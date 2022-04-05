@@ -9,9 +9,10 @@
 #include "DetailLayoutBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "GameFramework/PlayerController.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
+#include "PlayerMappableInputConfig.h"
 #include "InputCustomizations.h"
 #include "InputModifiers.h"
 #include "IAssetTools.h"
@@ -28,6 +29,7 @@
 #include "TickableEditorObject.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "AssetTypeActions/AssetTypeActions_DataAsset.h"
 
 #define LOCTEXT_NAMESPACE "InputEditor"
 
@@ -107,7 +109,9 @@ UObject* UInputMappingContext_Factory::FactoryCreateNew(UClass* Class, UObject* 
 }
 
 // InputAction
-UInputAction_Factory::UInputAction_Factory(const class FObjectInitializer& OBJ) : Super(OBJ) {
+UInputAction_Factory::UInputAction_Factory(const class FObjectInitializer& OBJ)
+	: Super(OBJ)
+{
 	SupportedClass = UInputAction::StaticClass();
 	bEditAfterNew = true;
 	bCreateNew = true;
@@ -117,6 +121,21 @@ UObject* UInputAction_Factory::FactoryCreateNew(UClass* Class, UObject* InParent
 {
 	check(Class->IsChildOf(UInputAction::StaticClass()));
 	return NewObject<UInputAction>(InParent, Class, Name, Flags | RF_Transactional, Context);
+}
+
+// UPlayerMappableInputConfig_Factory
+UPlayerMappableInputConfig_Factory::UPlayerMappableInputConfig_Factory(const class FObjectInitializer& OBJ)
+	: Super(OBJ)
+{
+	SupportedClass = UPlayerMappableInputConfig::StaticClass();
+	bEditAfterNew = true;
+	bCreateNew = true;
+}
+
+UObject* UPlayerMappableInputConfig_Factory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+{
+	check(Class->IsChildOf(UPlayerMappableInputConfig::StaticClass()));
+	return NewObject<UPlayerMappableInputConfig>(InParent, Class, Name, Flags | RF_Transactional, Context);
 }
 
 //
@@ -141,7 +160,8 @@ UObject* UInputAction_Factory::FactoryCreateNew(UClass* Class, UObject* InParent
 // Asset type actions
 // TODO: Move asset type action definitions out?
 
-class FAssetTypeActions_InputContext : public FAssetTypeActions_Base {
+class FAssetTypeActions_InputContext : public FAssetTypeActions_DataAsset
+{
 public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputMappingContext", "Input Mapping Context"); }
 	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
@@ -150,7 +170,8 @@ public:
 	virtual UClass* GetSupportedClass() const override { return UInputMappingContext::StaticClass(); }
 };
 
-class FAssetTypeActions_InputAction : public FAssetTypeActions_Base {
+class FAssetTypeActions_InputAction : public FAssetTypeActions_DataAsset
+{
 public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputAction", "Input Action"); }
 	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
@@ -159,23 +180,17 @@ public:
 	virtual UClass* GetSupportedClass() const override { return UInputAction::StaticClass(); }
 };
 
-//class FAssetTypeActions_InputTrigger : public FAssetTypeActions_Base {
-//public:
-//	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputTrigger", "Input Trigger"); }
-//	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
-//	virtual FColor GetTypeColor() const override { return FColor(127, 0, 255); }
-//	virtual FText GetAssetDescription(const FAssetData& AssetData) const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputTriggerDesc", "Supports custom trigger rules for actions and device inputs."); }
-//	virtual UClass* GetSupportedClass() const override { return UInputTrigger::StaticClass(); }
-//};
-//
-//class FAssetTypeActions_InputModifier : public FAssetTypeActions_Base {
-//public:
-//	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputModifier", "Input Modifier"); }
-//	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
-//	virtual FColor GetTypeColor() const override { return FColor(127, 255, 0); }
-//	virtual FText GetAssetDescription(const FAssetData& AssetData) const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_InputModifierDesc", "Applied to actions and raw device inputs to modify their output."); }
-//	virtual UClass* GetSupportedClass() const override { return UInputModifier::StaticClass(); }
-//};
+class FAssetTypeActions_PlayerMappableInputConfig : public FAssetTypeActions_DataAsset
+{
+public:
+	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_PlayerBindableInputConfig", "Player Bindable Input Config"); }
+	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
+	virtual FColor GetTypeColor() const override { return FColor(127, 255, 255); }
+	virtual FText GetAssetDescription(const FAssetData& AssetData) const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_PlayerBindableInputConfigDesc", "Represents one set of Player Mappable controller/keymappings"); }
+	virtual UClass* GetSupportedClass() const override { return UPlayerMappableInputConfig::StaticClass(); }
+};
+
+
 
 void FInputEditorModule::OnSettingChanged(const FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -435,6 +450,7 @@ void FInputEditorModule::StartupModule()
 	{
 		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputAction));
 		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputContext));
+		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_PlayerMappableInputConfig));
 		// TODO: Build these off a button on the InputContext Trigger/Mapping pickers? Would be good to have both.
 		//RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputTrigger));
 		//RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputModifier));

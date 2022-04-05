@@ -10,12 +10,11 @@
 	"DocsURL" : "",
 	"MarketplaceURL" : "",
 	"SupportURL" : "",
-	"EnabledByDefault" : true,
+	"EnabledByDefault" : false,
 	"CanContainContent" : true,
 	"IsBetaVersion" : false,
 	"Installed" : false,
 	"SupportedTargetPlatforms": [
-		"Win32",
 		"Win64",
 		"Linux",
 		"Android",
@@ -26,8 +25,7 @@
 			"Name": "OpenXRHMD",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64",
 				"Linux",
 				"Android",
@@ -38,8 +36,7 @@
 			"Name": "OpenXRInput",
 			"Type": "Runtime",
 			"LoadingPhase": "PostEngineInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64",
 				"Linux",
 				"Android",
@@ -50,8 +47,7 @@
 			"Name": "OpenXRAR",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64",
 				"Linux",
 				"Android",
@@ -62,7 +58,7 @@
 			"Name": "OpenXREditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"Linux"
 			]

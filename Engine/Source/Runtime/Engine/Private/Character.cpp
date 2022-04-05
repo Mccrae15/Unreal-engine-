@@ -85,8 +85,9 @@ ACharacter::ACharacter(const FObjectInitializer& ObjectInitializer)
 	if (CharacterMovement)
 	{
 		CharacterMovement->UpdatedComponent = CapsuleComponent;
-		CrouchedEyeHeight = CharacterMovement->CrouchedHalfHeight * 0.80f;
 	}
+
+	RecalculateCrouchedEyeHeight();
 
 	Mesh = CreateOptionalDefaultSubobject<USkeletalMeshComponent>(ACharacter::MeshComponentName);
 	if (Mesh)
@@ -114,7 +115,7 @@ void ACharacter::PostInitializeComponents()
 
 	Super::PostInitializeComponents();
 
-	if (!IsPendingKill())
+	if (IsValid(this))
 	{
 		if (Mesh)
 		{
@@ -261,24 +262,26 @@ bool ACharacter::CanJump() const
 
 bool ACharacter::CanJumpInternal_Implementation() const
 {
-	// Ensure the character isn't currently crouched.
-	bool bCanJump = !bIsCrouched;
+	return !bIsCrouched && JumpIsAllowedInternal();
+}
 
+bool ACharacter::JumpIsAllowedInternal() const
+{
 	// Ensure that the CharacterMovement state is valid
-	bCanJump &= CharacterMovement->CanAttemptJump();
+	bool bJumpIsAllowed = CharacterMovement->CanAttemptJump();
 
-	if (bCanJump)
+	if (bJumpIsAllowed)
 	{
 		// Ensure JumpHoldTime and JumpCount are valid.
 		if (!bWasJumping || GetJumpMaxHoldTime() <= 0.0f)
 		{
 			if (JumpCurrentCount == 0 && CharacterMovement->IsFalling())
 			{
-				bCanJump = JumpCurrentCount + 1 < JumpMaxCount;
+				bJumpIsAllowed = JumpCurrentCount + 1 < JumpMaxCount;
 			}
 			else
 			{
-				bCanJump = JumpCurrentCount < JumpMaxCount;
+				bJumpIsAllowed = JumpCurrentCount < JumpMaxCount;
 			}
 		}
 		else
@@ -287,12 +290,12 @@ bool ACharacter::CanJumpInternal_Implementation() const
 			// A) The jump limit hasn't been met OR
 			// B) The jump limit has been met AND we were already jumping
 			const bool bJumpKeyHeld = (bPressedJump && JumpKeyHoldTime < GetJumpMaxHoldTime());
-			bCanJump = bJumpKeyHeld &&
-						((JumpCurrentCount < JumpMaxCount) || (bWasJumping && JumpCurrentCount == JumpMaxCount));
+			bJumpIsAllowed = bJumpKeyHeld &&
+				((JumpCurrentCount < JumpMaxCount) || (bWasJumping && JumpCurrentCount == JumpMaxCount));
 		}
 	}
 
-	return bCanJump;
+	return bJumpIsAllowed;
 }
 
 void ACharacter::ResetJumpState()
@@ -442,6 +445,16 @@ void ACharacter::OnStartCrouch( float HeightAdjust, float ScaledHeightAdjust )
 	}
 
 	K2_OnStartCrouch(HeightAdjust, ScaledHeightAdjust);
+}
+
+void ACharacter::RecalculateCrouchedEyeHeight()
+{
+	if (CharacterMovement != nullptr)
+	{
+		constexpr float EyeHeightRatio = 0.8f;	// how high the character's eyes are, relative to the crouched height
+
+		CrouchedEyeHeight = CharacterMovement->GetCrouchedHalfHeight() * EyeHeightRatio;
+	}
 }
 
 void ACharacter::ApplyDamageMomentum(float DamageTaken, FDamageEvent const& DamageEvent, APawn* PawnInstigator, AActor* DamageCauser)
@@ -1752,4 +1765,44 @@ void ACharacter::ClientAdjustRootMotionPosition_Implementation(float TimeStamp, 
 void ACharacter::ClientAdjustRootMotionSourcePosition_Implementation(float TimeStamp, FRootMotionSourceGroup ServerRootMotion, bool bHasAnimRootMotion, float ServerMontageTrackPosition, FVector ServerLoc, FVector_NetQuantizeNormal ServerRotation, float ServerVelZ, UPrimitiveComponent* ServerBase, FName ServerBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode)
 {
 	GetCharacterMovement()->ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion, ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerBase, ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
+}
+
+void ACharacter::FillAsyncInput(FCharacterAsyncInput& Input) const
+{
+	Input.JumpMaxHoldTime = GetJumpMaxHoldTime();
+	Input.JumpMaxCount = JumpMaxCount;
+	Input.LocalRole = ENetRole::ROLE_Authority;//CharacterOwner->GetLocalRole(); Override as we aren't currently replicating to server. TODO NetRole
+	Input.RemoteRole = GetRemoteRole();
+	Input.bIsLocallyControlled = true;// CharacterOwner->IsLocallyControlled(); TODO NetRole
+	Input.bIsPlayingNetworkedRootMontage = IsPlayingNetworkedRootMotionMontage();
+	Input.bUseControllerRotationPitch = bUseControllerRotationPitch;
+	Input.bUseControllerRotationYaw = bUseControllerRotationYaw;
+	Input.bUseControllerRotationRoll = bUseControllerRotationRoll;
+	Input.ControllerDesiredRotation = Controller->GetDesiredRotation();
+}
+
+void ACharacter::InitializeAsyncOutput(FCharacterAsyncOutput& Output) const
+{
+	Output.Rotation = GetActorRotation();
+	Output.JumpCurrentCountPreJump = JumpCurrentCountPreJump;
+	Output.JumpCurrentCount = JumpCurrentCount;
+	Output.JumpForceTimeRemaining = JumpForceTimeRemaining;
+	Output.bWasJumping = bWasJumping;
+	Output.bPressedJump = bPressedJump;
+	Output.JumpKeyHoldTime = JumpKeyHoldTime;
+	Output.bClearJumpInput = false;
+}
+
+void ACharacter::ApplyAsyncOutput(const FCharacterAsyncOutput& Output)
+{
+	JumpCurrentCountPreJump = Output.JumpCurrentCountPreJump;
+	JumpCurrentCount = Output.JumpCurrentCount;
+	JumpForceTimeRemaining = Output.JumpForceTimeRemaining;
+	bWasJumping = Output.bWasJumping;
+	JumpKeyHoldTime = Output.JumpKeyHoldTime;
+
+	if (Output.bClearJumpInput)
+	{
+		bPressedJump = false;
+	}
 }

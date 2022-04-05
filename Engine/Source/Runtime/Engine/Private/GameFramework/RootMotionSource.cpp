@@ -68,6 +68,26 @@ void RootMotionSourceDebug::PrintOnScreenServerMsg(const FString& InString)
 
 const float RootMotionSource_InvalidStartTime = -BIG_NUMBER;
 
+
+static float EvaluateFloatCurveAtFraction(const UCurveFloat& Curve, const float Fraction)
+{
+	float MinCurveTime(0.f);
+	float MaxCurveTime(1.f);
+
+	Curve.GetTimeRange(MinCurveTime, MaxCurveTime);
+	return Curve.GetFloatValue(FMath::GetRangeValue(FVector2f(MinCurveTime, MaxCurveTime), Fraction));
+}
+
+static FVector EvaluateVectorCurveAtFraction(const UCurveVector& Curve, const float Fraction)
+{
+	float MinCurveTime(0.f);
+	float MaxCurveTime(1.f);
+
+	Curve.GetTimeRange(MinCurveTime, MaxCurveTime);
+	return Curve.GetVectorValue(FMath::GetRangeValue(FVector2f(MinCurveTime, MaxCurveTime), Fraction));
+}
+
+
 //
 // FRootMotionServerToLocalIDMapping
 //
@@ -693,12 +713,12 @@ void FRootMotionSource_MoveToForce::SetTime(float NewTime)
 	// TODO-RootMotionSource: Check if reached destination?
 }
 
-FVector FRootMotionSource_MoveToForce::GetPathOffsetInWorldSpace(float MoveFraction) const
+FVector FRootMotionSource_MoveToForce::GetPathOffsetInWorldSpace(const float MoveFraction) const
 {
 	if (PathOffsetCurve)
 	{
 		// Calculate path offset
-		const FVector PathOffsetInFacingSpace = PathOffsetCurve->GetVectorValue(MoveFraction);
+		const FVector PathOffsetInFacingSpace = EvaluateVectorCurveAtFraction(*PathOffsetCurve, MoveFraction);
 		FRotator FacingRotation((TargetLocation-StartLocation).Rotation());
 		FacingRotation.Pitch = 0.f; // By default we don't include pitch in the offset, but an option could be added if necessary
 		return FacingRotation.RotateVector(PathOffsetInFacingSpace);
@@ -881,12 +901,12 @@ void FRootMotionSource_MoveToDynamicForce::SetTime(float NewTime)
 	// TODO-RootMotionSource: Check if reached destination?
 }
 
-FVector FRootMotionSource_MoveToDynamicForce::GetPathOffsetInWorldSpace(float MoveFraction) const
+FVector FRootMotionSource_MoveToDynamicForce::GetPathOffsetInWorldSpace(const float MoveFraction) const
 {
 	if (PathOffsetCurve)
 	{
 		// Calculate path offset
-		const FVector PathOffsetInFacingSpace = PathOffsetCurve->GetVectorValue(MoveFraction);
+		const FVector PathOffsetInFacingSpace = EvaluateVectorCurveAtFraction(*PathOffsetCurve, MoveFraction);
 		FRotator FacingRotation((TargetLocation-StartLocation).Rotation());
 		FacingRotation.Pitch = 0.f; // By default we don't include pitch in the offset, but an option could be added if necessary
 		return FacingRotation.RotateVector(PathOffsetInFacingSpace);
@@ -908,9 +928,10 @@ void FRootMotionSource_MoveToDynamicForce::PrepareRootMotion
 	if (Duration > SMALL_NUMBER && MovementTickTime > SMALL_NUMBER)
 	{
 		float MoveFraction = (GetTime() + SimulationTime) / Duration;
+		
 		if (TimeMappingCurve)
 		{
-			MoveFraction = TimeMappingCurve->GetFloatValue(MoveFraction);
+			MoveFraction = EvaluateFloatCurveAtFraction(*TimeMappingCurve, MoveFraction);
 		}
 
 		FVector CurrentTargetLocation = FMath::Lerp<FVector, float>(StartLocation, TargetLocation, MoveFraction);
@@ -923,7 +944,12 @@ void FRootMotionSource_MoveToDynamicForce::PrepareRootMotion
 		if (bRestrictSpeedToExpected && !Force.IsNearlyZero(KINDA_SMALL_NUMBER))
 		{
 			// Calculate expected current location (if we didn't have collision and moved exactly where our velocity should have taken us)
-			const float PreviousMoveFraction = GetTime() / Duration;
+			float PreviousMoveFraction = GetTime() / Duration;
+			if (TimeMappingCurve)
+			{
+				PreviousMoveFraction = EvaluateFloatCurveAtFraction(*TimeMappingCurve, PreviousMoveFraction);
+			}
+
 			FVector CurrentExpectedLocation = FMath::Lerp<FVector, float>(StartLocation, TargetLocation, PreviousMoveFraction);
 			CurrentExpectedLocation += GetPathOffsetInWorldSpace(PreviousMoveFraction);
 
@@ -1083,13 +1109,13 @@ bool FRootMotionSource_JumpForce::UpdateStateFrom(const FRootMotionSource* Sourc
 	return true; // JumpForce has no unique state other than Time which is handled by FRootMotionSource
 }
 
-FVector FRootMotionSource_JumpForce::GetPathOffset(float MoveFraction) const
+FVector FRootMotionSource_JumpForce::GetPathOffset(const float MoveFraction) const
 {
 	FVector PathOffset(FVector::ZeroVector);
 	if (PathOffsetCurve)
 	{
 		// Calculate path offset
-		PathOffset = PathOffsetCurve->GetVectorValue(MoveFraction);
+		PathOffset = EvaluateVectorCurveAtFraction(*PathOffsetCurve, MoveFraction);
 	}
 	else
 	{
@@ -1150,8 +1176,8 @@ void FRootMotionSource_JumpForce::PrepareRootMotion
 
 		if (TimeMappingCurve)
 		{
-			CurrentMoveFraction = TimeMappingCurve->GetFloatValue(CurrentTimeFraction);
-			TargetMoveFraction = TimeMappingCurve->GetFloatValue(TargetTimeFraction);
+			CurrentMoveFraction = EvaluateFloatCurveAtFraction(*TimeMappingCurve, CurrentMoveFraction);
+			TargetMoveFraction  = EvaluateFloatCurveAtFraction(*TimeMappingCurve, TargetMoveFraction);
 		}
 
 		const FVector CurrentRelativeLocation = GetRelativeLocation(CurrentMoveFraction);
@@ -1341,14 +1367,14 @@ void FRootMotionSourceGroup::CleanUpInvalidRootMotion(float DeltaTime, const ACh
 			{
 				// For Z, only clamp positive values to prevent shooting off, we don't want to slow down a fall.
 				MoveComponent.Velocity = MoveComponent.Velocity.GetClampedToMaxSize2D(RootSource->FinishVelocityParams.ClampVelocity);
-				MoveComponent.Velocity.Z = FMath::Min(MoveComponent.Velocity.Z, RootSource->FinishVelocityParams.ClampVelocity);
+				MoveComponent.Velocity.Z = FMath::Min<FVector::FReal>(MoveComponent.Velocity.Z, RootSource->FinishVelocityParams.ClampVelocity);
 
 				// if we have additive velocity applied, LastPreAdditiveVelocity will stomp velocity, so make sure it gets clamped too.
 				if (bIsAdditiveVelocityApplied)
 				{
 					// For Z, only clamp positive values to prevent shooting off, we don't want to slow down a fall.
 					LastPreAdditiveVelocity = LastPreAdditiveVelocity.GetClampedToMaxSize2D(RootSource->FinishVelocityParams.ClampVelocity);
-					LastPreAdditiveVelocity.Z = FMath::Min(LastPreAdditiveVelocity.Z, RootSource->FinishVelocityParams.ClampVelocity);
+					LastPreAdditiveVelocity.Z = FMath::Min<FVector::FReal>(LastPreAdditiveVelocity.Z, RootSource->FinishVelocityParams.ClampVelocity);
 				}
 			}
 			else if (RootSource->FinishVelocityParams.Mode == ERootMotionFinishVelocityMode::SetVelocity)
@@ -1970,14 +1996,26 @@ void FRootMotionSourceGroup::UpdateStateFrom(const FRootMotionSourceGroup& Group
 	}
 }
 
-void FRootMotionSourceGroup::NetSerializeRMSArray(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, TArray< TSharedPtr<FRootMotionSource> >& RootMotionSourceArray)
+struct FRootMotionSourceDeleter
+{
+	FORCEINLINE void operator()(FRootMotionSource* Object) const
+	{
+		check(Object);
+		UScriptStruct* ScriptStruct = Object->GetScriptStruct();
+		check(ScriptStruct);
+		ScriptStruct->DestroyStruct(Object);
+		FMemory::Free(Object);
+	}
+};
+
+void FRootMotionSourceGroup::NetSerializeRMSArray(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, TArray< TSharedPtr<FRootMotionSource> >& RootMotionSourceArray, uint8 MaxNumRootMotionSourcesToSerialize/* = MAX_uint8*/)
 {
 	uint8 SourcesNum;
 	if (Ar.IsSaving())
 	{
-		UE_CLOG(RootMotionSourceArray.Num() > MAX_uint8, LogRootMotion, Warning, TEXT("Too many root motion sources (%d!) to net serialize. Clamping to %d"), 
-			RootMotionSourceArray.Num(), MAX_uint8);
-		SourcesNum = FMath::Min<int32>(RootMotionSourceArray.Num(), MAX_uint8);
+		UE_CLOG(RootMotionSourceArray.Num() > MaxNumRootMotionSourcesToSerialize, LogRootMotion, Warning, TEXT("Too many root motion sources (%d!) to net serialize. Clamping to %d"),
+			RootMotionSourceArray.Num(), MaxNumRootMotionSourcesToSerialize);
+		SourcesNum = FMath::Min<int32>(RootMotionSourceArray.Num(), MaxNumRootMotionSourcesToSerialize);
 	}
 	Ar << SourcesNum;
 	if (Ar.IsLoading())
@@ -2027,7 +2065,7 @@ void FRootMotionSourceGroup::NetSerializeRMSArray(FArchive& Ar, class UPackageMa
 						FRootMotionSource* NewSource = (FRootMotionSource*)FMemory::Malloc(ScriptStruct->GetCppStructOps()->GetSize());
 						ScriptStruct->InitializeStruct(NewSource);
 
-						RootMotionSourceArray[i] = TSharedPtr<FRootMotionSource>(NewSource);
+						RootMotionSourceArray[i] = TSharedPtr<FRootMotionSource>(NewSource, FRootMotionSourceDeleter());
 					}
 				}
 
@@ -2059,7 +2097,7 @@ void FRootMotionSourceGroup::NetSerializeRMSArray(FArchive& Ar, class UPackageMa
 
 }
 
-bool FRootMotionSourceGroup::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
+bool FRootMotionSourceGroup::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, uint8 MaxNumRootMotionSourcesToSerialize/* = MAX_uint8*/)
 {
 	FArchive_Serialize_BitfieldBool(Ar, bHasAdditiveSources);
 	FArchive_Serialize_BitfieldBool(Ar, bHasOverrideSources);
@@ -2068,8 +2106,10 @@ bool FRootMotionSourceGroup::NetSerialize(FArchive& Ar, class UPackageMap* Map, 
 	FArchive_Serialize_BitfieldBool(Ar, bIsAdditiveVelocityApplied);
 	Ar << LastAccumulatedSettings.Flags;
 
-	NetSerializeRMSArray(Ar, Map, bOutSuccess, RootMotionSources);
-	NetSerializeRMSArray(Ar, Map, bOutSuccess, PendingAddRootMotionSources);
+	uint8 NumRootMotionSourcesToSerialize = FMath::Min<int32>(RootMotionSources.Num(), MaxNumRootMotionSourcesToSerialize);
+	uint8 NumPendingAddRootMotionSourcesToSerialize = NumRootMotionSourcesToSerialize < MaxNumRootMotionSourcesToSerialize ? MaxNumRootMotionSourcesToSerialize - NumRootMotionSourcesToSerialize : 0;
+	NetSerializeRMSArray(Ar, Map, bOutSuccess, RootMotionSources, NumRootMotionSourcesToSerialize);
+	NetSerializeRMSArray(Ar, Map, bOutSuccess, PendingAddRootMotionSources, NumPendingAddRootMotionSourcesToSerialize);
 
 	if (Ar.IsError())
 	{

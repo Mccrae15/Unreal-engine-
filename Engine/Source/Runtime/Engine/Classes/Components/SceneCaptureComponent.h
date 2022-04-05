@@ -23,6 +23,7 @@ struct FSceneCaptureViewInfo
 	FMatrix ProjectionMatrix;
 	FIntRect ViewRect;
 	EStereoscopicPass StereoPass;
+	int32 StereoViewIndex;
 	float StereoIPD;
 };
 
@@ -35,7 +36,7 @@ struct FEngineShowFlagsSetting
 	FString ShowFlagName;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
-	bool Enabled=false;
+	bool Enabled = false;
 
 
 	bool operator == (const FEngineShowFlagsSetting& Other) const
@@ -86,7 +87,7 @@ class ENGINE_API USceneCaptureComponent : public USceneComponent
 
 	/** The actors to hide in the scene capture. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=SceneCapture)
-	TArray<AActor*> HiddenActors;
+	TArray<TObjectPtr<AActor>> HiddenActors;
 
 	/** The only components to be rendered by this scene capture, if PrimitiveRenderMode is set to UseShowOnlyList. */
  	UPROPERTY()
@@ -94,7 +95,7 @@ class ENGINE_API USceneCaptureComponent : public USceneComponent
 
 	/** The only actors to be rendered by this scene capture, if PrimitiveRenderMode is set to UseShowOnlyList.*/
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=SceneCapture)
-	TArray<AActor*> ShowOnlyActors;
+	TArray<TObjectPtr<AActor>> ShowOnlyActors;
 
 	/** Scales the distance used by LOD. Set to values greater than 1 to cause the scene capture to use lower LODs than the main view to speed up the scene capture pass. */
 	UPROPERTY(EditAnywhere, Category=PlanarReflection, meta=(UIMin = ".1", UIMax = "10"), AdvancedDisplay)
@@ -121,9 +122,6 @@ class ENGINE_API USceneCaptureComponent : public USceneComponent
 	FEngineShowFlags ShowFlags;
 
 public:
-	/** Indicates which stereo pass this component is capturing for, if any */
-    EStereoscopicPass CaptureStereoPass;
-
 	/** Name of the profiling event. */
 	UPROPERTY(EditAnywhere, interp, Category = SceneCapture)
 	FString ProfilingEventName;
@@ -213,7 +211,7 @@ protected:
 #if WITH_EDITORONLY_DATA
 	/** The mesh used by ProxyMeshComponent */
 	UPROPERTY(transient)
-	class UStaticMesh* CaptureMesh;
+	TObjectPtr<class UStaticMesh> CaptureMesh;
 
 	/** The mesh to show visually where the camera is placed */
 	class UStaticMeshComponent* ProxyMeshComponent;

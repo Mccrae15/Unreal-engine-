@@ -17,7 +17,7 @@
 //#include "DrawDebugHelpers.h"
 #include "ILiveLinkClient.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
-#include "IOpenXRHMDPlugin.h"
+#include "IOpenXRHMDModule.h"
 
 #define LOCTEXT_NAMESPACE "OpenXRHandTracking"
 
@@ -155,7 +155,7 @@ FOpenXRHandTracking::FOpenXRHandTracking(const TSharedRef<FGenericApplicationMes
 
 	// We're implicitly requiring that the OpenXRPlugin has been loaded and
 	// initialized at this point.
-	if (!IOpenXRHMDPlugin::Get().IsAvailable())
+	if (!IOpenXRHMDModule::Get().IsAvailable())
 	{
 		UE_LOG(LogOpenXRHandTracking, Error, TEXT("Error - OpenXRHMDPlugin isn't available"));
 	}
@@ -548,7 +548,7 @@ bool FOpenXRHandTracking::GetKeypointState(EControllerHand Hand, EHandKeypoint K
 	return gotTransform;
 }
 
-bool FOpenXRHandTracking::GetAllKeypointStates(EControllerHand Hand, TArray<struct FVector>& OutPositions, TArray<struct FQuat>& OutRotations, TArray<float>& OutRadii) const
+bool FOpenXRHandTracking::GetAllKeypointStates(EControllerHand Hand, TArray<FVector>& OutPositions, TArray<FQuat>& OutRotations, TArray<float>& OutRadii) const
 {
 	if (!bHandTrackingAvailable)
 	{

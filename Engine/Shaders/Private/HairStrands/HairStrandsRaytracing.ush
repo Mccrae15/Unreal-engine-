@@ -2,11 +2,12 @@
 
 #pragma once
 
+#ifndef VOXEL_TRAVERSAL_DEBUG
 #define VOXEL_TRAVERSAL_DEBUG 0
+#endif
 #define VOXEL_TRAVERSAL_TYPE VOXEL_TRAVERSAL_LINEAR_MIPMAP
 //#define VOXEL_TRAVERSAL_TYPE VOXEL_TRAVERSAL_LINEAR
 
-#include "../HairStrands/HairStrandsVoxelPageCommonStruct.ush"
 #include "../HairStrands/HairStrandsVoxelPageCommon.ush"
 #include "../HairStrands/HairStrandsVoxelPageTraversal.ush"
 
@@ -14,6 +15,9 @@
 float InternalTraverseHair(uint2 PixelCoord, float3 RayOrigin, float3 RayDirection, float InMinT, float InOcclusionThreshold, float3 VoxelRandom, float RayRandom)
 {
 	float HitT = InMinT;
+
+	// Note: VirtualVoxel.TranslatedWorldOffset should be equivalent to LWCHackToFloat(PrimaryView.WorldCameraOrigin), but insures the value is consistent
+	RayOrigin = RayOrigin + VirtualVoxel.TranslatedWorldOffset; // HAIR_LWC
 
 	// Depth bias
 	// Origin is shifted voxels away towards the light + a constant bias of the size of the voxel
@@ -55,6 +59,7 @@ float InternalTraverseHair(uint2 PixelCoord, float3 RayOrigin, float3 RayDirecti
 		TraversalSettings.SteppingScale = VirtualVoxel.SteppingScale_Raytracing;
 		TraversalSettings.Random = VoxelRandom;
 		TraversalSettings.bUseOpaqueVisibility = false;
+		TraversalSettings.bCastShadow = true;
 
 		Result = ComputeHairCountVirtualVoxel(
 			P0,
@@ -89,9 +94,23 @@ float TraverseHair(uint2 PixelCoord, inout RandomSequence RandSequence, float3 R
 {
 	float HitT = InMinT;
 
-	const float4 Rnd = RandomSequence_GenerateSample4D(RandSequence);
-	const float3 VoxelRandom = Rnd.xyz;
-	const float RayRandom = Rnd.w;
+	// 0: No jitter, 1:Time-Random jitter, 2:Time-Constant jitter
+	float3 VoxelRandom = 0.5f;
+	float  RayRandom   = 1.0f;
+	if (VirtualVoxel.JitterMode == 1)
+	{
+		const float4 Rnd = RandomSequence_GenerateSample4D(RandSequence);
+		VoxelRandom = Rnd.xyz;
+		RayRandom = Rnd.w;
+	}
+	else
+	{
+		const uint2  Seed0 = Rand3DPCG16(int3(PixelCoord, 0)).xy;
+		const uint2  Seed1 = Rand3DPCG16(int3(PixelCoord + 17, 0)).xy;
+		const float4 Rnd  = float4(Hammersley16(0, 8, Seed0), Hammersley16(0, 8, Seed1));
+		VoxelRandom = Rnd.xyz;
+		RayRandom = Rnd.w;
+	}
 
 	return InternalTraverseHair(PixelCoord, RayOrigin, RayDirection, InMinT, InOcclusionThreshold, VoxelRandom, RayRandom);
 }

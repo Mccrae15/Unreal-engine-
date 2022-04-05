@@ -106,6 +106,7 @@ protected:
 	virtual void GetChildren(TArray< TSharedPtr<FHierarchyModel> >& Children) = 0;
 	virtual void UpdateSelection() = 0;
 	virtual FWidgetReference AsDraggedWidgetReference() const { return FWidgetReference(); }
+	virtual bool HasCircularReferences(class UWidgetBlueprint* Blueprint, class UWidget* Widget, TSharedPtr<class FDragDropOperation>& DragDropOp);
 	void DetermineDragDropPreviewWidgets(TArray<class UWidget*>& OutWidgets, const FDragDropEvent& DragDropEvent);
 	void RemovePreviewWidget(class UWidgetBlueprint* Blueprint, class UWidget* Widget);
 
@@ -330,6 +331,7 @@ protected:
 private:
 	FWidgetReference Item;
 	bool bEditing;
+	bool bNameTextValid;
 };
 
 /**
@@ -349,7 +351,6 @@ public:
 	virtual ~SHierarchyViewItem();
 
 	// Begin SWidget
-	virtual bool IsHovered() const override;
 	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
 	// End SWidget
@@ -375,6 +376,7 @@ private:
 
 	bool IsReadOnly() const;
 	void OnRequestBeginRename();
+	bool ShouldAppearHovered() const;
 
 	/** Gets the font to use for the text item, bold for customized named items */
 	FSlateFontInfo GetItemFont() const;
@@ -404,4 +406,7 @@ private:
 
 	/** Text when we start editing. */
 	FText InitialText;
+
+	/** Keep an internal IsHovered flag*/
+	bool bHovered;
 };

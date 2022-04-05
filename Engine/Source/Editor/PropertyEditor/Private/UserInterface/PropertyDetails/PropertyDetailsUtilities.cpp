@@ -55,6 +55,11 @@ TSharedPtr<class FAssetThumbnailPool> FPropertyDetailsUtilities::GetThumbnailPoo
 	return DetailsView.GetThumbnailPool();
 }
 
+const TArray<TSharedRef<class IClassViewerFilter>>& FPropertyDetailsUtilities::GetClassViewerFilters() const
+{
+	return DetailsView.GetClassViewerFilters();
+}
+
 void FPropertyDetailsUtilities::NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)
 {
 	DetailsView.NotifyFinishedChangingProperties(PropertyChangedEvent);
@@ -73,9 +78,4 @@ const TArray<TWeakObjectPtr<UObject>>& FPropertyDetailsUtilities::GetSelectedObj
 bool FPropertyDetailsUtilities::HasClassDefaultObject() const
 {
 	return DetailsView.HasClassDefaultObject();
-}
-
-TSharedPtr<FEditConditionParser> FPropertyDetailsUtilities::GetEditConditionParser() const
-{
-	return DetailsView.GetEditConditionParser();
 }

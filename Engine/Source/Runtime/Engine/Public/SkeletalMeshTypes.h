@@ -29,24 +29,29 @@ struct ESkeletalMeshVertexFlags
 		UseFullPrecisionUVs = 0x1,
 		HasVertexColors = 0x2,
 		UseHighPrecisionTangentBasis = 0x4,
-		BuildAdjacencyIndexBuffer = 0x8
+		UseBackwardsCompatibleF16TruncUVs = 0x8
 	};
 };
 
-/** Name of vertex color channels */
+/** Name of vertex color channels, used by recompute tangents */
 enum class ESkinVertexColorChannel : uint8
 {
-	// 
+	// Use red channel as recompute tangents blending mask
 	Red = 0,
-	// 
+	// Use green channel as recompute tangents blending mask
 	Green = 1,
-	// 
+	// Use blue channel as recompute tangents blending mask
 	Blue = 2,
-	//
-	Alpha = 3
+	// Alpha channel not used by recompute tangents
+	Alpha = 3,
+	None = Alpha
 };
 
-
+enum class ESkinVertexFactoryMode
+{
+	Default,
+	RayTracing
+};
 
 /**
  * A structure for holding mesh-to-mesh triangle influences to skin one mesh to another (similar to a wrap deformer)
@@ -54,15 +59,15 @@ enum class ESkinVertexColorChannel : uint8
 struct FMeshToMeshVertData
 {
 	// Barycentric coords and distance along normal for the position of the final vert
-	FVector4 PositionBaryCoordsAndDist;
+	FVector4f PositionBaryCoordsAndDist; 
 
 	// Barycentric coords and distance along normal for the location of the unit normal endpoint
 	// Actual normal = ResolvedNormalPosition - ResolvedPosition
-	FVector4 NormalBaryCoordsAndDist;
+	FVector4f NormalBaryCoordsAndDist;
 
 	// Barycentric coords and distance along normal for the location of the unit Tangent endpoint
 	// Actual normal = ResolvedNormalPosition - ResolvedPosition
-	FVector4 TangentBaryCoordsAndDist;
+	FVector4f TangentBaryCoordsAndDist;
 
 	// Contains the 3 indices for verts in the source mesh forming a triangle, the last element
 	// is a flag to decide how the skinning works, 0xffff uses no simulation, and just normal
@@ -78,6 +83,26 @@ struct FMeshToMeshVertData
 	friend ENGINE_API FArchive& operator<<(FArchive& Ar, FMeshToMeshVertData& V);
 };
 
+/**
+* Structure to store the buffer offsets to the section's cloth deformer mapping data. 
+* Also contains the stride to further cloth LODs data for cases where one section has
+* multiple mappings so that it can be wrap deformed with cloth data from a different LOD.
+* When using LOD bias in Raytracing for example.
+*/
+struct FClothBufferIndexMapping
+{
+	/** Section first index. */
+	uint32 BaseVertexIndex;
+
+	/** Offset in the buffer to the corresponding cloth mapping. */
+	uint32 MappingOffset;
+
+	/** Stride to the next LOD mapping if any. */
+	uint32 LODBiasStride;
+
+	friend ENGINE_API FArchive& operator<<(FArchive& Ar, FClothBufferIndexMapping& V);
+};
+
 struct FClothingSectionData
 {
 	FClothingSectionData()
@@ -85,7 +110,7 @@ struct FClothingSectionData
 		, AssetLodIndex(INDEX_NONE)
 	{}
 
-	bool IsValid()
+	bool IsValid() const
 	{
 		return AssetGuid.IsValid() && AssetLodIndex != INDEX_NONE;
 	}
@@ -131,6 +156,8 @@ public:
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 #if RHI_RAYTRACING
+	virtual bool HasRayTracingRepresentation() const override;
+
 	virtual bool IsRayTracingRelevant() const override { return true; }
 
 	virtual bool IsRayTracingStaticRelevant() const override
@@ -146,7 +173,7 @@ public:
 	virtual bool IsUsingDistanceCullFade() const override;
 	
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
-	virtual void GetShadowShapes(TArray<FCapsuleShape>& CapsuleShapes) const override;
+	virtual void GetShadowShapes(TArray<FCapsuleShape3f>& CapsuleShapes) const override;
 
 	/** Return the bounds for the pre-skinned primitive in local space */
 	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const override { OutBounds = PreSkinnedLocalBounds; }
@@ -178,7 +205,7 @@ public:
 	void DebugDrawSkeleton(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
-	uint32 GetAllocatedSize( void ) const { return( FPrimitiveSceneProxy::GetAllocatedSize() + LODSections.GetAllocatedSize() ); }
+	SIZE_T GetAllocatedSize( void ) const { return( FPrimitiveSceneProxy::GetAllocatedSize() + LODSections.GetAllocatedSize() ); }
 
 	/**
 	* Updates morph material usage for materials referenced by each LOD entry
@@ -191,7 +218,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	virtual bool GetPrimitiveDistance(int32 LODIndex, int32 SectionIndex, const FVector& ViewOrigin, float& PrimitiveDistance) const override;
 	virtual bool GetMeshUVDensities(int32 LODIndex, int32 SectionIndex, FVector4& WorldUVDensities) const override;
-	virtual bool GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const FMaterialRenderProxy* MaterialRenderProxy, FVector4* OneOverScales, FIntVector4* UVChannelIndices) const override;
+	virtual bool GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const FMaterialRenderProxy* MaterialRenderProxy, FVector4f* OneOverScales, FIntVector4* UVChannelIndices) const override;
 #endif
 
 	friend class FSkeletalMeshSectionIter;
@@ -304,7 +331,7 @@ protected:
 	/** Only call on render thread timeline */
 	uint8 GetCurrentFirstLODIdx_Internal() const;
 private:
-	void CreateBaseMeshBatch(const FSceneView* View, const FSkeletalMeshLODRenderData& LODData, const int32 LODIndex, const int32 SectionIndex, const FSectionElementInfo& SectionElementInfo, FMeshBatch& Mesh) const;
+	void CreateBaseMeshBatch(const FSceneView* View, const FSkeletalMeshLODRenderData& LODData, const int32 LODIndex, const int32 SectionIndex, const FSectionElementInfo& SectionElementInfo, FMeshBatch& Mesh, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const;
 };
 
 /** Used to recreate all skinned mesh components for a given skeletal mesh */

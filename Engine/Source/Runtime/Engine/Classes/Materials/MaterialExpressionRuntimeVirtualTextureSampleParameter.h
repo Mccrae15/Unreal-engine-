@@ -31,12 +31,13 @@ class UMaterialExpressionRuntimeVirtualTextureSampleParameter : public UMaterial
 
 #if WITH_EDITOR
 	/** If this is the named parameter from this material expression, then set its value. */
-	bool SetParameterValue(FName InParameterName, URuntimeVirtualTexture* InValue);
+	bool SetParameterValue(FName InParameterName, URuntimeVirtualTexture* InValue, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None);
 #endif
 
-	/** Return whether this is the named parameter from this material expression, and if it is then return its value. */
+	UE_DEPRECATED(5.0, "Use GetParameterValue and/or GetParameterName")
 	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, URuntimeVirtualTexture*& OutValue) const;
-	/** Adds to arrays of parameter info and id with the values used by this material expression. */
+	
+	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const;
 
 	//~ Begin UMaterialExpression Interface
@@ -50,7 +51,31 @@ class UMaterialExpressionRuntimeVirtualTextureSampleParameter : public UMaterial
 	virtual void ValidateParameterName(const bool bAllowDuplicateName) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual bool MatchesSearchQuery(const TCHAR* SearchQuery) override;
-	virtual void SetValueToMatchingExpression(UMaterialExpression* OtherExpression) override;
+	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
+	{
+		OutMeta.Value = VirtualTexture;
+		OutMeta.Description = Desc;
+		OutMeta.ExpressionGuid = ExpressionGUID;
+		OutMeta.Group = Group;
+		OutMeta.SortPriority = SortPriority;
+		return true;
+	}
+	virtual bool SetParameterValue(const FName& Name, const FMaterialParameterMetadata& Meta, EMaterialExpressionSetParameterValueFlags Flags) override
+	{
+		if (Meta.Value.Type == EMaterialParameterType::RuntimeVirtualTexture)
+		{
+			if (SetParameterValue(Name, Meta.Value.RuntimeVirtualTexture, Flags))
+			{
+				if (EnumHasAnyFlags(Flags, EMaterialExpressionSetParameterValueFlags::AssignGroupAndSortPriority))
+				{
+					Group = Meta.Group;
+					SortPriority = Meta.SortPriority;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
 #endif
 	virtual FGuid& GetParameterExpressionId() override { return ExpressionGUID; }
 	//~ End UMaterialExpression Interface

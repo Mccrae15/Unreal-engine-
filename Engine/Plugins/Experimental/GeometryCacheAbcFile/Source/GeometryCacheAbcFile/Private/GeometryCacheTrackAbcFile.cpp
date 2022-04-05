@@ -10,9 +10,11 @@
 #include "GeometryCache.h"
 #include "GeometryCacheAbcStream.h"
 #include "GeometryCacheHelpers.h"
+#include "GeometryCacheStreamerSettings.h"
 #include "IGeometryCacheStreamer.h"
 #include "Logging/LogCategory.h"
 #include "Logging/LogMacros.h"
+#include "Misc/ArchiveMD5.h"
 #include "Misc/Paths.h"
 #include "PackageTools.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -21,8 +23,47 @@ DEFINE_LOG_CATEGORY_STATIC(LogGeometryCacheAbcFile, Log, All);
 
 #define LOCTEXT_NAMESPACE "GeometryCacheTrackAbcFile"
 
+namespace UE::GeometryCacheTrackAbcFile::Private
+{
+	void SerializeSettingsForDDC(FArchive& Ar, UAbcImportSettings* Settings)
+	{
+		// Include only settings that would affect how the frame data is generated
+		Ar << Settings->ConversionSettings.bFlipU;
+		Ar << Settings->ConversionSettings.bFlipV;
+		Ar << Settings->ConversionSettings.Rotation;
+		Ar << Settings->ConversionSettings.Scale;
+
+		Ar << Settings->GeometryCacheSettings.bFlattenTracks;
+		Ar << Settings->GeometryCacheSettings.bStoreImportedVertexNumbers;
+		Ar << Settings->GeometryCacheSettings.MotionVectors;
+
+		Ar << Settings->NormalGenerationSettings.bForceOneSmoothingGroupPerObject;
+		Ar << Settings->NormalGenerationSettings.HardEdgeAngleThreshold;
+		Ar << Settings->NormalGenerationSettings.bRecomputeNormals;
+		Ar << Settings->NormalGenerationSettings.bIgnoreDegenerateTriangles;
+		Ar << Settings->NormalGenerationSettings.bSkipComputingTangents;
+	}
+
+	FString ComputeSettingsHash(UAbcImportSettings* Settings)
+	{
+		if (!Settings)
+		{
+			return {};
+		}
+
+		FArchiveMD5 ArMD5;
+		SerializeSettingsForDDC(ArMD5, Settings);
+
+		FMD5Hash MD5Hash;
+		ArMD5.GetHash(MD5Hash);
+
+		return BytesToHex(MD5Hash.GetBytes(), MD5Hash.GetSize());
+	}
+}
+
 UGeometryCacheTrackAbcFile::UGeometryCacheTrackAbcFile()
-: EndFrameIndex(0)
+: StartFrameIndex(0)
+, EndFrameIndex(0)
 {
 }
 
@@ -75,6 +116,9 @@ const bool UGeometryCacheTrackAbcFile::UpdateBoundsData(const float Time, const 
 void UGeometryCacheTrackAbcFile::Reset()
 {
 	AbcFile.Reset();
+	Hash.Empty();
+	AbcStream.Reset();
+	SampleInfos.Reset();
 
 	EndFrameIndex = 0;
 	Duration = 0.f;
@@ -83,7 +127,7 @@ void UGeometryCacheTrackAbcFile::Reset()
 	MatrixSampleTimes.Reset();
 
 	MeshData = FGeometryCacheMeshData();
-	MeshData.BoundingBox = FBox(ForceInit);
+	MeshData.BoundingBox = FBox3f(ForceInit);
 }
 
 void UGeometryCacheTrackAbcFile::ShowNotification(const FText& Text)
@@ -129,9 +173,30 @@ bool UGeometryCacheTrackAbcFile::SetSourceFile(const FString& FilePath, UAbcImpo
 			return false;
 		}
 
+		// Automatically set the FrameEnd the same way as it's computed in FAbcImporter::GetEndFrameIndex when importing as GeometryCache to have same duration
+		if (AbcSettings->SamplingSettings.FrameEnd == 0)
+		{
+			AbcSettings->SamplingSettings.FrameEnd = FMath::Max(AbcFile->GetMaxFrameIndex() - 1, 1);
+		}
+
 		Result = AbcFile->Import(AbcSettings);
 
-		// Set the end frame after import since it might have been modified due to validation at import
+		// The hash is composed of the Alembic file hash and the settings hash used to import it
+		FString AbcHash;
+		for (const FAbcFile::FMetaData& MetaData : AbcFile->GetArchiveMetaData())
+		{
+			if (MetaData.Key == TEXT("Abc.Hash"))
+			{
+				AbcHash = MetaData.Value;
+				break;
+			}
+		}
+
+		FString SettingsHash = UE::GeometryCacheTrackAbcFile::Private::ComputeSettingsHash(AbcSettings);
+		Hash = AbcHash + TEXT("_") + SettingsHash;
+
+		// Set the start/end frame after import since it might have been modified due to validation at import
+		StartFrameIndex = AbcSettings->SamplingSettings.FrameStart;
 		EndFrameIndex = AbcSettings->SamplingSettings.FrameEnd;
 
 		if (Result != EAbcImportError::AbcImportError_NoError)
@@ -164,11 +229,14 @@ bool UGeometryCacheTrackAbcFile::SetSourceFile(const FString& FilePath, UAbcImpo
 
 		// Register this Track and associated Stream with the GeometryCacheStreamer and prefetch the first frame
 		// The Stream ownership is passed to the Streamer
-		FGeometryCacheAbcStream* Stream = new FGeometryCacheAbcStream(this);
-		Streamer.RegisterTrack(this, Stream);
+		AbcStream.Reset(new FGeometryCacheAbcStream(this));
+		Streamer.RegisterTrack(this, AbcStream.Get());
 
 		const int32 InitialFrameIndex = FindSampleIndexFromTime(InitialTime, bIsLooping);
-		Stream->Prefetch(InitialFrameIndex);
+		const float LookAhead = GetDefault<UGeometryCacheStreamerSettings>()->LookAheadBuffer;
+		const int32 NumFrames = FMath::CeilToInt(LookAhead / AbcFile->GetSecondsPerFrame());
+
+		AbcStream->Prefetch(InitialFrameIndex, NumFrames);
 		GetMeshData(InitialFrameIndex, MeshData);
 
 		if (MeshData.Positions.Num() == 0)
@@ -198,24 +266,66 @@ const int32 UGeometryCacheTrackAbcFile::FindSampleIndexFromTime(const float Time
 
 const FGeometryCacheTrackSampleInfo& UGeometryCacheTrackAbcFile::GetSampleInfo(float Time, bool bLooping)
 {
-	float SampleTime = Time;
-	if (bLooping)
+	if (SampleInfos.Num() == 0)
 	{
-		SampleTime = GeometyCacheHelpers::WrapAnimationTime(Time, Duration);
+		if (EndFrameIndex > StartFrameIndex)
+		{
+			// +1 because the SampleInfo for EndFrameIndex is also needed
+			SampleInfos.SetNum(EndFrameIndex - StartFrameIndex + 1);
+		}
+		else
+		{
+			return FGeometryCacheTrackSampleInfo::EmptySampleInfo;
+		}
 	}
 
-	// Update the mesh data as required
-	int32 ThisSampleIndex = FindSampleIndexFromTime(SampleTime, bLooping);
-	GetMeshData(ThisSampleIndex, MeshData);
+	// The sample info index must start from 0, while the sample index is between the range of the animation
+	const int32 SampleIndex = FindSampleIndexFromTime(Time, bLooping);
+	const int32 SampleInfoIndex = SampleIndex - StartFrameIndex;
 
-	SampleInfo = FGeometryCacheTrackSampleInfo(
-		SampleTime,
-		MeshData.BoundingBox,
-		MeshData.Positions.Num(),
-		MeshData.Indices.Num()
-	);
+	FGeometryCacheTrackSampleInfo& CurrentSampleInfo = SampleInfos[SampleInfoIndex];
 
-	return SampleInfo;
+	if (CurrentSampleInfo.SampleTime == 0.0f && CurrentSampleInfo.NumVertices == 0 && CurrentSampleInfo.NumIndices == 0)
+	{
+		if (GetMeshData(SampleIndex, MeshData))
+		{
+			CurrentSampleInfo = FGeometryCacheTrackSampleInfo(
+				Time,
+				(FBox) MeshData.BoundingBox,
+				MeshData.Positions.Num(),
+				MeshData.Indices.Num()
+			);
+		}
+	}
+
+	return CurrentSampleInfo;
+}
+
+const FGeometryCacheTrackSampleInfo& UGeometryCacheTrackAbcFile::GetSampleInfo(int32 FrameIndex)
+{
+	if (AbcFile)
+	{
+		// FrameIndex is normalized to 0
+		return GetSampleInfo((FrameIndex - StartFrameIndex) * AbcFile->GetSecondsPerFrame(), false);
+	}
+	return FGeometryCacheTrackSampleInfo::EmptySampleInfo;
+}
+
+bool UGeometryCacheTrackAbcFile::IsTopologyCompatible(int32 FrameA, int32 FrameB)
+{
+	// FrameA/B could be -1, meaning invalid frame
+	if (SampleInfos.Num() > 0 && FrameA >= 0 && FrameB >= 0)
+	{
+		return GetSampleInfo(FrameA).NumVertices == GetSampleInfo(FrameB).NumVertices;
+	}
+	return false;
+}
+
+bool UGeometryCacheTrackAbcFile::GetMeshDataAtTime(float Time, FGeometryCacheMeshData& OutMeshData)
+{
+	const bool bLooping = true;
+	const int32 SampleIndex = FindSampleIndexFromTime(Time, bLooping);
+	return GetMeshData(SampleIndex, OutMeshData);
 }
 
 bool UGeometryCacheTrackAbcFile::GetMeshData(int32 SampleIndex, FGeometryCacheMeshData& OutMeshData)
@@ -249,6 +359,15 @@ void UGeometryCacheTrackAbcFile::SetupGeometryCacheMaterials(UGeometryCache* Geo
 FAbcFile& UGeometryCacheTrackAbcFile::GetAbcFile()
 {
 	return *AbcFile.Get();
+}
+
+void UGeometryCacheTrackAbcFile::UpdateTime(float Time, bool bLooping)
+{
+	if (AbcStream)
+	{
+		int32 FrameIndex = FindSampleIndexFromTime(Time, bLooping);
+		AbcStream->UpdateCurrentFrameIndex(FrameIndex);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

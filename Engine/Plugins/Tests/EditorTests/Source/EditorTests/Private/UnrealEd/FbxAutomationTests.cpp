@@ -27,7 +27,10 @@
 #include "SkinWeightsUtilities.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Rendering/SkeletalMeshModel.h"
+#include "Misc/Paths.h"
+#include "UObject/SavePackage.h"
 
+#include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimSequence.h"
 
 #include "AssetRegistryModule.h"
@@ -36,6 +39,9 @@
 
 #include "FbxMeshUtils.h"
 #include "Tests/FbxAutomationCommon.h"
+
+#include "Editor/EditorEngine.h"
+extern UNREALED_API UEditorEngine* GEditor;
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -88,11 +94,11 @@ public:
 			}
 
 			const FString& CurveName = ExpectedResult.ExpectedPresetsDataString[0];
-			FFloatCurve* FloatCurve = nullptr;
+			const FFloatCurve* FloatCurve = nullptr;
 			FSmartName OutSmartName;
 			if (AnimSequence->GetSkeleton()->GetSmartNameByName(USkeleton::AnimCurveMappingName, *CurveName, OutSmartName))
 			{
-				FloatCurve = static_cast<FFloatCurve*>(AnimSequence->RawCurveData.GetCurveData(OutSmartName.UID, ERawCurveTrackTypes::RCT_Float));
+				FloatCurve = static_cast<const FFloatCurve*>(AnimSequence->GetCurveData().GetCurveData(OutSmartName.UID, ERawCurveTrackTypes::RCT_Float));
 			}
 			if (FloatCurve == nullptr)
 			{
@@ -127,7 +133,7 @@ void FFbxImportAssetsAutomationTest::GetTests(TArray<FString>& OutBeautifiedName
 	FString ImportTestDirectory;
 	check(GConfig);
 	GConfig->GetString(TEXT("AutomationTesting.FbxImport"), TEXT("FbxImportTestPath"), ImportTestDirectory, GEngineIni);
-
+	ImportTestDirectory = FPaths::Combine(FPaths::ConvertRelativePathToFull(FPaths::EngineDir()), ImportTestDirectory);
 
 	// Find all files in the GenericImport directory
 	TArray<FString> FilesInDirectory;
@@ -178,6 +184,10 @@ FString GetFormatedMessageErrorInExpectedResult(FString FileName, FString TestPl
 	return FString::Printf(TEXT("%s->%s: Wrong Expected Result, %s[%d] dont match expected data"),
 		*FileName, *TestPlanName, *ExpectedResultName, ExpectedResultIndex);
 }
+
+// Codegen optimization degenerates for very long functions like RunTest when combined with the invokation of lots of FORCEINLINE methods.
+// We don't need this code to be particularly fast anyway. The other way to improve this code would be to split the test in multiple functions.
+BEGIN_FUNCTION_BUILD_OPTIMIZATION
 
 /**
 * Execute the generic import test
@@ -286,7 +296,12 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 							}
 							FString PackageName = Asset->GetOutermost()->GetPathName();
 							Asset->MarkPackageDirty();
-							UPackage::SavePackage(Asset->GetOutermost(), Asset, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension()), GError, nullptr, false, true, SAVE_NoError);
+							FSavePackageArgs SaveArgs;
+							SaveArgs.TopLevelFlags = RF_Standalone;
+							SaveArgs.SaveFlags = SAVE_NoError;
+							UPackage::SavePackage(Asset->GetOutermost(), Asset,
+								*FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension()),
+								SaveArgs);
 						}
 					}
 					for (const FAssetData& AssetData : ImportedAssets)
@@ -301,12 +316,18 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 								{
 									ExistingObject->ClearFlags(RF_Standalone | RF_Public);
 									ExistingObject->RemoveFromRoot();
-									ExistingObject->MarkPendingKill();
+									ExistingObject->MarkAsGarbage();
 								}
 						
 							}
 						}
 					}
+
+					if ((GEditor != nullptr) && (GEditor->Trans != nullptr))
+					{
+						GEditor->Trans->Reset(FText::FromString("Discard undo history during FBX Automation testing."));
+					}
+
 
 					ImportedObjects.Empty();
 
@@ -368,7 +389,6 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->VertexColorImportOption = TestPlan->ImportUI->StaticMeshImportData->VertexColorImportOption;
 					ImportData->VertexOverrideColor = TestPlan->ImportUI->StaticMeshImportData->VertexOverrideColor;
 					ImportData->bRemoveDegenerates = TestPlan->ImportUI->StaticMeshImportData->bRemoveDegenerates;
-					ImportData->bBuildAdjacencyBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildAdjacencyBuffer;
 					ImportData->bBuildReversedIndexBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer;
 					ImportData->bGenerateLightmapUVs = TestPlan->ImportUI->StaticMeshImportData->bGenerateLightmapUVs;
 					ImportData->bOneConvexHullPerUCX = TestPlan->ImportUI->StaticMeshImportData->bOneConvexHullPerUCX;
@@ -475,7 +495,6 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->VertexColorImportOption = TestPlan->ImportUI->StaticMeshImportData->VertexColorImportOption;
 					ImportData->VertexOverrideColor = TestPlan->ImportUI->StaticMeshImportData->VertexOverrideColor;
 					ImportData->bRemoveDegenerates = TestPlan->ImportUI->StaticMeshImportData->bRemoveDegenerates;
-					ImportData->bBuildAdjacencyBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildAdjacencyBuffer;
 					ImportData->bBuildReversedIndexBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer;
 					ImportData->bGenerateLightmapUVs = TestPlan->ImportUI->StaticMeshImportData->bGenerateLightmapUVs;
 					ImportData->bOneConvexHullPerUCX = TestPlan->ImportUI->StaticMeshImportData->bOneConvexHullPerUCX;
@@ -1395,7 +1414,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 							}
 							else
 							{
-								VertexPosition = Mesh->GetRenderData()->LODResources[LODIndex].VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex);
+								VertexPosition = (FVector)Mesh->GetRenderData()->LODResources[LODIndex].VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex);
 							}
 						}
 					}
@@ -1416,7 +1435,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 							}
 							else
 							{
-								VertexPosition = Mesh->GetResourceForRendering()->LODRenderData[LODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex);
+								VertexPosition = (FVector)Mesh->GetResourceForRendering()->LODRenderData[LODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex);
 							}
 						}
 					}
@@ -1455,12 +1474,12 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 				}
 				const int32 LODIndex = ExpectedResult.ExpectedPresetsDataInteger[0];
 				const int32 VertexIndex = ExpectedResult.ExpectedPresetsDataInteger[1];
-				const FVector ExpectedNormal(ExpectedResult.ExpectedPresetsDataFloat[0], ExpectedResult.ExpectedPresetsDataFloat[1], ExpectedResult.ExpectedPresetsDataFloat[2]);
+				const FVector3f ExpectedNormal(ExpectedResult.ExpectedPresetsDataFloat[0], ExpectedResult.ExpectedPresetsDataFloat[1], ExpectedResult.ExpectedPresetsDataFloat[2]);
 				int32 LODNumber = 0;
 				int32 VertexNumber = 0;
 				bool BadLodIndex = false;
 				bool BadVertexIndex = false;
-				FVector VertexNormal(0.0f);
+				FVector3f VertexNormal(0.0f);
 				if (ImportedObjects.Num() > 0)
 				{
 					UObject *Object = ImportedObjects[0];
@@ -1674,7 +1693,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 							*FormatedMessageErrorPrefix));
 						break;
 					}
-					int32 FrameNumber = AnimSequence->GetNumberOfFrames();
+					int32 FrameNumber = AnimSequence->GetNumberOfSampledKeys();
 					if (FrameNumber != ExpectedResult.ExpectedPresetsDataInteger[0])
 					{
 						ExecutionInfo.AddError(FString::Printf(TEXT("%s [%d frames but expected %d]"),
@@ -1770,6 +1789,54 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					{
 						ExecutionInfo.AddError(FString::Printf(TEXT("%s the value for the specified leaving tangent [%f] does not match the expected value [%f]"),
 							*GetFormatedMessageErrorInTestData(CleanFilename, TestPlan->TestPlanName, TEXT("Animation_CustomCurve_KeyLeaveTangent"), ExpectedResultIndex), LeaveTangent, ExpectedResult.ExpectedPresetsDataFloat[0]));
+
+						break;
+					}
+				}
+				break;
+			}
+			case Animation_CustomCurve_KeyArriveTangentWeight:
+			{
+				FString FormatedMessageErrorPrefix = GetFormatedMessageErrorInTestData(CleanFilename, TestPlan->TestPlanName, TEXT("Animation_CustomCurve_KeyArriveTangentWeight"), ExpectedResultIndex);
+				FRichCurveKey CustomCurveKey;
+				if (FFbxImportAssetsAutomationTestHelper::GetImportedCustomCurveKey(ImportedAssets, ExecutionInfo, FormatedMessageErrorPrefix, ExpectedResult, CustomCurveKey))
+				{
+					if (ExpectedResult.ExpectedPresetsDataFloat.Num() < 1)
+					{
+						ExecutionInfo.AddError(FString::Printf(TEXT("%s expected result need 1 float data (Expected Custom Curve Key Arriving Tangent Weight value)"),
+							*FormatedMessageErrorPrefix));
+						break;
+					}
+
+					const float ArriveTangentWeight = CustomCurveKey.ArriveTangentWeight;
+					if (!FMath::IsNearlyEqual(ArriveTangentWeight, ExpectedResult.ExpectedPresetsDataFloat[0], 0.001f))
+					{
+						ExecutionInfo.AddError(FString::Printf(TEXT("%s the value for the specified arriving tangent weight [%f] does not match the expected value [%f]"),
+							*GetFormatedMessageErrorInTestData(CleanFilename, TestPlan->TestPlanName, TEXT("Animation_CustomCurve_KeyArriveTangentWeight"), ExpectedResultIndex), ArriveTangentWeight, ExpectedResult.ExpectedPresetsDataFloat[0]));
+
+						break;
+					}
+				}
+				break;
+			}
+			case Animation_CustomCurve_KeyLeaveTangentWeight:
+			{
+				FString FormatedMessageErrorPrefix = GetFormatedMessageErrorInTestData(CleanFilename, TestPlan->TestPlanName, TEXT("Animation_CustomCurve_KeyLeaveTangentWeight"), ExpectedResultIndex);
+				FRichCurveKey CustomCurveKey;
+				if (FFbxImportAssetsAutomationTestHelper::GetImportedCustomCurveKey(ImportedAssets, ExecutionInfo, FormatedMessageErrorPrefix, ExpectedResult, CustomCurveKey))
+				{
+					if (ExpectedResult.ExpectedPresetsDataFloat.Num() < 1)
+					{
+						ExecutionInfo.AddError(FString::Printf(TEXT("%s expected result need 1 float data (Expected Custom Curve Key Leaving Tangent Weight value)"),
+							*FormatedMessageErrorPrefix));
+						break;
+					}
+
+					const float LeaveTangentWeight = CustomCurveKey.LeaveTangentWeight;
+					if (!FMath::IsNearlyEqual(LeaveTangentWeight, ExpectedResult.ExpectedPresetsDataFloat[0], 0.001f))
+					{
+						ExecutionInfo.AddError(FString::Printf(TEXT("%s the value for the specified leaving tangent weight [%f] does not match the expected value [%f]"),
+							*GetFormatedMessageErrorInTestData(CleanFilename, TestPlan->TestPlanName, TEXT("Animation_CustomCurve_KeyLeaveTangentWeight"), ExpectedResultIndex), LeaveTangentWeight, ExpectedResult.ExpectedPresetsDataFloat[0]));
 
 						break;
 					}
@@ -1907,6 +1974,11 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 		}
 		if (TestPlan->bDeleteFolderAssets || TestPlan->Action == EFBXTestPlanActionType::ImportReload)
 		{
+			if ((GEditor != nullptr) && (GEditor->Trans != nullptr))
+			{
+				GEditor->Trans->Reset(FText::FromString("Discard undo history during FBX Automation testing."));
+			}
+
 			//When doing an import-reload we have to destroy the package since it was save
 			//But when we just have everything in memory a garbage collection pass is enough to
 			//delete assets.
@@ -1924,7 +1996,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 							{
 								ExistingObject->ClearFlags(RF_Standalone | RF_Public);
 								ExistingObject->RemoveFromRoot();
-								ExistingObject->MarkPendingKill();
+								ExistingObject->MarkAsGarbage();
 							}
 
 						}
@@ -1958,3 +2030,5 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 
 	return CurTestSuccessful;
 }
+
+END_FUNCTION_BUILD_OPTIMIZATION

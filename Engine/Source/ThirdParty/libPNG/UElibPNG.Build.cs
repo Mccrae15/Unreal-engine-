@@ -17,7 +17,6 @@ public class UElibPNG : ModuleRules
 				return "libPNG-1.6.37";
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Mac ||
 				Target.Architecture.StartsWith("aarch64") ||
 				Target.Architecture.StartsWith("i686"))
 			{
@@ -59,18 +58,11 @@ public class UElibPNG : ModuleRules
 			string LibFileName = "libpng" + (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT ? "d" : "") + "_64.lib";
 			PublicAdditionalLibraries.Add(Path.Combine(LibDir, LibFileName));
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32)
-		{
-			LibDir = Path.Combine(LibPNGPath, "Win32", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-
-			string LibFileName = "libpng" + (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT ? "d" : "") + ".lib";
-			PublicAdditionalLibraries.Add(Path.Combine(LibDir, LibFileName));
-		}
 		else if (Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
 			string PlatformSubpath = Target.Platform.ToString();
 			LibDir = Path.Combine(LibPNGPath, PlatformSubpath, "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM32 || Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
+			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
 			{
 				LibDir = Path.Combine(LibDir, Target.WindowsPlatform.GetArchitectureSubpath());
 			}
@@ -108,14 +100,12 @@ public class UElibPNG : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Android", "ARMv7", "libpng.a"));
 			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Android", "ARM64", "libpng.a"));
-			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Android", "x86", "libpng.a"));
 			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Android", "x64", "libpng.a"));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Linux", Target.Architecture, "libpng.a"));
+			PublicAdditionalLibraries.Add(Path.Combine(LibPNGPath, "Unix", Target.Architecture, "libpng.a"));
 		}
 
 		PublicIncludePaths.Add(IncPNGPath);

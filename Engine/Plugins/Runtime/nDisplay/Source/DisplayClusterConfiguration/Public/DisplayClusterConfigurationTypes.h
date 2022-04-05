@@ -11,6 +11,7 @@
 #include "DisplayClusterConfigurationTypes_ICVFX.h"
 #include "DisplayClusterConfigurationTypes_Viewport.h"
 #include "DisplayClusterConfigurationTypes_OutputRemap.h"
+#include "DisplayClusterEditorPropertyReference.h"
 
 #include "DisplayClusterConfigurationVersion.h"
 
@@ -162,21 +163,17 @@ protected:
 ////////////////////////////////////////////////////////////////
 // Cluster
 USTRUCT(Blueprintable)
-struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationMasterNodePorts
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationPrimaryNodePorts
 {
 	GENERATED_BODY()
 
 public:
-	FDisplayClusterConfigurationMasterNodePorts();
+	FDisplayClusterConfigurationPrimaryNodePorts();
 
 public:
 	/** Advanced: network port for Cluster Sync Events */
 	UPROPERTY(EditAnywhere, Category = NDisplay, meta = (ClampMin = "1024", ClampMax = "65535", UIMin = "1024", UIMax = "65535"))
 	uint16 ClusterSync;
-
-	/** Advanced: network port for Render Sync Events */
-	UPROPERTY(EditAnywhere, Category = NDisplay, meta = (ClampMin = "1024", ClampMax = "65535", UIMin = "1024", UIMax = "65535"))
-	uint16 RenderSync;
 
 	/** Advanced: network port for Json Cluster Events */
 	UPROPERTY(EditAnywhere, Category = NDisplay, meta = (ClampMin = "1024", ClampMax = "65535", UIMin = "1024", UIMax = "65535"))
@@ -188,7 +185,7 @@ public:
 };
 
 USTRUCT(Blueprintable)
-struct FDisplayClusterConfigurationMasterNode
+struct FDisplayClusterConfigurationPrimaryNode
 {
 	GENERATED_BODY()
 
@@ -196,8 +193,8 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = NDisplay)
 	FString Id;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration", meta = (DisplayName = "Master Node Ports"))
-	FDisplayClusterConfigurationMasterNodePorts Ports;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration", meta = (DisplayName = "Primary Node Ports"))
+	FDisplayClusterConfigurationPrimaryNodePorts Ports;
 };
 
 USTRUCT(Blueprintable)
@@ -223,10 +220,10 @@ public:
 	FDisplayClusterConfigurationClusterSync();
 	
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = NDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Configuration)
 	FDisplayClusterConfigurationRenderSyncPolicy RenderSyncPolicy;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = NDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Configuration)
 	FDisplayClusterConfigurationInputSyncPolicy InputSyncPolicy;
 };
 
@@ -265,6 +262,17 @@ public:
 	int32 RenderSyncBarrierTimeout;
 };
 
+USTRUCT(Blueprintable)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationFailoverSettings
+{
+	GENERATED_BODY()
+
+public:
+	/** Failover policy */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay)
+	EDisplayClusterConfigurationFailoverPolicy FailoverPolicy = EDisplayClusterConfigurationFailoverPolicy::Disabled;
+};
+
 USTRUCT()
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationExternalImage
 {
@@ -288,7 +296,14 @@ public:
 public:
 	UDisplayClusterConfigurationClusterNode();
 
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
+	void GetViewportIds(TArray<FString>& OutViewportIds) const;
+
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
+	UDisplayClusterConfigurationViewport* GetViewport(const FString& ViewportId) const;
+
 	// Return all references to meshes from policy, and other
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
 	
 private:
@@ -312,31 +327,35 @@ public:
 	bool bIsFullscreen;
 
 	/** Defines the application window size in pixels */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "Window"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "Window", DisplayMode = "Compound", FixedAspectRatioProperty = "bFixedAspectRatio"))
 	FDisplayClusterConfigurationRectangle WindowRect;
 
 	/** Output remapping settings for the selected cluster node */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "Output Remapping"))
 	FDisplayClusterConfigurationFramePostProcess_OutputRemap OutputRemap;
 
+	/** Enables texture sharing for this cluster node */
+	UPROPERTY(EditAnywhere, BlueprintReadonly, Category = "Configuration", meta = (DisplayName = "Enable Texture Share"))
+	bool bEnableTextureShare = false;
+
 #if WITH_EDITORONLY_DATA
 	/** Locks the application window aspect ratio for easier resizing */
-	UPROPERTY(EditAnywhere, Category = "Configuration")
+	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (HideProperty))
 	bool bFixedAspectRatio;
 #endif
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, EditFixedSize, Instanced, Category = "Configuration", meta = (DisplayThumbnail = false, ShowInnerProperties, nDisplayInstanceOnly))
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, EditFixedSize, Instanced, Category = "Configuration", meta = (DisplayThumbnail = false))
 	TMap<FString, UDisplayClusterConfigurationViewport*> Viewports;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Configuration", meta = (DisplayName = "Custom Output Settings", DisplayThumbnail = false, ShowInnerProperties))
 	TMap<FString, FDisplayClusterConfigurationPostprocess> Postprocess;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (nDisplayHidden))
+	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (HideProperty))
 	bool bIsVisible;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (nDisplayHidden))
-	bool bIsEnabled;
+	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (HideProperty))
+	bool bIsUnlocked;
 
 	/** Binds a background preview image for easier output mapping */
 	UPROPERTY(EditDefaultsOnly, Category = "Configuration")
@@ -381,7 +400,7 @@ public:
 	bool bAllowManualPlacement;
 
 	/** Resolution of Host PC in pixels */
-	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (EditCondition = "bAllowManualSizing"))
+	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (EditCondition = "bAllowManualSizing", AllowPreserveRatio))
 	FVector2D HostResolution;
 
 	/** Allows to manually resize the Host PC resolution */
@@ -400,7 +419,7 @@ public:
 	bool bIsVisible;
 
 	UPROPERTY()
-	bool bIsEnabled;
+	bool bIsUnlocked;
 };
 
 UCLASS(Blueprintable)
@@ -410,16 +429,19 @@ class DISPLAYCLUSTERCONFIGURATION_API UDisplayClusterConfigurationCluster
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration", meta = (ShowOnlyInnerProperties))
-	FDisplayClusterConfigurationMasterNode MasterNode;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Configuration", meta = (ShowOnlyInnerProperties))
+	FDisplayClusterConfigurationPrimaryNode PrimaryNode;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Configuration", meta = (ShowOnlyInnerProperties))
 	FDisplayClusterConfigurationClusterSync Sync;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Configuration")
 	FDisplayClusterConfigurationNetworkSettings Network;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, EditFixedSize, Instanced, Category = NDisplay, meta = (DisplayThumbnail = false, nDisplayInstanceOnly, ShowInnerProperties))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Configuration")
+	FDisplayClusterConfigurationFailoverSettings Failover;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, EditFixedSize, Instanced, Category = NDisplay, meta = (DisplayThumbnail = false, HideProperty))
 	TMap<FString, UDisplayClusterConfigurationClusterNode*> Nodes;
 
 #if WITH_EDITORONLY_DATA
@@ -432,7 +454,15 @@ protected:
 
 public:
 	// Return all references to meshes from policy, and other
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
+
+	// Nodes API
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
+	void GetNodeIds(TArray<FString>& OutNodeIds) const;
+
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
+	UDisplayClusterConfigurationClusterNode* GetNode(const FString& NodeId) const;
 };
 
 USTRUCT(Blueprintable)
@@ -442,13 +472,13 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationDiagnostics
 
 public:
 	UPROPERTY(EditAnywhere, Category = NDisplay)
-	bool bSimulateLag;
+	bool bSimulateLag = false;
 
 	UPROPERTY(EditAnywhere, Category = NDisplay)
-	float MinLagTime;
+	float MinLagTime = 0.01f;
 
 	UPROPERTY(EditAnywhere, Category = NDisplay)
-	float MaxLagTime;
+	float MaxLagTime = 0.3f;
 };
 
 struct FDisplayClusterConfigurationDataMetaInfo
@@ -469,16 +499,10 @@ public:
 	UDisplayClusterConfigurationData();
 
 public:
-	// Facade API
-	const UDisplayClusterConfigurationClusterNode* GetClusterNode(const FString& NodeId) const;
-	const UDisplayClusterConfigurationViewport*    GetViewport(const FString& NodeId, const FString& ViewportId) const;
-
-	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
-	UDisplayClusterConfigurationViewport* GetViewportConfiguration(const FString& NodeId, const FString& ViewportId);
-
-	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
-	UDisplayClusterConfigurationClusterNode* GetClusterNodeConfiguration(const FString& NodeId) const;
-
+	// Viewports API
+	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
+	UDisplayClusterConfigurationViewport* GetViewport(const FString& NodeId, const FString& ViewportId) const;
+	
 	/**
 	* Update\Create node postprocess
 	*
@@ -492,51 +516,51 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	bool AssignPostprocess(const FString& NodeId, const FString& PostprocessId, const FString& Type, TMap<FString, FString> Parameters, int32 Order = -1);
 
-	/**
-	* Delet node postprocess
-	*
-	* @param PostprocessId - Unique postprocess name
-	*
-	* @return - true, if success
-	*/
 	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	bool RemovePostprocess(const FString& NodeId, const FString& PostprocessId);
 
+	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	bool GetPostprocess(const FString& NodeId, const FString& PostprocessId, FDisplayClusterConfigurationPostprocess& OutPostprocess) const;
+
+	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	bool GetProjectionPolicy(const FString& NodeId, const FString& ViewportId, FDisplayClusterConfigurationProjection& OutProjection) const;
 
 	// Return all references to meshes from policy, and other
+	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
 
 public:
 	FDisplayClusterConfigurationDataMetaInfo Meta;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced)
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayAfter = "RenderFrameSettings"))
 	FDisplayClusterConfigurationInfo Info;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = Advanced)
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = NDisplay, meta = (HideProperty))
 	UDisplayClusterConfigurationScene* Scene;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Instanced, Category = Advanced, meta = (DisplayThumbnail = false, ShowInnerProperties))
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Instanced, Category = NDisplay)
 	UDisplayClusterConfigurationCluster* Cluster;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced)
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayAfter = "Diagnostics"))
 	TMap<FString, FString> CustomParameters;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced)
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayAfter = "Info"))
 	FDisplayClusterConfigurationDiagnostics Diagnostics;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Configuration, meta = (HidePropertyInstanceOnly, DisplayAfter = "DefaultFrameSizeRef"))
 	FDisplayClusterConfigurationRenderFrame RenderFrameSettings;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (HideProperty))
 	FDisplayClusterConfigurationICVFX_StageSettings StageSettings;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced, meta = (DisplayName = "Follow Local Player Camera"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayName = "Follow Local Player Camera", DisplayAfter = "CustomParameters"))
 	bool bFollowLocalPlayerCamera = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Advanced, meta = (DisplayName = "Exit When ESC Pressed"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayName = "Exit When ESC Pressed", DisplayAfter = "bFollowLocalPlayerCamera"))
 	bool bExitOnEsc = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Configuration, meta = (DisplayName = "Override Viewports From .ndisplay", DisplayAfter = "bExitOnEsc"))
+	bool bOverrideViewportsFromExternalConfig = false;
 
 	/** Create empty config data. */
 	static UDisplayClusterConfigurationData* CreateNewConfigData(UObject* Owner = nullptr, EObjectFlags ObjectFlags = RF_NoFlags);
@@ -557,5 +581,12 @@ public:
 
 	const static TSet<FString> ProjectionPolicies;
 	
-#endif
+//////////////////////////////////////////////////////////////////////////////////////////////
+// Details Panel Property Referencers
+//////////////////////////////////////////////////////////////////////////////////////////////
+private:
+	UPROPERTY(EditDefaultsOnly, Transient, Category = Configuration, meta = (PropertyPath = "StageSettings.DefaultFrameSize"))
+	FDisplayClusterEditorPropertyReference DefaultFrameSizeRef;
+
+#endif // WITH_EDITORONLY_DATA
 };

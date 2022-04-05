@@ -243,7 +243,7 @@ TSharedRef<ITableRow> FDMXPixelMappingDetailCustomization_Matrix::GenerateExpose
 }
 
 void FDMXPixelMappingDetailCustomization_Matrix::CreateModulatorDetails(IDetailLayoutBuilder& InDetailLayout)
-{	
+{
 	IDetailCategoryBuilder& ModualtorsCategory = InDetailLayout.EditCategory("Modulators", LOCTEXT("DMXModulatorsCategory", "Modulators"), ECategoryPriority::Important);
 
 	TSharedPtr<IPropertyHandle> ModulatorClassesHandle = DetailLayout->GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingMatrixComponent, ModulatorClasses), UDMXPixelMappingMatrixComponent::StaticClass());
@@ -290,7 +290,7 @@ void FDMXPixelMappingDetailCustomization_Matrix::CreateModulatorDetails(IDetailL
 						}
 					}
 				}
-				else if(UDMXModulator* ModulatorOfFirstMatrix = FirstMatrixComponent->Modulators[IndexModulator])
+				else if (UDMXModulator* ModulatorOfFirstMatrix = FirstMatrixComponent->Modulators[IndexModulator])
 				{
 					ModulatorsToEdit.Add(ModulatorOfFirstMatrix);
 				}
@@ -305,7 +305,7 @@ void FDMXPixelMappingDetailCustomization_Matrix::CreateModulatorDetails(IDetailL
 					DetailsViewArgs.bAllowSearch = false;
 					DetailsViewArgs.bHideSelectionTip = false;
 					DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-					
+
 					TSharedRef<IDetailsView> DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 					DetailsView->SetObjects(ModulatorsToEdit);
 
@@ -322,7 +322,7 @@ void FDMXPixelMappingDetailCustomization_Matrix::CreateModulatorDetails(IDetailL
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("ModulatorMultipleValues", "Multiple Values"))
-						.Font(IDetailLayoutBuilder::GetDetailFont())
+							.Font(IDetailLayoutBuilder::GetDetailFont())
 						];
 
 					break;

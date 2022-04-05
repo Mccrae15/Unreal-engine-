@@ -10,26 +10,20 @@
 
 namespace TextureShareItem
 {
-	FTextureShareSyncPolicySettings FTextureShareItemBase::GSyncPolicySettings[] =
+	FTextureShareSyncPolicySettings FTextureShareItemBase::SyncPolicySettings[] =
 	{
 		FTextureShareSyncPolicySettings(ETextureShareProcess::Server),
 		FTextureShareSyncPolicySettings(ETextureShareProcess::Client)
 	};
 
-	FCriticalSection FTextureShareItemBase::GSyncPolicySettingsDataGuard;
-
 	const FTextureShareSyncPolicySettings& FTextureShareItemBase::GetSyncPolicySettings(ETextureShareProcess Process)
 	{
-		FScopeLock DataLock(&GSyncPolicySettingsDataGuard);
-
-		return GSyncPolicySettings[(uint8)Process];
+		return SyncPolicySettings[(int)Process];
 	}
 
 	void FTextureShareItemBase::SetSyncPolicySettings(ETextureShareProcess Process, const FTextureShareSyncPolicySettings& InSyncPolicySettings)
 	{
-		FScopeLock DataLock(&GSyncPolicySettingsDataGuard);
-
-		GSyncPolicySettings[(uint8)Process] = InSyncPolicySettings;
+		SyncPolicySettings[(int)Process] = InSyncPolicySettings;
 	}
 
 	enum class ESyncProcessFailAction : uint8
@@ -41,11 +35,12 @@ namespace TextureShareItem
 	class FSyncProcess
 	{
 	public:
-		FSyncProcess(FTextureShareItemBase& ShareItem, float InTimeOut, ESyncProcessFailAction InFailAction = ESyncProcessFailAction::None)
+		FSyncProcess(FTextureShareItemBase& ShareItem, float InTimeOut, ESyncProcessFailAction InFailAction = ESyncProcessFailAction::None, float InWaitSeconds= 1.f/200.f)
 			: ShareItem(ShareItem)
 			, FailAction(InFailAction)
 			, Time0(FPlatformTime::Seconds())
 			, TimeOut(InTimeOut)
+			, WaitSeconds(InWaitSeconds)
 		{}
 
 		bool Tick()
@@ -55,52 +50,40 @@ namespace TextureShareItem
 				return false;
 			}
 
+			// If timeout is defined, checking elasped waiting time
+			double TotalWaitTime = FPlatformTime::Seconds() - Time0;
+			bool isTimeOut = (TimeOut>0) && (TotalWaitTime > TimeOut);
+
 			if (ShareItem.TryFrameSyncLost())
 			{
 				// remote process lost. break sync
 				return false;
 			}
 
-			// If timeout is defined, checking elasped waiting time
-			const double TotalWaitTime = FPlatformTime::Seconds() - Time0;
-			const bool bIsTimeOut = (TimeOut>0) && (TotalWaitTime > TimeOut);
-			if (!bIsTimeOut)
-			{
-				// default max timeout step in milliseconds (no timeout)
-				const uint32 MaxWaitTime = 200;
-
-				// TimeOut duration in milliseconds
-				uint32 CustomWaitTime = MaxWaitTime;
-				if (TimeOut > 0)
-				{
-					const double LostSeconds = TimeOut - TotalWaitTime;
-					if (LostSeconds > 0)
-					{
-						CustomWaitTime = LostSeconds * 1000; // sec->msec
-					}
-				}
-
-				// Use minimal wait time, to detect connection loss
-				const uint32 WaitTime = FMath::Min(MaxWaitTime, CustomWaitTime);
-
-				// Wait until the remote process data has changed or timed out
-				ShareItem.WaitForRemoteProcessDataChanged(WaitTime);
-
-				// Update data from remote process
-				ShareItem.ReadRemoteProcessData();
-				return true;
-			}
-
 			switch (FailAction)
 			{
 			case ESyncProcessFailAction::ConnectionLost:
-				ShareItem.RemoteConnectionLost();
+				if (isTimeOut)
+				{
+					ShareItem.RemoteConnectionLost();
+					return false;
+				}
 				break;
 			default:
+				if (isTimeOut)
+				{
+					return false;
+				}
 				break;
 			}
-			
-			return false;
+
+			// Wait for remote process data changes
+			FPlatformProcess::SleepNoStats(WaitSeconds);
+
+			// Update data from remote process
+			ShareItem.ReadRemoteProcessData();
+
+			return true;
 		}
 
 	private:
@@ -110,11 +93,6 @@ namespace TextureShareItem
 		double TimeOut;
 		float  WaitSeconds;
 	};
-
-	bool FTextureShareItemBase::WaitForRemoteProcessDataChanged(uint32 WaitTime, const bool bIgnoreThreadIdleStats)
-	{
-		return SharedResource && SharedResource->WaitReadDataEvent(WaitTime, bIgnoreThreadIdleStats);
-	}
 
 	bool FTextureShareItemBase::ReadRemoteProcessData()
 	{
@@ -158,39 +136,39 @@ namespace TextureShareItem
 		return !IsClient() ? ResourceData.ClientData : ResourceData.ServerData;
 	}
 
-	int32 FTextureShareItemBase::FindTextureIndex(const FSharedResourceProcessData& Src, ESharedResourceTextureState TextureState, bool bNotEqual) const
+	int FTextureShareItemBase::FindTextureIndex(const FSharedResourceProcessData& Src, ESharedResourceTextureState TextureState, bool bNotEqual) const
 	{
-		for (int32 TextureIndex = 0; TextureIndex < MaxTextureShareItemTexturesCount; TextureIndex++)
+		for (int i = 0; i < MaxTextureShareItemTexturesCount; i++)
 		{
-			if ((!bNotEqual && Src.Textures[TextureIndex].State == TextureState) || (bNotEqual && Src.Textures[TextureIndex].State != TextureState))
+			if ((!bNotEqual && Src.Textures[i].State == TextureState) || (bNotEqual && Src.Textures[i].State != TextureState))
 			{
-				return TextureIndex;
+				return i;
 			}
 		}
 		return -1;
 	}
 
-	int32 FTextureShareItemBase::FindTextureIndex(const FSharedResourceProcessData& Src, const FString& TextureName) const
+	int FTextureShareItemBase::FindTextureIndex(const FSharedResourceProcessData& Src, const FString& TextureName) const
 	{
-		for (int32 TextureIndex = 0; TextureIndex < MaxTextureShareItemTexturesCount; TextureIndex++)
+		for (int i = 0; i < MaxTextureShareItemTexturesCount; i++)
 		{
 			// Case insensitive search
-			if (!FPlatformString::Stricmp(Src.Textures[TextureIndex].Name, *TextureName))
+			if (!FPlatformString::Stricmp(Src.Textures[i].Name, *TextureName))
 			{
-				return TextureIndex;
+				return i;
 			}
 		}
 		return -1;
 	}
 
-	int32 FTextureShareItemBase::FindRemoteTextureIndex(const FSharedResourceTexture& LocalTextureData) const
+	int FTextureShareItemBase::FindRemoteTextureIndex(const FSharedResourceTexture& LocalTextureData) const
 	{
 		if (IsConnectionValid())
 		{
 			if (LocalTextureData.IsUsed())
 			{
 				const FSharedResourceProcessData& Data = GetRemoteProcessData();
-				int32 RemoteTextureIndex = FindTextureIndex(Data, LocalTextureData.Name);
+				int RemoteTextureIndex = FindTextureIndex(Data, LocalTextureData.Name);
 				if (RemoteTextureIndex >= 0 && Data.Textures[RemoteTextureIndex].IsUsed())
 				{
 					return RemoteTextureIndex;
@@ -216,41 +194,20 @@ namespace TextureShareItem
 			// Reset local process data
 			FSharedResourceProcessData& LocaData = GetLocalProcessData();
 			LocaData.SyncMode = SyncMode;
-			for (int32 TextureIndex = 0; TextureIndex < MaxTextureShareItemTexturesCount; TextureIndex++)
+			for (int i = 0; i < MaxTextureShareItemTexturesCount; i++)
 			{
-				LocaData.Textures[TextureIndex].Index = TextureIndex;
+				LocaData.Textures[i].Index = i;
 			}
 		}
 	};
 
 	bool FTextureShareItemBase::IsClient() const
 	{
-		FScopeLock DataLock(&DataLockGuard);
 		return SharedResource && SharedResource->IsClient();
-	}
-
-	bool FTextureShareItemBase::IsValid() const
-	{
-		FScopeLock DataLock(&DataLockGuard);
-		return SharedResource != nullptr;
-	}
-
-	bool FTextureShareItemBase::IsSessionValid() const
-	{
-		FScopeLock DataLock(&DataLockGuard);
-		return IsValid() && bIsSessionStarted;
-	}
-
-	bool FTextureShareItemBase::IsLocalFrameLocked() const
-	{
-		FScopeLock DataLock(&DataLockGuard);
-		return GetLocalProcessData().IsFrameLockedNow();
 	}
 
 	void FTextureShareItemBase::Release()
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		// Sync vs render thread frame lock/unlock
 		FScopeLock FrameLock(&FrameLockGuard);
 
@@ -261,7 +218,7 @@ namespace TextureShareItem
 		if (SharedResource)
 		{
 			const FTextureShareSyncPolicySettings& SyncSettings = GetSyncSettings();
-			SharedResource->Release(SyncSettings.TimeOut.ReleaseSync * 1000);
+			SharedResource->Release(SyncSettings.TimeOut.ReleaseSync*1000);
 			delete SharedResource;
 			SharedResource = nullptr;
 		}
@@ -269,8 +226,6 @@ namespace TextureShareItem
 
 	const FString& FTextureShareItemBase::GetName() const
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		static FString InvalidShareName(TEXT("InvalidShareName"));
 		return SharedResource ? SharedResource->GetName() : InvalidShareName;
 	}
@@ -293,15 +248,13 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::RegisterTexture(const FString& TextureName, const FIntPoint& InSize, ETextureShareFormat InFormat, uint32 InFormatValue, ETextureShareSurfaceOp OperationType)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		if (!CheckTextureInfo(TextureName, InSize, InFormat, InFormatValue))
 		{
 			return false;
 		}
 
 		FSharedResourceProcessData& Data = GetLocalProcessData();
-		int32 LocalTextureIndex = FindTextureIndex(Data, TextureName);
+		int LocalTextureIndex = FindTextureIndex(Data, TextureName);
 		if (LocalTextureIndex < 0)
 		{
 			//Texture Not defined, add new
@@ -349,15 +302,12 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::SetTextureGPUIndex(const FString& TextureName, uint32 GPUIndex)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		FSharedResourceProcessData& Data = GetLocalProcessData();
-		int32 LocalTextureIndex = FindTextureIndex(Data, TextureName);
+		int LocalTextureIndex = FindTextureIndex(Data, TextureName);
 		if (LocalTextureIndex >= 0)
 		{
 			FSharedResourceTexture& Dst = Data.Textures[LocalTextureIndex];
-			Dst.SetConnectionMGPUIndex((int32)GPUIndex);
-
+			Dst.SharingData.MGPUIndex = GPUIndex;
 			return WriteLocalProcessData();
 		}
 
@@ -367,8 +317,6 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::SetDefaultGPUIndex(uint32 GPUIndex)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		FSharedResourceProcessData& Data = GetLocalProcessData();
 		Data.DefaultMGPUIndex = GPUIndex;
 		return WriteLocalProcessData();
@@ -376,31 +324,20 @@ namespace TextureShareItem
 
 	void FTextureShareItemBase::SetSyncWaitTime(float InSyncWaitTime)
 	{
-		// SyncWaitTime now is deprecated
+		SyncWaitTime = InSyncWaitTime;
 	}
 
-	bool FTextureShareItemBase::IsLocalTextureUsed(const FString& TextureName) const
+	/*ESharedResourceTextureState FTextureShareItemBase::GetLocalTextureState(const FString& TextureName)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-		return IsTextureUsed(true, TextureName);
-	}
-
-	bool FTextureShareItemBase::IsRemoteTextureUsed(const FString& TextureName) const
-	{
-		FScopeLock DataLock(&DataLockGuard);
-		return IsTextureUsed(false, TextureName);
-	}
-
-	bool FTextureShareItemBase::GetRemoteTextureDesc(const FString& TextureName, FTextureShareSurfaceDesc& OutSharedTextureDesc) const
-	{
-		FScopeLock DataLock(&DataLockGuard);
-		return GetResampledTextureDesc(false, TextureName, OutSharedTextureDesc);
-	}
+		FSharedResourceProcessData& Data = GetLocalProcessData();
+		int TextureIndex = FindTextureIndex(Data, TextureName);
+		return (TextureIndex < 0) ? (ESharedResourceTextureState::INVALID) : (Data.Textures[TextureIndex].State);
+	}*/
 
 	bool FTextureShareItemBase::FindTextureData(const FString& TextureName, bool bIsLocal, FSharedResourceTexture& OutTextureData) const
 	{
 		const FSharedResourceProcessData& Data = bIsLocal ? GetLocalProcessData():GetRemoteProcessData();
-		int32 TextureIndex = FindTextureIndex(Data, TextureName);
+		int TextureIndex = FindTextureIndex(Data, TextureName);
 		if (TextureIndex >=0)
 		{
 			OutTextureData = Data.Textures[TextureIndex];
@@ -411,47 +348,28 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::SetLocalAdditionalData(const FTextureShareAdditionalData& InAdditionalData)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		FSharedResourceProcessData& LocalData = GetLocalProcessData();
 		LocalData.AdditionalData = InAdditionalData;
-		LocalData.bIsValidCustomProjectionData = false;
-
-		return WriteLocalProcessData();
-	}
-
-	bool FTextureShareItemBase::SetCustomProjectionData(const FTextureShareCustomProjectionData& InCustomProjectionData)
-	{
-		FScopeLock DataLock(&DataLockGuard);
-
-		FSharedResourceProcessData& LocalData = GetLocalProcessData();
-		LocalData.CustomProjectionData = InCustomProjectionData;
-		LocalData.bIsValidCustomProjectionData = true;
-
 		return WriteLocalProcessData();
 	}
 
 	bool FTextureShareItemBase::GetRemoteAdditionalData(FTextureShareAdditionalData& OutAdditionalData)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		if (ReadRemoteProcessData())
 		{
 			FSharedResourceProcessData& RemoteData = GetRemoteProcessData();
 			OutAdditionalData = RemoteData.AdditionalData;
-
-			if (RemoteData.bIsValidCustomProjectionData)
-			{
-				OutAdditionalData.PrjMatrix    = RemoteData.CustomProjectionData.PrjMatrix;
-				OutAdditionalData.ViewLocation = RemoteData.CustomProjectionData.ViewLocation;
-				OutAdditionalData.ViewRotation = RemoteData.CustomProjectionData.ViewRotation;
-			}
-
 			return true;
 		}
-
 		return false;
 	}
+
+	bool FTextureShareItemBase::SetCustomProjectionData(const FTextureShareCustomProjectionData& InCustomProjectionData)
+	{
+		// NOT IMPLEMETED
+		return false;
+	}
+
 
 	bool FTextureShareItemBase::BeginTextureOp(FSharedResourceTexture& LocalTextureData)
 	{
@@ -491,7 +409,7 @@ namespace TextureShareItem
 		}
 	}
 
-	bool FTextureShareItemBase::TryTextureSync(FSharedResourceTexture& LocalTextureData, int32& RemoteTextureIndex)
+	bool FTextureShareItemBase::TryTextureSync(FSharedResourceTexture& LocalTextureData, int& RemoteTextureIndex)
 	{
 		if (!LocalTextureData.IsUsed())
 		{
@@ -500,16 +418,16 @@ namespace TextureShareItem
 
 		// Update remote process data
 		ReadRemoteProcessData();
-
-		const FTextureShareSyncPolicySettings& SyncSettings = GetSyncSettings();
 		RemoteTextureIndex = FindRemoteTextureIndex(LocalTextureData);
 
-		ETextureShareSyncSurface TextureSyncMode = GetTextureSyncMode();
+		const FTextureShareSyncPolicySettings& SyncSettings = GetSyncSettings();
 
-		/** [Required] Waiting until remote process register texture (Required texture pairing) */
-		if(TextureSyncMode == ETextureShareSyncSurface::SyncPairingRead)
+		switch (GetTextureSyncMode())
 		{
-			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TexturePairingSync, ESyncProcessFailAction::ConnectionLost);
+		/** [Required] Waiting until remote process register texture (Required texture pairing) */
+		case ETextureShareSyncSurface::SyncPairingRead:
+		{
+			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TexturePairingSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 			while (RemoteTextureIndex < 0)
 			{
 				if (!SyncProcess.Tick())
@@ -520,83 +438,81 @@ namespace TextureShareItem
 				// Wait for texture pairing
 				RemoteTextureIndex = FindRemoteTextureIndex(LocalTextureData);
 			}
+			// don't break, continue
+		}
+
+		/** [SyncReadWrite] - Waiting until remote process change texture (readOP is wait for writeOP from remote process completed) */
+		case ETextureShareSyncSurface::SyncRead:
+		{
+			if (RemoteTextureIndex >= 0)
+			{
+				// texture paired, check [SyncReadWrite] with remote process
+				switch (LocalTextureData.OperationType)
+				{
+				/** Read operation wait for remote process write */
+				case ETextureShareSurfaceOp::Read:
+				{
+#if TEXTURESHARECORE_RHI
+					if(!IsClient() && !LocalTextureData.SharingData.IsValid())
+					{
+						// Server must create shared resource for client, before read op
+						bool bIsTextureChanged;
+						if(!LockServerRHITexture(LocalTextureData, bIsTextureChanged, RemoteTextureIndex))
+						{
+							return false;
+						}
+					}
+#endif
+					FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
+					FSharedResourceProcessData& LocalData = GetLocalProcessData();
+					FSharedResourceProcessData& RemoteData = GetRemoteProcessData();
+
+					uint64 LocalSyncFrame = LocalData.GetTextureAccessSyncFrame();
+					while (RemoteData.Textures[RemoteTextureIndex].AccessSyncFrame != LocalSyncFrame)
+					{
+						// Failed R/W on any side
+						if (!RemoteData.IsFrameLockedNow())
+						{
+							if (IsClient())
+							{
+								// Server finished current frame, ignore this texture
+								return false;
+							}
+							else
+							{
+								if (RemoteData.SyncFrame != LocalData.SyncFrame)
+								{
+									// Client inside frame, and wait for server. Ignore this frame
+									return false;
+								}
+							}
+						}
+
+						if (!SyncProcess.Tick())
+						{
+							return false;
+						}
+					}
+					break;
+				}
+
+				/** Write operation not require sync*/
+				default:
+					break;
+				}
+			}
+			break;
+		}
+
+		/** Ignore or skip texture update */
+		default:
+			break;
 		}
 
 		if (RemoteTextureIndex < 0)
 		{
 			// this texture not defined on remote process
 			return false;
-		}
-
-		switch (TextureSyncMode)
-		{
-		/** [SyncReadWrite] - Waiting until remote process change texture (readOP is wait for writeOP from remote process completed) */
-		case ETextureShareSyncSurface::SyncRead:
-		case ETextureShareSyncSurface::SyncPairingRead:
-		{
-			// texture paired, check [SyncReadWrite] with remote process
-			switch (LocalTextureData.OperationType)
-			{
-			/** Read operation wait for remote process write */
-			case ETextureShareSurfaceOp::Read:
-			{
-#if TEXTURESHARECORE_RHI
-				if(!IsClient() && !LocalTextureData.IsValidConnection())
-				{
-					// Server must create shared resource for client, before read op
-					bool bIsTextureChanged;
-					if(!LockServerRHITexture(LocalTextureData, bIsTextureChanged, RemoteTextureIndex))
-					{
-						return false;
-					}
-
-					// Publish local data
-					WriteLocalProcessData();
-				}
-#endif
-				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureSync, ESyncProcessFailAction::ConnectionLost);
-				const FSharedResourceProcessData& LocalData = GetLocalProcessData();
-				const FSharedResourceProcessData& RemoteData = GetRemoteProcessData();
-
-				const uint64 LocalSyncFrame = LocalData.GetTextureAccessSyncFrame();
-				while (RemoteData.Textures[RemoteTextureIndex].AccessSyncFrame != LocalSyncFrame)
-				{
-					// Failed R/W on any side
-					if (!RemoteData.IsFrameLockedNow())
-					{
-						if (IsClient())
-						{
-							// Server finished current frame, ignore this texture
-							return false;
-						}
-						else
-						{
-							if (RemoteData.SyncFrame != LocalData.SyncFrame)
-							{
-								// Client inside frame, and wait for server. Ignore this frame
-								return false;
-							}
-						}
-					}
-
-					if (!SyncProcess.Tick())
-					{
-						return false;
-					}
-				}
-				break;
-			}
-
-			/** Write operation not require sync*/
-			default:
-				break;
-			}
-		break;
-		}
-
-		/** Ignore or skip texture update */
-		default:
-			break;
 		}
 
 		// Wait for shared texture handle, created by server
@@ -607,8 +523,8 @@ namespace TextureShareItem
 			case ETextureShareSyncFrame::FrameSync:
 			{
 				// Wait for remote handle initialized
-				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureResourceSync, ESyncProcessFailAction::ConnectionLost);
-				while (!GetRemoteProcessData().Textures[RemoteTextureIndex].IsValidConnection())
+				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.TextureResourceSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
+				while (!GetRemoteProcessData().Textures[RemoteTextureIndex].SharingData.IsValid())
 				{
 					if (!SyncProcess.Tick())
 					{
@@ -621,7 +537,7 @@ namespace TextureShareItem
 				break;
 			}
 
-			return GetRemoteProcessData().Textures[RemoteTextureIndex].IsValidConnection();
+			return GetRemoteProcessData().Textures[RemoteTextureIndex].SharingData.IsValid();
 		}
 
 		// On the server side just use local texture, and share to client
@@ -638,12 +554,6 @@ namespace TextureShareItem
 			return false;
 		}
 
-		if (TryFrameSyncLost())
-		{
-			// remote process lost. break sync
-			return false;
-		}
-
 		const FTextureShareSyncPolicySettings& SyncSettings = GetSyncSettings();
 
 		if (!bRemoteConnectionValid)
@@ -654,7 +564,7 @@ namespace TextureShareItem
 			case ETextureShareSyncConnect::SyncSession:
 			{
 				// Wait for other process
-				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.ConnectionSync, ESyncProcessFailAction::ConnectionLost);
+				FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.ConnectionSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 				while (!IsConnectionValid())
 				{
 					if (!SyncProcess.Tick())
@@ -685,7 +595,7 @@ namespace TextureShareItem
 		{
 		case ETextureShareSyncFrame::FrameSync:
 		{
-			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.FrameSync, ESyncProcessFailAction::ConnectionLost);
+			FSyncProcess SyncProcess(*this, SyncSettings.TimeOut.FrameSync, ESyncProcessFailAction::ConnectionLost, SyncWaitTime);
 			while (!ResourceData.IsSyncFrameValid(IsClient()))
 			{
 				if (!SyncProcess.Tick())
@@ -736,8 +646,6 @@ namespace TextureShareItem
 #if TEXTURESHARECORE_RHI
 	bool FTextureShareItemBase::LockRHITexture_RenderThread(const FString& TextureName, FTexture2DRHIRef& OutRHITexture)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		bool bIsTextureChanged;
 		if (IsFrameValid())
 		{
@@ -747,7 +655,7 @@ namespace TextureShareItem
 				FSharedResourceTexture& LocalTextureData = GetLocalProcessData().Textures[TextureData.Index];
 				if (BeginTextureOp(LocalTextureData))
 				{
-					int32 RemoteTextureIndex;
+					int RemoteTextureIndex;
 					if (TryTextureSync(LocalTextureData,  RemoteTextureIndex) && LockTextureMutex(LocalTextureData))
 					{
 						if (!IsClient())
@@ -783,12 +691,10 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::IsFormatResampleRequired(const FRHITexture* SharedTexture, const FRHITexture* RHITexture)
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		return FTextureShareItemRHI::IsFormatResampleRequired(SharedTexture->GetFormat(), RHITexture->GetFormat());
 	}
 
-	bool FTextureShareItemBase::LockServerRHITexture(FSharedResourceTexture& LocalTextureData, bool& bIsTextureChanged, int32 RemoteTextureIndex)
+	bool FTextureShareItemBase::LockServerRHITexture(FSharedResourceTexture& LocalTextureData, bool& bIsTextureChanged, int RemoteTextureIndex)
 	{
 		// Server, only for UE4. implement throught RHI:
 		if (!IsFrameValid() || IsClient())
@@ -813,7 +719,10 @@ namespace TextureShareItem
 			bIsTextureChanged = true;
 
 			// Save new shared handle & guid
-			if (LocalTextureData.CreateConnection(SharedRHITexture->GetSharedHandle(), SharedRHITexture->GetSharedHandleGuid()))
+			LocalTextureData.SharingData.SharedHandle = SharedRHITexture->GetSharedHandle();
+			LocalTextureData.SharingData.SharedHandleGuid = SharedRHITexture->GetSharedHandleGuid();
+
+			if (LocalTextureData.SharingData.IsValid())
 			{
 				LocalTextureData.State = ESharedResourceTextureState::Enabled;
 
@@ -845,13 +754,11 @@ namespace TextureShareItem
 		// Server, only for UE4. implement throught RHI and MGPU
 		if (!IsClient())
 		{
-			FScopeLock DataLock(&DataLockGuard);
-
 			FSharedResourceTexture ServerTextureData, ClientTextureData;
 			if (FindTextureData(TextureName, true, ServerTextureData) && FindTextureData(TextureName, false, ClientTextureData))
 			{
-				int32 ServerGPUIndex = ResourceData.ServerData.GetTextureMGPUIndex(ServerTextureData.Index);
-				int32 ClientGPUIndex = ResourceData.ClientData.GetTextureMGPUIndex(ClientTextureData.Index);
+				int ServerGPUIndex = ResourceData.ServerData.GetTextureMGPUIndex(ServerTextureData.Index);
+				int ClientGPUIndex = ResourceData.ClientData.GetTextureMGPUIndex(ClientTextureData.Index);
 
 				if(ServerGPUIndex != ClientGPUIndex)
 				{
@@ -866,14 +773,14 @@ namespace TextureShareItem
 						{
 						case ETextureShareSurfaceOp::Write:
 						{
-							FTransferTextureParams Param(RHITexture, TextureRect, ServerGPUIndex, ClientGPUIndex, true, true);
-							RHICmdList.TransferTextures(TArrayView<const FTransferTextureParams>(&Param, 1));
+							FTransferResourceParams Param(RHITexture, TextureRect, ServerGPUIndex, ClientGPUIndex, true, true);
+							RHICmdList.TransferResources(TArrayView<const FTransferResourceParams>(&Param, 1));
 							break;
 						}
 						case ETextureShareSurfaceOp::Read:
 						{
-							FTransferTextureParams Param(RHITexture, TextureRect, ClientGPUIndex, ServerGPUIndex, true, true);
-							RHICmdList.TransferTextures(TArrayView<const FTransferTextureParams>(&Param, 1));
+							FTransferResourceParams Param(RHITexture, TextureRect, ClientGPUIndex, ServerGPUIndex, true, true);
+							RHICmdList.TransferResources(TArrayView<const FTransferResourceParams>(&Param, 1));
 							break;
 						}
 						}
@@ -889,11 +796,7 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::BeginFrame_RenderThread()
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
-		// Sync paired data at this point
 		WriteLocalProcessData();
-		ReadRemoteProcessData();
 
 		FSharedResourceProcessData& LocalData = GetLocalProcessData();
 		if (!LocalData.IsFrameLockedNow())
@@ -936,8 +839,6 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::EndFrame_RenderThread()
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		FSharedResourceProcessData& LocalData = GetLocalProcessData();
 		if (LocalData.IsFrameLockedNow())
 		{
@@ -960,8 +861,6 @@ namespace TextureShareItem
 
 	bool FTextureShareItemBase::BeginSession()
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		// Update remote process data
 		ReadRemoteProcessData();
 
@@ -985,8 +884,6 @@ namespace TextureShareItem
 
 	void FTextureShareItemBase::EndSession()
 	{
-		FScopeLock DataLock(&DataLockGuard);
-
 		if (bIsSessionStarted)
 		{
 			// Stop current connection
@@ -1015,7 +912,6 @@ namespace TextureShareItem
 			GetLocalProcessData().ResetSyncFrame();
 			return WriteLocalProcessData();
 		}
-
 		return false;
 	}
 

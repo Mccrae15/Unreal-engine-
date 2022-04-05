@@ -5,6 +5,7 @@
 #if USE_USD_SDK
 
 #include "USDMemory.h"
+#include "UsdWrappers/ForwardDeclarations.h"
 
 #include "USDIncludesStart.h"
 	#include "pxr/pxr.h"
@@ -26,8 +27,8 @@ PXR_NAMESPACE_CLOSE_SCOPE
 
 namespace UE
 {
-	class FSdfLayer;
-	class FUsdStage;
+	class FUsdAttribute;
+	class FUsdPrim;
 	struct FSdfLayerOffset;
 }
 
@@ -39,11 +40,19 @@ namespace UsdUtils
 		Save
 	};
 
-	/** Inserts the SubLayerFile path into ParentLayer as a sublayer */
-	USDUTILITIES_API bool InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index = -1 );
+	/**
+	 * Inserts the SubLayerFile path into ParentLayer as a sublayer
+	 * @param ParentLayer - Layer to receive the new sublayer entry
+	 * @param SubLayerFile - Absolute path to a usd file to use as sublayer
+	 * @param Index - Zero-based index on the list of ParentLayer's sublayers list to insert the new sublayer. -1 means "at the end" (the default)
+	 * @param OffsetTimeCodes - Offset in USD time codes to use for the sublayer reference
+	 * @param TimeCodesScale - Scale to use for the sublayer reference
+	 * @return Whether the sublayer reference was added successfully or not
+	 */
+	USDUTILITIES_API bool InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index = -1, double OffsetTimeCodes = 0.0, double TimeCodesScale = 1.0 );
 
 #if WITH_EDITOR
-	/** Opens a file dialog to open or save a USD file */
+	/** Opens a file dialog to open or save a USD file. The returned file path will always be absolute */
 	USDUTILITIES_API TOptional< FString > BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< const SWidget > OriginatingWidget );
 #endif // #if WITH_EDITOR
 
@@ -62,6 +71,9 @@ namespace UsdUtils
 	/** Finds the strongest layer contributing to an attribute */
 	USDUTILITIES_API UE::FSdfLayer FindLayerForAttribute( const pxr::UsdAttribute& Attribute, double TimeCode );
 
+	/** Finds the strongest layer that contributes to a set of attributes. Assumes these attributes are on the same stage */
+	USDUTILITIES_API UE::FSdfLayer FindLayerForAttributes( const TArray<UE::FUsdAttribute>& Attributes, double TimeCode, bool bIncludeSessionLayers=true );
+
 	/** Finds the layer for a sublayer path of a given root layer */
 	USDUTILITIES_API UE::FSdfLayer FindLayerForSubLayerPath( const UE::FSdfLayer& RootLayer, const FStringView& SubLayerPath );
 
@@ -70,6 +82,9 @@ namespace UsdUtils
 
 	/** Finds the layer offset that converts the Attribute local times to stage times */
 	USDUTILITIES_API UE::FSdfLayerOffset GetLayerToStageOffset( const pxr::UsdAttribute& Attribute );
+
+	/** Finds the full offset for a prim with respect to the composed stage */
+	USDUTILITIES_API UE::FSdfLayerOffset GetPrimToStageOffset( const UE::FUsdPrim& Prim );
 
 	/** Makes sure that the layer start and end timecodes include StartTimeCode and EndTimeCode */
 	USDUTILITIES_API void AddTimeCodeRangeToLayer( const pxr::SdfLayerRefPtr& Layer, double StartTimeCode, double EndTimeCode );
@@ -85,6 +100,9 @@ namespace UsdUtils
 
 	/** Uses FindOrOpen to return the layer with the given identifier if possible. If the identifier is for an anonymous layer, it will search via display name instead */
 	USDUTILITIES_API UE::FSdfLayer FindLayerForIdentifier( const TCHAR* Identifier, const UE::FUsdStage& Stage );
+
+	/** Returns true if Layer is a session layer within Stage's layer stack */
+	USDUTILITIES_API bool IsSessionLayerWithinStage( const pxr::SdfLayerRefPtr& Layer, const pxr::UsdStageRefPtr& Stage );
 }
 
 #endif // #if USE_USD_SDK

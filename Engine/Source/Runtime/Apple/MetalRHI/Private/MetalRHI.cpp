@@ -29,8 +29,6 @@ bool GIsMetalInitialized = false;
 
 FMetalBufferFormat GMetalBufferFormats[PF_MAX];
 
-static bool GFormatSupportsTypedUAVLoad[PF_MAX] = { false };
-
 static TAutoConsoleVariable<int32> CVarUseIOSRHIThread(
 													TEXT("r.Metal.IOSRHIThread"),
 													0,
@@ -186,14 +184,17 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 #if PLATFORM_IOS
 	// A8 can use 256 bits of MRTs
 #if PLATFORM_TVOS
-	bool bCanUseWideMRTs = true;
-	bool bCanUseASTC = true;
 	GRHISupportsDrawIndirect = Device.SupportsFeatureSet(mtlpp::FeatureSet::tvOS_GPUFamily2_v1);
 	GRHISupportsPixelShaderUAVs = Device.SupportsFeatureSet(mtlpp::FeatureSet::tvOS_GPUFamily2_v1);
 #else
-	bool bCanUseWideMRTs = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v1);
-	bool bCanUseASTC = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily2_v1) && !FParse::Param(FCommandLine::Get(),TEXT("noastc"));
-	
+	{
+		bool bSupportAppleA8 = false;
+		GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportAppleA8"), bSupportAppleA8, GEngineIni);
+		if (!Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v1) && !bSupportAppleA8)
+		{
+			UE_LOG(LogMetal, Fatal, TEXT("This device does not supports the Apple A9 feature set which is the minimum for this build. Please check the Support Apple A8 checkbox in the IOS Project Settings."));
+		}
+	}
 	GRHISupportsRWTextureBuffers = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily4_v1);
 	GRHISupportsDrawIndirect = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v1);
 	GRHISupportsPixelShaderUAVs = Device.SupportsFeatureSet(mtlpp::FeatureSet::iOS_GPUFamily3_v1);
@@ -231,7 +232,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	bool const bRequestedMetalMRT = ((RequestedFeatureLevel >= ERHIFeatureLevel::SM5) || (!bRequestedFeatureLevel && FParse::Param(FCommandLine::Get(),TEXT("metalmrt"))));
 
     // only allow GBuffers, etc on A8s (A7s are just not going to cut it)
-    if (bProjectSupportsMRTs && bCanUseWideMRTs && bRequestedMetalMRT)
+    if (bProjectSupportsMRTs && bRequestedMetalMRT)
     {
 #if PLATFORM_TVOS
 		ValidateTargetedRHIFeatureLevelExists(SP_METAL_MRT);
@@ -284,9 +285,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	check(DeviceIndex < GPUs.Num());
 	FMacPlatformMisc::FGPUDescriptor const& GPUDesc = GPUs[DeviceIndex];
 	
-    // A8 can use 256 bits of MRTs
-    bool bCanUseWideMRTs = true;
-    bool bCanUseASTC = false;
 	bool bSupportsD24S8 = false;
 	bool bSupportsD16 = false;
 	
@@ -359,13 +357,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	else
 	{
-		if (bRequestedSM5)
-		{
-			UE_LOG(LogMetal, Warning, TEXT("Metal Shader Model 5 w/tessellation support requires 10.12.6 for Nvidia, it is broken on 10.13.0+. Falling back to Metal Shader Model 5 without tessellation support."));
-		}
-	
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		GMaxRHIShaderPlatform = SP_METAL_SM5_NOTESS;
+		GMaxRHIShaderPlatform = SP_METAL_SM5;
 	}
 
 	ERHIFeatureLevel::Type PreviewFeatureLevel;
@@ -416,7 +409,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	
 	// Disable the distance field AO & shadowing effects on GPU drivers that don't currently execute the shaders correctly.
-	if ((GMaxRHIShaderPlatform == SP_METAL_SM5 || GMaxRHIShaderPlatform == SP_METAL_SM5_NOTESS) && !bSupportsDistanceFields && !FParse::Param(FCommandLine::Get(),TEXT("metaldistancefields")))
+	if ((GMaxRHIShaderPlatform == SP_METAL_SM5) && !bSupportsDistanceFields && !FParse::Param(FCommandLine::Get(),TEXT("metaldistancefields")))
 	{
 		static auto CVarDistanceFieldAO = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFieldAO"));
 		if(CVarDistanceFieldAO && CVarDistanceFieldAO->GetInt() != 0)
@@ -551,11 +544,11 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 #endif
 
 	GSupportsShaderFramebufferFetch = !PLATFORM_MAC && GMaxRHIShaderPlatform != SP_METAL_MRT && GMaxRHIShaderPlatform != SP_METAL_MRT_TVOS;
+	GSupportsShaderMRTFramebufferFetch = GSupportsShaderFramebufferFetch;
 	GHardwareHiddenSurfaceRemoval = true;
 	GSupportsRenderTargetFormat_PF_G8 = false;
 	GRHISupportsTextureStreaming = true;
-	GSupportsWideMRT = bCanUseWideMRTs;
-	// GSupportsTransientResourceAliasing = FMetalCommandQueue::SupportsFeature(EMetalFeaturesHeaps) && FMetalCommandQueue::SupportsFeature(EMetalFeaturesFences);
+	GSupportsWideMRT = true;
 	GSupportsSeparateRenderTargetBlendState = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5);
 
 	GRHISupportsPipelineFileCache = true;
@@ -590,14 +583,11 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GRHISupportsFirstInstance = GRHISupportsBaseVertexIndex;
 	
 	// TODO: Move this into IOSPlatform
-	if (@available(iOS 11.0, *))
-	{
-		@autoreleasepool {
-			UIScreen* mainScreen = [UIScreen mainScreen];
-			UIDisplayGamut gamut = mainScreen.traitCollection.displayGamut;
-			GRHISupportsHDROutput = FPlatformMisc::IOSVersionCompare(10, 0, 0) && gamut == UIDisplayGamutP3;
-		}
-	}
+    @autoreleasepool {
+        UIScreen* mainScreen = [UIScreen mainScreen];
+        UIDisplayGamut gamut = mainScreen.traitCollection.displayGamut;
+        GRHISupportsHDROutput = FPlatformMisc::IOSVersionCompare(10, 0, 0) && gamut == UIDisplayGamutP3;
+    }
 	
 	GRHIHDRDisplayOutputFormat = (GRHISupportsHDROutput) ? PF_PLATFORM_HDR_0 : PF_B8G8R8A8;
 	// Based on the spec below, the maxTotalThreadsPerThreadgroup is not a fixed number but calculated according to the device current ability, so the available threads could less than the maximum number.
@@ -611,9 +601,21 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMaxShadowDepthBufferSizeX = GMaxTextureDimensions;
 	GMaxShadowDepthBufferSizeY = GMaxTextureDimensions;
 #endif
-	
+
+	GRHIMaxDispatchThreadGroupsPerDimension.X = MAX_uint16;
+	GRHIMaxDispatchThreadGroupsPerDimension.Y = MAX_uint16;
+	GRHIMaxDispatchThreadGroupsPerDimension.Z = MAX_uint16;
+
 	GMaxTextureMipCount = FPlatformMath::CeilLogTwo( GMaxTextureDimensions ) + 1;
 	GMaxTextureMipCount = FPlatformMath::Min<int32>( MAX_TEXTURE_MIP_COUNT, GMaxTextureMipCount );
+
+	// Using packed pixel formats (specifically MTLPixelFormatRG11B10Float) for texture_buffers on macOS <= 11.4 results in Metal validation errors:
+	// "pixel format (MTLPixelFormatRG11B10Float) cannot be written to from a shader on this device"
+	// macOS Big Sur 11.5.1 works; Big Sur 11.4.0 (and prior versions including Catalina) report the error; texture2d with buffer backing does not report this error.
+	bool bSupportsPackedPixelFormatsInTextureBuffers = true;
+#if PLATFORM_MAC
+	bSupportsPackedPixelFormatsInTextureBuffers = FPlatformMisc::MacOSXVersionCompare(11,5,1) >= 0;
+#endif
 
 	// Initialize the buffer format map - in such a way as to be able to validate it in non-shipping...
 #if METAL_DEBUG_OPTIONS
@@ -628,7 +630,14 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_DXT3                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_DXT5                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_UYVY                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
-	GMetalBufferFormats[PF_FloatRGB             ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::RGB16Half };
+	if(bSupportsPackedPixelFormatsInTextureBuffers)
+	{
+		GMetalBufferFormats[PF_FloatRGB        	] = { mtlpp::PixelFormat::RG11B10Float, (uint8)EMetalBufferFormat::RG11B10Half };
+	}
+	else
+	{
+		GMetalBufferFormats[PF_FloatRGB        	] = { mtlpp::PixelFormat::RGBA16Float, (uint8)EMetalBufferFormat::RGBA16Half };
+	}
 	GMetalBufferFormats[PF_FloatRGBA            ] = { mtlpp::PixelFormat::RGBA16Float, (uint8)EMetalBufferFormat::RGBA16Half };
 	GMetalBufferFormats[PF_DepthStencil         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_ShadowDepth          ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
@@ -656,6 +665,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_R16G16B16A16_UINT    ] = { mtlpp::PixelFormat::RGBA16Uint, (uint8)EMetalBufferFormat::RGBA16Uint };
 	GMetalBufferFormats[PF_R16G16B16A16_SINT    ] = { mtlpp::PixelFormat::RGBA16Sint, (uint8)EMetalBufferFormat::RGBA16Sint };
 	GMetalBufferFormats[PF_R5G6B5_UNORM         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::R5G6B5Unorm };
+	GMetalBufferFormats[PF_B5G5R5A1_UNORM       ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::B5G5R5A1Unorm };
 	GMetalBufferFormats[PF_R8G8B8A8             ] = { mtlpp::PixelFormat::RGBA8Unorm, (uint8)EMetalBufferFormat::RGBA8Unorm };
 	GMetalBufferFormats[PF_A8R8G8B8				] = { mtlpp::PixelFormat::RGBA8Unorm, (uint8)EMetalBufferFormat::RGBA8Unorm }; // mtlpp::PixelFormat::BGRA8Unorm/EMetalBufferFormat::BGRA8Unorm,  < We don't support this as a vertex-format so we have code to swizzle in the shader
 	GMetalBufferFormats[PF_BC4					] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
@@ -675,6 +685,11 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_ASTC_8x8             ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_ASTC_10x10           ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_ASTC_12x12           ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_4x4_HDR         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_6x6_HDR         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_8x8_HDR         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_10x10_HDR       ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_12x12_HDR       ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_BC6H					] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_BC7					] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_R8_UINT				] = { mtlpp::PixelFormat::R8Uint, (uint8)EMetalBufferFormat::R8Uint };
@@ -693,6 +708,14 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_ETC2_R11_EAC			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_ETC2_RG11_EAC		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 		
+	GMetalBufferFormats[PF_G16R16_SNORM			] = { mtlpp::PixelFormat::RG16Snorm, (uint8)EMetalBufferFormat::RG16Snorm };
+	GMetalBufferFormats[PF_R8G8_UINT			] = { mtlpp::PixelFormat::RG8Uint, (uint8)EMetalBufferFormat::RG8Uint };
+	GMetalBufferFormats[PF_R32G32B32_UINT		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_R32G32B32_SINT		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_R32G32B32F			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_R8_SINT				] = { mtlpp::PixelFormat::R8Sint, (uint8)EMetalBufferFormat::R8Sint };
+	GMetalBufferFormats[PF_R64_UINT				] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+
 	// Initialize the platform pixel format map.
 	GPixelFormats[PF_Unknown			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_A32B32G32R32F		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA32Float;
@@ -702,7 +725,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_R32G32B32A32_UINT	].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA32Uint;
 	GPixelFormats[PF_R16G16_UINT		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Uint;
 	GPixelFormats[PF_R32G32_UINT		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG32Uint;
-		
+
 #if PLATFORM_IOS
     GPixelFormats[PF_DXT1				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_DXT1				].Supported			= false;
@@ -719,16 +742,31 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_PVRTC4				].PlatformFormat	= (uint32)mtlpp::PixelFormat::PVRTC_RGBA_4BPP;
 	GPixelFormats[PF_PVRTC4				].Supported			= true;
 	GPixelFormats[PF_ASTC_4x4			].PlatformFormat	= (uint32)mtlpp::PixelFormat::ASTC_4x4_LDR;
-	GPixelFormats[PF_ASTC_4x4			].Supported			= bCanUseASTC;
+	GPixelFormats[PF_ASTC_4x4			].Supported			= true;
 	GPixelFormats[PF_ASTC_6x6			].PlatformFormat	= (uint32)mtlpp::PixelFormat::ASTC_6x6_LDR;
-	GPixelFormats[PF_ASTC_6x6			].Supported			= bCanUseASTC;
+	GPixelFormats[PF_ASTC_6x6			].Supported			= true;
 	GPixelFormats[PF_ASTC_8x8			].PlatformFormat	= (uint32)mtlpp::PixelFormat::ASTC_8x8_LDR;
-	GPixelFormats[PF_ASTC_8x8			].Supported			= bCanUseASTC;
+	GPixelFormats[PF_ASTC_8x8			].Supported			= true;
 	GPixelFormats[PF_ASTC_10x10			].PlatformFormat	= (uint32)mtlpp::PixelFormat::ASTC_10x10_LDR;
-	GPixelFormats[PF_ASTC_10x10			].Supported			= bCanUseASTC;
+	GPixelFormats[PF_ASTC_10x10			].Supported			= true;
 	GPixelFormats[PF_ASTC_12x12			].PlatformFormat	= (uint32)mtlpp::PixelFormat::ASTC_12x12_LDR;
-	GPixelFormats[PF_ASTC_12x12			].Supported			= bCanUseASTC;
+	GPixelFormats[PF_ASTC_12x12			].Supported			= true;
 
+#if !PLATFORM_TVOS
+	if([Device.GetPtr() supportsFamily:MTLGPUFamilyApple6])
+	{
+		GPixelFormats[PF_ASTC_4x4_HDR].PlatformFormat = (uint32)mtlpp::PixelFormat::ASTC_4x4_HDR;
+		GPixelFormats[PF_ASTC_4x4_HDR].Supported = true;
+		GPixelFormats[PF_ASTC_6x6_HDR].PlatformFormat = (uint32)mtlpp::PixelFormat::ASTC_6x6_HDR;
+		GPixelFormats[PF_ASTC_6x6_HDR].Supported = true;
+		GPixelFormats[PF_ASTC_8x8_HDR].PlatformFormat = (uint32)mtlpp::PixelFormat::ASTC_8x8_HDR;
+		GPixelFormats[PF_ASTC_8x8_HDR].Supported = true;
+		GPixelFormats[PF_ASTC_10x10_HDR].PlatformFormat = (uint32)mtlpp::PixelFormat::ASTC_10x10_HDR;
+		GPixelFormats[PF_ASTC_10x10_HDR].Supported = true;
+		GPixelFormats[PF_ASTC_12x12_HDR].PlatformFormat = (uint32)mtlpp::PixelFormat::ASTC_12x12_HDR;
+		GPixelFormats[PF_ASTC_12x12_HDR].Supported = true;
+	}
+#endif
 	// used with virtual textures
 	GPixelFormats[PF_ETC2_RGB	  		].PlatformFormat	= (uint32)mtlpp::PixelFormat::ETC2_RGB8;
 	GPixelFormats[PF_ETC2_RGB			].Supported			= true;
@@ -779,13 +817,25 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		
 	GPixelFormats[PF_BC5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_R5G6B5_UNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::B5G6R5Unorm;
+	GPixelFormats[PF_R5G6B5_UNORM       ].Supported         = true;
+	GPixelFormats[PF_B5G5R5A1_UNORM     ].PlatformFormat    = (uint32)mtlpp::PixelFormat::BGR5A1Unorm;
+	GPixelFormats[PF_B5G5R5A1_UNORM     ].Supported         = true;
 #else
     GPixelFormats[PF_DXT1				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC1_RGBA;
     GPixelFormats[PF_DXT3				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC2_RGBA;
     GPixelFormats[PF_DXT5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC3_RGBA;
 	
-	GPixelFormats[PF_FloatRGB			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
-	GPixelFormats[PF_FloatRGB			].BlockBytes		= 4;
+	if(bSupportsPackedPixelFormatsInTextureBuffers)
+	{
+		GPixelFormats[PF_FloatRGB		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
+		GPixelFormats[PF_FloatRGB		].BlockBytes		= 4;
+	}
+	else
+	{
+		GPixelFormats[PF_FloatRGB		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA16Float;
+		GPixelFormats[PF_FloatRGB		].BlockBytes		= 8;
+	}
+	
 	GPixelFormats[PF_FloatR11G11B10		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
 	GPixelFormats[PF_FloatR11G11B10		].BlockBytes		= 4;
 	GPixelFormats[PF_FloatR11G11B10		].Supported			= true;
@@ -839,6 +889,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_BC7				].Supported			= true;
 	GPixelFormats[PF_BC7				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC7_RGBAUnorm;
 	GPixelFormats[PF_R5G6B5_UNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_B5G5R5A1_UNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 #endif
 	GPixelFormats[PF_UYVY				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_FloatRGBA			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA16Float;
@@ -880,6 +931,18 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_NV12				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_NV12				].Supported			= false;
 	
+	GPixelFormats[PF_G16R16_SNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Snorm;
+	GPixelFormats[PF_R8G8_UINT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG8Uint;
+	GPixelFormats[PF_R32G32B32_UINT		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_R32G32B32_UINT		].Supported			= false;
+	GPixelFormats[PF_R32G32B32_SINT		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_R32G32B32_SINT		].Supported			= false;
+	GPixelFormats[PF_R32G32B32F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_R32G32B32F			].Supported			= false;
+	GPixelFormats[PF_R8_SINT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::R8Sint;
+	GPixelFormats[PF_R64_UINT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_R64_UINT			].Supported			= false;
+
 #if METAL_DEBUG_OPTIONS
 	for (uint32 i = 0; i < PF_MAX; i++)
 	{
@@ -888,31 +951,38 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 #endif
 
+	RHIInitDefaultPixelFormatCapabilities();
+
+	auto AddTypedUAVSupport = [](EPixelFormat InPixelFormat)
+	{
+		EnumAddFlags(GPixelFormats[InPixelFormat].Capabilities, EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore);
+	};
+
 	switch (Device.GetReadWriteTextureSupport())
 	{
-		case mtlpp::ReadWriteTextureTier::Tier2:
-			GFormatSupportsTypedUAVLoad[PF_A32B32G32R32F]			= true;
-			GFormatSupportsTypedUAVLoad[PF_R32G32B32A32_UINT]		= true;
-			GFormatSupportsTypedUAVLoad[PF_FloatRGBA]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R16G16B16A16_UINT]		= true;
-			GFormatSupportsTypedUAVLoad[PF_R16G16B16A16_SINT]		= true;
-			GFormatSupportsTypedUAVLoad[PF_R8G8B8A8]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R8G8B8A8_UINT]			= true;
-			GFormatSupportsTypedUAVLoad[PF_R16F]					= true;
-			GFormatSupportsTypedUAVLoad[PF_R16_UINT]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R16_SINT]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R8]						= true;
-			GFormatSupportsTypedUAVLoad[PF_R8_UINT]					= true;
-			// Fall through
+	case mtlpp::ReadWriteTextureTier::Tier2:
+		AddTypedUAVSupport(PF_A32B32G32R32F);
+		AddTypedUAVSupport(PF_R32G32B32A32_UINT);
+		AddTypedUAVSupport(PF_FloatRGBA);
+		AddTypedUAVSupport(PF_R16G16B16A16_UINT);
+		AddTypedUAVSupport(PF_R16G16B16A16_SINT);
+		AddTypedUAVSupport(PF_R8G8B8A8);
+		AddTypedUAVSupport(PF_R8G8B8A8_UINT);
+		AddTypedUAVSupport(PF_R16F);
+		AddTypedUAVSupport(PF_R16_UINT);
+		AddTypedUAVSupport(PF_R16_SINT);
+		AddTypedUAVSupport(PF_R8);
+		AddTypedUAVSupport(PF_R8_UINT);
+		// Fall through
 
-		case mtlpp::ReadWriteTextureTier::Tier1:
-			GFormatSupportsTypedUAVLoad[PF_R32_FLOAT]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R32_UINT]				= true;
-			GFormatSupportsTypedUAVLoad[PF_R32_SINT]				= true;
-			// Fall through
+	case mtlpp::ReadWriteTextureTier::Tier1:
+		AddTypedUAVSupport(PF_R32_FLOAT);
+		AddTypedUAVSupport(PF_R32_UINT);
+		AddTypedUAVSupport(PF_R32_SINT);
+		// Fall through
 
-		case mtlpp::ReadWriteTextureTier::None:
-			break;
+	case mtlpp::ReadWriteTextureTier::None:
+		break;
 	};
 
 	// get driver version (todo: share with other RHIs)
@@ -1233,16 +1303,11 @@ void* FMetalDynamicRHI::RHIGetNativeInstance()
 	return nullptr;
 }
 
-bool FMetalDynamicRHI::RHIIsTypedUAVLoadSupported(EPixelFormat PixelFormat)
-{
-	return GFormatSupportsTypedUAVLoad[PixelFormat];
-}
-
 uint16 FMetalDynamicRHI::RHIGetPlatformTextureMaxSampleCount()
 {
-	TArray<EMobileMSAASampleCount::Type> SamplesArray{ EMobileMSAASampleCount::Type::One, EMobileMSAASampleCount::Type::Two, EMobileMSAASampleCount::Type::Four, EMobileMSAASampleCount::Type::Eight };
+	TArray<ECompositingSampleCount::Type> SamplesArray{ ECompositingSampleCount::Type::One, ECompositingSampleCount::Type::Two, ECompositingSampleCount::Type::Four, ECompositingSampleCount::Type::Eight };
 
-	uint16 PlatformMaxSampleCount = EMobileMSAASampleCount::Type::One;
+	uint16 PlatformMaxSampleCount = ECompositingSampleCount::Type::One;
 	for (auto sampleIt = SamplesArray.CreateConstIterator(); sampleIt; ++sampleIt)
 	{
 		int sample = *sampleIt;

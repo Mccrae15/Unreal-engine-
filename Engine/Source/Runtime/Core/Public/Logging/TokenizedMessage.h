@@ -10,6 +10,7 @@
 #include "Delegates/Delegate.h"
 #include "Internationalization/Text.h"
 #include "Misc/Attribute.h"
+#include "Misc/Guid.h"
 
 /** The severity of the message type */
 namespace EMessageSeverity
@@ -33,6 +34,7 @@ namespace EMessageToken
 	enum Type
 	{
 		Action,
+		Actor,
 		AssetName,
 		Documentation,
 		Image,
@@ -372,12 +374,6 @@ public:
 		return URL;
 	}
 
-	DECLARE_DELEGATE_RetVal_OneParam(FString, FGenerateURL, const FString&);
-	CORE_API static FGenerateURL& OnGenerateURL()
-	{
-		return GenerateURL;
-	}
-
 private:
 	/** Private constructor */
 	FURLToken( const FString& InURL, const FText& InMessage );
@@ -391,9 +387,6 @@ private:
 
 	/** The URL we will follow */
 	FString URL;
-
-	/** The delegate we will use to generate our URL */
-	CORE_API static FGenerateURL GenerateURL;
 };
 
 /** 
@@ -602,3 +595,52 @@ private:
 	FString TutorialAssetName;
 };
 
+/** 
+ * Basic message token that defaults its activated method to select an actor in the opened level
+ */
+class FActorToken : public IMessageToken
+{
+public:
+	/** Factory method, tokens can only be constructed as shared refs */
+	CORE_API static TSharedRef<FActorToken> Create(const FString& InActorPath, const FGuid& InActorGuid, const FText& InMessage = FText());
+
+	/** Begin IMessageToken interface */
+	virtual EMessageToken::Type GetType() const override
+	{
+		return EMessageToken::Actor;
+	}
+
+	virtual const FOnMessageTokenActivated& GetOnMessageTokenActivated() const override;
+	/** End IMessageToken interface */
+
+	/** Get the actor name used by this token */
+	const FString& GetActorPath() const
+	{
+		return ActorPath;
+	}
+
+	/** Get the actor guid used by this token */
+	const FGuid& GetActorGuid() const
+	{
+		return ActorGuid;
+	}
+
+	/** Get the delegate for default token activation */
+	CORE_API static FOnMessageTokenActivated& DefaultOnMessageTokenActivated()
+	{
+		return DefaultMessageTokenActivated;
+	}
+
+private:
+	/** Private constructor */
+	FActorToken(const FString& InActorPath, const FGuid& InActorGuid, const FText& InMessage);
+
+	/** The actor path we will select */
+	FString ActorPath;
+
+	/** The actor guid we will select */
+	FGuid ActorGuid;
+
+	/** The default activation method, if any */
+	CORE_API static FOnMessageTokenActivated DefaultMessageTokenActivated;
+};

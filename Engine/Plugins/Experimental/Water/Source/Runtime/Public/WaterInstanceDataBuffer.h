@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 
 template <bool bWithWaterSelectionSupport>
 class TWaterInstanceDataBuffers
@@ -16,14 +17,14 @@ public:
 		(
 			[this, InInstanceCount](FRHICommandListImmediate& RHICmdList)
 			{
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("WaterInstanceDataBuffers"));
 
-				int32 SizeInBytes = Align<int32>(InInstanceCount * sizeof(FVector4), 4 * 1024);
+				int32 SizeInBytes = Align<int32>(InInstanceCount * sizeof(FVector4f), 4 * 1024);
 
 				for (int32 i = 0; i < NumBuffers; ++i)
 				{
 					Buffer[i] = RHICreateVertexBuffer(SizeInBytes, BUF_Dynamic, CreateInfo);
-					BufferMemory[i] = nullptr;
+					BufferMemory[i] = TArrayView<FVector4f>();
 				}
 			}
 		);
@@ -50,33 +51,33 @@ public:
 		for (int32 i = 0; i < NumBuffers; ++i)
 		{
 			Unlock(i);
-			BufferMemory[i] = nullptr;
+			BufferMemory[i] = TArrayView<FVector4f>();
 		}
 	}
 
-	FVertexBufferRHIRef GetBuffer(int32 InBufferID) const
+	FBufferRHIRef GetBuffer(int32 InBufferID) const
 	{
 		return Buffer[InBufferID];
 	}
 
-	FVector4* GetBufferMemory(int32 InBufferID) const
+	TArrayView<FVector4f> GetBufferMemory(int32 InBufferID) const
 	{
-		check(BufferMemory[InBufferID]);
+		check(!BufferMemory[InBufferID].IsEmpty());
 		return BufferMemory[InBufferID];
 	}
 
 private:
-	FVector4* Lock(int32 InInstanceCount, int32 InBufferID)
+	TArrayView<FVector4f> Lock(int32 InInstanceCount, int32 InBufferID)
 	{
 		check(IsInRenderingThread());
 
-		uint32 SizeInBytes = InInstanceCount * sizeof(FVector4);
+		uint32 SizeInBytes = InInstanceCount * sizeof(FVector4f);
 
 		if (SizeInBytes > Buffer[InBufferID]->GetSize())
 		{
 			Buffer[InBufferID].SafeRelease();
 
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("WaterInstanceDataBuffers"));
 
 			// Align size in to avoid reallocating for a few differences of instance count
 			uint32 AlignedSizeInBytes = Align<uint32>(SizeInBytes, 4 * 1024);
@@ -84,14 +85,15 @@ private:
 			Buffer[InBufferID] = RHICreateVertexBuffer(AlignedSizeInBytes, BUF_Dynamic, CreateInfo);
 		}
 
-		return reinterpret_cast<FVector4*>(RHILockVertexBuffer(Buffer[InBufferID], 0, SizeInBytes, RLM_WriteOnly));
+		FVector4f* Data = reinterpret_cast<FVector4f*>(RHILockBuffer(Buffer[InBufferID], 0, SizeInBytes, RLM_WriteOnly));
+		return TArrayView<FVector4f>(Data, InInstanceCount);
 	}
 
 	void Unlock(int32 InBufferID)
 	{
-		RHIUnlockVertexBuffer(Buffer[InBufferID]);
+		RHIUnlockBuffer(Buffer[InBufferID]);
 	}
 
-	FVertexBufferRHIRef Buffer[NumBuffers];
-	FVector4* BufferMemory[NumBuffers];
+	FBufferRHIRef Buffer[NumBuffers];
+	TArrayView<FVector4f> BufferMemory[NumBuffers];
 };

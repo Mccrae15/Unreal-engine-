@@ -14,7 +14,7 @@ public class LiveCodingServer : ModuleRules
 
         AddEngineThirdPartyPrivateStaticDependencies(Target, "Distorm");
 
-        if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+        if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateIncludePaths.Add("Developer/Windows/LiveCoding/Private");
 			PrivateIncludePaths.Add("Developer/Windows/LiveCoding/Private/External");
@@ -30,6 +30,15 @@ public class LiveCodingServer : ModuleRules
 			RuntimeDependencies.Add("$(TargetOutputDir)/msdia140.dll", Path.Combine(DiaSdkDir, "bin", "amd64", "msdia140.dll"));
 		}
 
+		if (Target.Configuration == UnrealTargetConfiguration.Debug)
+		{
+			PrivateDefinitions.Add("LC_DEBUG=1");
+		}
+		else
+		{
+			PrivateDefinitions.Add("LC_DEBUG=0");
+		}
+		
 		// Allow precompiling when generating project files so we can get intellisense
 		if(!Target.bGenerateProjectFiles)
 		{

@@ -34,7 +34,8 @@ struct FMPDLoadRequestDASH : public IHTTPResourceRequestObject
 		XLink_InitializationSet,
 		Callback,
 		Segment,
-		TimeSync
+		TimeSync,
+		Sideload
 	};
 	const TCHAR* const GetRequestTypeName() const
 	{
@@ -51,6 +52,7 @@ struct FMPDLoadRequestDASH : public IHTTPResourceRequestObject
 			case ELoadType::Callback:				return TEXT("Callback");
 			case ELoadType::Segment:				return TEXT("Segment");
 			case ELoadType::TimeSync:				return TEXT("Time sync");
+			case ELoadType::Sideload:				return TEXT("Sideload");
 			default:								return TEXT("<unknown>");
 		}
 	}
@@ -143,6 +145,7 @@ public:
 		FURL InitializationURL;
 		FURL MediaURL;
 		FTimeValue ATO;
+		FTimeValue PeriodLocalSegmentStartTime;
 		int64 Time = 0;								//!< Time value T in timescale units
 		int64 PTO = 0;								//!< PresentationTimeOffset
 		int64 EPTdelta = 0;
@@ -154,6 +157,8 @@ public:
 		int64 MediaLocalFirstAUTime = 0;			//!< Time of the first AU to use in this segment in media local time
 		int64 MediaLocalLastAUTime = 0;				//!< Time at which the last AU to use in thie segment ends in media local time
 		uint32 Timescale = 0;						//!< Local media timescale
+		bool bFrameAccuracyRequired = false;		//!< true if the segment was located for frame accurate seeking.
+		bool bIsSideload = false;					//!< true if this is a side-loaded resource to be fetched and cached.
 		bool bIsLastInPeriod = false;				//!< true if known to be the last segment in the period.
 		bool bMayBeMissing = false;					//!< true if the last segment in <SegmentTemplate> that might not exist.
 		bool bIsMissing = false;					//!< Set to true if known to be missing.
@@ -203,9 +208,11 @@ public:
 	{
 		FTimeValue PeriodLocalTime;					//!< Time local in the period to search a segment for.
 		FTimeValue PeriodDuration;					//!< Duration of the period. Needed to determine the number of segments in the period.
+		FTimeValue PeriodPresentationEnd;			//!< End time of the presetation in period local time, if not set to invalid or infinity.
 		IManifest::ESearchType SearchType = IManifest::ESearchType::Closest;
 		int64 RequestID = 0;						//!< Sequential request ID across all segments during playback, needed to re-resolve potential UrlQueryInfo xlinks.
 		bool bHasFollowingPeriod = false;			//!< true if we know for sure there is another period following.
+		bool bFrameAccurateSearch = false;			//!< true to prepare segments for frame-accurate decoding and rendering
 	};
 
 	class FRepresentation : public IPlaybackAssetRepresentation, public TSharedFromThis<FRepresentation, ESPMode::ThreadSafe>
@@ -227,7 +234,9 @@ public:
 
 		void GetSegmentInformation(TArray<IManifest::IPlayPeriod::FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const TSharedPtrTS<IPlaybackAssetAdaptationSet>& AdaptationSet);
 
+		int32 GetSelectionPriority() const { return SelectionPriority; }
 
+		bool IsSideloadedSubtitle() const { return bIsSideloadedSubtitle; }
 
 		//----------------------------------------------
 		// Methods from IPlaybackAssetRepresentation
@@ -259,6 +268,7 @@ public:
 		ESearchResult FindSegment_Base(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& OutSegmentInfo, TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, const FSegmentSearchOption& InSearchOptions, const TSharedPtrTS<FDashMPD_RepresentationType>& MPDRepresentation, const TArray<TSharedPtrTS<FDashMPD_SegmentBaseType>>& SegmentBase);
 		ESearchResult FindSegment_Template(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& OutSegmentInfo, TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, const FSegmentSearchOption& InSearchOptions, const TSharedPtrTS<FDashMPD_RepresentationType>& MPDRepresentation, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentTemplate);
 		ESearchResult FindSegment_Timeline(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& OutSegmentInfo, TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, const FSegmentSearchOption& InSearchOptions, const TSharedPtrTS<FDashMPD_RepresentationType>& MPDRepresentation, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentTemplate, const TSharedPtrTS<FDashMPD_SegmentTimelineType>& SegmentTimeline);
+		ESearchResult SetupSideloadedFile(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& OutSegmentInfo, const FSegmentSearchOption& InSearchOptions, const TSharedPtrTS<FDashMPD_RepresentationType>& MPDRepresentation);
 
 		bool PrepareDownloadURLs(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo, const TArray<TSharedPtrTS<FDashMPD_SegmentBaseType>>& SegmentBase);
 		bool PrepareDownloadURLs(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentTemplate);
@@ -272,6 +282,7 @@ public:
 		FString ID;
 		int32 Bitrate = MAX_int32;
 		int32 QualityIndex = -1;
+		int32 SelectionPriority = 1;
 		bool bIsUsable = false;
 		bool bIsEnabled = true;
 		bool bWarnedAboutTimelineStartGap = false;
@@ -286,6 +297,8 @@ public:
 		int64 SegmentIndexRangeStart = 0;
 		int64 SegmentIndexRangeSize = 0;
 		TSharedPtrTS<FMPDLoadRequestDASH> PendingSegmentIndexLoadRequest;
+		//
+		bool bIsSideloadedSubtitle = false;
 	};
 
 	class FAdaptationSet : public IPlaybackAssetAdaptationSet
@@ -301,7 +314,10 @@ public:
 		const FTimeFraction& GetPAR() const											{ return PAR; }
 		//const FString& GetLanguage() const											{ return Language; }
 		int32 GetMaxBandwidth() const												{ return MaxBandwidth; }
+		int32 GetSelectionPriority() const											{ return SelectionPriority; }
 		bool GetIsUsable() const													{ return bIsUsable; }
+		bool GetIsInSwitchGroup() const												{ return bIsInSwitchGroup; }
+		bool GetIsSwitchGroup() const												{ return bIsSwitchGroup; }
 
 		TSharedPtrTS<FRepresentation> GetRepresentationByUniqueID(const FString& UniqueIdentifier) const
 		{
@@ -413,10 +429,14 @@ public:
 				{
 					InOutMetadata.Kind = TEXT("metadata");
 				}
-				// TODO: ID and language (complicated by the CEA services)
-				check(!"need to add ID and language handling");
-				InOutMetadata.ID = TEXT("CC1");
-				InOutMetadata.Language = TEXT("en");
+				// ID and language for CEA services
+				if (bIsCEAService)
+				{
+					// TODO
+					check(!"need to add ID and language handling");
+					InOutMetadata.ID = TEXT("CC1");
+					InOutMetadata.Language = TEXT("en");
+				}
 			}
 		}
 
@@ -467,6 +487,9 @@ public:
 		const FString& GetCommonEncryptionScheme() const { return CommonEncryptionScheme; }
 		const FString& GetDefaultKID() const { return DefaultKID; }
 
+		const TArray<FString>& GetSwitchToSetIDs() const { return SwitchToSetIDs; }
+		const TArray<FString>& GetSwitchedFromSetIDs() const { return SwitchedFromSetIDs; }
+
 		//----------------------------------------------
 		// Methods from IPlaybackAssetAdaptationSet
 		//
@@ -508,6 +531,7 @@ public:
 		FTimeFraction PAR;
 		FString Language;
 		int32 MaxBandwidth = 0;
+		int32 SelectionPriority = 1;
 		int32 UniqueSequentialSetIndex = 0;
 		bool bIsUsable = false;
 		bool bIsEnabled = true;
@@ -515,6 +539,11 @@ public:
 		TArray<FContentProtection> PossibleContentProtections;
 		FString CommonEncryptionScheme;
 		FString DefaultKID;
+		// Switching related
+		TArray<FString> SwitchToSetIDs;
+		TArray<FString> SwitchedFromSetIDs;
+		bool bIsInSwitchGroup = false;
+		bool bIsSwitchGroup = false;
 	};
 
 	class FPeriod : public ITimelineMediaAsset
@@ -559,6 +588,20 @@ public:
 			return nullptr;
 		}
 
+		TSharedPtrTS<FAdaptationSet> GetAdaptationSetByMPDID(const FString& MPDID) const
+		{
+			for(int32 i=0; i<AdaptationSets.Num(); ++i)
+			{
+				TSharedPtrTS<FDashMPD_AdaptationSetType> MPDAdaptationSet = AdaptationSets[i]->AdaptationSet.Pin();
+				if (MPDAdaptationSet.IsValid() && MPDAdaptationSet->GetID_AsStr().Equals(MPDID))
+				{
+					return AdaptationSets[i];
+				}
+			}
+			return nullptr;
+		}
+
+
 		void EndPresentationAt(const FTimeValue& EndsAt)
 		{
 			FTimeValue NewDur = EndsAt - Start;
@@ -592,7 +635,8 @@ public:
 		//
 		virtual FTimeRange GetTimeRange() const override
 		{
-			return FTimeRange({Start, End});
+			// Per convention the time range includes the AST
+			return FTimeRange({StartAST, EndAST});
 		}
 		virtual FTimeValue GetDuration() const override
 		{
@@ -641,7 +685,7 @@ public:
 			{
 				TSharedPtrTS<IPlaybackAssetAdaptationSet> AdaptationSet = GetAdaptationSetByTypeAndIndex(OfStreamType, i);
 				const FAdaptationSet* Adapt = static_cast<const FAdaptationSet*>(AdaptationSet.Get());
-				if (Adapt && Adapt->GetIsUsable())
+				if (Adapt && Adapt->GetIsUsable() && !Adapt->GetIsInSwitchGroup())
 				{
 					FTrackMetadata tm;
 					Adapt->GetMetaData(tm, OfStreamType);
@@ -657,6 +701,8 @@ public:
 		FString ID;
 		FTimeValue Start;
 		FTimeValue End;
+		FTimeValue StartAST;
+		FTimeValue EndAST;
 		FTimeValue Duration;
 		bool bIsEarlyPeriod = false;
 		bool bHasFollowingPeriod = false;
@@ -679,9 +725,9 @@ public:
 		return PresentationType;
 	}
 
-	bool IsEventType() const
+	bool IsDynamicEpicEvent() const
 	{
-		return bIsEventType;
+		return EpicEventType == EEpicEventType::Dynamic;
 	}
 
 	const TArray<TSharedPtrTS<FPeriod>>& GetPeriods() const
@@ -757,8 +803,10 @@ public:
 	FTimeRange GetSeekableTimeRange() const;
 	void GetSeekablePositions(TArray<FTimespan>& OutPositions) const;
 	FTimeValue GetDuration() const;
+	void PrepareDefaultStartTime();
 	FTimeValue GetDefaultStartTime() const;
 	void ClearDefaultStartTime();
+	FTimeRange GetPlayTimesFromURI() const;
 
 	FTimeValue GetMPDValidityEndTime() const;
 	FTimeValue GetLastPeriodEndTime() const;
@@ -772,12 +820,17 @@ public:
 	void EndPresentationAt(const FTimeValue& EndsAt, const FString& InPeriod);
 
 private:
+	enum class EEpicEventType
+	{
+		None,
+		Static,
+		Dynamic
+	};
 	FErrorDetail PrepareRemoteElementLoadRequest(TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, TWeakPtrTS<IDashMPDElement> ElementWithXLink, int64 RequestID);
 
 	int32 ReplaceElementWithRemoteEntities(TSharedPtrTS<IDashMPDElement> Element, const FDashMPD_RootEntities& NewRootEntities, int64 OldResolveID, int64 NewResolveID);
 
 	FTimeValue CalculateDistanceToLiveEdge() const;
-	FTimeRange GetPlayTimesFromURI() const;
 
 	bool CanUseEncryptedAdaptation(const TSharedPtrTS<FAdaptationSet>& InAdaptationSet);
 
@@ -794,12 +847,14 @@ private:
 
 	// Type of the presentation.
 	EPresentationType PresentationType;
-	bool bIsEventType = false;
+	EEpicEventType EpicEventType = EEpicEventType::None;
 
 	TArray<TSharedPtrTS<FPeriod>> Periods;
 
 	mutable FTimeRange TotalTimeRange;
 	mutable FTimeRange SeekableTimeRange;
+	FTimeValue DefaultStartTime;
+	mutable bool bWarnedAboutTooSmallSuggestedPresentationDelay = false;
 };
 
 

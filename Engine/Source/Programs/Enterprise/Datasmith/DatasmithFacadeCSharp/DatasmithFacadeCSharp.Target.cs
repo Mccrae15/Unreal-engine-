@@ -80,13 +80,13 @@ public class DatasmithFacadeCSharpTarget : TargetRules
 		PreBuildSteps.Add(SwigCommand);
 
 		// Add copyright headers after generating the new files from swig.
-		string PythonDir = Path.Combine("$(EngineDir)", "Binaries", "ThirdParty", "Python");
+		string PythonDir = Path.Combine("$(EngineDir)", "Binaries", "ThirdParty", "Python3");
 		if (TargetPlatform == UnrealTargetPlatform.Mac)
 		{
 			PreBuildSteps.Add(string.Format("\"{0}\" \"{1}\"", Path.Combine(PythonDir, "Mac", "bin", "python"), Path.Combine(ProjectPath, "FacadeHeaderHelper.py")));
 		}
 		else
-        {
+		{
 			PreBuildSteps.Add(string.Format("\"{0}\" \"{1}\"", Path.Combine(PythonDir, "Win64", "python.exe"), Path.Combine(ProjectPath, "FacadeHeaderHelper.py")));
 		}
 	}

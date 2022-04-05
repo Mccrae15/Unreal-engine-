@@ -51,7 +51,7 @@ namespace CubemapHelpers
 		RenderTargetLongLat->TargetGamma = 0;
 		FRenderTarget* RenderTarget = RenderTargetLongLat->GameThread_GetRenderTargetResource();
 
-		FCanvas* Canvas = new FCanvas(RenderTarget, NULL, 0, 0, 0, GMaxRHIFeatureLevel);
+		FCanvas* Canvas = new FCanvas(RenderTarget, NULL, FGameTime(), GMaxRHIFeatureLevel);
 		Canvas->SetRenderTarget_GameThread(RenderTarget);
 
 		// Clear the render target to black
@@ -105,19 +105,19 @@ namespace CubemapHelpers
 	bool GenerateLongLatUnwrap(const UTextureCube* CubeTexture, TArray64<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT)
 	{
 		check(CubeTexture != NULL);
-		return GenerateLongLatUnwrap(CubeTexture->Resource, CubeTexture->GetSizeX(), CubeTexture->GetPixelFormat(), BitsOUT, SizeOUT, FormatOUT);
+		return GenerateLongLatUnwrap(CubeTexture->GetResource(), CubeTexture->GetSizeX(), CubeTexture->GetPixelFormat(), BitsOUT, SizeOUT, FormatOUT);
 	}
 
 	bool GenerateLongLatUnwrap(const UTextureRenderTargetCube* CubeTarget, TArray64<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT)
 	{
 		check(CubeTarget != NULL);
-		return GenerateLongLatUnwrap(CubeTarget->Resource, CubeTarget->SizeX, CubeTarget->GetFormat(), BitsOUT, SizeOUT, FormatOUT);
+		return GenerateLongLatUnwrap(CubeTarget->GetResource(), CubeTarget->SizeX, CubeTarget->GetFormat(), BitsOUT, SizeOUT, FormatOUT);
 	}
 }
 
 void FCubemapTexturePropertiesVS::SetParameters( FRHICommandList& RHICmdList, const FMatrix& TransformValue )
 {
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), Transform, TransformValue);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), Transform, (FMatrix44f)TransformValue);
 }
 
 template<bool bHDROutput>
@@ -125,9 +125,9 @@ void FCubemapTexturePropertiesPS<bHDROutput>::SetParameters( FRHICommandList& RH
 {
 	SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(),CubeTexture,CubeTextureSampler,Texture);
 
-	FVector4 PackedProperties0Value(MipLevel, 0, 0, 0);
+	FVector4f PackedProperties0Value(MipLevel, 0, 0, 0);
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), PackedProperties0, PackedProperties0Value);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorWeights, ColorWeightsValue);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorWeights, (FMatrix44f)ColorWeightsValue);
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), Gamma, GammaValue);
 }
 
@@ -156,7 +156,8 @@ void FMipLevelBatchedElementParameters::BindShaders(FRHICommandList& RHICmdList,
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, EApplyRendertargetOption::ForceApply);
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	VertexShader->SetParameters(RHICmdList, InTransform);
 	PixelShader->SetParameters(RHICmdList, Texture, ColorWeights, MipLevel, InGamma);
@@ -182,7 +183,8 @@ void FIESLightProfileBatchedElementParameters::BindShaders( FRHICommandList& RHI
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, EApplyRendertargetOption::ForceApply);
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	VertexShader->SetParameters(RHICmdList, InTransform);
 	PixelShader->SetParameters(RHICmdList, Texture, BrightnessInLumens);

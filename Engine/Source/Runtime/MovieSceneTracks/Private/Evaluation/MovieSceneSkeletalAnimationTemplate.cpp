@@ -138,7 +138,7 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 				{
 					Component->AnimScriptInstance = CachedAnimInstance.Get();
 					CachedAnimInstance.Reset();
-					if (Component->AnimScriptInstance && Component->SkeletalMesh)
+					if (Component->AnimScriptInstance && Component->SkeletalMesh && Component->AnimScriptInstance->CurrentSkeleton != Component->SkeletalMesh->GetSkeleton())
 					{
 						//the skeleton may have changed so need to recalc required bones as needed.
 						Component->AnimScriptInstance->CurrentSkeleton = Component->SkeletalMesh->GetSkeleton();
@@ -277,7 +277,7 @@ namespace MovieScene
 			ensureMsgf(InObject, TEXT("Attempting to evaluate an Animation track with a null object."));
 
 			USkeletalMeshComponent* SkeletalMeshComponent = SkeletalMeshComponentFromObject(InObject);
-			if (!SkeletalMeshComponent)
+			if (!SkeletalMeshComponent || !SkeletalMeshComponent->SkeletalMesh)
 			{
 				return;
 			}
@@ -398,6 +398,11 @@ namespace MovieScene
 		{
 			for (USceneComponent* Child : SkeletalMeshComponent->GetAttachChildren())
 			{
+				if (!Child)
+				{
+					continue;
+				}
+
 				FName SocketName = Child->GetAttachSocketName();
 				if (SocketName != NAME_None)
 				{
@@ -464,8 +469,7 @@ namespace MovieScene
 					RootMotion.GetValue().bBlendFirstChildOfRoot = bBlendFirstChildOfRoot;
 				}
 
-				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID),RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies);
-
+				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID),RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.MirrorDataTable.Get());
 			}
 			else if (UAnimInstance* AnimInst = GetSourceAnimInstance(SkeletalMeshComponent))
 			{
@@ -524,8 +528,8 @@ namespace MovieScene
 					RootMotion.GetValue().RootMotion = RootMotionTransform.GetValue();
 					RootMotion.GetValue().bBlendFirstChildOfRoot = bBlendFirstChildOfRoot;
 				}
-				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID), RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies);
 
+				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID), RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.MirrorDataTable.Get());
 			}
 			else if (UAnimInstance* AnimInst = GetSourceAnimInstance(SkeletalMeshComponent))
 			{
@@ -629,7 +633,7 @@ void FMovieSceneSkeletalAnimationSectionTemplate::Evaluate(const FMovieSceneEval
 	}
 }
 
-float FMovieSceneSkeletalAnimationSectionTemplateParameters::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
+double FMovieSceneSkeletalAnimationSectionTemplateParameters::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
 {
 	const FFrameTime AnimationLength = GetSequenceLength() * InFrameRate;
 	const int32 LengthInFrames = AnimationLength.FrameNumber.Value + (int)(AnimationLength.GetSubFrame() + 0.5f) + 1;
@@ -642,11 +646,11 @@ float FMovieSceneSkeletalAnimationSectionTemplateParameters::MapTimeToAnimation(
 	const float AnimPlayRate = FMath::IsNearlyZero(SectionPlayRate) ? 1.0f : SectionPlayRate;
 
 	const float FirstLoopSeqLength = GetSequenceLength() - InFrameRate.AsSeconds(FirstLoopStartFrameOffset + StartFrameOffset + EndFrameOffset);
-	const float SeqLength = GetSequenceLength() - InFrameRate.AsSeconds(StartFrameOffset + EndFrameOffset);
+	const double SeqLength = GetSequenceLength() - InFrameRate.AsSeconds(StartFrameOffset + EndFrameOffset);
 
-	float AnimPosition = FFrameTime::FromDecimal((InPosition - SectionStartTime).AsDecimal() * AnimPlayRate) / InFrameRate;
+	double AnimPosition = FFrameTime::FromDecimal((InPosition - SectionStartTime).AsDecimal() * AnimPlayRate) / InFrameRate;
 	AnimPosition += InFrameRate.AsSeconds(FirstLoopStartFrameOffset);
-	if (SeqLength > 0.f && (bLooping || !FMath::IsNearlyEqual(AnimPosition, SeqLength,1e-4f)))
+	if (SeqLength > 0.0 && (bLooping || !FMath::IsNearlyEqual(AnimPosition, SeqLength, 1e-4)))
 	{
 		AnimPosition = FMath::Fmod(AnimPosition, SeqLength);
 	}

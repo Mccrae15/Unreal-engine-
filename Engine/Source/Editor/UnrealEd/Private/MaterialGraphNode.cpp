@@ -9,6 +9,9 @@
 #include "ToolMenus.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
 
+#include "Materials/MaterialExpressionComposite.h"
+#include "Materials/MaterialExpressionPinBase.h"
+
 #include "Materials/MaterialExpressionComponentMask.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
@@ -29,12 +32,15 @@
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionTextureProperty.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionDoubleVectorParameter.h"
 #include "Materials/MaterialExpressionViewProperty.h"
 #include "Materials/MaterialExpressionMaterialLayerOutput.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialExpressionReroute.h"
-
+#include "Materials/MaterialExpressionCurveAtlasRowParameter.h"
+#include "Materials/MaterialExpressionExecBegin.h"
+#include "Materials/MaterialExpressionStrata.h"
 #include "MaterialEditorUtilities.h"
 #include "MaterialEditorActions.h"
 #include "GraphEditorActions.h"
@@ -81,7 +87,7 @@ void UMaterialGraphNode::RecreateAndLinkNode()
 
 		UEdGraphNode::DestroyPin(Pin);
 	}
-	Pins.Empty();
+	EmptyPins();
 
 	AllocateDefaultPins();
 
@@ -225,8 +231,6 @@ FLinearColor UMaterialGraphNode::GetNodeTitleColor() const
 		return Settings->PreviewNodeTitleColor;
 	}
 
-
-
 	if (UsesBoolColour(MaterialExpression))
 	{
 		return Settings->BooleanPinTypeColor;
@@ -275,6 +279,10 @@ FLinearColor UMaterialGraphNode::GetNodeTitleColor() const
 		// Previously FColor(255, 155, 0);
 		return Settings->ResultNodeTitleColor;
 	}
+	else if (MaterialExpression->HasExecInput())
+	{
+		return Settings->ExecutionPinTypeColor;
+	}
 	else if (const UMaterialExpressionNamedRerouteDeclaration* RerouteDeclaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(MaterialExpression))
 	{
 		// If it's a declaration node, we simply get the color from it 
@@ -311,6 +319,10 @@ FLinearColor UMaterialGraphNode::GetNodeTitleColor() const
 		{
 			return FColor( 0, 128, 128 );
 		}
+	}
+	else if (const UMaterialExpressionStrataBSDF* StrataBSDF = Cast<UMaterialExpressionStrataBSDF>(MaterialExpression))
+	{
+		return FColor(181, 29, 230);
 	}
 
 	// Assume that most material expressions act like pure functions and don't affect anything else
@@ -355,25 +367,25 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 
 	if (Context->Node)
 	{
+		FToolMenuInsert MenuPosition = FToolMenuInsert(NAME_None, EToolMenuInsertType::First);
+		FToolMenuSection& NodeSection = Menu->AddSection("MaterialSchemaNodeActions", LOCTEXT("NodeActionsMenuHeader", "Node Actions"), MenuPosition);
 		if (MaterialExpression)
 		{
 			if (MaterialExpression->IsA(UMaterialExpressionTextureBase::StaticClass()))
 			{
 				{
-					FToolMenuSection& Section = Menu->AddSection("MaterialGraphNode");
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().UseCurrentTexture);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().UseCurrentTexture);
 				}
 
 				// Add a 'Convert To Texture' option for convertible types
 				{
-					FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu0");
 					if ( MaterialExpression->IsA(UMaterialExpressionTextureSample::StaticClass()) && !MaterialExpression->HasAParameterName())
 					{
-						Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToTextureObjects);
+						NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToTextureObjects);
 					}
 					else if ( MaterialExpression->IsA(UMaterialExpressionTextureObject::StaticClass()))
 					{
-						Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToTextureSamples);
+						NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToTextureSamples);
 					}
 				}
 			}
@@ -381,23 +393,21 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 			// Add a 'Convert to Local Variables' option to reroute nodes
 			if (MaterialExpression->IsA(UMaterialExpressionReroute::StaticClass()))
 			{
-				FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu1");
-				Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertRerouteToNamedReroute);
+				NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertRerouteToNamedReroute);
 			}
 
 			// Add local variables selection & conversion to reroute nodes
 			if (MaterialExpression->IsA(UMaterialExpressionNamedRerouteBase::StaticClass()))
 			{
-				FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu1");
 				if (MaterialExpression->IsA(UMaterialExpressionNamedRerouteDeclaration::StaticClass()))
 				{
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().SelectNamedRerouteUsages);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().SelectNamedRerouteUsages);
 				}
 				if (MaterialExpression->IsA(UMaterialExpressionNamedRerouteUsage::StaticClass()))
 				{
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().SelectNamedRerouteDeclaration);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().SelectNamedRerouteDeclaration);
 				}
-				Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertNamedRerouteToReroute);
+				NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertNamedRerouteToReroute);
 			}
 
 			// Add a 'Convert To Parameter' option for convertible types
@@ -411,24 +421,37 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 				|| MaterialExpression->IsA(UMaterialExpressionComponentMask::StaticClass()))
 			{
 				{
-					FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu1");
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertObjects);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertObjects);
 				}
 			}
 
+			// Constants cannot be converted back to a CurveAtlasRowParameter
+			const bool bIsAStandardScalarParam = MaterialExpression->IsA(UMaterialExpressionScalarParameter::StaticClass())
+											     && !MaterialExpression->IsA(UMaterialExpressionCurveAtlasRowParameter::StaticClass());
+
 			// Add a 'Convert To Constant' option for convertible types
-			if (MaterialExpression->IsA(UMaterialExpressionScalarParameter::StaticClass())
+			if (bIsAStandardScalarParam
 				|| MaterialExpression->IsA(UMaterialExpressionVectorParameter::StaticClass())
 				|| MaterialExpression->IsA(UMaterialExpressionTextureObjectParameter::StaticClass()))
 			{
 				{
-					FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu1");
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToConstant);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().ConvertToConstant);
 				}
 			}
 
+			// Add 'Promote to Double' option for float types
+			if (MaterialExpression->IsA(UMaterialExpressionVectorParameter::StaticClass()))
 			{
-				FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu2");
+				NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().PromoteToDouble);
+			}
+
+			// Add 'Promote to Float' option for double types
+			if (MaterialExpression->IsA(UMaterialExpressionDoubleVectorParameter::StaticClass()))
+			{
+				NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().PromoteToFloat);
+			}
+
+			{
 				// Don't show preview option for bools
 				if (!MaterialExpression->IsA(UMaterialExpressionStaticBool::StaticClass())
 					&& !MaterialExpression->IsA(UMaterialExpressionStaticBoolParameter::StaticClass()))
@@ -437,36 +460,35 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 					if (bIsPreviewExpression)
 					{
 						// If we are already previewing the selected node, the menu option should tell the user that this will stop previewing
-						Section.AddMenuEntry(FMaterialEditorCommands::Get().StopPreviewNode);
+						NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().StopPreviewNode);
 					}
 					else
 					{
 						// The menu option should tell the user this node will be previewed.
-						Section.AddMenuEntry(FMaterialEditorCommands::Get().StartPreviewNode);
+						NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().StartPreviewNode);
 					}
 				}
 
 				if (MaterialExpression->bRealtimePreview)
 				{
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().DisableRealtimePreviewNode);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().DisableRealtimePreviewNode);
 				}
 				else
 				{
-					Section.AddMenuEntry(FMaterialEditorCommands::Get().EnableRealtimePreviewNode);
+					NodeSection.AddMenuEntry(FMaterialEditorCommands::Get().EnableRealtimePreviewNode);
 				}
 			}
 		}
 
 		// Break all links
 		{
-			FToolMenuSection& Section = Menu->AddSection("BreakAllLinks");
-			Section.AddMenuEntry(FGraphEditorCommands::Get().BreakNodeLinks);
+			NodeSection.AddMenuEntry(FGraphEditorCommands::Get().BreakNodeLinks);
 		}
 
 		// Separate the above frequently used options from the below less frequently used common options
 		
 		{
-			FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu3");
+			FToolMenuSection& Section = Menu->AddSection("MaterialEditorMenu3", LOCTEXT("GeneralNodeActionsMenuHeader", "General"));
 			Section.AddMenuEntry( FGenericCommands::Get().Delete );
 			Section.AddMenuEntry( FGenericCommands::Get().Cut );
 			Section.AddMenuEntry( FGenericCommands::Get().Copy );
@@ -478,7 +500,10 @@ void UMaterialGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 		}
 			
 		{
-			FToolMenuSection& Section = Menu->AddSection("Alignment");
+			FToolMenuSection& Section = Menu->AddSection("EdGraphSchemaOrganization", LOCTEXT("OrganizationHeader", "Organization"));
+			Section.AddMenuEntry(FGraphEditorCommands::Get().CollapseNodes);
+			Section.AddMenuEntry(FGraphEditorCommands::Get().ExpandNodes);
+
 			Section.AddSubMenu(
 				"Alignment",
 				LOCTEXT("AlignmentHeader", "Alignment"),
@@ -593,20 +618,53 @@ FName UMaterialGraphNode::GetShortenPinName(const FName PinName)
 	return InputName;
 }
 
+uint32 UMaterialGraphNode::GetPinMaterialType(const UEdGraphPin* Pin) const
+{
+	if (Pin->PinType.PinCategory == UMaterialGraphSchema::PC_Exec)
+	{
+		return MCT_Execution;
+	}
+	
+	if (Pin->Direction == EGPD_Input)
+	{
+		return MaterialExpression->GetInputType(Pin->SourceIndex);
+	}
+	else
+	{
+		return MaterialExpression->GetOutputType(Pin->SourceIndex);
+	}
+}
+
 void UMaterialGraphNode::CreateInputPins()
 {
-	const TArray<FExpressionInput*> ExpressionInputs = MaterialExpression->GetInputs();
+	if (MaterialExpression->HasExecInput())
+	{
+		UEdGraphPin* NewPin = CreatePin(EGPD_Input, UMaterialGraphSchema::PC_Exec, NAME_None, NAME_None);
+		NewPin->SourceIndex = 0;
+		// Makes sure pin has a name for lookup purposes but user will never see it
+		NewPin->PinName = CreateUniquePinName(TEXT("Input"));
+		NewPin->PinFriendlyName = SpaceText;
+	}
 
-	for (int32 Index = 0; Index < ExpressionInputs.Num() ; ++Index)
+	const TArray<FExpressionInput*> ExpressionInputs = MaterialExpression->GetInputs();
+	for (int32 Index = 0; Index < ExpressionInputs.Num(); ++Index)
 	{
 		FExpressionInput* Input = ExpressionInputs[Index];
+		FName PinCategory;
+
 		FName InputName = MaterialExpression->GetInputName(Index);
-
 		InputName = GetShortenPinName(InputName);
-
-		const FName PinCategory = MaterialExpression->IsInputConnectionRequired(Index) ? UMaterialGraphSchema::PC_Required : UMaterialGraphSchema::PC_Optional;
+		if (MaterialExpression->IsInputConnectionRequired(Index))
+		{
+			PinCategory = UMaterialGraphSchema::PC_Required;
+		}
+		else
+		{
+			PinCategory = UMaterialGraphSchema::PC_Optional;
+		}
 
 		UEdGraphPin* NewPin = CreatePin(EGPD_Input, PinCategory, InputName);
+		NewPin->SourceIndex = Index;
 		if (NewPin->PinName.IsNone())
 		{
 			// Makes sure pin has a name for lookup purposes but user will never see it
@@ -619,48 +677,46 @@ void UMaterialGraphNode::CreateInputPins()
 void UMaterialGraphNode::CreateOutputPins()
 {
 	TArray<FExpressionOutput>& Outputs = MaterialExpression->GetOutputs();
-
-	for (const FExpressionOutput& ExpressionOutput : Outputs)
+	for(int32 Index = 0; Index < Outputs.Num(); ++Index)
 	{
+		const FExpressionOutput& ExpressionOutput = Outputs[Index];
+
 		FName PinCategory;
 		FName PinSubCategory;
 		FName OutputName;
-
-		if (MaterialExpression->bShowMaskColorsOnPin)
-		{
-			if (ExpressionOutput.Mask)
-			{
-				PinCategory = UMaterialGraphSchema::PC_Mask;
-
-				if (ExpressionOutput.MaskR && !ExpressionOutput.MaskG && !ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
-				{
-					PinSubCategory = UMaterialGraphSchema::PSC_Red;
-				}
-				else if (!ExpressionOutput.MaskR &&  ExpressionOutput.MaskG && !ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
-				{
-					PinSubCategory = UMaterialGraphSchema::PSC_Green;
-				}
-				else if (!ExpressionOutput.MaskR && !ExpressionOutput.MaskG &&  ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
-				{
-					PinSubCategory = UMaterialGraphSchema::PSC_Blue;
-				}
-				else if (!ExpressionOutput.MaskR && !ExpressionOutput.MaskG && !ExpressionOutput.MaskB &&  ExpressionOutput.MaskA)
-				{
-					PinSubCategory = UMaterialGraphSchema::PSC_Alpha;
-				}
-				else if (ExpressionOutput.MaskR && ExpressionOutput.MaskG && ExpressionOutput.MaskB &&  ExpressionOutput.MaskA)
-				{
-					PinSubCategory = UMaterialGraphSchema::PSC_RGBA;
-				}
-			}
-		}
-
 		if (MaterialExpression->bShowOutputNameOnPin)
 		{
 			OutputName = ExpressionOutput.OutputName;
 		}
 
+		if (MaterialExpression->bShowMaskColorsOnPin && ExpressionOutput.Mask)
+		{
+			PinCategory = UMaterialGraphSchema::PC_Mask;
+
+			if (ExpressionOutput.MaskR && !ExpressionOutput.MaskG && !ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
+			{
+				PinSubCategory = UMaterialGraphSchema::PSC_Red;
+			}
+			else if (!ExpressionOutput.MaskR && ExpressionOutput.MaskG && !ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
+			{
+				PinSubCategory = UMaterialGraphSchema::PSC_Green;
+			}
+			else if (!ExpressionOutput.MaskR && !ExpressionOutput.MaskG && ExpressionOutput.MaskB && !ExpressionOutput.MaskA)
+			{
+				PinSubCategory = UMaterialGraphSchema::PSC_Blue;
+			}
+			else if (!ExpressionOutput.MaskR && !ExpressionOutput.MaskG && !ExpressionOutput.MaskB && ExpressionOutput.MaskA)
+			{
+				PinSubCategory = UMaterialGraphSchema::PSC_Alpha;
+			}
+			else if (ExpressionOutput.MaskR && ExpressionOutput.MaskG && ExpressionOutput.MaskB && ExpressionOutput.MaskA)
+			{
+				PinSubCategory = UMaterialGraphSchema::PSC_RGBA;
+			}
+		}
+
 		UEdGraphPin* NewPin = CreatePin(EGPD_Output, PinCategory, PinSubCategory, OutputName);
+		NewPin->SourceIndex = Index;
 		if (NewPin->PinName.IsNone())
 		{
 			// Makes sure pin has a name for lookup purposes but user will never see it
@@ -668,48 +724,28 @@ void UMaterialGraphNode::CreateOutputPins()
 			NewPin->PinFriendlyName = SpaceText;
 		}
 	}
-}
 
-int32 UMaterialGraphNode::GetOutputIndex(const UEdGraphPin* OutputPin)
-{
-	TArray<UEdGraphPin*> OutputPins;
-	GetOutputPins(OutputPins);
-
-	for (int32 Index = 0; Index < OutputPins.Num(); ++Index)
+	TArray<FExpressionExecOutputEntry> ExecOutputs;
+	MaterialExpression->GetExecOutputs(ExecOutputs);
+	for (int32 Index = 0; Index < ExecOutputs.Num(); ++Index)
 	{
-		if (OutputPin == OutputPins[Index])
+		const FExpressionExecOutputEntry& Entry = ExecOutputs[Index];
+
+		FName OutputName;
+		if (MaterialExpression->bShowOutputNameOnPin)
 		{
-			return Index;
+			OutputName = Entry.Name;
+		}
+
+		UEdGraphPin* NewPin = CreatePin(EGPD_Output, UMaterialGraphSchema::PC_Exec, NAME_None, OutputName);
+		NewPin->SourceIndex = Index;
+		if (NewPin->PinName.IsNone())
+		{
+			// Makes sure pin has a name for lookup purposes but user will never see it
+			NewPin->PinName = CreateUniquePinName(TEXT("Output"));
+			NewPin->PinFriendlyName = SpaceText;
 		}
 	}
-
-	return -1;
-}
-
-uint32 UMaterialGraphNode::GetOutputType(const UEdGraphPin* OutputPin)
-{
-	return MaterialExpression->GetOutputType(GetOutputIndex(OutputPin));
-}
-
-int32 UMaterialGraphNode::GetInputIndex(const UEdGraphPin* InputPin) const
-{
-	TArray<UEdGraphPin*> InputPins;
-	GetInputPins(InputPins);
-
-	for (int32 Index = 0; Index < InputPins.Num(); ++Index)
-	{
-		if (InputPin == InputPins[Index])
-		{
-			return Index;
-		}
-	}
-
-	return -1;
-}
-
-uint32 UMaterialGraphNode::GetInputType(const UEdGraphPin* InputPin) const
-{
-	return MaterialExpression->GetInputType(GetInputIndex(InputPin));
 }
 
 void UMaterialGraphNode::ResetMaterialExpressionOwner()

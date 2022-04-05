@@ -14,6 +14,7 @@ class FAnisotropyMeshProcessor : public FMeshPassProcessor
 public:
 	FAnisotropyMeshProcessor(
 		const FScene* Scene,
+		ERHIFeatureLevel::Type InFeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand,
 		const FMeshPassProcessorRenderState& InPassDrawRenderState,
 		FMeshPassDrawListContext* InDrawListContext
@@ -29,7 +30,15 @@ public:
 		) override final;
 
 protected:
-	void Process(
+	bool TryAddMeshBatch(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material);
+
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,
@@ -40,3 +49,6 @@ protected:
 		ERasterizerCullMode MeshCullMode
 		);
 };
+
+bool ShouldRenderAnisotropyPass(const FViewInfo& Views);
+bool ShouldRenderAnisotropyPass(const TArray<FViewInfo>& Views);

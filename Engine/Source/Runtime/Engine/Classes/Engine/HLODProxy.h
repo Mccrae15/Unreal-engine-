@@ -54,11 +54,15 @@ public:
 
 	static uint32 GetCRC(UMaterialInterface* InMaterialInterface, uint32 InCRC = 0);
 	static uint32 GetCRC(UTexture* InTexture, uint32 InCRC = 0);
-	static uint32 GetCRC(UStaticMesh* InStaticMesh, uint32 InCRC = 0);
+	static uint32 GetCRC(UStaticMesh* InStaticMesh, uint32 InCRC = 0, bool bInConsiderPhysicData = false);
 	static uint32 GetCRC(UStaticMeshComponent* InComponent, uint32 InCRC = 0, const FTransform& TransformComponents = FTransform::Identity);
 
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 
 	/** Returns true if proxy doesn't contain any mesh entry. */
 	bool IsEmpty() const;
@@ -78,7 +82,7 @@ public:
 	 */
 	static void ExtractStaticMeshComponentsFromLODActor(const ALODActor* LODActor, TArray<UStaticMeshComponent*>& InOutComponents);
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || WITH_EDITOR
 	/** Check if we contain data for the specified actor */
 	bool ContainsDataForActor(const ALODActor* InLODActor) const;
 #endif
@@ -103,5 +107,5 @@ private:
 	TArray<FHLODProxyMesh> ProxyMeshes;
 
 	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
-	TMap<UHLODProxyDesc*, FHLODProxyMesh> HLODActors;
+	TMap<TObjectPtr<UHLODProxyDesc>, FHLODProxyMesh> HLODActors;
 };

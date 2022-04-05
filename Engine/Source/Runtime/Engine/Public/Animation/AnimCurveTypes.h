@@ -8,6 +8,7 @@
 #include "Animation/SmartName.h"
 #include "Animation/Skeleton.h"
 #include "Curves/RichCurve.h"
+#include "Misc/EnumRange.h"
 #include "AnimCurveTypes.generated.h"
 
 /** This is curve flags that are saved in asset and **/
@@ -31,6 +32,8 @@ enum EAnimAssetCurveFlags
 	AACF_Disabled = 0x00000040 UMETA(Hidden), // per asset
 };
 static const EAnimAssetCurveFlags AACF_DefaultCurve = AACF_Editable;
+
+ENUM_RANGE_BY_FIRST_AND_LAST(EAnimAssetCurveFlags, AACF_DriveMorphTarget_DEPRECATED, AACF_Disabled);
 
 /** UI Curve Parameter type
  * This gets name, and cached UID and use it when needed
@@ -69,7 +72,7 @@ struct ENGINE_API FAnimCurveParam
 /**
  * Float curve data for one track
  */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct ENGINE_API FAnimCurveBase
 {
 	GENERATED_USTRUCT_BODY()
@@ -153,8 +156,8 @@ private:
 #endif
 };
 
-USTRUCT()
-struct FFloatCurve : public FAnimCurveBase
+USTRUCT(BlueprintType)
+struct ENGINE_API FFloatCurve : public FAnimCurveBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -170,15 +173,15 @@ struct FFloatCurve : public FAnimCurveBase
 	}
 
 	// we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-	void CopyCurve(FFloatCurve& SourceCurve);
-	ENGINE_API float Evaluate(float CurrentTime) const;
-	ENGINE_API void UpdateOrAddKey(float NewKey, float CurrentTime);
-	ENGINE_API void GetKeys(TArray<float>& OutTimes, TArray<float>& OutValues);
+	void CopyCurve(const FFloatCurve& SourceCurve);
+	float Evaluate(float CurrentTime) const;
+	void UpdateOrAddKey(float NewKey, float CurrentTime);
+	void GetKeys(TArray<float>& OutTimes, TArray<float>& OutValues) const;
 	void Resize(float NewLength, bool bInsert/* whether insert or remove*/, float OldStartTime, float OldEndTime);
 };
 
 USTRUCT()
-struct FVectorCurve : public FAnimCurveBase
+struct ENGINE_API FVectorCurve : public FAnimCurveBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -202,17 +205,17 @@ struct FVectorCurve : public FAnimCurveBase
 	}
 
 	// we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-	void CopyCurve(FVectorCurve& SourceCurve);
+	void CopyCurve(const FVectorCurve& SourceCurve);
 	FVector Evaluate(float CurrentTime, float BlendWeight) const;
-	ENGINE_API void UpdateOrAddKey(const FVector& NewKey, float CurrentTime);
-	ENGINE_API void GetKeys(TArray<float>& OutTimes, TArray<FVector>& OutValues);
+	void UpdateOrAddKey(const FVector& NewKey, float CurrentTime);
+	void GetKeys(TArray<float>& OutTimes, TArray<FVector>& OutValues) const;
 	bool DoesContainKey() const { return (FloatCurves[0].GetNumKeys() > 0 || FloatCurves[1].GetNumKeys() > 0 || FloatCurves[2].GetNumKeys() > 0);}
 	void Resize(float NewLength, bool bInsert/* whether insert or remove*/, float OldStartTime, float OldEndTime);
-	int32 GetNumKeys();
+	int32 GetNumKeys() const;
 };
 
-USTRUCT()
-struct FTransformCurve: public FAnimCurveBase
+USTRUCT(BlueprintType)
+struct ENGINE_API FTransformCurve: public FAnimCurveBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -238,14 +241,73 @@ struct FTransformCurve: public FAnimCurveBase
 	}
 
 	// we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-	void CopyCurve(FTransformCurve& SourceCurve);
+	void CopyCurve(const FTransformCurve& SourceCurve);
 	FTransform Evaluate(float CurrentTime, float BlendWeight) const;
-	ENGINE_API void UpdateOrAddKey(const FTransform& NewKey, float CurrentTime);
-	ENGINE_API void GetKeys(TArray<float>& OutTimes, TArray<FTransform>& OutValues);
+	void UpdateOrAddKey(const FTransform& NewKey, float CurrentTime);
+	void GetKeys(TArray<float>& OutTimes, TArray<FTransform>& OutValues) const;
 	void Resize(float NewLength, bool bInsert/* whether insert or remove*/, float OldStartTime, float OldEndTime);
+	
+	const FVectorCurve* GetVectorCurveByIndex(int32 Index) const;
+	FVectorCurve* GetVectorCurveByIndex(int32 Index);
 };
 
+USTRUCT(BlueprintType)
+struct ENGINE_API FCachedFloatCurve
+{
+	GENERATED_USTRUCT_BODY()
 
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curve Settings")
+	FName CurveName;
+
+private:
+	mutable USkeleton::AnimCurveUID CachedUID;
+	mutable FName CachedCurveName;
+
+public:
+	FCachedFloatCurve()
+		: CachedUID(SmartName::MaxUID)
+	{}
+
+	bool IsValid(const UAnimSequenceBase* InAnimSequence) const;
+	float GetValueAtPosition(const UAnimSequenceBase* InAnimSequence, const float& InPosition) const;
+	const FFloatCurve* GetFloatCurve(const UAnimSequenceBase* InAnimSequence) const;
+
+protected:
+	USkeleton::AnimCurveUID GetAnimCurveUID(const UAnimSequenceBase* InAnimSequence) const;
+};
+
+/**
+* This is array of curves that run when collecting curves natively 
+*/
+struct FCurveElement
+{
+	/** Curve Value */
+	float					Value;
+	/** Whether this value is set or not */
+	bool					bValid;
+
+	FCurveElement(float InValue)
+		:  Value(InValue)
+		,  bValid (true)
+	{}
+
+	FCurveElement()
+		: Value(0.f)
+		, bValid(false)
+	{}
+
+	bool IsValid() const 
+	{
+		return bValid;
+	}
+
+	void SetValue(float InValue)
+	{
+		Value = InValue;
+		bValid = true;
+	}
+};
 
 /**
  * This struct is used to create curve snap shot of current time when extracted
@@ -290,7 +352,7 @@ struct FBaseBlendedCurve
 	void InitFrom(const FBoneContainer& RequiredBones)
 	{
 		UIDToArrayIndexLUT = &RequiredBones.GetUIDToArrayLookupTable();
-		NumValidCurveCount = RequiredBones.GetUIDToArrayIndexLookupTableValidCount();
+		NumValidCurveCount = (uint16)RequiredBones.GetUIDToArrayIndexLookupTableValidCount();
 		CurveWeights.Reset();
 		CurveWeights.AddZeroed(NumValidCurveCount);
 		ValidCurveWeights.Init(false, NumValidCurveCount);
@@ -302,7 +364,7 @@ struct FBaseBlendedCurve
 	{
 		check(InUIDToArrayIndexLUT != nullptr);
 		UIDToArrayIndexLUT = InUIDToArrayIndexLUT;
-		NumValidCurveCount = GetValidElementCount(UIDToArrayIndexLUT);
+		NumValidCurveCount = (uint16)GetValidElementCount(UIDToArrayIndexLUT);
 		CurveWeights.Reset();
 		CurveWeights.AddZeroed(NumValidCurveCount);
 		ValidCurveWeights.Init(false, NumValidCurveCount);
@@ -364,6 +426,22 @@ struct FBaseBlendedCurve
 		}
 
 		return 0.f;
+	}
+
+	/** Get Value of InUID with validation and default value */
+	float Get(USkeleton::AnimCurveUID InUid, bool& OutIsValid, float InDefaultValue=0.f) const
+	{
+		check(bInitialized);
+
+		const int32 ArrayIndex = GetArrayIndexByUID(InUid);
+		if ((ArrayIndex != INDEX_NONE) && ValidCurveWeights[ArrayIndex])
+		{
+			OutIsValid = true;
+			return CurveWeights[ArrayIndex];
+		}
+
+		OutIsValid = false;
+		return InDefaultValue;
 	}
 
 	/** Get Array Index by UID */
@@ -633,6 +711,9 @@ struct FBaseBlendedCurve
 	/** Return number of elements */
 	int32 Num() const { return CurveWeights.Num(); }
 
+	/** Return number of valid elements */
+	int32 NumValid() const { return ValidCurveWeights.CountSetBits(); }
+
 	/** CopyFrom as expected. */
 	template <typename OtherAllocator>
 	void CopyFrom(const FBaseBlendedCurve<OtherAllocator>& CurveToCopyFrom)
@@ -701,11 +782,11 @@ struct ENGINE_API FBlendedHeapCurve : public FBaseBlendedCurve<FDefaultAllocator
 {
 };
 
-UENUM()
+UENUM(BlueprintType)
 enum class ERawCurveTrackTypes : uint8
 {
 	RCT_Float UMETA(DisplayName = "Float Curve"),
-	RCT_Vector UMETA(DisplayName = "Vector Curve"),
+	RCT_Vector UMETA(DisplayName = "Vector Curve", Hidden),
 	RCT_Transform UMETA(DisplayName = "Transformation Curve"),
 	RCT_MAX
 };

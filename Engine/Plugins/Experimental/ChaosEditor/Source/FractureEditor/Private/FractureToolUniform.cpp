@@ -23,7 +23,7 @@ FText UFractureToolUniform::GetDisplayText() const
 
 FText UFractureToolUniform::GetTooltipText() const 
 { 
-	return FText(NSLOCTEXT("Fracture", "FractureToolUniformTooltip", "Uniform Fracture will create pieces of approximately the same volume.  Specify minimum and maximum number of cites.  Using the same Random Seed will produce the same fracture.")); 
+	return FText(NSLOCTEXT("Fracture", "FractureToolUniformTooltip", "Uniform Fracture will create pieces of approximately the same volume.  Specify minimum and maximum number of sites.  Using the same Random Seed will produce the same fracture.")); 
 }
 
 FSlateIcon UFractureToolUniform::GetToolIcon() const 
@@ -33,15 +33,16 @@ FSlateIcon UFractureToolUniform::GetToolIcon() const
 
 void UFractureToolUniform::RegisterUICommand( FFractureEditorCommands* BindingContext ) 
 {
-	UI_COMMAND_EXT( BindingContext, UICommandInfo, "Uniform", "Uniform", "Uniform Voronoi Fracture", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND_EXT( BindingContext, UICommandInfo, "Uniform", "Uniform", "Fracture using a Voronoi diagram with a uniform random pattern, creating fracture pieces of similar volume across the shape.", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	BindingContext->Uniform = UICommandInfo;
 }
 
 TArray<UObject*> UFractureToolUniform::GetSettingsObjects() const 
 { 
 	TArray<UObject*> AllSettings; 
-	AllSettings.Add(CutterSettings);
 	AllSettings.Add(UniformSettings);
+	AllSettings.Add(CutterSettings);
+	AllSettings.Add(CollisionSettings);
 	return AllSettings;
 }
 
@@ -49,14 +50,15 @@ void UFractureToolUniform::GenerateVoronoiSites(const FFractureToolContext& Cont
 {
 	FRandomStream RandStream(Context.GetSeed());
 
-	const FVector Extent(Context.GetBounds().Max - Context.GetBounds().Min);
+	FBox Bounds = Context.GetWorldBounds();
+	const FVector Extent(Bounds.Max - Bounds.Min);
 
 	const int32 SiteCount = RandStream.RandRange(UniformSettings->NumberVoronoiSitesMin, UniformSettings->NumberVoronoiSitesMax);
 
 	Sites.Reserve(Sites.Num() + SiteCount);
 	for (int32 ii = 0; ii < SiteCount; ++ii)
 	{
-		Sites.Emplace(Context.GetBounds().Min + FVector(RandStream.FRand(), RandStream.FRand(), RandStream.FRand()) * Extent );
+		Sites.Emplace(Bounds.Min + FVector(RandStream.FRand(), RandStream.FRand(), RandStream.FRand()) * Extent );
 	}
 }
 

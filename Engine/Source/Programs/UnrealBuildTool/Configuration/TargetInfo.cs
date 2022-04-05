@@ -6,7 +6,8 @@ using System.Linq;
 using System.Runtime.Serialization;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -38,7 +39,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The project containing the target
 		/// </summary>
-		public readonly FileReference ProjectFile;
+		public readonly FileReference? ProjectFile;
 
 		/// <summary>
 		/// The current build version
@@ -51,7 +52,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Additional command line arguments for this target
 		/// </summary>
-		public CommandLineArguments Arguments;
+		public CommandLineArguments? Arguments;
 
 		/// <summary>
 		/// Constructs a TargetInfo for passing to the TargetRules constructor.
@@ -62,7 +63,7 @@ namespace UnrealBuildTool
 		/// <param name="Architecture">The architecture being built for</param>
 		/// <param name="ProjectFile">Path to the project file containing the target</param>
 		/// <param name="Arguments">Additional command line arguments for this target</param>
-		public TargetInfo(string Name, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, FileReference ProjectFile, CommandLineArguments Arguments)
+		public TargetInfo(string Name, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, FileReference? ProjectFile, CommandLineArguments? Arguments)
 		{
 			this.Name = Name;
 			this.Platform = Platform;
@@ -78,12 +79,12 @@ namespace UnrealBuildTool
 		/// <param name="Reader">Archive to read from</param>
 		public TargetInfo(BinaryArchiveReader Reader)
 		{
-			this.Name = Reader.ReadString();
-			this.Platform = UnrealTargetPlatform.Parse(Reader.ReadString());
-			string ConfigurationStr = Reader.ReadString();
-			this.Architecture = Reader.ReadString();
-			this.ProjectFile = Reader.ReadFileReference();
-			string[] ArgumentStrs = Reader.ReadArray(() => Reader.ReadString());
+			this.Name = Reader.ReadString()!;
+			this.Platform = UnrealTargetPlatform.Parse(Reader.ReadString()!);
+			string ConfigurationStr = Reader.ReadString()!;
+			this.Architecture = Reader.ReadString()!;
+			this.ProjectFile = Reader.ReadFileReferenceOrNull();
+			string[]? ArgumentStrs = Reader.ReadArray(() => Reader.ReadString()!);
 
 			if (!UnrealTargetConfiguration.TryParse(ConfigurationStr, out Configuration))
 			{
@@ -91,7 +92,7 @@ namespace UnrealBuildTool
 					string.Join(",", Enum.GetValues(typeof(UnrealTargetConfiguration)).Cast<UnrealTargetConfiguration>().Select(x => x.ToString()))));
 			}
 
-			Arguments = new CommandLineArguments(ArgumentStrs);
+			Arguments = ArgumentStrs == null ? null : new CommandLineArguments(ArgumentStrs);
 		}
 
 		/// <summary>
@@ -105,7 +106,7 @@ namespace UnrealBuildTool
 			Writer.WriteString(Configuration.ToString());
 			Writer.WriteString(Architecture);
 			Writer.WriteFileReference(ProjectFile);
-			Writer.WriteArray(Arguments.GetRawArray(), Item => Writer.WriteString(Item));
+			Writer.WriteArray(Arguments?.GetRawArray(), Item => Writer.WriteString(Item));
 		}
 	}
 }

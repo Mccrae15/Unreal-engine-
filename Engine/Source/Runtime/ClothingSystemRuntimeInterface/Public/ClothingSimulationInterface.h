@@ -60,6 +60,14 @@ protected:
 	 */
 	virtual void FillContext(USkeletalMeshComponent* InComponent, float InDeltaTime, IClothingSimulationContext* InOutContext) = 0;
 
+	/**
+	 * Fills an existing context for a single simulation step, called by the engine on the game thread prior to simulation 
+	 * @param InComponent - The component to fill the context for
+	 * @param InOutContext - The context to fill
+	 * @param bIsInitialization - Whether this fill is occurring as part of the actor creation stage
+	 */
+	virtual void FillContext(USkeletalMeshComponent* InComponent, float InDeltaTime, IClothingSimulationContext* InOutContext, bool bIsInitialization) = 0;
+
 	/** Initialize the simulation, will be called before any Simulate calls */
 	virtual void Initialize() = 0;
 
@@ -134,6 +142,11 @@ public:
 	 * Implementation is not considered thread safe, and therefore this function must be called at a synchronization point.
 	 */
 	virtual void SetNumIterations(int32 /*NumIterations*/) {}
+	/**
+	 * Set the maximum number of iterations used by the solver.
+	 * Implementation is not considered thread safe, and therefore this function must be called at a synchronization point.
+	 */
+	virtual void SetMaxNumIterations(int32 /*MaxNumIterations*/) {}
 	/**
 	 * Set the number of substeps used by the solver.
 	 * Implementation is not considered thread safe, and therefore this function must be called at a synchronization point.

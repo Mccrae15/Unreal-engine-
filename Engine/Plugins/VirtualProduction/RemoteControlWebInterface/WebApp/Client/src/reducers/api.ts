@@ -14,52 +14,68 @@ export type ApiState = {
   view: IView;
   status: {
     connected?: boolean;
+    keyCorrect?: boolean;
     loading?: boolean;
+    isOpen?: boolean;
   },
 };
 
 
+let _preset;
 let _dispatch: Dispatch;
-let _getState: () => { api: ApiState };
 let _socket: SocketIOClient.Socket;
+let _passphrase: string;
 const _host = (process.env.NODE_ENV === 'development' ? `http://${window.location.hostname}:7001` : '');
 
 function _initialize(dispatch: Dispatch, getState: () => { api: ApiState }) {
   _dispatch = dispatch;
-  _getState = getState;
+  _passphrase = localStorage.getItem('passphrase'); 
 
   _socket = io(`${_host}/`, { path: '/api/io' });
 
   _socket
-    .on('disconnect', () => dispatch(API.STATUS({ connected: false })))
+    .on('disconnect', () => dispatch(API.STATUS({ connected: false, isOpen: false, keyCorrect: false, version: undefined })))
     .on('presets', (presets: IPreset[]) => dispatch(API.PRESETS(presets)))
     .on('payloads', (payloads: IPayloads) => {
       dispatch(API.PAYLOADS(payloads));
-      const preset = _internal.getPreset();
-      if (!preset || !payloads[preset])
+      if (!_preset || !payloads[_preset])
         return;
 
-      dispatch(API.PAYLOAD(payloads[preset]));
+      dispatch(API.PAYLOAD(payloads[_preset]));
     })
     .on('value', (preset: string, property: string, value: PropertyValue) => {
       dispatch(API.PAYLOADS_VALUE({ [preset]: { [property]: value }}));
-      
-      if (_internal.getPreset() === preset)
+
+      if (_preset === preset)
         dispatch(API.PAYLOAD({ [property]: value }));
     })
+    .on('values', (preset: string, changes: { [key: string]: PropertyValue }) => {
+      dispatch(API.PAYLOADS_VALUE({ [preset]: changes }));
+      if (_preset === preset)
+        dispatch(API.PAYLOAD(changes));
+    })
     .on('view', (preset: string, view: IView) => {
-      if (_internal.getPreset() !== preset)
+      if (_preset !== preset)
         return;
 
       dispatch(API.VIEW(view));
     })
-    .on('connected', (connected: boolean) => {
-      dispatch(API.STATUS({ connected, loading: false }));
+    .on('connected', (connected: boolean, version: string) => {
+      dispatch(API.STATUS({ connected, version }));
 
-      if (connected) {
-          _api.presets.get();
-          _api.payload.all();
-      }
+      if (_passphrase !== null)
+        _api.passphrase.login(_passphrase);
+          
+      _api.presets.get();
+      _api.payload.all();
+    })
+    .on('opened', (isOpen: boolean) => {
+      dispatch(API.STATUS({ isOpen, loading: false }));
+    })
+    .on('passphrase', (keyCorrect: boolean) => {
+      dispatch(API.STATUS({ keyCorrect }));
+
+
     })
     .on('loading', (loading: boolean) => {
       dispatch(API.STATUS({ loading }));
@@ -68,7 +84,7 @@ function _initialize(dispatch: Dispatch, getState: () => { api: ApiState }) {
 
 type IRequestCallback = Function | string | undefined;
 
-async function _request(method: string, url: string, body: string | object | undefined, callback: IRequestCallback): Promise<any> {
+async function _request(method: string, url: string, body: string | object | undefined, callback: IRequestCallback, passphrase?: string): Promise<any> {
   const request: RequestInit = { method, mode: 'cors', redirect: 'follow', headers: {} };
   if (body instanceof FormData || typeof(body) === 'string') {
     request.body = body;
@@ -76,13 +92,14 @@ async function _request(method: string, url: string, body: string | object | und
     request.body = JSON.stringify(body);
     request.headers['Content-Type'] = 'application/json';
   }
+  request.headers['passphrase'] = passphrase ?? _passphrase;
 
   const res = await fetch(_host + url, request);
 
   let answer: any = await res.text();
   if (answer.length > 0)
     answer = JSON.parse(answer);
-
+  
   if (!res.ok)
     throw answer;
 
@@ -92,8 +109,8 @@ async function _request(method: string, url: string, body: string | object | und
   return answer;
 }
 
-function _get(url: string, callback?: IRequestCallback)        { return _request('GET', url, undefined, callback) }
-function _put(url: string, body: any)                          { return _request('PUT', url, body, undefined) }
+function _get(url: string, callback?: IRequestCallback, passphrase?: string)        { return _request('GET', url, undefined, callback, passphrase) };
+function _put(url: string, body: any, passphrase?: string)                          { return _request('PUT', url, body, undefined, passphrase) };
 
 const API = {
   STATUS: createAction<any>('API_STATUS'),
@@ -105,11 +122,6 @@ const API = {
   PAYLOADS_VALUE: createAction<IPayloads>('API_PAYLOADS_VALUE'),
 };
 
-const _internal = {
-  getPreset: () => {
-    return _getState().api.preset;
-  }
-};
 
 export const _api = {
   initialize: () => _initialize.bind(null),
@@ -136,41 +148,41 @@ export const _api = {
       return view;
     },
     set: (view: IView) => {
-      const preset = _internal.getPreset();
+      _socket.emit('view', _preset, view);
+    },
+  },
+  passphrase: {
+    login: async(passphrase: string): Promise<boolean> => {
+      const ok = await _get('/api/passphrase', API.STATUS, passphrase);
+      if (!ok)
+        return false;
 
-      _socket.emit('view', preset, view);
+      localStorage.setItem('passphrase', passphrase);
+      _passphrase = passphrase;
+      _api.presets.get();
+      _api.payload.all();
+      return true;
     },
   },
   payload: {
     get: (preset: string): Promise<IPayload> => _get(`/api/presets/payload?preset=${preset}`, API.PAYLOAD),
     all: (): Promise<IPayloads> => _get('/api/payloads', API.PAYLOADS),
     set: (property: string, value: PropertyValue) => {
-      const preset = _internal.getPreset();
-      _socket.emit('value', preset, property, value);
+      _socket.emit('value', _preset, property, value);
     },
     execute: (func: string, args?: Record<string, any>) => {
-      const preset = _internal.getPreset();
-      _socket.emit('execute', preset, func, args ?? {});
+      _socket.emit('execute', _preset, func, args ?? {});
     },
     metadata: (property: string, meta: string, value: string) => {
-      const preset = _internal.getPreset();
-      _socket.emit('metadata', preset, property, meta, value);
-    }
+      _socket.emit('metadata', _preset, property, meta, value);
+    },
+    rebind: (properties: string[], owner: string) => {
+      _socket.emit('rebind', _preset, properties, owner);
+    },
   },
   assets: {
-    search: (q: string, types: string[], prefix: string, count: number = 50): Promise<IAsset[]> => {
-      const args = {
-        q,
-        prefix,
-        count,
-        types: types.join(','),
-      };
-      
-      let url = '/api/assets/search?';
-      for (const arg in args)
-        url += `${arg}=${encodeURIComponent(args[arg])}&`;
-      
-      return _get(url);
+    search: (q: string, types: string[], prefix: string, filterArgs = {}, count: number = 50): Promise<IAsset[]> => {
+      return new Promise(resolve => _socket.emit('search', q, types, prefix, filterArgs, count, resolve));
     },
     thumbnailUrl: (asset: string) => `${_host}/api/thumbnail?asset=${asset}`,
   },
@@ -210,6 +222,8 @@ const initialState: ApiState = {
   view: { tabs: null },
   status: {
     connected: false,
+    keyCorrect: false,
+    isOpen: false,
   },
 };
 
@@ -244,9 +258,12 @@ reducer
         preset = presets[0]?.ID;
 
       // No available preset
-      if (!preset)
+      if (!preset) {
+        _preset = undefined;
         return { ...state, preset: undefined, view: { tabs: null }, payload: {} };
+      }
 
+      _preset = preset;
       _api.presets.load(preset)
           .then(() => Promise.all([
               _api.views.get(preset),
@@ -277,6 +294,7 @@ reducer
     return state;
   })
   .on(API.PRESET_SELECT, (state, preset) => {
+    _preset = preset;
     localStorage.setItem('preset', preset);
     _api.views.get(preset);
     _api.payload.get(preset);

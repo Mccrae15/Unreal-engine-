@@ -5,6 +5,7 @@
 #include "Async/TaskGraphInterfaces.h"
 //#include "Brushes/SlateImageBrush.h"
 #include "Containers/Ticker.h"
+#include "CoreGlobals.h"
 #include "EditorStyleSet.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/LayoutService.h"
@@ -38,12 +39,38 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define IDEAL_FRAMERATE 60
+#define BACKGROUND_FRAMERATE 4
+#define IDLE_INPUT_SECONDS 5.0f
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace UserInterfaceCommand
 {
 	TSharedRef<FWorkspaceItem> DeveloperTools = FWorkspaceItem::NewGroup(NSLOCTEXT("UnrealInsights", "DeveloperToolsMenu", "Developer Tools"));
+
+	bool IsApplicationBackground()
+	{
+		return !FPlatformApplicationMisc::IsThisApplicationForeground() && (FPlatformTime::Seconds() - FSlateApplication::Get().GetLastUserInteractionTime()) > IDLE_INPUT_SECONDS;
+	}
+
+	void AdaptiveSleep(float Seconds)
+	{
+		const double IdealFrameTime = 1.0 / IDEAL_FRAMERATE;
+		if (Seconds > IdealFrameTime)
+		{
+			// While in background, pump message at ideal frame time and get out of background as soon as input is received
+			const double WakeupTime = FPlatformTime::Seconds() + Seconds;
+			while (IsApplicationBackground() && FPlatformTime::Seconds() < WakeupTime)
+			{
+				FSlateApplication::Get().PumpMessages();
+				FPlatformProcess::Sleep((float)FMath::Clamp(WakeupTime - FPlatformTime::Seconds(), 0.0, IdealFrameTime));
+			}
+		}
+		else
+		{
+			FPlatformProcess::Sleep(Seconds);
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -51,9 +78,11 @@ namespace UserInterfaceCommand
 bool CheckSessionBrowserSingleInstance()
 {
 #if PLATFORM_WINDOWS
-	// Create a named event that other processes can use to detect a running recorder and connect to it automatically.
-	// See usage in \Engine\Source\Runtime\Launch\Private\LaunchEngineLoop.cpp
-	HANDLE SessionBrowserEvent = CreateEvent(NULL, true, false, TEXT("Local\\UnrealInsightsRecorder"));
+	// Create a named event that other processes can detect.
+	// It allows only a single instance of Unreal Insights (Browser Mode).
+	// The event is also used by runtime to choose when to try to auto-connect.
+	// See FTraceAuxiliary::TryAutoConnect() in \Runtime\Core\Private\ProfilingDebugging\TraceAuxiliary.cpp
+	HANDLE SessionBrowserEvent = CreateEvent(NULL, true, false, TEXT("Local\\UnrealInsightsBrowser"));
 	if (SessionBrowserEvent == NULL || GetLastError() == ERROR_ALREADY_EXISTS)
 	{
 		// Another Session Browser process is already running.
@@ -64,7 +93,7 @@ bool CheckSessionBrowserSingleInstance()
 		}
 
 		// Activate the respective window.
-		HWND Window = FindWindowW(0, L"Unreal Insights");
+		HWND Window = FindWindowW(0, L"Unreal Insights Session Browser");
 		if (Window)
 		{
 			ShowWindow(Window, SW_SHOW);
@@ -84,7 +113,7 @@ bool CheckSessionBrowserSingleInstance()
 #endif // PLATFORM_WINDOWS
 
 #if PLATFORM_UNIX
-	int FileHandle = open("/var/run/UnrealInsights.pid", O_CREAT | O_RDWR, 0666);
+	int FileHandle = open("/var/run/UnrealInsightsBrowser.pid", O_CREAT | O_RDWR, 0666);
 	int Ret = flock(FileHandle, LOCK_EX | LOCK_NB);
 	if (Ret && EWOULDBLOCK == errno)
 	{
@@ -129,7 +158,7 @@ void FUserInterfaceCommand::Run()
 		}
 	}
 
-	FCoreStyle::ResetToDefault();
+	//FCoreStyle::ResetToDefault();
 
 	// Crank up a normal Slate application using the platform's standalone renderer.
 	FSlateApplication::InitializeAsStandaloneApplication(GetStandardStandaloneRenderer());
@@ -168,7 +197,7 @@ void FUserInterfaceCommand::Run()
 #endif
 
 #if WITH_SHARED_POINTER_TESTS
-	SharedPointerTesting::TestSharedPointer<ESPMode::Fast>();
+	SharedPointerTesting::TestSharedPointer<ESPMode::NotThreadSafe>();
 	SharedPointerTesting::TestSharedPointer<ESPMode::ThreadSafe>();
 #endif
 
@@ -176,6 +205,7 @@ void FUserInterfaceCommand::Run()
 	double DeltaTime = 0.0;
 	double LastTime = FPlatformTime::Seconds();
 	const float IdealFrameTime = 1.0f / IDEAL_FRAMERATE;
+	const float BackgroundFrameTime = 1.0f / BACKGROUND_FRAMERATE;
 
 	while (!IsEngineExitRequested())
 	{
@@ -186,10 +216,11 @@ void FUserInterfaceCommand::Run()
 
 		FSlateApplication::Get().PumpMessages();
 		FSlateApplication::Get().Tick();
-		FTicker::GetCoreTicker().Tick(DeltaTime);
+		FTSTicker::GetCoreTicker().Tick(DeltaTime);
 
 		// Throttle frame rate.
-		FPlatformProcess::Sleep(FMath::Max<float>(0.0f, IdealFrameTime - (FPlatformTime::Seconds() - LastTime)));
+		const float FrameTime = UserInterfaceCommand::IsApplicationBackground() ? BackgroundFrameTime : IdealFrameTime;
+		UserInterfaceCommand::AdaptiveSleep(FMath::Max<float>(0.0f, FrameTime - (FPlatformTime::Seconds() - LastTime)));
 
 		double CurrentTime = FPlatformTime::Seconds();
 		DeltaTime =  CurrentTime - LastTime;
@@ -199,6 +230,8 @@ void FUserInterfaceCommand::Run()
 
 		FCoreDelegates::OnEndFrame.Broadcast();
 		GLog->FlushThreadedLogs(); //im: ???
+
+		GFrameCounter++;
 	}
 
 	//im: ??? FCoreDelegates::OnExit.Broadcast();
@@ -210,13 +243,12 @@ void FUserInterfaceCommand::Run()
 
 void FUserInterfaceCommand::InitializeSlateApplication(bool bOpenTraceFile, const TCHAR* TraceFile)
 {
-	//TODO: FSlateApplication::InitHighDPI(true);
+	FSlateApplication::InitHighDPI(true);
+
+	FModuleManager::Get().LoadModuleChecked("EditorStyle");
 
 	//const FSlateBrush* AppIcon = new FSlateImageBrush(FPaths::EngineContentDir() / "Editor/Slate/Icons/Insights/AppIcon_24x.png", FVector2D(24.0f, 24.0f));
 	//FSlateApplication::Get().SetAppIcon(AppIcon);
-
-	// Menu anims aren't supported. See Runtime\Slate\Private\Framework\Application\MenuStack.cpp.
-	FSlateApplication::Get().EnableMenuAnimations(false);
 
 	// Set the application name.
 	const FText ApplicationTitle = FText::Format(NSLOCTEXT("UnrealInsights", "AppTitle", "Unreal Insights {0}"), FText::FromString(TEXT(UNREAL_INSIGHTS_VERSION_STRING_EX)));
@@ -271,6 +303,8 @@ void FUserInterfaceCommand::InitializeSlateApplication(bool bOpenTraceFile, cons
 	//This parameter will cause the application to close when analysis fails to start or completes succesfully
 	const bool bAutoQuit = FParse::Param(FCommandLine::Get(), TEXT("AutoQuit"));
 
+	const bool bNoUI = FParse::Param(FCommandLine::Get(), TEXT("NoUI"));
+
 	const bool bInitializeTesting = FParse::Param(FCommandLine::Get(), TEXT("InsightsTest"));
 
 	if (bUseTraceId)
@@ -285,7 +319,11 @@ void FUserInterfaceCommand::InitializeSlateApplication(bool bOpenTraceFile, cons
 			}
 		}
 
-		TraceInsightsModule.CreateSessionViewer(bAllowDebugTools);
+		if (!bNoUI)
+		{
+			TraceInsightsModule.CreateSessionViewer(bAllowDebugTools);
+		}
+
 		TraceInsightsModule.ConnectToStore(StoreHost, StorePort);
 		TraceInsightsModule.StartAnalysisForTrace(TraceId, bAutoQuit);
 	}
@@ -303,7 +341,11 @@ void FUserInterfaceCommand::InitializeSlateApplication(bool bOpenTraceFile, cons
 				}
 			}
 
-			TraceInsightsModule.CreateSessionViewer(bAllowDebugTools);
+			if (!bNoUI)
+			{
+				TraceInsightsModule.CreateSessionViewer(bAllowDebugTools);
+			}
+
 			TraceInsightsModule.StartAnalysisForTraceFile(TraceFile, bAutoQuit);
 		}
 		else
@@ -316,8 +358,12 @@ void FUserInterfaceCommand::InitializeSlateApplication(bool bOpenTraceFile, cons
 			{
 				TraceInsightsModule.ConnectToStore(StoreHost, StorePort);
 			}
-			const bool bSingleProcess = FParse::Param(FCommandLine::Get(), TEXT("SingleProcess"));
-			TraceInsightsModule.CreateSessionBrowser(bAllowDebugTools, bSingleProcess);
+
+			FCreateSessionBrowserParams Params;
+			Params.bAllowDebugTools = bAllowDebugTools;
+			Params.bInitializeTesting = bInitializeTesting;
+			Params.bStartProcessWithStompMalloc = FParse::Param(FCommandLine::Get(), TEXT("stompmalloc"));
+			TraceInsightsModule.CreateSessionBrowser(Params);
 		}
 	}
 

@@ -235,6 +235,12 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 
 					float UsePhysWeight = (bBlendPhysics)? 1.f : PhysicsAssetBodyInstance->PhysicsBlendWeight;
 
+					// if the body instance is disabled, then we want to use the animation transform and ignore the physics one
+					if (PhysicsAssetBodyInstance->IsPhysicsDisabled())
+					{
+						UsePhysWeight = 0.0f;
+					}
+
 					// Find this bones parent matrix.
 					FTransform ParentWorldTM;
 
@@ -639,7 +645,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 								// if uniform, we'll use BoneTranform
 								if(MeshScale3D.IsUniform())
 								{
-									// @todo UE4 should we update scale when it's simulated?
+									// @todo should we update scale when it's simulated?
 									BodyInst->UpdateBodyScale(BoneTransform.GetScale3D());
 								}
 								else
@@ -682,8 +688,8 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 			{
 				const FSkeletalMeshLODRenderData& LODData = MeshObject->GetSkeletalMeshRenderData().LODRenderData[0];
 				FSkinWeightVertexBuffer& SkinWeightBuffer = *GetSkinWeightBuffer(0);
-				TArray<FMatrix> RefToLocals;
-				TArray<FVector> NewPositions;
+				TArray<FMatrix44f> RefToLocals;
+				TArray<FVector3f> NewPositions;
 				if (true)
 				{
 					SCOPE_CYCLE_COUNTER(STAT_SkinPerPolyVertices);
@@ -701,7 +707,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 						}
 					}
 				}
-				BodyInstance.UpdateTriMeshVertices(NewPositions);
+				BodyInstance.UpdateTriMeshVertices(LWC::ConvertArrayType<FVector>(NewPositions));
 			}
 			
 			BodyInstance.SetBodyTransform(CurrentLocalToWorld, Teleport);
@@ -736,8 +742,8 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 			UPhysicsConstraintTemplate* CS = PhysicsAsset->ConstraintSetup[i];
 			FConstraintInstance* CI = Constraints[i];
 
-			FName JointName = CS->DefaultInstance.JointName;
-			int32 BoneIndex = SkeletalMesh->GetRefSkeleton().FindBoneIndex(JointName);
+			FName JointChildBoneName = CS->DefaultInstance.GetChildBoneName();
+			int32 BoneIndex = SkeletalMesh->GetRefSkeleton().FindBoneIndex(JointChildBoneName);
 
 			// If we found this bone, and a visible bone that is not the root, and its joint is motorised in some way..
 			if( (BoneIndex != INDEX_NONE) && (BoneIndex != 0) &&

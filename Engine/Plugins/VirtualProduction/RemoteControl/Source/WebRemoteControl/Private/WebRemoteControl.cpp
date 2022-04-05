@@ -6,18 +6,18 @@
 #include "Modules/ModuleManager.h"
 
 #include "IRemoteControlModule.h"
-#include "WebRemoteControlUtils.h"
+#include "RemoteControlReflectionUtils.h"
 #include "RemoteControlRoute.h"
 #include "RemoteControlSettings.h"
 #include "RemoteControlPreset.h"
+#include "WebRemoteControlUtils.h"
+#include "WebRemoteControlExternalLogger.h"
 #include "WebSocketMessageHandler.h"
 
 #if WITH_EDITOR
 // Settings
 #include "Editor.h"
 #include "IRemoteControlUIModule.h"
-#include "ISettingsModule.h"
-#include "ISettingsSection.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -46,16 +46,15 @@
 #include "RemoteControlRequest.h"
 #include "RemoteControlResponse.h"
 #include "RemoteControlModels.h"
-#include "HttpServerHttpVersion.h"
 
 // Asset registry
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 
 // Miscelleanous
+#include "Blueprint/BlueprintSupport.h"
 #include "Misc/App.h"
 #include "UObject/UnrealType.h"
-#include "UObject/UObjectHash.h"
 #include "Templates/UnrealTemplate.h"
 
 #define LOCTEXT_NAMESPACE "WebRemoteControl"
@@ -65,6 +64,98 @@ static TAutoConsoleVariable<int32> CVarWebControlStartOnBoot(TEXT("WebControl.En
 
 // Enable experimental remote routes
 static TAutoConsoleVariable<int32> CVarWebControlEnableExperimentalRoutes(TEXT("WebControl.EnableExperimentalRoutes"), 0, TEXT("Enable the Web Control server experimental routes."));
+
+namespace WebRemoteControlStructUtils
+{
+	FName Struct_PropertyValue = "WebRCPropertyValue";
+	FName Prop_ObjectPath = "ObjectPath";
+	FName Prop_PropertyValue = "PropertyValue";
+
+	FName Struct_GetPropertyResponse = "WebRCGetPropertyResponse";
+	FName Prop_PropertyValues = "PropertyValues";
+	FName Prop_ExposedPropertyDescription = "ExposedPropertyDescription";
+	
+	UScriptStruct* CreatePropertyValueContainer(FProperty* InValueSrcProperty)
+	{
+		check(InValueSrcProperty);
+
+		static FGuid PropertyValueGuid = FGuid::NewGuid();
+
+		FWebRCGenerateStructArgs Args;
+		Args.GenericProperties.Emplace(Prop_PropertyValue, InValueSrcProperty);
+		Args.StringProperties.Add(Prop_ObjectPath);
+		
+		const FString StructName = FString::Format(TEXT("{0}_{1}_{2}_{3}"), { *Struct_PropertyValue.ToString(), *InValueSrcProperty->GetClass()->GetName(), *InValueSrcProperty->GetName(), PropertyValueGuid.ToString() });
+		return UE::WebRCReflectionUtils::GenerateStruct(*StructName, Args);
+	}
+
+	UScriptStruct* CreateActorPropertyValueContainer(FProperty* InValueSrcProperty)
+	{
+		check(InValueSrcProperty);
+
+		static FGuid ActorPropertyValueGuid = FGuid::NewGuid();
+
+		FWebRCGenerateStructArgs Args;
+		Args.GenericProperties.Emplace(Prop_PropertyValue, InValueSrcProperty);
+
+		const FString StructName = FString::Format(TEXT("{0}_{1}_{2}_{4}"), { *Struct_PropertyValue.ToString(), *InValueSrcProperty->GetClass()->GetName(), *InValueSrcProperty->GetName(), ActorPropertyValueGuid.ToString() });
+		return UE::WebRCReflectionUtils::GenerateStruct(*StructName, Args);
+	}
+
+	FStructOnScope CreatePropertyValueOnScope(const TSharedPtr<FRemoteControlProperty>& RCProperty, const FRCObjectReference& ObjectReference)
+	{
+		check(ObjectReference.IsValid());
+
+		UScriptStruct* Struct = CreatePropertyValueContainer(ObjectReference.Property.Get());
+		FStructOnScope StructOnScope{ Struct };
+
+		UE::WebRCReflectionUtils::SetStringPropertyValue(Prop_ObjectPath, StructOnScope, ObjectReference.Object->GetPathName());
+		UE::WebRCReflectionUtils::CopyPropertyValue(Prop_PropertyValue, StructOnScope, ObjectReference);
+
+		return StructOnScope;
+	}
+
+	UScriptStruct* CreateGetPropertyResponseStruct(UScriptStruct* CustomContainer)
+	{
+		check(CustomContainer);
+
+		FWebRCGenerateStructArgs Args;
+		Args.ArrayProperties.Emplace(Prop_PropertyValues, CustomContainer);
+		Args.StructProperties.Emplace(Prop_ExposedPropertyDescription, FRCExposedPropertyDescription::StaticStruct());
+		
+		const FString StructName = FString::Format(TEXT("{0}_{1}"), { *Struct_GetPropertyResponse.ToString(), *CustomContainer->GetFName().ToString()});
+		return UE::WebRCReflectionUtils::GenerateStruct(*StructName, Args);
+	}
+
+	FStructOnScope CreateGetPropertyOnScope(const TSharedPtr<FRemoteControlProperty>& RCProperty, const FRCObjectReference& ObjectReference, FStructOnScope&& PropertyValueOnScope)
+	{
+		check(ObjectReference.IsValid() && RCProperty);
+
+		UScriptStruct* TopLevelStruct = CreateGetPropertyResponseStruct((UScriptStruct*)PropertyValueOnScope.GetStruct());
+		FStructOnScope TopLevelOnScope{ TopLevelStruct };
+
+		FRCExposedPropertyDescription PropertyDescription{ *RCProperty };
+		UE::WebRCReflectionUtils::SetStructPropertyValue(Prop_ExposedPropertyDescription, TopLevelOnScope, FRCExposedPropertyDescription::StaticStruct(), &PropertyDescription);
+
+		TArray<FStructOnScope> PropertyValueArray {};
+		PropertyValueArray.Add(MoveTemp(PropertyValueOnScope));
+		UE::WebRCReflectionUtils::SetStructArrayPropertyValue(Prop_PropertyValues, TopLevelOnScope, PropertyValueArray);
+
+		return TopLevelOnScope;
+	}
+
+	FStructOnScope CreateActorPropertyOnScope(const FRCObjectReference& ObjectReference)
+	{
+		check(ObjectReference.IsValid());
+
+		UScriptStruct* Struct = CreateActorPropertyValueContainer(ObjectReference.Property.Get());
+
+		FStructOnScope StructOnScope{ Struct };
+		UE::WebRCReflectionUtils::CopyPropertyValue(Prop_PropertyValue, StructOnScope, ObjectReference);
+
+		return StructOnScope;
+	}
+}
 
 namespace WebRemoteControl
 {
@@ -85,7 +176,6 @@ namespace WebRemoteControl
 			}
 		}
 
-
 		return Preset->GetExposedEntity<EntityType>(Preset->GetExposedEntityId(*PropertyLabelOrId)).Pin();
 	}
 
@@ -102,8 +192,8 @@ namespace WebRemoteControl
 
 		return IRemoteControlModule::Get().ResolvePreset(*PresetNameOrId);
 	}
-
-	bool IsWebControlEnabled()
+	
+	bool IsWebControlEnabledInEditor()
 	{
 		bool bIsEditor = false;
 
@@ -112,18 +202,58 @@ namespace WebRemoteControl
 #endif
 
 		// By default, web remote control is disabled in -game and packaged game.
-		return (bIsEditor && FApp::CanEverRender()) || FParse::Param(FCommandLine::Get(), TEXT("RCWebControlEnable"));
+		return bIsEditor || FParse::Param(FCommandLine::Get(), TEXT("RCWebControlEnable"));
+	}
+
+	void DoNativeClassBlueprintFilter(const FSearchAssetRequest& SearchAssetRequest, TArray<FAssetData>& OutFilteredAssets)
+	{
+		if (SearchAssetRequest.Filter.EnableBlueprintNativeClassFiltering && SearchAssetRequest.Filter.NativeParentClasses.Num() > 0)
+		{
+			TSet<UClass*> NativeClasses;
+			NativeClasses.Reserve(SearchAssetRequest.Filter.NativeParentClasses.Num());
+			for (FName NativeClass : SearchAssetRequest.Filter.NativeParentClasses)
+			{
+				if (UClass* Class = FindObject<UClass>(ANY_PACKAGE, *NativeClass.ToString()))
+				{
+					NativeClasses.Add(Class);
+				}
+			}
+
+			for (auto It = OutFilteredAssets.CreateIterator(); It; ++It)
+			{
+				const FAssetData& AssetData = *It;
+				const FString NativeParentClassPath = AssetData.GetTagValueRef<FString>(FBlueprintTags::NativeParentClassPath);
+				const FSoftClassPath ClassPath(NativeParentClassPath);
+				UClass* NativeParentClass = ClassPath.ResolveClass();
+				if (NativeParentClass)
+				{
+					for (UClass* ClassFilter : NativeClasses)
+					{
+						if (!NativeParentClass->IsChildOf(ClassFilter))
+						{
+							It.RemoveCurrent();
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
 void FWebRemoteControlModule::StartupModule()
 {
-	if (!WebRemoteControl::IsWebControlEnabled())
+	if (FParse::Param(FCommandLine::Get(), TEXT("RCWebControlDisable")) || !FApp::CanEverRender())
+	{
+		return;
+	}
+
+	// By default, disable web remote control in -game and packaged game.
+	if (!WebRemoteControl::IsWebControlEnabledInEditor())
 	{
 		UE_LOG(LogRemoteControl, Display, TEXT("Web remote control is disabled by default when running outside the editor. Use the -RCWebControlEnable flag when launching in order to use it."));
 		return;
 	}
-	
+
 #if WITH_EDITOR
 	RegisterSettings();
 #endif
@@ -138,6 +268,27 @@ void FWebRemoteControlModule::StartupModule()
 	RegisterConsoleCommands();
 	RegisterRoutes();
 
+	WebSocketRouter->AddPreDispatch([this](const struct FRemoteControlWebSocketMessage& Message)
+	{
+		const TArray<FString>* InPassphrase = Message.Header.Find(WebRemoteControlUtils::PassphraseHeader);
+		
+		const bool bCanBeDispatched = InPassphrase ? CheckPassphrase(InPassphrase->Last()) : CheckPassphrase("");
+
+		if (!bCanBeDispatched)
+		{
+			TArray<uint8> Response;
+			FRCRequestWrapper Wrapper;
+			Wrapper.RequestId = Message.MessageId;
+			
+			WebRemoteControlUtils::CreateUTF8ErrorMessage(FString::Printf(TEXT("Given Passphrase is not correct!")), Wrapper.TCHARBody);
+			WebRemoteControlUtils::SerializeResponse(Wrapper, Response);
+
+			WebSocketServer.Send(Message.ClientId, MoveTemp(Response));
+		}
+
+		return bCanBeDispatched;
+	});
+
 	if (GetDefault<URemoteControlSettings>()->bAutoStartWebServer || CVarWebControlStartOnBoot.GetValueOnAnyThread() > 0)
 	{
 		StartHttpServer();
@@ -151,8 +302,13 @@ void FWebRemoteControlModule::StartupModule()
 
 void FWebRemoteControlModule::ShutdownModule()
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("RCWebControlDisable")) || !FApp::CanEverRender())
+	{
+		return;
+	}
+
 	// By default, web remote control is disabled in -game and packaged game.
-	if (!WebRemoteControl::IsWebControlEnabled())
+	if (!WebRemoteControl::IsWebControlEnabledInEditor())
 	{
 		return;
 	}
@@ -249,6 +405,31 @@ void FWebRemoteControlModule::StartHttpServer()
 			StartRoute(Route);
 		}
 
+		const FHttpRequestHandler ValidationRequestHandler = FHttpRequestHandler([this](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+		{
+			TUniquePtr<FHttpServerResponse> Response = WebRemoteControlUtils::CreateHttpResponse();
+
+			TArray<FString> ValueArray = {};
+			if (Request.Headers.Find(WebRemoteControlUtils::PassphraseHeader))
+			{
+				ValueArray = Request.Headers[WebRemoteControlUtils::PassphraseHeader];
+			}
+			
+			const FString Passphrase = !ValueArray.IsEmpty() ? ValueArray.Last() : "";
+
+			if (!CheckPassphrase(Passphrase))
+			{
+				WebRemoteControlUtils::CreateUTF8ErrorMessage(FString::Printf(TEXT("Given Passphrase is not correct!")), Response->Body);
+				Response->Code = EHttpServerResponseCodes::Denied;
+				OnComplete(MoveTemp(Response));
+				return true;
+			}
+
+			return false;
+		});
+
+		HttpRouter->RegisterRequestPreprocessor(ValidationRequestHandler);
+		
 		// Go through externally registered request pre-processors and register them with the http router.
 		for (const TPair<FDelegateHandle, FHttpRequestHandler>& Handler : PreprocessorsToRegister)
 		{
@@ -321,6 +502,16 @@ void FWebRemoteControlModule::StopWebSocketServer()
 	OnWebSocketServerStoppedDelegate.Broadcast();
 }
 
+void FWebRemoteControlModule::SetExternalRemoteWebSocketLoggerConnection(TSharedPtr<INetworkingWebSocket> WebSocketLoggerConnection)
+{
+	ExternalLogger.Reset();
+	
+	if (WebSocketLoggerConnection.IsValid())
+	{
+		ExternalLogger = MakeUnique<FWebRemoteControlExternalLogger>(WebSocketLoggerConnection);
+	}
+}
+
 void FWebRemoteControlModule::StartRoute(const FRemoteControlRoute& Route)
 {
 	// The handler is wrapped in a lambda since HttpRouter::BindRoute only accepts TFunctions
@@ -371,6 +562,14 @@ void FWebRemoteControlModule::RegisterRoutes()
 		FHttpPath(TEXT("/remote/object/describe")),
 		EHttpServerRequestVerbs::VERB_PUT,
 		FRequestHandlerDelegate::CreateRaw(this, &FWebRemoteControlModule::HandleDescribeObjectRoute)
+		});
+
+	// Passphrase Checking
+	RegisterRoute({
+		TEXT("Check whether or no the given Passphrase is correct"),
+		FHttpPath(TEXT("/remote/passphrase/")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FRequestHandlerDelegate::CreateRaw(this, &FWebRemoteControlModule::HandlePassphraseRoute)
 		});
 
 	// Preset API
@@ -596,8 +795,11 @@ bool FWebRemoteControlModule::HandleBatchRequest(const FHttpServerRequest& Reque
 	JsonWriter->WriteIdentifierPrefix("Responses");
 	JsonWriter->WriteArrayStart();
 
+	BatchRequest.Passphrase = Request.Headers[WebRemoteControlUtils::PassphraseHeader].Last();
+
 	for (FRCRequestWrapper& Wrapper : BatchRequest.Requests)
 	{
+		Wrapper.Passphrase = BatchRequest.Passphrase;
 		// This makes sure the Json writer is in a good state before writing raw data.
 		JsonWriter->WriteRawJSONValue(TEXT(""));
 		InvokeWrappedRequest(Wrapper, Writer, &Request);
@@ -721,7 +923,7 @@ bool FWebRemoteControlModule::HandleObjectPropertyRoute(const FHttpServerRequest
 			Reader.SetLimitSize(PropertyValueDelimiters.BlockEnd);
 			FRCJsonStructDeserializerBackend DeserializerBackend(Reader);
 			// Set a ERCPayloadType and TCHARBody in order to follow the replication path
-			if (IRemoteControlModule::Get().SetObjectProperties(ObjectRef, DeserializerBackend, ERCPayloadType::Json, DeserializedRequest.TCHARBody))
+			if (IRemoteControlModule::Get().SetObjectProperties(ObjectRef, DeserializerBackend, ERCPayloadType::Json, DeserializedRequest.TCHARBody, DeserializedRequest.Operation))
 			{
 				Response->Code = EHttpServerResponseCodes::Ok;
 			}
@@ -998,53 +1200,27 @@ bool FWebRemoteControlModule::HandlePresetGetPropertyRoute(const FHttpServerRequ
 		return true;
 	}
 
+	if (!RemoteControlProperty->IsBound())
+	{
+		Response->Code = EHttpServerResponseCodes::NotFound;
+		WebRemoteControlUtils::CreateUTF8ErrorMessage(TEXT("Exposed entity was found but not bound to any object."), Response->Body);
+		OnComplete(MoveTemp(Response));
+		return true;
+	}
+
 	TArray<uint8> WorkingBuffer;
 	FMemoryWriter Writer(WorkingBuffer);
-	TSharedPtr<TJsonWriter<UCS2CHAR>> JsonWriter = TJsonWriter<UCS2CHAR>::Create(&Writer);
 
 	FRCObjectReference ObjectRef;
 
-	bool bSuccess = true;
-
-	JsonWriter->WriteObjectStart();
-	{
-		{
-			JsonWriter->WriteIdentifierPrefix(TEXT("ExposedPropertyDescription"));
-			FRCJsonStructSerializerBackend SerializeBackend{Writer};
-			FStructSerializer::Serialize(FRCExposedPropertyDescription{*RemoteControlProperty}, SerializeBackend, FStructSerializerPolicies());
-		}
-		
-		// Temporary workaround, reset the state of the json writer
-		JsonWriter->WriteRawJSONValue(TEXT(""));
-		
-		JsonWriter->WriteIdentifierPrefix("PropertyValues");
-		JsonWriter->WriteArrayStart();
-
-		for (UObject* Object : RemoteControlProperty->GetBoundObjects())
-		{
-			IRemoteControlModule::Get().ResolveObjectProperty(ERCAccess::READ_ACCESS, Object, RemoteControlProperty->FieldPathInfo.ToString(), ObjectRef);
-
-			JsonWriter->WriteObjectStart();
-			{
-				JsonWriter->WriteValue(TEXT("ObjectPath"), Object->GetPathName());
-				JsonWriter->WriteIdentifierPrefix(TEXT("PropertyValue"));
-
-				bSuccess &= RemotePayloadSerializer::SerializePartial(
-	                [&ObjectRef] (FJsonStructSerializerBackend& SerializerBackend)
-	                {
-	                    return IRemoteControlModule::Get().GetObjectProperties(ObjectRef, SerializerBackend);
-	                }
-	                , Writer);
-			}
-			JsonWriter->WriteObjectEnd();
-		}
-
-		JsonWriter->WriteArrayEnd();
-	}
-	JsonWriter->WriteObjectEnd();
+	bool bSuccess = IRemoteControlModule::Get().ResolveObjectProperty(ERCAccess::READ_ACCESS, RemoteControlProperty->GetBoundObjects()[0], RemoteControlProperty->FieldPathInfo.ToString(), ObjectRef);
 
 	if (bSuccess)
 	{
+		FStructOnScope PropertyValueOnScope = WebRemoteControlStructUtils::CreatePropertyValueOnScope(RemoteControlProperty, ObjectRef);
+		FStructOnScope FinalStruct = WebRemoteControlStructUtils::CreateGetPropertyOnScope(RemoteControlProperty, ObjectRef, MoveTemp(PropertyValueOnScope));
+		WebRemoteControlUtils::SerializeStructOnScope(FinalStruct, Writer);
+
 		Response->Code = EHttpServerResponseCodes::Ok;
 		WebRemoteControlUtils::ConvertToUTF8(WorkingBuffer, Response->Body);
 	}
@@ -1082,30 +1258,14 @@ bool FWebRemoteControlModule::HandlePresetGetExposedActorPropertyRoute(const FHt
 		{
 			TArray<uint8> WorkingBuffer;
 			FMemoryWriter Writer(WorkingBuffer);
-			TSharedPtr<TJsonWriter<UCS2CHAR>> JsonWriter = TJsonWriter<UCS2CHAR>::Create(&Writer);
 
 			FRCObjectReference ObjectRef;
 
-			bool bSuccess = true;
-
-			bSuccess &= IRemoteControlModule::Get().ResolveObjectProperty(ERCAccess::READ_ACCESS, Actor, FieldPath, ObjectRef);
-
-			FRCJsonStructSerializerBackend SerializerBackend(Writer);
-
-			JsonWriter->WriteObjectStart();
-			JsonWriter->WriteIdentifierPrefix(TEXT("PropertyValue"));
-
-			bSuccess &= RemotePayloadSerializer::SerializePartial(
-				[&ObjectRef](FJsonStructSerializerBackend& SerializerBackend)
-				{
-					return IRemoteControlModule::Get().GetObjectProperties(ObjectRef, SerializerBackend);
-				}
-			, Writer);
-
-			JsonWriter->WriteObjectEnd();
-			
-			if (bSuccess)
+			if (IRemoteControlModule::Get().ResolveObjectProperty(ERCAccess::READ_ACCESS, Actor, FieldPath, ObjectRef))
 			{
+				FStructOnScope ActorPropertyOnScope = WebRemoteControlStructUtils::CreateActorPropertyOnScope(ObjectRef);
+				WebRemoteControlUtils::SerializeStructOnScope(ActorPropertyOnScope, Writer);
+			
 				Response->Code = EHttpServerResponseCodes::Ok;
 				WebRemoteControlUtils::ConvertToUTF8(WorkingBuffer, Response->Body);
 			}
@@ -1320,6 +1480,34 @@ bool FWebRemoteControlModule::HandleDescribeObjectRoute(const FHttpServerRequest
 	return true;
 }
 
+bool FWebRemoteControlModule::HandlePassphraseRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	TUniquePtr<FHttpServerResponse> Response = WebRemoteControlUtils::CreateHttpResponse();
+	
+	FString Passphrase = "";
+	const TArray<FString>* PassphraseHeader = Request.Headers.Find(WebRemoteControlUtils::PassphraseHeader);
+	
+	if (PassphraseHeader)
+	{
+		Passphrase = PassphraseHeader->Last();
+	}
+	
+	if (bool bIsCorrect = CheckPassphrase(Passphrase))
+	{
+		WebRemoteControlUtils::SerializeResponse(FCheckPassphraseResponse{ bIsCorrect}, Response->Body);
+		Response->Code = EHttpServerResponseCodes::Ok;
+	}
+	else
+	{
+		WebRemoteControlUtils::SerializeResponse(FCheckPassphraseResponse{ bIsCorrect}, Response->Body);
+		Response->Code = EHttpServerResponseCodes::Denied;
+	}
+
+	OnComplete(MoveTemp(Response));
+	return true;
+}
+
+
 bool FWebRemoteControlModule::HandleSearchActorRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	TUniquePtr<FHttpServerResponse> Response = WebRemoteControlUtils::CreateHttpResponse(EHttpServerResponseCodes::NotSupported);
@@ -1339,10 +1527,15 @@ bool FWebRemoteControlModule::HandleSearchAssetRoute(const FHttpServerRequest& R
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
 	FARFilter Filter = SearchAssetRequest.Filter.ToARFilter();
 
 	TArray<FAssetData> Assets;
 	AssetRegistryModule.Get().GetAssets(Filter, Assets);
+
+	//Do advanced blueprint filtering if required
+	WebRemoteControl::DoNativeClassBlueprintFilter(SearchAssetRequest, Assets);
+
 	TArrayView<FAssetData> AssetsView{Assets};
 	int32 ArrayEnd = FMath::Min(SearchAssetRequest.Limit, Assets.Num());
 
@@ -1529,6 +1722,34 @@ bool FWebRemoteControlModule::HandleEntityMetadataOperationsRoute(const FHttpSer
 	return true;
 }
 
+bool FWebRemoteControlModule::CheckPassphrase(const FString& HashedPassphrase) const
+{
+	bool bOutResult = !(GetMutableDefault<URemoteControlSettings>()->bUseRemoteControlPassphrase);
+
+	if (bOutResult)
+	{
+		return true;
+	}
+
+	TArray<FString> HashedPassphrases = GetMutableDefault<URemoteControlSettings>()->GetHashedPassphrases();
+	if (HashedPassphrases.IsEmpty())
+	{
+		return true;
+	}
+	
+	for (const FString& InPassphrase : HashedPassphrases)
+	{
+		bOutResult = bOutResult || InPassphrase == HashedPassphrase;
+
+		if (bOutResult)
+		{
+			break;
+		}
+	}
+	
+	return bOutResult;
+}
+
 bool FWebRemoteControlModule::HandleEntitySetLabelRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
 	TUniquePtr<FHttpServerResponse> Response = WebRemoteControlUtils::CreateHttpResponse();
@@ -1599,11 +1820,21 @@ void FWebRemoteControlModule::HandleWebSocketHttpMessage(const FRemoteControlWeb
 	{
 		return;
 	}
+	
+	if (WebSocketMessage.Header.Find(WebRemoteControlUtils::PassphraseHeader))
+	{
+		Wrapper.Passphrase = WebSocketMessage.Header[WebRemoteControlUtils::PassphraseHeader][0];
+	}
 
+	LogRequestExternally(Wrapper.RequestId, TEXT("UE Received"));
+	
 	FMemoryWriter Writer(UTF8Response);
 	InvokeWrappedRequest(Wrapper, Writer);
 
+	LogRequestExternally(Wrapper.RequestId, TEXT("UE Processed"));
+
 	WebSocketServer.Send(WebSocketMessage.ClientId, MoveTemp(UTF8Response));
+	LogRequestExternally(Wrapper.RequestId, TEXT("UE Sent"));
 }
 
 void FWebRemoteControlModule::InvokeWrappedRequest(const FRCRequestWrapper& Wrapper, FMemoryWriter& OutUTF8PayloadWriter, const FHttpServerRequest* TemplateRequest)
@@ -1662,6 +1893,14 @@ void FWebRemoteControlModule::OnSettingsModified(UObject* Settings, FPropertyCha
 }
 
 #endif
+
+void FWebRemoteControlModule::LogRequestExternally(int32 RequestId, const TCHAR* Stage)
+{
+	if (ExternalLogger.IsValid())
+	{
+		ExternalLogger->Log(RequestId, Stage);
+	}
+}
 
 #undef LOCTEXT_NAMESPACE /* WebRemoteControl */
 

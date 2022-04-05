@@ -28,7 +28,7 @@ struct FBinkMediaPlayerEditorToolkit : public FAssetEditorToolkit, public FEdito
 
 	// FAssetEditorToolkit interface
 
-	virtual FString GetDocumentationLink() const override { return FString(TEXT("Engine/Content/Types/MediaAssets/Properties/Interface")); }
+	virtual FString GetDocumentationLink() const override { return FString(TEXT("WorkingWithMedia/IntegratingMedia/BinkVideo")); }
 	virtual void RegisterTabSpawners( const TSharedRef<class FTabManager>& TabManager ) override;
 	virtual void UnregisterTabSpawners( const TSharedRef<class FTabManager>& TabManager ) override;
 
@@ -42,7 +42,11 @@ struct FBinkMediaPlayerEditorToolkit : public FAssetEditorToolkit, public FEdito
 	// FGCObject interface
 
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override { Collector.AddReferencedObject(MediaPlayer); }
-	
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FBinkMediaPlayerEditorToolkit");
+	}
+
 	// FEditorUndoClient interface
 
 	virtual void PostUndo( bool bSuccess ) override { }

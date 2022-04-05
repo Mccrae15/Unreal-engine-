@@ -9,7 +9,9 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing.Util;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -31,7 +33,7 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Contents of the include directive
 			/// </summary>
-			public string IncludeText;
+			public string? IncludeText;
 		}
 
 		/// <summary>
@@ -68,7 +70,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The parent cache.
 		/// </summary>
-		SourceFileMetadataCache Parent;
+		SourceFileMetadataCache? Parent;
 
 		/// <summary>
 		/// Map from file item to source file info
@@ -79,6 +81,11 @@ namespace UnrealBuildTool
 		/// Map from file item to header file info
 		/// </summary>
 		ConcurrentDictionary<FileItem, ReflectionInfo> FileToReflectionInfo = new ConcurrentDictionary<FileItem, ReflectionInfo>();
+
+		/// <summary>
+		/// Map from file item to source file info
+		/// </summary>
+		ConcurrentDictionary<FileItem, SourceFile> FileToSourceFile = new ConcurrentDictionary<FileItem, SourceFile>();
 
 		/// <summary>
 		/// Whether the cache has been modified and needs to be saved
@@ -111,7 +118,7 @@ namespace UnrealBuildTool
 		/// <param name="Location">File to store the cache</param>
 		/// <param name="BaseDir">Base directory for files that this cache should store data for</param>
 		/// <param name="Parent">The parent cache to use</param>
-		private SourceFileMetadataCache(FileReference Location, DirectoryReference BaseDir, SourceFileMetadataCache Parent)
+		private SourceFileMetadataCache(FileReference Location, DirectoryReference BaseDir, SourceFileMetadataCache? Parent)
 		{
 			this.Location = Location;
 			this.BaseDirectory = BaseDir;
@@ -119,7 +126,7 @@ namespace UnrealBuildTool
 
 			if(FileReference.Exists(Location))
 			{
-				using(Timeline.ScopeEvent("Reading source file metadata cache"))
+				using (GlobalTracer.Instance.BuildSpan("Reading source file metadata cache").StartActive())
 				{
 					Read();
 				}
@@ -131,7 +138,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="SourceFile">The source file to parse</param>
 		/// <returns>Text from the first include directive. Null if the file did not contain any include directives.</returns>
-		public string GetFirstInclude(FileItem SourceFile)
+		public string? GetFirstInclude(FileItem SourceFile)
 		{
 			if(Parent != null && !SourceFile.Location.IsUnderDirectory(BaseDirectory))
 			{
@@ -139,7 +146,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				IncludeInfo IncludeInfo;
+				IncludeInfo? IncludeInfo;
 				if(!FileToIncludeInfo.TryGetValue(SourceFile, out IncludeInfo) || SourceFile.LastWriteTimeUtc.Ticks > IncludeInfo.LastWriteTimeUtc)
 				{
 					IncludeInfo = new IncludeInfo();
@@ -149,6 +156,50 @@ namespace UnrealBuildTool
 					bModified = true;
 				}
 				return IncludeInfo.IncludeText;
+			}
+		}
+
+		/// <summary>
+		/// Finds or adds a SourceFile class for the given file
+		/// </summary>
+		/// <param name="File">File to fetch the source file data for</param>
+		/// <returns>SourceFile instance corresponding to the given source file</returns>
+		public SourceFile GetSourceFile(FileItem File)
+		{
+			if (Parent != null && !File.Location.IsUnderDirectory(BaseDirectory))
+			{
+				return Parent.GetSourceFile(File);
+			}
+			else
+			{
+				SourceFile? Result;
+				if (!FileToSourceFile.TryGetValue(File, out Result) || File.LastWriteTimeUtc.Ticks > Result.LastWriteTimeUtc)
+				{
+					SourceFile NewSourceFile = new SourceFile(File);
+					if (Result == null)
+					{
+						if (FileToSourceFile.TryAdd(File, NewSourceFile))
+						{
+							Result = NewSourceFile;
+						}
+						else
+						{
+							Result = FileToSourceFile[File];
+						}
+					}
+					else
+					{
+						if (FileToSourceFile.TryUpdate(File, NewSourceFile, Result))
+						{
+							Result = NewSourceFile;
+						}
+						else
+						{
+							Result = FileToSourceFile[File];
+						}
+					}
+				}
+				return Result;
 			}
 		}
 
@@ -165,7 +216,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				ReflectionInfo ReflectionInfo;
+				ReflectionInfo? ReflectionInfo;
 				if(!FileToReflectionInfo.TryGetValue(SourceFile, out ReflectionInfo) || SourceFile.LastWriteTimeUtc.Ticks > ReflectionInfo.LastWriteTimeUtc)
 				{
 					ReflectionInfo = new ReflectionInfo();
@@ -183,14 +234,14 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="SourceFile">The source file to parse</param>
 		/// <returns>The first include directive</returns>
-		static string ParseFirstInclude(FileReference SourceFile)
+		static string? ParseFirstInclude(FileReference SourceFile)
 		{
 			bool bMatchImport = SourceFile.HasExtension(".m") || SourceFile.HasExtension(".mm");
 			using(StreamReader Reader = new StreamReader(SourceFile.FullName, true))
 			{
 				for(;;)
 				{
-					string Line = Reader.ReadLine();
+					string? Line = Reader.ReadLine();
 					if(Line == null)
 					{
 						return null;
@@ -219,14 +270,14 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">Project file for the target being built</param>
 		/// <returns>Dependency cache hierarchy for the given project</returns>
-		public static SourceFileMetadataCache CreateHierarchy(FileReference ProjectFile)
+		public static SourceFileMetadataCache CreateHierarchy(FileReference? ProjectFile)
 		{
-			SourceFileMetadataCache Cache = null;
+			SourceFileMetadataCache? Cache = null;
 
-			if(ProjectFile == null || !UnrealBuildTool.IsEngineInstalled())
+			if(ProjectFile == null || !Unreal.IsEngineInstalled())
 			{
-				FileReference EngineCacheLocation = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "Build", "SourceFileCache.bin");
-				Cache = FindOrAddCache(EngineCacheLocation, UnrealBuildTool.EngineDirectory, Cache);
+				FileReference EngineCacheLocation = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "SourceFileCache.bin");
+				Cache = FindOrAddCache(EngineCacheLocation, Unreal.EngineDirectory, Cache);
 			}
 
 			if(ProjectFile != null)
@@ -235,7 +286,7 @@ namespace UnrealBuildTool
 				Cache = FindOrAddCache(ProjectCacheLocation, ProjectFile.Directory, Cache);
 			}
 
-			return Cache;
+			return Cache!;
 		}
 
 		/// <summary>
@@ -243,11 +294,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">Project file for the target being built</param>
 		/// <returns>Dependency cache hierarchy for the given project</returns>
-		public static IEnumerable<FileReference> GetFilesToClean(FileReference ProjectFile)
+		public static IEnumerable<FileReference> GetFilesToClean(FileReference? ProjectFile)
 		{
-			if(ProjectFile == null || !UnrealBuildTool.IsEngineInstalled())
+			if(ProjectFile == null || !Unreal.IsEngineInstalled())
 			{
-				yield return FileReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "Build", "SourceFileCache.bin");
+				yield return FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "SourceFileCache.bin");
 			}
 			if(ProjectFile != null)
 			{
@@ -262,11 +313,11 @@ namespace UnrealBuildTool
 		/// <param name="BaseDirectory">Base directory for files that this cache should store data for</param>
 		/// <param name="Parent">The parent cache to use</param>
 		/// <returns>Reference to a dependency cache with the given settings</returns>
-		static SourceFileMetadataCache FindOrAddCache(FileReference Location, DirectoryReference BaseDirectory, SourceFileMetadataCache Parent)
+		static SourceFileMetadataCache FindOrAddCache(FileReference Location, DirectoryReference BaseDirectory, SourceFileMetadataCache? Parent)
 		{
 			lock(Caches)
 			{
-				SourceFileMetadataCache Cache;
+				SourceFileMetadataCache? Cache;
 				if(Caches.TryGetValue(Location, out Cache))
 				{
 					Debug.Assert(Cache.BaseDirectory == BaseDirectory);

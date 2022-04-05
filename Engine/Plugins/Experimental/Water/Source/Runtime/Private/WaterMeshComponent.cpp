@@ -14,7 +14,9 @@
 #include "WaterMeshSceneProxy.h"
 #include "WaterSubsystem.h"
 #include "WaterModule.h"
+#include "WaterUtils.h"
 #include "Math/NumericLimits.h"
+#include "Algo/Transform.h"
 
 /** Scalability CVars*/
 static TAutoConsoleVariable<int32> CVarWaterMeshLODCountBias(
@@ -47,19 +49,17 @@ static TAutoConsoleVariable<int32> CVarWaterMeshForceRebuildMeshPerFrame(
 	ECVF_Default
 );
 
-static TAutoConsoleVariable<int32> CVarWaterMeshEnabled(
+TAutoConsoleVariable<int32> CVarWaterMeshEnabled(
 	TEXT("r.Water.WaterMesh.Enabled"),
 	1,
 	TEXT("If the water mesh is enabled or disabled. This affects both rendering and the water tile generation"),
 	ECVF_RenderThreadSafe
 );
 
-// ----------------------------------------------------------------------------------
+extern TAutoConsoleVariable<float> CVarWaterSplineResampleMaxDistance;
 
-bool IsWaterMeshEnabled(bool bIsRenderThread)
-{
-	return IsWaterEnabled(bIsRenderThread) && !!(bIsRenderThread ? CVarWaterMeshEnabled.GetValueOnRenderThread() : CVarWaterMeshEnabled.GetValueOnGameThread());
-}
+
+// ----------------------------------------------------------------------------------
 
 UWaterMeshComponent::UWaterMeshComponent()
 {
@@ -104,6 +104,11 @@ void UWaterMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMater
 	}
 }
 
+void UWaterMeshComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Material)
+{
+	UE_LOG(LogWater, Warning, TEXT("SetMaterial is not compatible with UWaterMeshComponent since all materials on this component are auto-populated from the Water Bodies contained within it."));
+}
+
 bool UWaterMeshComponent::ShouldRenderSelected() const
 {
 	if (bSelectable)
@@ -129,6 +134,20 @@ FMaterialRelevance UWaterMeshComponent::GetWaterMaterialRelevance(ERHIFeatureLev
 	}
 
 	return Result;
+}
+
+void UWaterMeshComponent::SetExtentInTiles(FIntPoint NewExtentInTiles)
+{
+	ExtentInTiles = NewExtentInTiles;
+	MarkWaterMeshGridDirty();
+	MarkRenderStateDirty();
+}
+
+void UWaterMeshComponent::SetTileSize(float NewTileSize)
+{
+	TileSize = NewTileSize;
+	MarkWaterMeshGridDirty();
+	MarkRenderStateDirty();
 }
 
 FBoxSphereBounds UWaterMeshComponent::CalcBounds(const FTransform& LocalToWorld) const
@@ -159,7 +178,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 	TRACE_CPUPROFILER_EVENT_SCOPE(RebuildWaterMesh);
 
 	// Position snapped to the grid
-	const FVector2D GridPosition = FVector2D(FMath::GridSnap(GetComponentLocation().X, InTileSize), FMath::GridSnap(GetComponentLocation().Y, InTileSize)); 
+	const FVector2D GridPosition = FVector2D(FMath::GridSnap<FVector::FReal>(GetComponentLocation().X, InTileSize), FMath::GridSnap<FVector::FReal>(GetComponentLocation().Y, InTileSize));
 	const FVector2D WorldExtent = FVector2D(InTileSize * InExtentInTiles.X, InTileSize * InExtentInTiles.Y);
 
 	const FBox2D WaterWorldBox = FBox2D(-WorldExtent + GridPosition, WorldExtent + GridPosition);
@@ -178,27 +197,35 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 	const float OceanFlood = WaterSubsystem ? WaterSubsystem->GetOceanFloodHeight() : 0.0f;
 	const bool bIsFlooded = OceanFlood > 0.0f;
 
-	// Go through all water body actors to figure out bounds and water tiles (should only be done and cached at load and when water bodies change)
-	for (TActorIterator<AWaterBody> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+	// Go through all water body actors to figure out bounds and water tiles
+	UWaterSubsystem::ForEachWaterBodyComponent(GetWorld(), [this, WaterWorldBox, bIsFlooded, GlobalOceanHeight, OceanFlood, &FarMeshHeight](UWaterBodyComponent* WaterBodyComponent)
 	{
-		AWaterBody* WaterBody = *ActorItr;
-		
-		const FBox SplineCompBounds = WaterBody->GetWaterSpline()->Bounds.GetBox();
+		check(WaterBodyComponent);
+		AActor* Actor = WaterBodyComponent->GetOwner();
+		check(Actor);
+
+		const FBox SplineCompBounds = WaterBodyComponent->GetWaterSpline()->Bounds.GetBox();
 
 		// Don't process water bodies that has their spline outside of this water mesh
 		if (!SplineCompBounds.IntersectXY(FBox(FVector(WaterWorldBox.Min, 0.0f), FVector(WaterWorldBox.Max, 0.0f))))
 		{
-			continue;
+			return true;
 		}
 
 		FWaterBodyRenderData RenderData;
 
-		EWaterBodyType WaterBodyType = WaterBody->GetWaterBodyType();
+		const EWaterBodyType WaterBodyType = WaterBodyComponent->GetWaterBodyType();
+
+		// Skip invisible water bodies : 
+		if (!WaterBodyComponent->ShouldRender())
+		{
+			return true;
+		}
 
 		// No need to generate anything in the case of a custom water
-		if (!WaterBody->ShouldGenerateWaterMeshTile())
+		if (!WaterBodyComponent->ShouldGenerateWaterMeshTile())
 		{
-			continue;
+			return true;
 		}
 
 		if (WaterBodyType != EWaterBodyType::Ocean)
@@ -206,16 +233,16 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 			if (bIsFlooded)
 			{
 				// If water body is below ocean height and not set to snap to the ocean height, skip it
-				const float CompareHeight = (WaterBodyType == EWaterBodyType::River) ? WaterBody->GetComponentsBoundingBox().Max.Z : WaterBody->GetActorLocation().Z;
+				const float CompareHeight = (WaterBodyType == EWaterBodyType::River) ? Actor->GetComponentsBoundingBox().Max.Z : WaterBodyComponent->GetComponentLocation().Z;
 				if (CompareHeight <= GlobalOceanHeight)
 				{
-					continue;
+					return true;
 				}
 			}
 		}
 
 		// Assign material instance
-		UMaterialInstanceDynamic* WaterMaterial = WaterBody->GetWaterMaterialInstance();
+		UMaterialInstanceDynamic* WaterMaterial = WaterBodyComponent->GetWaterMaterialInstance();
 		RenderData.Material = WaterMaterial;
 		if (!IsMaterialUsedWithWater(RenderData.Material))
 		{
@@ -224,7 +251,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		else
 		{
 			// Add ocean height as a scalar parameter
-			WaterBody->SetDynamicParametersOnMID(WaterMaterial);
+			WaterBodyComponent->SetDynamicParametersOnMID(WaterMaterial);
 		}
 
 		// Add material so that the component keeps track of all potential materials used
@@ -233,13 +260,13 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		// Min and max user defined priority range. (Input also clamped on OverlapMaterialPriority in AWaterBody)
 		const int32 MinPriority = -8192;
 		const int32 MaxPriority = 8191;
-		RenderData.Priority = (int16)FMath::Clamp(WaterBody->GetOverlapMaterialPriority(), MinPriority, MaxPriority);
-		RenderData.WaterBodyIndex = (int16)WaterBody->WaterBodyIndex;
-		RenderData.SurfaceBaseHeight = WaterBody->GetActorLocation().Z;
-		RenderData.WaterBodyType = (int8)WaterBodyType;
+		RenderData.Priority = static_cast<int16>(FMath::Clamp(WaterBodyComponent->GetOverlapMaterialPriority(), MinPriority, MaxPriority));
+		RenderData.WaterBodyIndex = static_cast<int16>(WaterBodyComponent->GetWaterBodyIndex());
+		RenderData.SurfaceBaseHeight = WaterBodyComponent->GetComponentLocation().Z;
+		RenderData.WaterBodyType = static_cast<int8>(WaterBodyType);
 #if WITH_WATER_SELECTION_SUPPORT
-		RenderData.HitProxy = new HActor(WaterBody, this);
-		RenderData.bWaterBodySelected = WaterBody->IsSelected();
+		RenderData.HitProxy = new HActor(/*InActor = */Actor, /*InPrimComponent = */nullptr);
+		RenderData.bWaterBodySelected = Actor->IsSelected();
 #endif // WITH_WATER_SELECTION_SUPPORT
 
 		if (WaterBodyType == EWaterBodyType::Ocean && bIsFlooded)
@@ -251,22 +278,22 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		// For rivers, set up transition materials if they exist
 		if (WaterBodyType == EWaterBodyType::River)
 		{
-			UMaterialInstanceDynamic* RiverToLakeMaterial = WaterBody->GetRiverToLakeTransitionMaterialInstance();
+			UMaterialInstanceDynamic* RiverToLakeMaterial = WaterBodyComponent->GetRiverToLakeTransitionMaterialInstance();
 			if (IsMaterialUsedWithWater(RiverToLakeMaterial))
 			{
 				RenderData.RiverToLakeMaterial = RiverToLakeMaterial;
 				UsedMaterials.Add(RenderData.RiverToLakeMaterial);
 				// Add ocean height as a scalar parameter
-				WaterBody->SetDynamicParametersOnMID(RiverToLakeMaterial);
+				WaterBodyComponent->SetDynamicParametersOnMID(RiverToLakeMaterial);
 			}
 			
-			UMaterialInstanceDynamic* RiverToOceanMaterial = WaterBody->GetRiverToOceanTransitionMaterialInstance();
+			UMaterialInstanceDynamic* RiverToOceanMaterial = WaterBodyComponent->GetRiverToOceanTransitionMaterialInstance();
 			if (IsMaterialUsedWithWater(RiverToOceanMaterial))
 			{
 				RenderData.RiverToOceanMaterial = RiverToOceanMaterial;
 				UsedMaterials.Add(RenderData.RiverToOceanMaterial);
 				// Add ocean height as a scalar parameter
-				WaterBody->SetDynamicParametersOnMID(RiverToOceanMaterial);
+				WaterBodyComponent->SetDynamicParametersOnMID(RiverToOceanMaterial);
 			}
 		}
 
@@ -285,7 +312,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 			TRACE_CPUPROFILER_EVENT_SCOPE(River);
 
 			TArray<FBox, TInlineAllocator<16>> Boxes;
-			TArray<UPrimitiveComponent*> CollisionComponents = WaterBody->GetCollisionComponents();
+			TArray<UPrimitiveComponent*> CollisionComponents = WaterBodyComponent->GetCollisionComponents();
 			for (UPrimitiveComponent* Comp : CollisionComponents)
 			{
 				if (UBodySetup* BodySetup = (Comp != nullptr) ? Comp->GetBodySetup() : nullptr)
@@ -296,7 +323,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 						TRACE_CPUPROFILER_EVENT_SCOPE(Add);
 
 						FBox SubBox = ConvElem.ElemBox.TransformBy(Comp->GetComponentTransform().ToMatrixWithScale());
-						SubBox.Max.Z += WaterBody->GetMaxWaveHeight();
+						SubBox.Max.Z += WaterBodyComponent->GetMaxWaveHeight();
 
 						Boxes.Add(SubBox);
 					}
@@ -306,9 +333,9 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 					// fallback on global AABB: 
 					FVector Center;
 					FVector Extent;
-					WaterBody->GetActorBounds(false, Center, Extent);
+					Actor->GetActorBounds(false, Center, Extent);
 					FBox Box(FBox::BuildAABB(Center, Extent));
-					Box.Max.Z += WaterBody->GetMaxWaveHeight();
+					Box.Max.Z += WaterBodyComponent->GetMaxWaveHeight();
 					Boxes.Add(Box);
 				}
 			}
@@ -330,42 +357,84 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(Lake);
 
-			const UWaterSplineComponent* SplineComp = WaterBody->GetWaterSpline();
-			const int32 NumOriginaSplinePoints = SplineComp->GetNumberOfSplinePoints();
-			
+			const UWaterSplineComponent* SplineComp = WaterBodyComponent->GetWaterSpline();
+			const int32 NumOriginalSplinePoints = SplineComp->GetNumberOfSplinePoints();
+			float ConstantZ = SplineComp->GetLocationAtDistanceAlongSpline(0.0f, ESplineCoordinateSpace::World).Z;
+
+			FBox LakeBounds = Actor->GetComponentsBoundingBox();
+			LakeBounds.Max.Z += WaterBodyComponent->GetMaxWaveHeight();
+
 			// Skip lakes with less than 3 spline points
-			if (NumOriginaSplinePoints < 3)
+			if (NumOriginalSplinePoints < 3)
 			{
 				break;
 			}
 
-			const float SplineLength = SplineComp->GetSplineLength();
-			// LeafSize * 1.5 is roughly the max distance along the spline we aim to sample at
-			const int32 NumSamplePoints = FMath::Max(FMath::FloorToInt(SplineLength / (WaterQuadTree.GetLeafSize() * 1.5f)), NumOriginaSplinePoints);
-			const float DistDelta = SplineLength / NumSamplePoints;
+			TArray<TArray<FVector2D>> PolygonBatches;
+			// Reuse the convex hulls generated for the physics shape because the work has already been done, but we can fallback to a simple spline evaluation method in case there's no physics:
+			bool bUseFallbackMethod = true;
 
-			TArray<FVector2D> SplinePoints;
-
-			// Allocate the number of spline points we'll be using and fill it from the actual spline
-			SplinePoints.SetNum(NumSamplePoints);
-			for (int32 i = 0; i < NumSamplePoints; i++)
+			TArray<UPrimitiveComponent*> CollisionComponents = WaterBodyComponent->GetCollisionComponents();
+			if (CollisionComponents.Num() > 0)
 			{
-				SplinePoints[i] = FVector2D(SplineComp->GetLocationAtDistanceAlongSpline(i*DistDelta, ESplineCoordinateSpace::World));
-				
+				UPrimitiveComponent* Comp = CollisionComponents[0];
+				if (UBodySetup* BodySetup = (Comp != nullptr) ? Comp->GetBodySetup() : nullptr)
+				{
+					FTransform CompTransform = Comp->GetComponentTransform();
+					// Go through all sub shapes on the bodysetup to get a tight fit along water body
+					for (const FKConvexElem& ConvElem : BodySetup->AggGeom.ConvexElems)
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(Add);
+
+						// Vertex data contains the bottom vertices first, then the top ones :
+						int32 TotalNumVertices = ConvElem.VertexData.Num();
+						check(TotalNumVertices % 2 == 0);
+						int32 NumVertices = TotalNumVertices / 2;
+						if (NumVertices > 0)
+						{ 
+							bUseFallbackMethod = false;
+
+							// Because the physics shape is made of multiple convex hulls, we cannot simply add their vertices to one big list but have to have 1 batch of polygons per convex hull
+							TArray<FVector2D>& Polygon = PolygonBatches.Emplace_GetRef();
+							Polygon.SetNum(NumVertices);
+							for (int32 i = 0; i < NumVertices; ++i)
+							{
+								// Gather the top vertices :
+								Polygon[i] = FVector2D(CompTransform.TransformPosition(ConvElem.VertexData[NumVertices + i]));
+							}
+						}
+					}
+				}
+			}
+
+			if (bUseFallbackMethod)
+			{
+				TArray<FVector> PolyLineVertices;
+				SplineComp->ConvertSplineToPolyLine(ESplineCoordinateSpace::World, FMath::Square(CVarWaterSplineResampleMaxDistance.GetValueOnGameThread()), PolyLineVertices);
+
+				TArray<FVector2D>& Polygon = PolygonBatches.Emplace_GetRef();
+				Polygon.Reserve(PolyLineVertices.Num());
+				Algo::Transform(PolyLineVertices, Polygon, [](const FVector& Vertex) { return FVector2D(Vertex); });
+			}
+
+			for (const TArray<FVector2D>& Polygon : PolygonBatches)
+			{
+				WaterQuadTree.AddLake(Polygon, LakeBounds, WaterBodyRenderDataIndex);
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 				if (!!CVarWaterMeshShowTileGenerationGeometry.GetValueOnGameThread())
 				{
-					FVector Point0 = SplineComp->GetLocationAtDistanceAlongSpline(i*DistDelta, ESplineCoordinateSpace::World);
-					FVector Point1 = SplineComp->GetLocationAtDistanceAlongSpline(((i + 1) % NumSamplePoints)*DistDelta, ESplineCoordinateSpace::World);
-					DrawDebugLine(GetWorld(), Point0, Point1, FColor::Green);
+					float Z = SplineComp->GetLocationAtDistanceAlongSpline(0.0f, ESplineCoordinateSpace::World).Z;
+					int32 NumVertices = Polygon.Num();
+					for (int32 i = 0; i < NumVertices; i++)
+					{
+						const FVector2D& Point0 = Polygon[i];
+						const FVector2D& Point1 = Polygon[(i + 1) % NumVertices];
+						DrawDebugLine(GetWorld(), FVector(Point0.X, Point0.Y, Z), FVector(Point1.X, Point1.Y, Z), FColor::Green);
+					}
 				}
-#endif
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			}
-
-			FBox LakeBounds = WaterBody->GetComponentsBoundingBox();
-			LakeBounds.Max.Z += WaterBody->GetMaxWaveHeight();
-
-			WaterQuadTree.AddLake(SplinePoints, LakeBounds, WaterBodyRenderDataIndex);
 
 			break;
 		}
@@ -376,46 +445,49 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 			// Add ocean based on the ocean spline when there is no flood. Otherwise add ocean everywhere
 			if (bIsFlooded)
 			{
-				FBox OceanBounds = WaterBody->GetComponentsBoundingBox();
-				OceanBounds.Max.Z += WaterBody->GetMaxWaveHeight() + OceanFlood;
+				FBox OceanBounds = Actor->GetComponentsBoundingBox();
+				OceanBounds.Max.Z += WaterBodyComponent->GetMaxWaveHeight() + OceanFlood;
 				WaterQuadTree.AddWaterTilesInsideBounds(OceanBounds, WaterBodyRenderDataIndex);
 			}
 			else
 			{
-				const UWaterSplineComponent* SplineComp = WaterBody->GetWaterSpline();
-				const int32 NumSamplePoints = SplineComp->GetNumberOfSplinePoints();
+				const UWaterSplineComponent* SplineComp = WaterBodyComponent->GetWaterSpline();
+				const int32 NumOriginalSplinePoints = SplineComp->GetNumberOfSplinePoints();
 
 				// Skip oceans with less than 3 spline points
-				if (NumSamplePoints < 3)
+				if (NumOriginalSplinePoints < 3)
 				{
 					break;
 				}
 
-				TArray<FVector2D> SplinePoints;
+				TArray<FVector2D> Polygon;
 
-				// Allocate the number of spline points we'll be using and fill it from the actual spline
-				SplinePoints.SetNum(NumSamplePoints);
-				for (int32 i = 0; i < NumSamplePoints; i++)
-				{
-					SplinePoints[i] = FVector2D(SplineComp->GetLocationAtSplinePoint(i, ESplineCoordinateSpace::World));
+				TArray<FVector> PolyLineVertices;
+				SplineComp->ConvertSplineToPolyLine(ESplineCoordinateSpace::World, FMath::Square(CVarWaterSplineResampleMaxDistance.GetValueOnGameThread()), PolyLineVertices);
+
+				Polygon.Reserve(PolyLineVertices.Num());
+				Algo::Transform(PolyLineVertices, Polygon, [](const FVector& Vertex) { return FVector2D(Vertex); });
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					if (!!CVarWaterMeshShowTileGenerationGeometry.GetValueOnGameThread())
+				if (!!CVarWaterMeshShowTileGenerationGeometry.GetValueOnGameThread())
+				{
+					float Z = SplineComp->GetLocationAtDistanceAlongSpline(0.0f, ESplineCoordinateSpace::World).Z;
+					int32 NumVertices = Polygon.Num();
+					for (int32 i = 0; i < NumVertices; i++)
 					{
-						FVector Point0 = SplineComp->GetLocationAtSplinePoint(i, ESplineCoordinateSpace::World);
-						FVector Point1 = SplineComp->GetLocationAtSplinePoint(((i + 1) % NumSamplePoints), ESplineCoordinateSpace::World);
-						DrawDebugLine(GetWorld(), Point0, Point1, FColor::Blue);
+						const FVector2D& Point0 = Polygon[i];
+						const FVector2D& Point1 = Polygon[(i + 1) % NumVertices];
+						DrawDebugLine(GetWorld(), FVector(Point0.X, Point0.Y, Z), FVector(Point1.X, Point1.Y, Z), FColor::Blue);
 					}
-#endif
 				}
+#endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-				const FBox OceanBounds = WaterBody->GetComponentsBoundingBox();
-
-				WaterQuadTree.AddOcean(SplinePoints, FVector2D(OceanBounds.Min.Z, OceanBounds.Max.Z + WaterBody->GetMaxWaveHeight()), WaterBodyRenderDataIndex);
+				const FBox OceanBounds = Actor->GetComponentsBoundingBox();
+				WaterQuadTree.AddOcean(Polygon, FVector2D(OceanBounds.Min.Z, OceanBounds.Max.Z + WaterBodyComponent->GetMaxWaveHeight()), WaterBodyRenderDataIndex);
 			}
 
 			// Place far mesh height just below the ocean level
-			FarMeshHeight = RenderData.SurfaceBaseHeight - WaterBody->GetMaxWaveHeight();
+			FarMeshHeight = RenderData.SurfaceBaseHeight - WaterBodyComponent->GetMaxWaveHeight();
 
 			break;
 		}
@@ -425,60 +497,26 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		default:
 			ensureMsgf(false, TEXT("This water body type is not implemented and will not produce any water tiles. "));
 		}
+
+		return true;
+	});
+
+	// Build the far distance mesh instances if needed
+	if (IsMaterialUsedWithWater(FarDistanceMaterial) && FarDistanceMeshExtent > 0.0f)
+	{
+		UsedMaterials.Add(FarDistanceMaterial);
+
+		WaterQuadTree.AddFarMesh(FarDistanceMaterial, FarDistanceMeshExtent, FarMeshHeight);
 	}
 
 	WaterQuadTree.Unlock(true);
 
 	MarkRenderStateDirty();
-
-	// Build the far distance mesh instances. These are 8 tiles around the water quad tree
-	if (IsMaterialUsedWithWater(FarDistanceMaterial) && FarDistanceMeshExtent > 0.0f)
-	{
-		UsedMaterials.Add(FarDistanceMaterial);
-
-		for (int32 StreamIdx = 0; StreamIdx < FWaterTileInstanceData::NumStreams; ++StreamIdx)
-		{
-			FarDistanceWaterInstanceData.Streams[StreamIdx].SetNum(8);
-		}
-
-		const FVector2D WaterCenter = WaterQuadTree.GetTileRegion().GetCenter();
-		const FVector2D WaterExtents = WaterQuadTree.GetTileRegion().GetExtent();
-		const FVector2D WaterSize = WaterQuadTree.GetTileRegion().GetSize();
-		const FVector2D TileOffets[] = { {-1.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, -1.0f}, {0.0f, -1.0f}, {-1.0f, -1.0f}, {-1.0f, 0.0f} };
-		for (int32 i = 0; i < 8; i++)
-		{
-			const FVector2D TilePos = WaterCenter + TileOffets[i] * (WaterExtents + 0.5f * FarDistanceMeshExtent);
-			FVector2D TileScale;
-			TileScale.X = (TileOffets[i].X == 0.0f) ? WaterSize.X : FarDistanceMeshExtent;
-			TileScale.Y = (TileOffets[i].Y == 0.0f) ? WaterSize.Y : FarDistanceMeshExtent;
-
-			// Build instance data
-			FVector4 InstanceData[FWaterTileInstanceData::NumStreams];
-			InstanceData[0] = FVector4(TilePos, FVector2D(FarMeshHeight, 0.0f));
-			InstanceData[1] = FVector4(FVector2D::ZeroVector, TileScale);
-#if WITH_WATER_SELECTION_SUPPORT
-			InstanceData[2] = FHitProxyId::InvisibleHitProxyId.GetColor().ReinterpretAsLinear();
-#endif // WITH_WATER_SELECTION_SUPPORT
-
-			for (int32 StreamIdx = 0; StreamIdx < FWaterTileInstanceData::NumStreams; ++StreamIdx)
-			{
-				FarDistanceWaterInstanceData.Streams[StreamIdx][i] = InstanceData[StreamIdx];
-			}
-		}
-	}
-	else
-	{
-		for(int32 StreamIdx = 0; StreamIdx < FWaterTileInstanceData::NumStreams; ++StreamIdx)
-		{
-			FarDistanceWaterInstanceData.Streams[StreamIdx].Empty();
-		}
-	}
 }
 
 void UWaterMeshComponent::Update()
 {
-	// For now, the CVar determines the enabled state
-	bIsEnabled = IsWaterEnabled(/*bIsRenderThread = */false) && IsWaterMeshEnabled(/*bIsRenderThread = */false);
+	bIsEnabled = FWaterUtils::IsWaterMeshEnabled(/*bIsRenderThread = */false);
 
 	// Early out
 	if (!bIsEnabled)
@@ -501,7 +539,6 @@ void UWaterMeshComponent::Update()
 		LODScaleBiasScalability = NewLODScaleBias;
 		const float LODCountBiasFactor = FMath::Pow(2.0f, (float)LODCountBiasScalability);
 		RebuildWaterMesh(TileSize / LODCountBiasFactor, FIntPoint(FMath::CeilToInt(ExtentInTiles.X * LODCountBiasFactor), FMath::CeilToInt(ExtentInTiles.Y * LODCountBiasFactor)));
-		UpdateWaterMPC();
 		bNeedsRebuild = false;
 	}
 }
@@ -510,33 +547,6 @@ void UWaterMeshComponent::SetLandscapeInfo(const FVector& InRTWorldLocation, con
 {
 	RTWorldLocation = InRTWorldLocation;
 	RTWorldSizeVector = InRTWorldSizeVector;
-
-	UpdateWaterMPC();
-}
-
-void UWaterMeshComponent::UpdateWaterMPC()
-{
-	if (const UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld()))
-	{
-		UMaterialParameterCollection* WaterCollection = WaterSubsystem->GetMaterialParameterCollection();
-		if (WaterCollection == nullptr)
-		{
-			UE_LOG(LogWater, Error, TEXT("No Water MaterialParameterCollection Assigned"));
-		}
-		else
-		{
-			UMaterialParameterCollectionInstance* WaterCollectionInstance = GetWorld()->GetParameterCollectionInstance(CastChecked<UMaterialParameterCollection>(WaterCollection));
-			check(WaterCollectionInstance != nullptr);
-			if (!WaterCollectionInstance->SetVectorParameterValue(FName(TEXT("LandscapeWorldSize")), FLinearColor(RTWorldSizeVector)))
-			{
-				UE_LOG(LogWater, Error, TEXT("Failed to set \"LandscapeWorldSize\" on Water MaterialParameterCollection"));
-			}
-			if (!WaterCollectionInstance->SetVectorParameterValue(FName(TEXT("LandscapeLocation")), FLinearColor(RTWorldLocation)))
-			{
-				UE_LOG(LogWater, Error, TEXT("Failed to set \"LandscapeLocation\" on Water MaterialParameterCollection"));
-			}
-		}
-	}
 }
 
 #if WITH_EDITOR

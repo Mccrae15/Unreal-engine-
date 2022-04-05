@@ -15,9 +15,15 @@
 #endif
 #endif
 
+#if !defined(CPUPROFILERTRACE_FILE_AND_LINE_ENABLED)
+#define CPUPROFILERTRACE_FILE_AND_LINE_ENABLED 1
+#endif
+
 #if CPUPROFILERTRACE_ENABLED
 
 UE_TRACE_CHANNEL_EXTERN(CpuChannel, CORE_API);
+
+class FName;
 
 /*
  * Facilities for tracing timed cpu events. Two types of events are supported, static events where the identifier is
@@ -31,19 +37,22 @@ UE_TRACE_CHANNEL_EXTERN(CpuChannel, CORE_API);
  */
 struct FCpuProfilerTrace
 {
-	CORE_API static void Shutdown();
 	/*
 	 * Output cpu event definition (spec).
 	 * @param Name Event name
+	 * @param File Source filename
+	 * @param Line Line number in source file
 	 * @return Event definition id
 	 */
-	FORCENOINLINE CORE_API static uint32 OutputEventType(const ANSICHAR* Name);
+	FORCENOINLINE CORE_API static uint32 OutputEventType(const ANSICHAR* Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
 	/*
 	 * Output cpu event definition (spec).
 	 * @param Name Event name
+	 * @param File Source filename
+	 * @param Line Line number in source file
 	 * @return Event definition id
 	 */
-	FORCENOINLINE CORE_API static uint32 OutputEventType(const TCHAR* Name);
+	FORCENOINLINE CORE_API static uint32 OutputEventType(const TCHAR* Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
 	/*
 	 * Output begin event marker for a given spec. Must always be matched with an end event.
 	 * @param SpecId Event definition id.
@@ -53,14 +62,27 @@ struct FCpuProfilerTrace
 	 * Output begin event marker for a dynamic event name. This is more expensive than statically known event
 	 * names using \ref OutputBeginEvent. Must always be matched with an end event.
 	 * @param Name Name of event
+	 * @param File Source filename
+	 * @param Line Line number in source file
 	 */
-	CORE_API static void OutputBeginDynamicEvent(const ANSICHAR* Name);
+	CORE_API static void OutputBeginDynamicEvent(const ANSICHAR* Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
 	/*
 	 * Output begin event marker for a dynamic event name. This is more expensive than statically known event
 	 * names using \ref OutputBeginEvent. Must always be matched with an end event.
 	 * @param Name Name of event
+	 * @param File Source filename
+	 * @param Line Line number in source file
 	 */
-	CORE_API static void OutputBeginDynamicEvent(const TCHAR* Name);
+	CORE_API static void OutputBeginDynamicEvent(const TCHAR* Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
+	/*
+	 * Output begin event marker for a dynamic event identified by an FName. This is more expensive than
+	 * statically known event names using \ref OutputBeginEvent, but it is faster than \ref OutputBeginDynamicEvent
+	 * that receives ANSICHAR* / TCHAR* name. Must always be matched with an end event.
+	 * @param Name Name of event
+	 * @param File Source filename
+	 * @param Line Line number in source file
+	 */
+	CORE_API static void OutputBeginDynamicEvent(const FName& Name, const ANSICHAR* File = nullptr, uint32 Line = 0);
 	/*
 	 * Output end event marker for static or dynamic event for the currently open scope.
 	 */
@@ -68,8 +90,8 @@ struct FCpuProfilerTrace
 
 	struct FEventScope
 	{
-		FEventScope(uint32 InSpecId, const Trace::FChannel& Channel)
-			: bEnabled(Channel | CpuChannel)
+		FEventScope(uint32 InSpecId, const UE::Trace::FChannel& Channel, bool bCondition)
+			: bEnabled(bCondition && (Channel | CpuChannel))
 		{
 			if (bEnabled)
 			{
@@ -90,21 +112,21 @@ struct FCpuProfilerTrace
 
 	struct FDynamicEventScope
 	{
-		FDynamicEventScope(const ANSICHAR* InEventName, const Trace::FChannel& Channel)
-			: bEnabled(Channel | CpuChannel)
+		FDynamicEventScope(const ANSICHAR* InEventName, const UE::Trace::FChannel& Channel, bool Condition, const ANSICHAR* File = nullptr, uint32 Line = 0)
+			: bEnabled(Condition && (Channel | CpuChannel))
 		{
 			if (bEnabled)
 			{
-				OutputBeginDynamicEvent(InEventName);
+				OutputBeginDynamicEvent(InEventName, File, Line);
 			}
 		}
 
-		FDynamicEventScope(const TCHAR* InEventName, const Trace::FChannel& Channel)
-			: bEnabled(Channel | CpuChannel)
+		FDynamicEventScope(const TCHAR* InEventName, const UE::Trace::FChannel& Channel, bool Condition, const ANSICHAR* File = nullptr, uint32 Line = 0)
+			: bEnabled(Condition && (Channel | CpuChannel))
 		{
 			if (bEnabled)
 			{
-				OutputBeginDynamicEvent(InEventName);
+				OutputBeginDynamicEvent(InEventName, File, Line);
 			}
 		}
 
@@ -120,19 +142,26 @@ struct FCpuProfilerTrace
 	};
 };
 
-#define TRACE_CPUPROFILER_SHUTDOWN() \
-	FCpuProfilerTrace::Shutdown();
+// Advanced macro for integrating e.g. stats/named events with cpu trace
+// Declares a cpu timing event for future use, conditionally and with a particular variable name for storing the id
+#define TRACE_CPUPROFILER_EVENT_DECLARE(NameStr, DeclName, Channel, Condition) \
+	static uint32 DeclName; \
+	if ((Condition) && bool(Channel|CpuChannel) && (DeclName == 0)) { \
+		DeclName = FCpuProfilerTrace::OutputEventType(NameStr, __FILE__, __LINE__); \
+	}
+
+// Advanced macro for integrating e.g. stats/named events with cpu trace
+// Traces a scoped event previously declared with TRACE_CPUPROFILER_EVENT_DECLARE, conditionally
+#define TRACE_CPUPROFILER_EVENT_SCOPE_USE(DeclName, ScopeName, Channel, Condition) \
+	FCpuProfilerTrace::FEventScope ScopeName(DeclName, Channel, Condition);
 
 // Trace a scoped cpu timing event providing a static string (const ANSICHAR* or const TCHAR*)
 // as the scope name and a trace channel.
 // Example: TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR("My Scoped Timer A", CpuChannel)
 // Note: The event will be emitted only if both the given channel and CpuChannel is enabled.
 #define TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR(NameStr, Channel) \
-	static uint32 PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__); \
-	if (bool(Channel|CpuChannel) && PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__) == 0) { \
-		PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__) = FCpuProfilerTrace::OutputEventType(NameStr); \
-	} \
-	FCpuProfilerTrace::FEventScope PREPROCESSOR_JOIN(__CpuProfilerEventScope, __LINE__)(PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__), Channel);
+	TRACE_CPUPROFILER_EVENT_DECLARE(NameStr, PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__), Channel, true); \
+	TRACE_CPUPROFILER_EVENT_SCOPE_USE(PREPROCESSOR_JOIN(__CpuProfilerEventSpecId, __LINE__), PREPROCESSOR_JOIN(__CpuProfilerEventScope, __LINE__), Channel, true); 
 
 // Trace a scoped cpu timing event providing a scope name (plain text) and a trace channel.
 // Example: TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(MyScopedTimer::A, CpuChannel)
@@ -148,7 +177,7 @@ struct FCpuProfilerTrace
 #define TRACE_CPUPROFILER_EVENT_SCOPE_STR(NameStr) \
 	TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR(NameStr, CpuChannel)
 
-// Trace a scoped cpu timing event providing a scope name (plain text) and a trace channel.
+// Trace a scoped cpu timing event providing a scope name (plain text).
 // It will use the Cpu trace channel.
 // Example: TRACE_CPUPROFILER_EVENT_SCOPE(MyScopedTimer::A)
 // Note: Do not use this macro with a static string because, in that case, additional quotes will
@@ -162,7 +191,7 @@ struct FCpuProfilerTrace
 // Note: This macro has a larger overhead compared to macro that accepts a plain text name
 //       or a static string. Use it only if scope name really needs to be a dynamic string.
 #define TRACE_CPUPROFILER_EVENT_SCOPE_TEXT_ON_CHANNEL(Name, Channel) \
-	FCpuProfilerTrace::FDynamicEventScope PREPROCESSOR_JOIN(__CpuProfilerEventScope, __LINE__)(Name, Channel);
+	FCpuProfilerTrace::FDynamicEventScope PREPROCESSOR_JOIN(__CpuProfilerEventScope, __LINE__)(Name, Channel, true, __FILE__, __LINE__);
 
 // Trace a scoped cpu timing event providing a dynamic string (const ANSICHAR* or const TCHAR*)
 // as the scope name. It will use the Cpu trace channel.
@@ -174,7 +203,8 @@ struct FCpuProfilerTrace
 
 #else
 
-#define TRACE_CPUPROFILER_SHUTDOWN()
+#define TRACE_CPUPROFILER_EVENT_DECLARE(NameStr, DeclName, Channel, Condition)
+#define TRACE_CPUPROFILER_EVENT_SCOPE_USE(DeclName, ScopeName, Channel, Condition)
 #define TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR(NameStr, Channel)
 #define TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(Name, Channel)
 #define TRACE_CPUPROFILER_EVENT_SCOPE_STR(NameStr)

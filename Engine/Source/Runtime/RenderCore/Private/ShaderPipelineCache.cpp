@@ -10,8 +10,6 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
-#include "Serialization/ArchiveSaveCompressedProxy.h"
-#include "Serialization/ArchiveLoadCompressedProxy.h"
 #include "Serialization/CustomVersion.h"
 #include "Serialization/MemoryReader.h"
 #include "Shader.h"
@@ -95,12 +93,8 @@ static TAutoConsoleVariable<float> CVarPSOFileCachePrecompileBatchTime(
 															 );
 static TAutoConsoleVariable<int32> CVarPSOFileCacheSaveAfterPSOsLogged(
 														   TEXT("r.ShaderPipelineCache.SaveAfterPSOsLogged"),
-#if !UE_BUILD_SHIPPING
-														   100,
-#else
 														   0,
-#endif
-														   TEXT("Set the number of PipelineStateObjects to log before automatically saving. 0 will disable automatic saving. Shipping defaults to 0, otherwise default is 100."),
+														   TEXT("Set the number of PipelineStateObjects to log before automatically saving. 0 will disable automatic saving (which is the default now, as automatic saving is found to be broken)."),
 														   ECVF_Default | ECVF_RenderThreadSafe
 														   );
  
@@ -120,7 +114,8 @@ static TAutoConsoleVariable<int32> CVarPSOFileCachePreCompileMask(
 
 static TAutoConsoleVariable<int32> CVarPSOFileCacheAutoSaveTimeBoundPSO(
 	TEXT("r.ShaderPipelineCache.AutoSaveTimeBoundPSO"),
-	10,
+	MAX_int32, // This effictively disables auto-save, since the feature is broken. See FORT-430086 for details, but in short, Save function takes a broad lock, and while holding it attempts to execute async tasks (reading from pak files). 
+			   // These task may not be executed if all the worker threads are blocked trying to acquire the same lock that the saving thread is holding, which happens on a low-core CPUs.
 	TEXT("Set the time where any logged PSO's will be saved when -logpso is on the command line."),
 	ECVF_Default | ECVF_RenderThreadSafe
 );
@@ -256,7 +251,14 @@ static FAutoConsoleCommand SwitchModePipelineCacheCmd(
                                                 FConsoleCommandWithArgsDelegate::CreateStatic(ConsoleCommandSwitchModePipelineCacheCmd)
                                                 );
  
- 
+int32 GShaderPipelineCacheDoNotPrecompileComputePSO = PLATFORM_ANDROID;	// temporarily (as of 2021-06-21) disable compute PSO precompilation on Android
+static FAutoConsoleVariableRef CVarShaderPipelineCacheDoNotPrecompileComputePSO(
+												TEXT("r.ShaderPipelineCache.DoNotPrecompileComputePSO"),
+												GShaderPipelineCacheDoNotPrecompileComputePSO,
+												TEXT("Disables precompilation of compute PSOs (replayed from a recorded file) on start. This is a safety switch in case things go wrong"),
+												ECVF_Default
+												);
+
 class FShaderPipelineCacheArchive final : public FArchive
 {
 public:
@@ -521,7 +523,7 @@ uint32 FShaderPipelineCache::NumPrecompilesRemaining()
 		if (CVarPSOFileCacheMaxPrecompileTime.GetValueOnAnyThread() > 0.0 && FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks) > 0)
 		{
 			float Mult = ShaderPipelineCache->TotalPrecompileWallTime / CVarPSOFileCacheMaxPrecompileTime.GetValueOnAnyThread();
-			NumRemaining = FMath::Max(0.f, 1.f - Mult) * FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks);
+			NumRemaining = uint32(FMath::Max(0.f, 1.f - Mult) * FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks));
 		}
 		else
 		{
@@ -548,7 +550,7 @@ uint32 FShaderPipelineCache::NumPrecompilesActive()
 		if (CVarPSOFileCacheMaxPrecompileTime.GetValueOnAnyThread() > 0.0 && FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks) > 0)
 		{
 			float Mult = ShaderPipelineCache->TotalPrecompileWallTime / CVarPSOFileCacheMaxPrecompileTime.GetValueOnAnyThread();
-			NumRemaining = FMath::Max(0.f, 1.f - Mult) * FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks);
+			NumRemaining = uint32(FMath::Max(0.f, 1.f - Mult) * FPlatformAtomics::AtomicRead(&ShaderPipelineCache->TotalPrecompileTasks));
 		}
     }
     
@@ -616,33 +618,43 @@ bool FShaderPipelineCache::Precompile(FRHICommandListImmediate& RHICmdList, ESha
 	{
 		if(FPipelineCacheFileFormatPSO::DescriptorType::Graphics == PSO.Type)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(FShaderPipelineCache::PrecompileGraphics);
+
 			FGraphicsPipelineStateInitializer GraphicsInitializer;
-			
-			FRHIVertexDeclaration* VertexDesc = PipelineStateCache::GetOrCreateVertexDeclaration(PSO.GraphicsDesc.VertexDescriptor);
-			GraphicsInitializer.BoundShaderState.VertexDeclarationRHI = VertexDesc;
-			
-			FVertexShaderRHIRef VertexShader;
-			if (PSO.GraphicsDesc.VertexShader != FSHAHash())
+
+			if (PSO.GraphicsDesc.MeshShader != FSHAHash())
 			{
-				VertexShader = FShaderCodeLibrary::CreateVertexShader(Platform, PSO.GraphicsDesc.VertexShader);
-				GraphicsInitializer.BoundShaderState.VertexShaderRHI = VertexShader;
+				FMeshShaderRHIRef MeshShader = FShaderCodeLibrary::CreateMeshShader(Platform, PSO.GraphicsDesc.MeshShader);
+				GraphicsInitializer.BoundShaderState.SetMeshShader(MeshShader);
+
+				if (PSO.GraphicsDesc.AmplificationShader != FSHAHash())
+				{
+					FAmplificationShaderRHIRef AmplificationShader = FShaderCodeLibrary::CreateAmplificationShader(Platform, PSO.GraphicsDesc.AmplificationShader);
+					GraphicsInitializer.BoundShaderState.SetAmplificationShader(AmplificationShader);
+				}
+			}
+			else
+			{
+				FRHIVertexDeclaration* VertexDesc = PipelineStateCache::GetOrCreateVertexDeclaration(PSO.GraphicsDesc.VertexDescriptor);
+				GraphicsInitializer.BoundShaderState.VertexDeclarationRHI = VertexDesc;
+			
+				FVertexShaderRHIRef VertexShader;
+				if (PSO.GraphicsDesc.VertexShader != FSHAHash())
+				{
+					VertexShader = FShaderCodeLibrary::CreateVertexShader(Platform, PSO.GraphicsDesc.VertexShader);
+					GraphicsInitializer.BoundShaderState.VertexShaderRHI = VertexShader;
+				}
+
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+				FGeometryShaderRHIRef GeometryShader;
+				if (PSO.GraphicsDesc.GeometryShader != FSHAHash())
+				{
+					GeometryShader = FShaderCodeLibrary::CreateGeometryShader(Platform, PSO.GraphicsDesc.GeometryShader);
+					GraphicsInitializer.BoundShaderState.SetGeometryShader(GeometryShader);
+				}
+#endif
 			}
 
-	#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-			FHullShaderRHIRef HullShader;
-			if (PSO.GraphicsDesc.HullShader != FSHAHash())
-			{
-				HullShader = FShaderCodeLibrary::CreateHullShader(Platform, PSO.GraphicsDesc.HullShader);
-				GraphicsInitializer.BoundShaderState.HullShaderRHI = HullShader;
-			}
-
-			FDomainShaderRHIRef DomainShader;
-			if (PSO.GraphicsDesc.DomainShader != FSHAHash())
-			{
-				DomainShader = FShaderCodeLibrary::CreateDomainShader(Platform, PSO.GraphicsDesc.DomainShader);
-				GraphicsInitializer.BoundShaderState.DomainShaderRHI = DomainShader;
-			}
-	#endif
 			FPixelShaderRHIRef FragmentShader;
 			if (PSO.GraphicsDesc.FragmentShader != FSHAHash())
 			{
@@ -650,14 +662,6 @@ bool FShaderPipelineCache::Precompile(FRHICommandListImmediate& RHICmdList, ESha
 				GraphicsInitializer.BoundShaderState.PixelShaderRHI = FragmentShader;
 			}
 
-	#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-			FGeometryShaderRHIRef GeometryShader;
-			if (PSO.GraphicsDesc.GeometryShader != FSHAHash())
-			{
-				GeometryShader = FShaderCodeLibrary::CreateGeometryShader(Platform, PSO.GraphicsDesc.GeometryShader);
-				GraphicsInitializer.BoundShaderState.GeometryShaderRHI = GeometryShader;
-			}
-	#endif
 			auto BlendState = GetOrCreateBlendState(PSO.GraphicsDesc.BlendState);
 			GraphicsInitializer.BlendState = BlendState;
 			
@@ -678,7 +682,10 @@ bool FShaderPipelineCache::Precompile(FRHICommandListImmediate& RHICmdList, ESha
 
 			GraphicsInitializer.SubpassHint = (ESubpassHint)PSO.GraphicsDesc.SubpassHint;
 			GraphicsInitializer.SubpassIndex = PSO.GraphicsDesc.SubpassIndex;
-			
+
+			GraphicsInitializer.MultiViewCount = PSO.GraphicsDesc.MultiViewCount;
+			GraphicsInitializer.bHasFragmentDensityAttachment = PSO.GraphicsDesc.bHasFragmentDensityAttachment;
+
 			GraphicsInitializer.DepthStencilTargetFormat = PSO.GraphicsDesc.DepthStencilFormat;
 			GraphicsInitializer.DepthStencilTargetFlag = PSO.GraphicsDesc.DepthStencilFlags;
 			GraphicsInitializer.DepthTargetLoadAction = PSO.GraphicsDesc.DepthLoad;
@@ -687,23 +694,31 @@ bool FShaderPipelineCache::Precompile(FRHICommandListImmediate& RHICmdList, ESha
 			GraphicsInitializer.StencilTargetStoreAction = PSO.GraphicsDesc.StencilStore;
 			
 			GraphicsInitializer.PrimitiveType = PSO.GraphicsDesc.PrimitiveType;
-			GraphicsInitializer.bFromPSOFileCache = true;
 			
 			// This indicates we do not want a fatal error if this compilation fails
 			// (ie, if this entry in the file cache is bad)
-			GraphicsInitializer.bFromPSOFileCache = 1;
+			GraphicsInitializer.bFromPSOFileCache = true;
 			
 			// Use SetGraphicsPipelineState to call down into PipelineStateCache and also handle the fallback case used by OpenGL.
-			SetGraphicsPipelineState(RHICmdList, GraphicsInitializer, EApplyRendertargetOption::DoNothing, false);
+			SetGraphicsPipelineState(RHICmdList, GraphicsInitializer, 0, EApplyRendertargetOption::DoNothing, false);
 			bOk = true;
 		}
 		else if(FPipelineCacheFileFormatPSO::DescriptorType::Compute == PSO.Type)
 		{
-			FComputeShaderRHIRef ComputeInitializer = FShaderCodeLibrary::CreateComputeShader(Platform, PSO.ComputeDesc.ComputeShader);
-			if(ComputeInitializer.IsValid())
+			TRACE_CPUPROFILER_EVENT_SCOPE(FShaderPipelineCache::PrecompileCompute);
+			
+			if (LIKELY(!GShaderPipelineCacheDoNotPrecompileComputePSO))
 			{
-				FComputePipelineState* ComputeResult = PipelineStateCache::GetAndOrCreateComputePipelineState(RHICmdList, ComputeInitializer);
-				bOk = ComputeResult != nullptr;
+				FComputeShaderRHIRef ComputeInitializer = FShaderCodeLibrary::CreateComputeShader(Platform, PSO.ComputeDesc.ComputeShader);
+				if (ComputeInitializer.IsValid())
+				{
+					FComputePipelineState* ComputeResult = PipelineStateCache::GetAndOrCreateComputePipelineState(RHICmdList, ComputeInitializer, true);
+					bOk = ComputeResult != nullptr;
+				}
+			}
+			else
+			{
+				bOk = true;
 			}
 		}
 		else if (FPipelineCacheFileFormatPSO::DescriptorType::RayTracing == PSO.Type)
@@ -808,30 +823,25 @@ void FShaderPipelineCache::PreparePipelineBatch(TDoubleLinkedList<FPipelineCache
             if (PSO.Type == FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
 			{
                 // See if the shaders exist in the current code libraries, before trying to load the shader data
-                if (PSO.GraphicsDesc.VertexShader != EmptySHA)
+				if (PSO.GraphicsDesc.MeshShader != EmptySHA)
+				{
+					RequiredShaders.Add(PSO.GraphicsDesc.MeshShader);
+					bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.MeshShader);
+					UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find MeshShader shader: %s"), *(PSO.GraphicsDesc.MeshShader.ToString()));
+
+					if (PSO.GraphicsDesc.AmplificationShader != EmptySHA)
+					{
+						RequiredShaders.Add(PSO.GraphicsDesc.AmplificationShader);
+						bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.AmplificationShader);
+						UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find AmplificationShader shader: %s"), *(PSO.GraphicsDesc.AmplificationShader.ToString()));
+					}
+				}
+                else if (PSO.GraphicsDesc.VertexShader != EmptySHA)
                 {
                     RequiredShaders.Add(PSO.GraphicsDesc.VertexShader);
                     bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.VertexShader);
                     UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find VertexShader shader: %s"), *(PSO.GraphicsDesc.VertexShader.ToString()));
-					
-					if (PSO.GraphicsDesc.HullShader != EmptySHA)
-					{
-						RequiredShaders.Add(PSO.GraphicsDesc.HullShader);
-						bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.HullShader);
-						UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find HullShader shader: %s"), *(PSO.GraphicsDesc.HullShader.ToString()));
-					}
-					if (PSO.GraphicsDesc.DomainShader != EmptySHA)
-					{
-						RequiredShaders.Add(PSO.GraphicsDesc.DomainShader);
-						bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.DomainShader);
-						UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find DomainShader shader: %s"), *(PSO.GraphicsDesc.DomainShader.ToString()));
-					}
-					if (PSO.GraphicsDesc.FragmentShader != EmptySHA)
-					{
-						RequiredShaders.Add(PSO.GraphicsDesc.FragmentShader);
-						bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.FragmentShader);
-						UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find FragmentShader shader: %s"), *(PSO.GraphicsDesc.FragmentShader.ToString()));
-					}
+
 					if (PSO.GraphicsDesc.GeometryShader != EmptySHA)
 					{
 						RequiredShaders.Add(PSO.GraphicsDesc.GeometryShader);
@@ -846,26 +856,35 @@ void FShaderPipelineCache::PreparePipelineBatch(TDoubleLinkedList<FPipelineCache
 					UE_LOG(LogRHI, Error, TEXT("PSO Entry has no vertex shader: %u this is an invalid entry!"), PSORead->Hash);
 					bOK = false;
 				}
-                
+
+				if (PSO.GraphicsDesc.FragmentShader != EmptySHA)
+				{
+					RequiredShaders.Add(PSO.GraphicsDesc.FragmentShader);
+					bOK &= FShaderCodeLibrary::ContainsShaderCode(PSO.GraphicsDesc.FragmentShader);
+					UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to find FragmentShader shader: %s"), *(PSO.GraphicsDesc.FragmentShader.ToString()));
+				}
+
                 // If everything is OK then we can issue reads of the actual shader code
 				if (bOK && PSO.GraphicsDesc.VertexShader != FSHAHash())
 				{
 					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.VertexShader, AsyncJob.ReadRequests);
                     UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to read VertexShader shader: %s"), *(PSO.GraphicsDesc.VertexShader.ToString()));
 				}
-		
-				if (bOK && PSO.GraphicsDesc.HullShader != EmptySHA)
+
+				// If everything is OK then we can issue reads of the actual shader code
+				if (bOK && PSO.GraphicsDesc.MeshShader != FSHAHash())
 				{
-					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.HullShader, AsyncJob.ReadRequests);
-                    UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to read HullShader shader: %s"), *(PSO.GraphicsDesc.HullShader.ToString()));
+					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.MeshShader, AsyncJob.ReadRequests);
+					UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to read MeshShader shader: %s"), *(PSO.GraphicsDesc.MeshShader.ToString()));
 				}
-		
-				if (bOK && PSO.GraphicsDesc.DomainShader != EmptySHA)
+
+				// If everything is OK then we can issue reads of the actual shader code
+				if (bOK && PSO.GraphicsDesc.AmplificationShader != FSHAHash())
 				{
-					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.DomainShader, AsyncJob.ReadRequests);
-                    UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to read DomainShader shader: %s"), *(PSO.GraphicsDesc.DomainShader.ToString()));
+					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.AmplificationShader, AsyncJob.ReadRequests);
+					UE_CLOG(!bOK, LogRHI, Verbose, TEXT("Failed to read AmplificationShader shader: %s"), *(PSO.GraphicsDesc.AmplificationShader.ToString()));
 				}
-		
+
 				if (bOK && PSO.GraphicsDesc.FragmentShader != EmptySHA)
 				{
 					bOK &= FShaderCodeLibrary::PreloadShader(PSO.GraphicsDesc.FragmentShader, AsyncJob.ReadRequests);
@@ -1004,8 +1023,10 @@ void FShaderPipelineCache::PrecompilePipelineBatch()
 		
 		FRHICommandListImmediate& RHICmdList = GRHICommandList.GetImmediateCommandList();
 		
+		uint32 PSOHash = GetTypeHash(CompileTask.PSO);
+		UE_LOG(LogRHI, Verbose, TEXT("Precompiling PSO %u (%d/%d)"), PSOHash, i, NumToPrecompile);
 		Precompile(RHICmdList, GMaxRHIShaderPlatform, CompileTask.PSO);
-		CompiledHashes.Add(GetTypeHash(CompileTask.PSO));
+		CompiledHashes.Add(PSOHash);
 		
 		delete CompileTask.ReadRequests;
 		CompileTask.ReadRequests = nullptr;
@@ -1060,7 +1081,7 @@ bool FShaderPipelineCache::ReadyForAutoSave() const
 	uint32 SaveAfterNum = CVarPSOFileCacheSaveAfterPSOsLogged.GetValueOnAnyThread();
 	uint32 NumLogged = FPipelineFileCache::NumPSOsLogged();
 
-	const float TimeSinceSave = FPlatformTime::Seconds() - LastAutoSaveTime;
+	const double TimeSinceSave = FPlatformTime::Seconds() - LastAutoSaveTime;
 
 	// autosave if its enabled, and we have more than the desired number, or it's been a while since our last save
 	if (SaveAfterNum > 0 && 
@@ -1181,7 +1202,7 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 , TotalPrecompileTime(0)
 , PrecompileStartTime(0.0)
 , LastAutoSaveTime(0)
-, LastAutoSaveTimeLogBoundPSO(0)
+, LastAutoSaveTimeLogBoundPSO(FPlatformTime::Seconds())
 , LastAutoSaveNum(-1)
 , TotalPrecompileWallTime(0.0)
 , TotalPrecompileTasks(0)
@@ -1310,7 +1331,7 @@ void FShaderPipelineCache::Tick( float DeltaTime )
 	{
 		if (LastAutoSaveNum < int32(FPipelineFileCache::NumPSOsLogged()))
 		{
-			const float TimeSinceSave = FPlatformTime::Seconds() - LastAutoSaveTimeLogBoundPSO;
+			const double TimeSinceSave = FPlatformTime::Seconds() - LastAutoSaveTimeLogBoundPSO;
 
 			if (TimeSinceSave >= CVarPSOFileCacheAutoSaveTimeBoundPSO.GetValueOnAnyThread())
 			{

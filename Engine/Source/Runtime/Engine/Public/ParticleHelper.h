@@ -120,7 +120,7 @@ const int32 PDM_DefaultValue = 0xFFFF;
 	Helper functions.
 -----------------------------------------------------------------------------*/
 
-inline void Particle_SetColorFromVector(const FVector& InColorVec, const float InAlpha, FLinearColor& OutColor)
+inline void Particle_SetColorFromVector(const FVector3f& InColorVec, const float InAlpha, FLinearColor& OutColor)
 {
 	OutColor.R = InColorVec.X;
 	OutColor.G = InColorVec.Y;
@@ -182,35 +182,37 @@ struct FStaticMeshLODResources;
 // Only used when required.
 struct FBaseParticle
 {
-	// 16 bytes
-	FVector			OldLocation;			// Last frame's location, used for collision
-	float			RelativeTime;			// Relative time, range is 0 (==spawn) to 1 (==death)
+	// 48 bytes
+	FVector		OldLocation;			// Last frame's location, used for collision
+	FVector		Location;				// Current location
 
 	// 16 bytes
-	FVector			Location;				// Current location
-	float			OneOverMaxLifetime;		// Reciprocal of lifetime
-
-	// 16 bytes
-	FVector			BaseVelocity;			// Velocity = BaseVelocity at the start of each frame.
+	FVector3f		BaseVelocity;			// Velocity = BaseVelocity at the start of each frame.
 	float			Rotation;				// Rotation of particle (in Radians)
 
 	// 16 bytes
-	FVector			Velocity;				// Current velocity, gets reset to BaseVelocity each frame to allow 
+	FVector3f		Velocity;				// Current velocity, gets reset to BaseVelocity each frame to allow 
 	float			BaseRotationRate;		// Initial angular velocity of particle (in Radians per second)
 
 	// 16 bytes
-	FVector			BaseSize;				// Size = BaseSize at the start of each frame
+	FVector3f		BaseSize;				// Size = BaseSize at the start of each frame
 	float			RotationRate;			// Current rotation rate, gets reset to BaseRotationRate each frame
 
 	// 16 bytes
-	FVector			Size;					// Current size, gets reset to BaseSize each frame
-	int32				Flags;					// Flags indicating various particle states
+	FVector3f		Size;					// Current size, gets reset to BaseSize each frame
+	int32			Flags;					// Flags indicating various particle states
 
 	// 16 bytes
 	FLinearColor	Color;					// Current color of particle.
 
 	// 16 bytes
 	FLinearColor	BaseColor;				// Base color of the particle
+
+	// 16 bytes
+	float			RelativeTime;			// Relative time, range is 0 (==spawn) to 1 (==death)
+	float			OneOverMaxLifetime;		// Reciprocal of lifetime
+	float			Placeholder0;
+	float			Placeholder1;
 };
 
 /*-----------------------------------------------------------------------------
@@ -332,7 +334,6 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Sprite PreRender Time"),STAT_GPUSpritePreRenderT
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Sprite Render Time"),STAT_GPUSpriteRenderingTime,STATGROUP_GPUParticles, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("GPU Particle Tick Time"),STAT_GPUParticleTickTime,STATGROUP_GPUParticles, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Build Sim Commands"),STAT_GPUParticleBuildSimCmdsTime,STATGROUP_GPUParticles, );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Cull Vector Fields"),STAT_GPUParticleVFCullTime,STATGROUP_GPUParticles, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Misc1"),STAT_GPUParticleMisc1,STATGROUP_GPUParticles, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Misc2"),STAT_GPUParticleMisc2,STATGROUP_GPUParticles, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Misc3"),STAT_GPUParticleMisc3,STATGROUP_GPUParticles, );
@@ -351,15 +352,15 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Mesh Tick Time GT,AT"),STAT_MeshTickTime,STATGRO
 struct FParticleSpriteVertex
 {
 	/** The position of the particle. */
-	FVector Position;
+	FVector3f Position;
 	/** The relative time of the particle. */
 	float RelativeTime;
 	/** The previous position of the particle. */
-	FVector	OldPosition;
+	FVector3f	OldPosition;
 	/** Value that remains constant over the lifetime of a particle. */
 	float ParticleId;
 	/** The size of the particle. */
-	FVector2D Size;
+	FVector2f Size;
 	/** The rotation of the particle. */
 	float Rotation;
 	/** The sub-image index for the particle. */
@@ -374,17 +375,17 @@ struct FParticleSpriteVertex
 struct FParticleSpriteVertexNonInstanced
 {
 	/** The texture UVs. */
-	FVector2D UV;
+	FVector2f UV;
 	/** The position of the particle. */
-	FVector Position;
+	FVector3f Position;
 	/** The relative time of the particle. */
 	float RelativeTime;
 	/** The previous position of the particle. */
-	FVector	OldPosition;
+	FVector3f	OldPosition;
 	/** Value that remains constant over the lifetime of a particle. */
 	float ParticleId;
 	/** The size of the particle. */
-	FVector2D Size;
+	FVector2f Size;
 	/** The rotation of the particle. */
 	float Rotation;
 	/** The sub-image index for the particle. */
@@ -405,15 +406,15 @@ struct FParticleVertexDynamicParameter
 struct FParticleBeamTrailVertex
 {
 	/** The position of the particle. */
-	FVector Position;
+	FVector3f Position;
 	/** The relative time of the particle. */
 	float RelativeTime;
 	/** The previous position of the particle. */
-	FVector	OldPosition;
+	FVector3f	OldPosition;
 	/** Value that remains constant over the lifetime of a particle. */
 	float ParticleId;
 	/** The size of the particle. */
-	FVector2D Size;
+	FVector2f Size;
 	/** The rotation of the particle. */
 	float Rotation;
 	/** The sub-image index for the particle. */
@@ -443,10 +444,10 @@ struct FMeshParticleInstanceVertex
 	FLinearColor Color;
 
 	/** The instance to world transform of the particle. Translation vector is packed into W components. */
-	FVector4 Transform[3];
+	FVector4f Transform[3];
 
 	/** The velocity of the particle, XYZ: direction, W: speed. */
-	FVector4 Velocity;
+	FVector4f Velocity;
 
 	/** The sub-image texture offsets for the particle. */
 	int16 SubUVParams[4];
@@ -466,9 +467,9 @@ struct FMeshParticleInstanceVertexDynamicParameter
 
 struct FMeshParticleInstanceVertexPrevTransform
 {
-	FVector4 PrevTransform0;
-	FVector4 PrevTransform1;
-	FVector4 PrevTransform2;
+	FVector4f PrevTransform0;
+	FVector4f PrevTransform1;
+	FVector4f PrevTransform2;
 };
 
 //
@@ -592,12 +593,12 @@ struct FAttractorParticlePayload
 {
 	int32			SourceIndex;
 	uint32		SourcePointer;
-	FVector		SourceVelocity;
+	FVector3f		SourceVelocity;
 };
 
 struct FLightParticlePayload
 {
-	FVector		ColorScale;
+	FVector3f		ColorScale;
 	uint64		LightId;
 	float		RadiusScale;
 	float		LightExponent;
@@ -621,16 +622,16 @@ struct FLightParticlePayload
 struct FBeam2TypeDataPayload
 {
 	/** The source of this beam											*/
-	FVector		SourcePoint;
+	FVector3f		SourcePoint;
 	/** The source tangent of this beam									*/
-	FVector		SourceTangent;
+	FVector3f		SourceTangent;
 	/** The stength of the source tangent of this beam					*/
 	float		SourceStrength;
 
 	/** The target of this beam											*/
-	FVector		TargetPoint;
+	FVector3f		TargetPoint;
 	/** The target tangent of this beam									*/
-	FVector		TargetTangent;
+	FVector3f		TargetTangent;
 	/** The stength of the Target tangent of this beam					*/
 	float		TargetStrength;
 
@@ -641,7 +642,7 @@ struct FBeam2TypeDataPayload
 	int32			InterpolationSteps;
 
 	/** Direction to step in											*/
-	FVector		Direction;
+	FVector3f		Direction;
 	/** StepSize (for each segment to be rendered)						*/
 	float		StepSize;
 	/** Number of segments to render (steps)							*/
@@ -690,12 +691,12 @@ struct FBeamParticleModifierPayloadData
 	uint32	bScaleTangent:1;
 	uint32	bModifyStrength:1;
 	uint32	bScaleStrength:1;
-	FVector		Position;
-	FVector		Tangent;
+	FVector3f		Position;
+	FVector3f		Tangent;
 	float		Strength;
 
 	// Helper functions
-	FORCEINLINE void UpdatePosition(FVector& Value)
+	FORCEINLINE void UpdatePosition(FVector3f& Value)
 	{
 		if (bModifyPosition == true)
 		{
@@ -710,16 +711,16 @@ struct FBeamParticleModifierPayloadData
 		}
 	}
 
-	FORCEINLINE void UpdateTangent(FVector& Value, bool bAbsolute)
+	FORCEINLINE void UpdateTangent(FVector3f& Value, bool bAbsolute)
 	{
 		if (bModifyTangent == true)
 		{
-			FVector ModTangent;
+			FVector3f ModTangent;
 			if (bAbsolute == false)
 			{
 				// Transform the modified tangent so it is relative to the real tangent
-				const FQuat RotQuat = FQuat::FindBetweenNormals(FVector(1.0f, 0.0f, 0.0f), Value);
-				ModTangent = RotQuat.RotateVector(Tangent);
+				const FQuat RotQuat = FQuat::FindBetweenNormals(FVector(1.0f, 0.0f, 0.0f), FVector(Value));
+				ModTangent = FVector3f(RotQuat.RotateVector(FVector(Tangent)));
 			}
 			else
 			{
@@ -803,9 +804,9 @@ struct FTrailsBaseTypeDataPayload
 struct FRibbonTypeDataPayload : public FTrailsBaseTypeDataPayload
 {
 	/**	Tangent for the trail segment */
-	FVector Tangent;
+	FVector3f Tangent;
 	/**	The 'up' for the segment (render plane) */
-	FVector Up;
+	FVector3f Up;
 	/** The source index tracker (particle index, etc.) */
 	int32 SourceIndex;
 };
@@ -814,9 +815,9 @@ struct FRibbonTypeDataPayload : public FTrailsBaseTypeDataPayload
 struct FAnimTrailTypeDataPayload : public FTrailsBaseTypeDataPayload
 {
 	//Direction from the first socket sample to the second.
-	FVector Direction;
+	FVector3f Direction;
 	//Tangent of the curve.
-	FVector Tangent;
+	FVector3f Tangent;
 	//Half length between the sockets. First vertex = Location - Dir * Length; Second vertex = Location + Dir * Lenght
 	float Length;
 	/** Parameter of this knot on the spline*/
@@ -826,20 +827,20 @@ struct FAnimTrailTypeDataPayload : public FTrailsBaseTypeDataPayload
 /** Mesh rotation data payload										*/
 struct FMeshRotationPayloadData
 {
-	FVector	 InitialOrientation;		// from mesh data module
-	FVector  InitRotation;				// from init rotation module
-	FVector  Rotation;
-	FVector	 CurContinuousRotation;
-	FVector  RotationRate;
-	FVector  RotationRateBase;
+	FVector3f	 InitialOrientation;		// from mesh data module
+	FVector3f  InitRotation;				// from init rotation module
+	FVector3f  Rotation;
+	FVector3f	 CurContinuousRotation;
+	FVector3f  RotationRate;
+	FVector3f  RotationRateBase;
 };
 
 struct FMeshMotionBlurPayloadData
 {
-	FVector BaseParticlePrevVelocity;
-	FVector BaseParticlePrevSize;
-	FVector PayloadPrevRotation;
-	FVector PayloadPrevOrbitOffset;
+	FVector3f BaseParticlePrevVelocity;
+	FVector3f BaseParticlePrevSize;
+	FVector3f PayloadPrevRotation;
+	FVector3f PayloadPrevOrbitOffset;
 	float   BaseParticlePrevRotation;
 	float   PayloadPrevCameraOffset;
 };
@@ -938,17 +939,17 @@ struct FModuleLocationBoneSocketParticlePayload
 struct FOrbitChainModuleInstancePayload
 {
 	/** The base offset of the particle from it's tracked location	*/
-	FVector	BaseOffset;
+	FVector3f	BaseOffset;
 	/** The offset of the particle from it's tracked location		*/
-	FVector	Offset;
+	FVector3f	Offset;
 	/** The rotation of the particle at it's offset location		*/
-	FVector	Rotation;
+	FVector3f	Rotation;
 	/** The base rotation rate of the particle offset				*/
-	FVector	BaseRotationRate;
+	FVector3f	BaseRotationRate;
 	/** The rotation rate of the particle offset					*/
-	FVector	RotationRate;
+	FVector3f	RotationRate;
 	/** The offset of the particle from the last frame				*/
-	FVector	PreviousOffset;
+	FVector3f	PreviousOffset;
 };
 
 /**
@@ -964,8 +965,8 @@ struct FParticleSpawnPerUnitInstancePayload
  */
 struct FParticleCollisionPayload
 {
-	FVector	UsedDampingFactor;
-	FVector	UsedDampingFactorRotation;
+	FVector3f	UsedDampingFactor;
+	FVector3f	UsedDampingFactorRotation;
 	int32		UsedCollisions;
 	float	Delay;
 };
@@ -1013,7 +1014,7 @@ struct FEmitterDynamicParameterPayload
  *	@param	InParticle					The particle being processed
  *	@param	OutDynamicData				The dynamic data from the particle
  */
-FORCEINLINE void GetDynamicValueFromPayload(int32 InDynamicPayloadOffset, const FBaseParticle& InParticle, FVector4& OutDynamicData)
+FORCEINLINE void GetDynamicValueFromPayload(int32 InDynamicPayloadOffset, const FBaseParticle& InParticle, FVector4f& OutDynamicData)
 {
 	checkSlow(InDynamicPayloadOffset > 0);
 	const FEmitterDynamicParameterPayload* DynPayload = ((const FEmitterDynamicParameterPayload*)((uint8*)(&InParticle) + InDynamicPayloadOffset));
@@ -1217,7 +1218,7 @@ struct FMacroUVOverride
 
 	bool	bOverride;
 	float   Radius;
-	FVector Position;
+	FVector3f Position;
 
 	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, FMacroUVOverride& O)
 	{
@@ -1240,7 +1241,7 @@ struct FDynamicEmitterReplayDataBase
 	int32 ParticleStride;
 	FParticleDataContainer DataContainer;
 
-	FVector Scale;
+	FVector3f Scale;
 
 	/** Whether this emitter requires sorting as specified by artist.	*/
 	int32 SortMode;
@@ -1253,7 +1254,7 @@ struct FDynamicEmitterReplayDataBase
 		: eEmitterType( DET_Unknown ),
 		  ActiveParticleCount( 0 ),
 		  ParticleStride( 0 ),
-		  Scale( FVector( 1.0f ) ),
+		  Scale( FVector3f( 1.0f ) ),
 		  SortMode(0)	// Default to PSORTMODE_None		  
 	{
 	}
@@ -1386,8 +1387,8 @@ struct FDynamicSpriteEmitterReplayDataBase
 {
 	UMaterialInterface*				MaterialInterface;
 	struct FParticleRequiredModule	*RequiredModule;
-	FVector							NormalsSphereCenter;
-	FVector							NormalsCylinderDirection;
+	FVector3f							NormalsSphereCenter;
+	FVector3f							NormalsCylinderDirection;
 	float							InvDeltaSeconds;
 	int32							MaxDrawCount;
 	int32							OrbitModuleOffset;
@@ -1404,7 +1405,7 @@ struct FDynamicSpriteEmitterReplayDataBase
 	uint8						LockAxisFlag;
 	uint8						EmitterRenderMode;
 	uint8						EmitterNormalsMode;
-	FVector2D					PivotOffset;
+	FVector2f					PivotOffset;
 	bool						bRemoveHMDRoll;
 	float						MinFacingCameraBlendDistance;
 	float						MaxFacingCameraBlendDistance;
@@ -1673,7 +1674,7 @@ struct FDynamicMeshEmitterReplayData
 	int32	MeshMotionBlurOffset;
 	uint8	MeshAlignment;
 	bool	bMeshRotationActive;
-	FVector	LockedAxis;	
+	FVector3f	LockedAxis;	
 
 	/** Constructor */
 	FDynamicMeshEmitterReplayData() : 
@@ -1777,14 +1778,14 @@ struct FDynamicMeshEmitterData : public FDynamicSpriteEmitterDataBase
 		const FMatrix& ProxyLocalToWorld,
 		const FVector& ParticleLocation,
 			  float    ParticleRotation,
-		const FVector& ParticleVelocity,
-		const FVector& ParticleSize,
-		const FVector& ParticlePayloadInitialOrientation,
-		const FVector& ParticlePayloadRotation,
+		const FVector3f& ParticleVelocity,
+		const FVector3f& ParticleSize,
+		const FVector3f& ParticlePayloadInitialOrientation,
+		const FVector3f& ParticlePayloadRotation,
 		const FVector& ParticlePayloadCameraOffset,
-		const FVector& ParticlePayloadOrbitOffset,
+		const FVector3f& ParticlePayloadOrbitOffset,
 		const FVector& ViewOrigin,
-		const FVector& ViewDirection,
+		const FVector3f& ViewDirection,
 		FMatrix& OutTransformMat
 		) const;
 
@@ -1895,7 +1896,7 @@ struct FDynamicBeam2EmitterReplayData
 	int32									NoiseTessellation;
 	float								NoiseRangeScale;
 	float								NoiseTangentStrength;
-	FVector								NoiseSpeed;
+	FVector3f								NoiseSpeed;
 	float								NoiseLockTime;
 	float								NoiseLockRadius;
 	float								NoiseTension;
@@ -2407,7 +2408,7 @@ public:
 	/**
 	 *	Called when the rendering thread removes the dynamic data from the scene.
 	 */
-	virtual void ReleaseRenderThreadResources();
+	void ReleaseRenderThreadResources();
 
 	void UpdateData(FParticleDynamicData* NewDynamicData);
 	void UpdateData_RenderThread(FParticleDynamicData* NewDynamicData);
@@ -2430,7 +2431,7 @@ public:
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
 	uint32 GetAllocatedSize( void ) const 
 	{ 
-		uint32 AdditionalSize = FPrimitiveSceneProxy::GetAllocatedSize();
+		uint32 AdditionalSize = (uint32)FPrimitiveSceneProxy::GetAllocatedSize();
 
 		return( AdditionalSize ); 
 	}
@@ -2612,21 +2613,20 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FParticleVertexDynamicParameter), BUF_Static, CreateInfo, BufferData);
-		FParticleVertexDynamicParameter* Vertices = (FParticleVertexDynamicParameter*)BufferData;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNullDynamicParameterVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FParticleVertexDynamicParameter), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FParticleVertexDynamicParameter* Vertices = (FParticleVertexDynamicParameter*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FParticleVertexDynamicParameter), RLM_WriteOnly);
 		Vertices[0].DynamicValue[0] = Vertices[0].DynamicValue[1] = Vertices[0].DynamicValue[2] = Vertices[0].DynamicValue[3] = 1.0f;
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
 };
 
 /** The global null color vertex buffer, which is set with a stride of 0 on meshes without a color component. */
 extern ENGINE_API TGlobalResource<FNullDynamicParameterVertexBuffer> GNullDynamicParameterVertexBuffer;
 
-FORCEINLINE FVector GetParticleBaseSize(const FBaseParticle& Particle, bool bKeepFlipScale = false)
+FORCEINLINE FVector3f GetParticleBaseSize(const FBaseParticle& Particle, bool bKeepFlipScale = false)
 {
-	return bKeepFlipScale ? Particle.BaseSize : FVector(FMath::Abs(Particle.BaseSize.X), FMath::Abs(Particle.BaseSize.Y), FMath::Abs(Particle.BaseSize.Z));
+	return bKeepFlipScale ? Particle.BaseSize : FVector3f(FMath::Abs(Particle.BaseSize.X), FMath::Abs(Particle.BaseSize.Y), FMath::Abs(Particle.BaseSize.Z));
 }
 
 FORCEINLINE FVector2D GetParticleSizeWithUVFlipInSign(const FBaseParticle& Particle, const FVector2D& ScaledSize)

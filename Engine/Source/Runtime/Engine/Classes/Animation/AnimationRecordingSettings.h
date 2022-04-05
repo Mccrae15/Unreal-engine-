@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Curves/RichCurve.h"
+#include "Misc/FrameRate.h"
 #include "AnimationRecordingSettings.generated.h"
 
 /** Settings describing how to record an animation */
@@ -13,8 +14,8 @@ struct ENGINE_API FAnimationRecordingSettings
 {
 	GENERATED_BODY()
 
-	/** 30Hz default sample rate */
-	static const float DefaultSampleRate;
+	/** 30Hz default sample frame rate */
+	static const FFrameRate DefaultSampleFrameRate;
 
 	/** 1 minute default length */
 	static const float DefaultMaximumLength;
@@ -26,13 +27,15 @@ struct ENGINE_API FAnimationRecordingSettings
 		: bRecordInWorldSpace(true)
 		, bRemoveRootAnimation(true)
 		, bAutoSaveAsset(false)
-		, SampleRate((float)DefaultSampleRate)
+		, SampleFrameRate(DefaultSampleFrameRate)
 		, Length((float)DefaultMaximumLength)
 		, InterpMode(ERichCurveInterpMode::RCIM_Linear)
 		, TangentMode(ERichCurveTangentMode::RCTM_Auto)
 		, bCheckDeltaTimeAtBeginning(true)
 		, bRecordTransforms(true)
-		, bRecordCurves(true)
+		, bRecordMorphTargets(true)
+		, bRecordAttributeCurves(true)
+		, bRecordMaterialCurves(true)
 	{}
 	
 	/** Whether to record animation in world space, defaults to true */
@@ -47,9 +50,9 @@ struct ENGINE_API FAnimationRecordingSettings
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	bool bAutoSaveAsset;
 
-	/** Sample rate of the recorded animation (in Hz) */
+	/** Sample rate of the recorded animation */
 	UPROPERTY(EditAnywhere, Category = "Settings")
-	float SampleRate;
+	FFrameRate SampleFrameRate;
 
 	/** Maximum length of the animation recorded (in seconds). If zero the animation will keep on recording until stopped. */
 	UPROPERTY(EditAnywhere, Category = "Settings")
@@ -66,11 +69,19 @@ struct ENGINE_API FAnimationRecordingSettings
 	/** Whether to check DeltaTime at recording for pauses, turned off for TakeRecorder*/
 	bool bCheckDeltaTimeAtBeginning;
 
-	/** Whether or not to record transforms*/
+	/** Whether or not to record transforms */
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	bool bRecordTransforms;
 
-	/** Whether or not to record curves*/
+	/** Whether or not to record morph targets */
 	UPROPERTY(EditAnywhere, Category = "Settings")
-	bool bRecordCurves;
+	bool bRecordMorphTargets;
+
+	/** Whether or not to record parameter curves */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	bool bRecordAttributeCurves;
+
+	/** Whether or not to record material curves */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	bool bRecordMaterialCurves;
 };

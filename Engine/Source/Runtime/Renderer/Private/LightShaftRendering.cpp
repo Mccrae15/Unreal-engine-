@@ -70,16 +70,16 @@ int32 GetLightShaftDownsampleFactor()
 	return FMath::Clamp(GLightShaftDownsampleFactor, 1, 8);
 }
 
-FVector4 GetLightScreenPosition(const FViewInfo& View, const FLightSceneProxy& LightSceneProxy)
+FVector4f GetLightScreenPosition(const FViewInfo& View, const FLightSceneProxy& LightSceneProxy)
 {
-	return View.WorldToScreen(LightSceneProxy.GetLightPositionForLightShafts(View.ViewMatrices.GetViewOrigin()));
+	return (FVector4f)View.WorldToScreen(LightSceneProxy.GetLightPositionForLightShafts(View.ViewMatrices.GetViewOrigin()));
 }
 
 FMobileLightShaftInfo GetMobileLightShaftInfo(const FViewInfo& View, const FLightSceneInfo& LightSceneInfo)
 {
 	const FLightSceneProxy& LightSceneProxy = *LightSceneInfo.Proxy;
 	const FLinearColor BloomScale(LightSceneInfo.BloomScale, LightSceneInfo.BloomScale, LightSceneInfo.BloomScale, 1.0f);
-	const FVector4 LightScreenPosition = GetLightScreenPosition(View, LightSceneProxy);
+	const FVector4f LightScreenPosition = GetLightScreenPosition(View, LightSceneProxy);
 
 	FMobileLightShaftInfo LightShaft;
 	LightShaft.Center = FVector2D(LightScreenPosition.X / LightScreenPosition.W, LightScreenPosition.Y / LightScreenPosition.W);
@@ -131,11 +131,11 @@ enum class ELightShaftTechnique
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLightShaftPixelShaderParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-	SHADER_PARAMETER(FVector4, UVMinMax)
-	SHADER_PARAMETER(FVector4, AspectRatioAndInvAspectRatio)
-	SHADER_PARAMETER(FVector4, LightShaftParameters)
-	SHADER_PARAMETER(FVector4, BloomTintAndThreshold)
-	SHADER_PARAMETER(FVector2D, TextureSpaceBlurOrigin)
+	SHADER_PARAMETER(FVector4f, UVMinMax)
+	SHADER_PARAMETER(FVector4f, AspectRatioAndInvAspectRatio)
+	SHADER_PARAMETER(FVector4f, LightShaftParameters)
+	SHADER_PARAMETER(FVector4f, BloomTintAndThreshold)
+	SHADER_PARAMETER(FVector2f, TextureSpaceBlurOrigin)
 	SHADER_PARAMETER(float, BloomMaxBrightness)
 END_SHADER_PARAMETER_STRUCT()
 
@@ -150,35 +150,35 @@ FLightShaftPixelShaderParameters GetLightShaftParameters(
 	const FScreenPassTextureViewportParameters LightShaftParameters = GetScreenPassTextureViewportParameters(LightShaftViewport);
 
 	const FVector2D LightShaftRectToExtentRatio = LightShaftViewport.GetRectToExtentRatio();
-	const FVector2D LightShaftAspectRatio(LightShaftRectToExtentRatio.X, (float)LightShaftViewport.Extent.X * LightShaftRectToExtentRatio.Y / LightShaftViewport.Extent.Y);
-	const FVector2D LightShaftAspectRatioInverse = FVector2D(1.0f) / LightShaftAspectRatio;
+	const FVector2f LightShaftAspectRatio(LightShaftRectToExtentRatio.X, (float)LightShaftViewport.Extent.X * LightShaftRectToExtentRatio.Y / LightShaftViewport.Extent.Y);
+	const FVector2f LightShaftAspectRatioInverse = FVector2f(1.0f) / LightShaftAspectRatio;
 
 	FLightShaftPixelShaderParameters Parameters;
 	Parameters.View = View.ViewUniformBuffer;
-	Parameters.AspectRatioAndInvAspectRatio = FVector4(LightShaftAspectRatio, LightShaftAspectRatioInverse);
+	Parameters.AspectRatioAndInvAspectRatio = FVector4f(LightShaftAspectRatio, LightShaftAspectRatioInverse);
 
 	{
-		const FVector4 LightScreenPosition = GetLightScreenPosition(View, LightSceneProxy);
+		const FVector4f LightScreenPosition = GetLightScreenPosition(View, LightSceneProxy);
 		const float InvW = 1.0f / LightScreenPosition.W;
 		const float Y = (GProjectionSignY > 0.0f) ? LightScreenPosition.Y : 1.0f - LightScreenPosition.Y;
-		const FVector2D ScreenSpaceBlurOrigin(
+		const FVector2f ScreenSpaceBlurOrigin(
 			View.ViewRect.Min.X + (0.5f + LightScreenPosition.X * 0.5f * InvW) * View.ViewRect.Width(),
 			View.ViewRect.Min.Y + (0.5f - Y * 0.5f * InvW) * View.ViewRect.Height());
 
 		Parameters.TextureSpaceBlurOrigin = ScreenSpaceBlurOrigin * SceneViewportParameters.ExtentInverse * LightShaftAspectRatioInverse;
 	}
 
-	Parameters.UVMinMax = FVector4(LightShaftParameters.UVViewportBilinearMin, LightShaftParameters.UVViewportBilinearMax);
+	Parameters.UVMinMax = FVector4f(LightShaftParameters.UVViewportBilinearMin, LightShaftParameters.UVViewportBilinearMax);
 
 	const FLinearColor BloomTint = LightSceneInfo.BloomTint;
-	Parameters.BloomTintAndThreshold = FVector4(BloomTint.R, BloomTint.G, BloomTint.B, LightSceneInfo.BloomThreshold);
+	Parameters.BloomTintAndThreshold = FVector4f(BloomTint.R, BloomTint.G, BloomTint.B, LightSceneInfo.BloomThreshold);
 	Parameters.BloomMaxBrightness = LightSceneInfo.BloomMaxBrightness;
 
 	float OcclusionMaskDarkness;
 	float OcclusionDepthRange;
 	LightSceneProxy.GetLightShaftOcclusionParameters(OcclusionMaskDarkness, OcclusionDepthRange);
 
-	Parameters.LightShaftParameters = FVector4(1.0f / OcclusionDepthRange, LightSceneInfo.BloomScale, 1, OcclusionMaskDarkness);
+	Parameters.LightShaftParameters = FVector4f(1.0f / OcclusionDepthRange, LightSceneInfo.BloomScale, 1, OcclusionMaskDarkness);
 
 	return Parameters;
 }
@@ -233,7 +233,7 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLightShaftPixelShaderParameters, LightShafts)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SourceTexture)
-		SHADER_PARAMETER(FVector4, RadialBlurParameters)
+		SHADER_PARAMETER(FVector4f, RadialBlurParameters)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -345,7 +345,7 @@ FScreenPassTexture AddTemporalAAPass(
 	FTemporalAAHistory* HistoryState,
 	FScreenPassTexture LightShafts)
 {
-	if (View.AntiAliasingMethod == AAM_TemporalAA && HistoryState && GLightShaftAllowTAA)
+	if (IsTemporalAccumulationBasedMethod(View.AntiAliasingMethod) && HistoryState && GLightShaftAllowTAA)
 	{
 		const FSceneTextureParameters SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
@@ -376,7 +376,7 @@ FScreenPassTexture AddRadialBlurPass(
 		auto* PassParameters = GraphBuilder.AllocParameters<FBlurLightShaftsPixelShader::FParameters>();
 		PassParameters->LightShafts = LightShaftParameters;
 		PassParameters->SourceTexture = LightShafts.Texture;
-		PassParameters->RadialBlurParameters = FVector4(GLightShaftBlurNumSamples, GLightShaftFirstPassDistance, PassIndex);
+		PassParameters->RadialBlurParameters = FVector4f(GLightShaftBlurNumSamples, GLightShaftFirstPassDistance, PassIndex);
 		PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 		TShaderMapRef<FBlurLightShaftsPixelShader> PixelShader(View.ShaderMap);
@@ -423,8 +423,7 @@ void AddOcclusionTermPass(
 
 FRDGTextureRef FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(
 	FRDGBuilder& GraphBuilder,
-	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
-	FIntPoint SceneTextureExtent)
+	const FMinimalSceneTextures& SceneTextures)
 {
 	FScreenPassRenderTarget Output;
 
@@ -432,7 +431,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "LightShafts (Occlusion)");
 
-		for (TSparseArray<FLightSceneInfoCompact>::TConstIterator LightIt(Scene->Lights); LightIt; ++LightIt)
+		for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 		{
 			const FLightSceneInfo& LightSceneInfo = *LightIt->LightSceneInfo;
 			const FLightSceneProxy& LightSceneProxy = *LightSceneInfo.Proxy;
@@ -459,7 +458,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(
 						RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
 						INC_DWORD_STAT(STAT_LightShaftsLights);
 
-						const FScreenPassTextureViewport SceneViewport(SceneTextureExtent, View.ViewRect);
+						const FScreenPassTextureViewport SceneViewport(SceneTextures.Config.Extent, View.ViewRect);
 						const FScreenPassTextureViewport OutputViewport(GetDownscaledViewport(SceneViewport, GetLightShaftDownsampleFactor()));
 						const FLightShaftPixelShaderParameters LightShaftParameters = GetLightShaftParameters(View, LightSceneInfo, SceneViewport, OutputViewport);
 						FTemporalAAHistory* TemporalHistory = nullptr;
@@ -485,7 +484,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(
 							GraphBuilder,
 							View,
 							LightShaftParameters,
-							SceneTexturesUniformBuffer,
+							SceneTextures.UniformBuffer,
 							SceneViewport,
 							OutputViewport,
 							TemporalHistory,
@@ -529,10 +528,8 @@ void AddLightShaftBloomPass(
 
 void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 	FRDGBuilder& GraphBuilder,
-	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
-	FIntPoint SceneTextureExtent,
-	FRDGTextureRef SceneColorTexture,
-	FSeparateTranslucencyTextures& SeparateTranslucencyTextures)
+	const FMinimalSceneTextures& SceneTextures,
+	FTranslucencyPassResourcesMap& OutTranslucencyResourceMap)
 {
 	if (ShouldRenderLightShafts(ViewFamily))
 	{
@@ -540,7 +537,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 
 		TBitArray<TInlineAllocator<1, SceneRenderingBitArrayAllocator>> ViewsToRender(false, Views.Num());
 
-		for (TSparseArray<FLightSceneInfoCompact>::TConstIterator LightIt(Scene->Lights); LightIt; ++LightIt)
+		for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 		{
 			const FLightSceneInfo& LightSceneInfo = *LightIt->LightSceneInfo;
 			const FLightSceneProxy& LightSceneProxy = *LightSceneInfo.Proxy;
@@ -561,19 +558,41 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 				if (bWillRenderLightShafts)
 				{
 					// Default to scene color output.
-					FRDGTextureMSAA OutputTexture(SceneColorTexture);
+					FRDGTextureMSAA OutputTexture(SceneTextures.Color.Target);
 					ERenderTargetLoadAction OutputLoadAction = ERenderTargetLoadAction::ELoad;
 					float OutputViewRectScale = 1.0f;
 
-					// Reset to point at separate translucency if enabled.
+					// Render to separate translucency buffer instead of scene color if requested.
 					const ELightShaftBloomOutput BloomOutput = GetLightShaftBloomOutput(ViewFamily);
+					bool bUpdateViewsSeparateTranslucency = false;
 					if (BloomOutput == ELightShaftBloomOutput::SeparateTranslucency)
 					{
-						if (!SeparateTranslucencyTextures.IsColorValid())
+						FTranslucencyPassResources& TranslucencyPassResources = OutTranslucencyResourceMap.Get(/* ViewIndex = */ 0, ETranslucencyPass::TPT_TranslucencyAfterDOF);
+
+						if (!TranslucencyPassResources.IsValid())
 						{
 							OutputLoadAction = ERenderTargetLoadAction::EClear;
+
+							const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+								SeparateTranslucencyDimensions.Extent,
+								PF_FloatRGBA,
+								FClearValueBinding::Black,
+								TexCreate_RenderTargetable | TexCreate_ShaderResource,
+								1,
+								SeparateTranslucencyDimensions.NumSamples);
+
+							OutputTexture = CreateTextureMSAA(
+								GraphBuilder, Desc,
+								TEXT("Translucency.LightShaftBloom"),
+								GFastVRamConfig.SeparateTranslucency);
+
+							// We will need to update views separate transluceny buffers if we have just created them.
+							bUpdateViewsSeparateTranslucency = true;
 						}
-						OutputTexture = SeparateTranslucencyTextures.GetColorForWrite(GraphBuilder);
+						else
+						{
+							OutputTexture = TranslucencyPassResources.ColorTexture;
+						}
 						OutputViewRectScale = SeparateTranslucencyDimensions.Scale;
 					}
 
@@ -589,7 +608,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 							RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
 							INC_DWORD_STAT(STAT_LightShaftsLights);
 
-							const FScreenPassTextureViewport SceneViewport(SceneTextureExtent, View.ViewRect);
+							const FScreenPassTextureViewport SceneViewport(SceneTextures.Config.Extent, View.ViewRect);
 							const FScreenPassTextureViewport LightShaftViewport(GetDownscaledViewport(SceneViewport, GetLightShaftDownsampleFactor()));
 							const FScreenPassTextureViewport OutputViewport(OutputTexture.Target, GetScaledRect(View.ViewRect, OutputViewRectScale));
 							const FLightShaftPixelShaderParameters LightShaftParameters = GetLightShaftParameters(View, LightSceneInfo, SceneViewport, LightShaftViewport);
@@ -614,7 +633,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 								GraphBuilder,
 								View,
 								LightShaftParameters,
-								SceneTexturesUniformBuffer,
+								SceneTextures.UniformBuffer,
 								SceneViewport,
 								LightShaftViewport,
 								TemporalHistory,
@@ -623,6 +642,17 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 
 							AddLightShaftBloomPass(GraphBuilder, View, LightShaftParameters, LightShafts, OutputViewport, OutputBinding);
 							OutputLoadAction = ERenderTargetLoadAction::ELoad;
+
+							FTranslucencyPassResources& TranslucencyPassResources = OutTranslucencyResourceMap.Get(ViewIndex, ETranslucencyPass::TPT_TranslucencyAfterDOF);
+							if (bUpdateViewsSeparateTranslucency)
+							{
+								TranslucencyPassResources.ViewRect = OutputViewport.Rect;
+								TranslucencyPassResources.ColorTexture = OutputTexture;
+							}
+							else if(TranslucencyPassResources.IsValid())
+							{
+								ensure(TranslucencyPassResources.ViewRect == OutputViewport.Rect);
+							}
 						}
 					}
 				}
@@ -637,7 +667,7 @@ void FSceneViewState::TrimHistoryRenderTargets(const FScene* Scene)
 	{
 		bool bLightIsUsed = false;
 
-		for (TSparseArray<FLightSceneInfoCompact>::TConstIterator LightIt(Scene->Lights); LightIt; ++LightIt)
+		for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 		{
 			const FLightSceneInfo* const LightSceneInfo = LightIt->LightSceneInfo;
 

@@ -67,7 +67,8 @@ void FCompositeDataTableEditor::CreateAndRegisterRowEditorTab(const TSharedRef<c
 void FCompositeDataTableEditor::CreateAndRegisterPropertiesTab(const TSharedRef<class FTabManager>& InTabManager)
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	const FDetailsViewArgs DetailsViewArgs(/*bIsUpdatable*/false, /*bIsLockable*/false, true, FDetailsViewArgs::ObjectsUseNameArea, false);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 
 	InTabManager->RegisterTabSpawner(PropertiesTabId, FOnSpawnTab::CreateSP(this, &FCompositeDataTableEditor::SpawnTab_Properties))
@@ -77,7 +78,7 @@ void FCompositeDataTableEditor::CreateAndRegisterPropertiesTab(const TSharedRef<
 
 void FCompositeDataTableEditor::InitDataTableEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UDataTable* Table)
 {
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CompositeDataTableEditor_temp_Layout")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CompositeDataTableEditor_temp_Layout_v2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Horizontal)
@@ -105,13 +106,6 @@ void FCompositeDataTableEditor::InitDataTableEditor(const EToolkitMode::Type Mod
 			(
 				FTabManager::NewSplitter()
 				->SetOrientation(Orient_Vertical)
-				->Split
-				(
-					FTabManager::NewStack()
-					->SetSizeCoefficient(0.1f)
-					->SetHideTabWell(true)
-					->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				)
 				->Split
 				(
 					FTabManager::NewStack()
@@ -152,7 +146,6 @@ TSharedRef<SDockTab> FCompositeDataTableEditor::SpawnTab_Stack(const FSpawnTabAr
 	check(Args.GetTabId().TabType == StackTabId);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("DataTableEditor.Tabs.Properties"))
 		.Label(LOCTEXT("StackTitle", "Datatable Stack"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -172,7 +165,6 @@ TSharedRef<SDockTab> FCompositeDataTableEditor::SpawnTab_Properties(const FSpawn
 	check(Args.GetTabId().TabType == PropertiesTabId);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("DataTableEditor.Tabs.Properties"))
 		.Label(LOCTEXT("PropertiesTitle", "Properties"))
 		.TabColorScale(GetTabColorScale())
 		[

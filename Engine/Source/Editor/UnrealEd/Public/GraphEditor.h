@@ -16,6 +16,7 @@
 #include "Engine/LevelStreaming.h"
 
 class UEdGraph;
+class SGraphPanel;
 struct FNotificationInfo;
 struct Rect;
 class FMenuBuilder;
@@ -96,6 +97,8 @@ public:
 
 	DECLARE_DELEGATE_TwoParams( FOnDisallowedPinConnection, const UEdGraphPin*, const UEdGraphPin* );
 
+	DECLARE_DELEGATE( FOnDoubleClicked );
+
 	/** Info about events occurring in/on the graph */
 	struct FGraphEditorEvents
 	{
@@ -123,6 +126,8 @@ public:
 		FOnNodeSpawnedByKeymap OnNodeSpawnedByKeymap;
 		/** Called when the user generates a warning tooltip because a connection was invalid */
 		FOnDisallowedPinConnection OnDisallowedPinConnection;
+		/** Called when the graph itself is double clicked */
+		FOnDoubleClicked OnDoubleClicked;
 	};
 
 
@@ -470,6 +475,32 @@ public:
 
 	UNREALED_API void FocusCommentNodes(TArray<UEdGraphNode*> &CommentNodes, TArray<UEdGraphNode*> &RelatedNodes);
 
+	virtual void OnCollapseNodes()
+	{
+		if (Implementation.IsValid())
+		{
+			Implementation->OnCollapseNodes();
+		}
+	}
+
+	virtual bool CanCollapseNodes() const
+	{
+		return Implementation.IsValid() ? Implementation->CanCollapseNodes() : false;
+	}
+
+	virtual void OnExpandNodes()
+	{
+		if (Implementation.IsValid())
+		{
+			Implementation->OnExpandNodes();
+		}
+	}
+
+	virtual bool CanExpandNodes() const
+	{
+		return Implementation.IsValid() ? Implementation->CanExpandNodes() : false;
+	}
+
 	virtual void OnAlignTop()
 	{
 		if (Implementation.IsValid())
@@ -567,6 +598,17 @@ public:
 
 	// Returns the first graph editor that is viewing the specified graph
 	UNREALED_API static TSharedPtr<SGraphEditor> FindGraphEditorForGraph(const UEdGraph* Graph);
+
+
+	/** Returns the graph panel used for this graph editor */
+	UNREALED_API virtual SGraphPanel* GetGraphPanel() const
+	{
+		if (Implementation.IsValid())
+		{
+			return Implementation->GetGraphPanel();
+		}
+		return nullptr;
+	}
 
 protected:
 	/** Invoked when the underlying Graph is being changed. */

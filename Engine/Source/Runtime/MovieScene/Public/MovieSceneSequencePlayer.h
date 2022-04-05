@@ -180,24 +180,32 @@ struct FMovieSceneSequencePlaybackParams
 	FMovieSceneSequencePlaybackParams()
 		: Time(0.f)
 		, PositionType(EMovieScenePositionType::Frame)
-		, UpdateMethod(EUpdatePositionMethod::Play) {}
+		, UpdateMethod(EUpdatePositionMethod::Play)
+		, bHasJumped(false)
+	{}
 
 	FMovieSceneSequencePlaybackParams(FFrameTime InFrame, EUpdatePositionMethod InUpdateMethod)
 		: Frame(InFrame)
 		, Time(0.f)
 		, PositionType(EMovieScenePositionType::Frame)
-		, UpdateMethod(InUpdateMethod) {}
+		, UpdateMethod(InUpdateMethod)
+		, bHasJumped(false)
+	{}
 
 	FMovieSceneSequencePlaybackParams(float InTime, EUpdatePositionMethod InUpdateMethod)
 		: Time(InTime)
 		, PositionType(EMovieScenePositionType::Time)
-		, UpdateMethod(InUpdateMethod) {}
+		, UpdateMethod(InUpdateMethod)
+		, bHasJumped(false)
+	{}
 
 	FMovieSceneSequencePlaybackParams(const FString& InMarkedFrame, EUpdatePositionMethod InUpdateMethod)
 		: Time(0.f)
 		, MarkedFrame(InMarkedFrame)
 		, PositionType(EMovieScenePositionType::MarkedFrame)
-		, UpdateMethod(InUpdateMethod) {}
+		, UpdateMethod(InUpdateMethod)
+		, bHasJumped(false)
+	{}
 
 	FFrameTime GetPlaybackPosition(UMovieSceneSequencePlayer* Player) const;
 
@@ -215,6 +223,19 @@ struct FMovieSceneSequencePlaybackParams
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
 	EUpdatePositionMethod UpdateMethod;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
+	bool bHasJumped;
+};
+
+USTRUCT(BlueprintType)
+struct FMovieSceneSequencePlayToParams
+{
+	GENERATED_BODY()
+
+	/** Should the PlayTo time be considered exclusive? Defaults to true as end frames in Sequencer are exclusive by default. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
+	bool bExclusive = true;
 };
 
 template<> struct TStructOpsTypeTraits<FMovieSceneSequencePlaybackSettings> : public TStructOpsTypeTraitsBase2<FMovieSceneSequencePlaybackSettings>
@@ -350,7 +371,7 @@ public:
 	 * @param PlaybackParams The position settings (ie. the position to play to)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player")
-	void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams);
+	void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams, FMovieSceneSequencePlayToParams PlayToParams);
 
 	/**
 	 * Set the current time of the player by evaluating from the current time to the specified time, as if the sequence is playing. 
@@ -484,6 +505,9 @@ public:
 	/** Update the sequence for the current time, if playing */
 	void Update(const float DeltaSeconds);
 
+	/** Update the sequence for the current time, if playing, asynchronously */
+	void UpdateAsync(const float DeltaSeconds);
+
 public:
 
 	/**
@@ -492,6 +516,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player")
 	UMovieSceneSequence* GetSequence() const { return Sequence; }
+
+	/**
+	 * Get the name of the sequence this player is playing
+	 * @param bAddClientInfo  If true, add client index if running as a client
+	 * @return the name of the sequence, or None if no sequence is set
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player")
+	FString GetSequenceName(bool bAddClientInfo = false) const;
 
 	/**
 	 * Access this player's tick manager
@@ -512,6 +544,7 @@ protected:
 
 	void PlayInternal();
 	void StopInternal(FFrameTime TimeToResetTo);
+	void FinishPlaybackInternal(FFrameTime TimeToFinishAt);
 
 	struct FMovieSceneUpdateArgs
 	{
@@ -522,13 +555,20 @@ protected:
 	void UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, bool bHasJumped = false);
 	virtual void UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, const FMovieSceneUpdateArgs& Args);
 
-	void UpdateTimeCursorPosition(FFrameTime NewPosition, EUpdatePositionMethod Method);
+	void UpdateTimeCursorPosition(FFrameTime NewPosition, EUpdatePositionMethod Method, bool bHasJumpedOverride = false);
 	bool ShouldStopOrLoop(FFrameTime NewPosition) const;
-	bool ShouldPause(FFrameTime NewPosition) const;
+	/** 
+	* If the current sequence should pause (due to NewPosition overshooting a previously set ShouldPause) 
+	* then a range of time that should be evaluated to reach there will be returned. If we should not pause
+	* then the TOptional will be unset.
+	* */
+	TOptional<TRange<FFrameTime>> GetPauseRange(const FFrameTime& NewPosition) const;
 
 	UWorld* GetPlaybackWorld() const;
 
 	FFrameTime GetLastValidTime() const;
+
+	FFrameRate GetDisplayRate() const;
 
 	bool NeedsQueueLatentAction() const;
 	void QueueLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate);
@@ -552,6 +592,7 @@ protected:
 	virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override {}
 	virtual void ResolveBoundObjects(const FGuid& InBindingId, FMovieSceneSequenceID SequenceID, UMovieSceneSequence& Sequence, UObject* ResolutionContext, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
 	virtual IMovieScenePlaybackClient* GetPlaybackClient() override { return PlaybackClient ? &*PlaybackClient : nullptr; }
+	virtual bool IsDisablingEventTriggers(FFrameTime& DisabledUntilTime) const override;
 	virtual void PreEvaluation(const FMovieSceneContext& Context) override;
 	virtual void PostEvaluation(const FMovieSceneContext& Context) override;
 
@@ -573,7 +614,7 @@ protected:
 	
 private:
 
-	void UpdateTimeCursorPosition_Internal(FFrameTime NewPosition, EUpdatePositionMethod Method);
+	void UpdateTimeCursorPosition_Internal(FFrameTime NewPosition, EUpdatePositionMethod Method, bool bHasJumpedOverride);
 
 	void RunPreEvaluationCallbacks();
 	void RunPostEvaluationCallbacks();
@@ -593,6 +634,12 @@ private:
 	void RPC_OnStopEvent(FFrameTime StoppedTime);
 
 	/**
+	 * Called on the server when playback has reached the end. Could lead to stopping or pausing.
+	 */
+	UFUNCTION(netmulticast, reliable)
+	void RPC_OnFinishPlaybackEvent(FFrameTime StoppedTime);
+
+	/**
 	 * Check whether this sequence player is an authority, as determined by its outer Actor
 	 */
 	bool HasAuthority() const;
@@ -601,6 +648,13 @@ private:
 	 * Update the replicated properties required for synchronizing to clients of this sequence player
 	 */
 	void UpdateNetworkSyncProperties();
+
+	/**
+	 * Analyse the set of samples we have estimating the server time if we have confidence over the data.
+	 * Should only be called once per frame.
+	 * @return An estimation of the server time, or the current local time if we cannot make a strong estimate
+	 */
+	FFrameTime UpdateServerTimeSamples();
 
 protected:
 
@@ -619,14 +673,14 @@ protected:
 	uint32 bIsEvaluating : 1;
 
 	/** Set to true when the player is currently in the main level update */
-	uint32 bIsMainLevelUpdate : 1;
+	uint32 bIsAsyncUpdate : 1;
 
 	/** Flag that allows the player to tick its time controller without actually evaluating the sequence */
 	uint32 bSkipNextUpdate : 1;
 
 	/** The sequence to play back */
 	UPROPERTY(transient)
-	UMovieSceneSequence* Sequence;
+	TObjectPtr<UMovieSceneSequence> Sequence;
 
 	/** Time (in playback frames) at which to start playing the sequence (defaults to the lower bound of the sequence's play range) */
 	UPROPERTY(replicated)
@@ -654,7 +708,24 @@ protected:
 	/** Play position helper */
 	FMovieScenePlaybackPosition PlayPosition;
 
+	/** Disable event triggers until given time */
+	TOptional<FFrameTime> DisableEventTriggersUntilTime;
+
+	/** Spawn register */
 	TSharedPtr<FMovieSceneSpawnRegister> SpawnRegister;
+
+	struct FServerTimeSample
+	{
+		/** The actual server sequence time in seconds, with client ping at the time of the sample baked in */
+		double ServerTime;
+		/** Wall-clock time that the sample was receieved */
+		double ReceievedTime;
+	};
+	/**
+	 * Array of server sequence times in seconds, with ping compensation baked in.
+	 * Samples are sorted chronologically with the oldest samples first
+	 */
+	TArray<FServerTimeSample> ServerTimeSamples;
 
 	/** Replicated playback status and current time that are replicated to clients */
 	UPROPERTY(replicated)
@@ -666,7 +737,7 @@ protected:
 
 	/** Global tick manager, held here to keep it alive while world sequences are in play */
 	UPROPERTY(transient)
-	UMovieSceneSequenceTickManager* TickManager;
+	TObjectPtr<UMovieSceneSequenceTickManager> TickManager;
 
 	/** Local latent action manager for when we're running a blocking sequence */
 	FMovieSceneLatentActionManager LatentActionManager;
@@ -688,8 +759,14 @@ private:
 	*/
 	TOptional<float> LastTickGameTimeSeconds;
 
+	struct FPauseOnArgs
+	{
+		FFrameTime Time;
+		bool bExclusive;
+	};
+
 	/** If set, pause playback on this frame */
-	TOptional<FFrameTime> PauseOnFrame;
+	TOptional<FPauseOnArgs> PauseOnFrame;
 
 	/** Pre and post evaluation callbacks, for async evaluations */
 	DECLARE_DELEGATE(FOnEvaluationCallback);

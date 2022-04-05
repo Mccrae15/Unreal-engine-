@@ -398,7 +398,7 @@ UTexture2D* UPaperTiledImporterFactory::ImportTexture(const FString& SourceFilen
 
 	//@TODO: Avoid the first compression, since we're going to recompress
 	TArray<UObject*> ImportedAssets = AssetToolsModule.Get().ImportAssets(FileNames, TargetSubPath);
-	UTexture2D* ImportedTexture = ImportedTexture = (ImportedAssets.Num() > 0) ? Cast<UTexture2D>(ImportedAssets[0]) : nullptr;
+	UTexture2D* ImportedTexture = (ImportedAssets.Num() > 0) ? Cast<UTexture2D>(ImportedAssets[0]) : nullptr;
 
 	if (ImportedTexture != nullptr)
 	{
@@ -1145,7 +1145,7 @@ void FTiledObject::AddToSpriteGeometryCollection(const FVector2D& Offset, const 
 
 		if (bCreatedShape)
 		{
-			const float RotationUnwound = FMath::Fmod(SourceObject.RotationDegrees, 360.0f);
+			const float RotationUnwound = FMath::Fmod(SourceObject.RotationDegrees, 360.0);
 			InOutShapes.Shapes.Last().Rotation = RotationUnwound;
 		}
 	}

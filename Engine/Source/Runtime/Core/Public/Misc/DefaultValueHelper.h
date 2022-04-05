@@ -131,7 +131,8 @@ public:
 	 *
 	 * @return true if the conversion happened, false otherwise
 	 */
-	static bool ParseVector(const FString& Source, FVector& OutVal);
+	static bool ParseVector(const FString& Source, FVector3f& OutVal);
+	static bool ParseVector(const FString& Source, FVector3d& OutVal);
 
 	/**
 	 * Converts a string into a FVector. Accepted form: " %f, %f "
@@ -141,7 +142,8 @@ public:
 	 *
 	 * @return true if the conversion happened, false otherwise
 	 */
-	static bool ParseVector2D(const FString& Source, FVector2D& OutVal);
+	static bool ParseVector2D(const FString& Source, FVector2f& OutVal);
+	static bool ParseVector2D(const FString& Source, FVector2d& OutVal);
 
 	/**
 	* Converts a string into a FVector4. Accepted form: " %f, %f, %f, %f "
@@ -151,7 +153,8 @@ public:
 	*
 	* @return true if the conversion happened, false otherwise
 	*/
-	static bool ParseVector4(const FString& Source, FVector4& OutVal);
+	static bool ParseVector4(const FString& Source, FVector4f& OutVal);
+	static bool ParseVector4(const FString& Source, FVector4d& OutVal);
 
 	/**
 	 * Converts a string into a FRotator. Accepted form: " %f, %f, %f "
@@ -161,7 +164,8 @@ public:
 	 *
 	 * @return true if the conversion happened, false otherwise
 	 */
-	static bool ParseRotator(const FString& Source, FRotator& OutVal);
+	static bool ParseRotator(const FString& Source, FRotator3f& OutVal);
+	static bool ParseRotator(const FString& Source, FRotator3d& OutVal);
 
 	/**
 	 * Converts a string into a FLinearColor. 

@@ -13,6 +13,7 @@
 #include "Editor.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
+#include "SPrimaryButton.h"
 
 #define LOCTEXT_NAMESPACE "DlgPickAssetPath"
 
@@ -84,24 +85,23 @@ void SDlgPickAssetPath::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			.HAlign(HAlign_Right)
 			.VAlign(VAlign_Bottom)
+			.Padding(8.f, 16.f)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
 				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
 				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
+
 				+SUniformGridPanel::Slot(0,0)
 				[
-					SNew(SButton)
-					.Text(LOCTEXT("OK", "OK"))
-					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					SNew(SPrimaryButton)
+					.Text(LOCTEXT("Save", "Save"))
 					.OnClicked(this, &SDlgPickAssetPath::OnButtonClick, EAppReturnType::Ok)
 				]
 				+SUniformGridPanel::Slot(1,0)
 				[
 					SNew(SButton)
 					.Text(LOCTEXT("Cancel", "Cancel"))
-					.HAlign(HAlign_Center)
 					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgPickAssetPath::OnButtonClick, EAppReturnType::Cancel)
 				]

@@ -9,6 +9,9 @@
 //                                                                           //
 ///////////////////////////////////////////////////////////////////////////////
 
+// We need to keep & fix these warnings to integrate smoothly with HLK
+#pragma warning(error: 4100 4146 4242 4244 4267 4701 4389)
+
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -25,7 +28,7 @@
 #include "dxc/Support/dxcapi.use.h" // DxcDllSupport
 #include "dxc/DXIL/DxilConstants.h" // ComponentType
 #include "WexTestClass.h"           // TAEF
-#include "dxc/Test/HLSLTestUtils.h"          // LogCommentFmt
+#include "HLSLTestUtils.h"          // LogCommentFmt
 
 #include <stdlib.h>
 #include <DirectXMath.h>
@@ -297,7 +300,9 @@ void ShaderOpTest::CreateDescriptorHeaps() {
 
     const UINT descriptorSize = m_pDevice->GetDescriptorHandleIncrementSize(H.Desc.Type);
     CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(pHeap->GetCPUDescriptorHandleForHeapStart());
-    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(pHeap->GetGPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
+    if (H.Desc.Type != D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
+        gpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(pHeap->GetGPUDescriptorHandleForHeapStart());
     for (ShaderOpDescriptor &D : H.Descriptors) {
       ShaderOpResource *R = m_pShaderOp->GetResourceByName(D.ResName);
       if (R == nullptr) {
@@ -336,11 +341,13 @@ void ShaderOpTest::CreateDescriptorHeaps() {
         m_pDevice->CreateConstantBufferView(&cbvDesc, cpuHandle);
       }
 
-      DData.GPUHandle = gpuHandle;
       DData.CPUHandle = cpuHandle;
       m_DescriptorData[R->Name] = DData;
       cpuHandle = cpuHandle.Offset(descriptorSize);
-      gpuHandle = gpuHandle.Offset(descriptorSize);
+      if (H.Desc.Type != D3D12_DESCRIPTOR_HEAP_TYPE_RTV) {
+        DData.GPUHandle = gpuHandle;
+        gpuHandle = gpuHandle.Offset(descriptorSize);
+      }
     }
   }
 
@@ -418,6 +425,62 @@ void ShaderOpTest::CreatePipelineState() {
     InitByteCode(&CDesc.CS, pCS);
     CHECK_HR(m_pDevice->CreateComputePipelineState(&CDesc, IID_PPV_ARGS(&m_pPSO)));
   }
+  // Wakanda technology, needs vibranium to work
+#if defined(NTDDI_WIN10_VB) && WDK_NTDDI_VERSION >= NTDDI_WIN10_VB
+  else if (m_pShaderOp->MS) {
+    // A couple types from a future version of d3dx12.h
+    typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT< D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS>  CD3DX12_PIPELINE_STATE_STREAM_MS;
+    typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT< D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS>  CD3DX12_PIPELINE_STATE_STREAM_AS;
+
+    struct D3DX12_MESH_SHADER_PIPELINE_STATE_DESC
+    {
+      CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+      CD3DX12_PIPELINE_STATE_STREAM_AS    AS;
+      CD3DX12_PIPELINE_STATE_STREAM_MS    MS;
+      CD3DX12_PIPELINE_STATE_STREAM_PS    PS;
+      CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimitiveTopologyType;
+      CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_MASK SampleMask;
+
+      CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+
+    } MDesc = {};
+
+    CComPtr<ID3D10Blob> pAS, pMS, pPS;
+    pAS = map_get_or_null(m_Shaders, m_pShaderOp->AS);
+    pMS = map_get_or_null(m_Shaders, m_pShaderOp->MS);
+    pPS = map_get_or_null(m_Shaders, m_pShaderOp->PS);
+
+    ZeroMemory(&MDesc, sizeof(MDesc));
+    MDesc.RootSignature = CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE(m_pRootSignature.p);
+    D3D12_SHADER_BYTECODE BC;
+    InitByteCode(&BC, pAS);
+    MDesc.AS = CD3DX12_PIPELINE_STATE_STREAM_AS(BC);
+    InitByteCode(&BC, pMS);
+    MDesc.MS = CD3DX12_PIPELINE_STATE_STREAM_MS(BC);
+    InitByteCode(&BC, pPS);
+    MDesc.PS = CD3DX12_PIPELINE_STATE_STREAM_PS(BC);
+    MDesc.PrimitiveTopologyType = CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY(m_pShaderOp->PrimitiveTopologyType);
+    MDesc.SampleMask = CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_MASK(m_pShaderOp->SampleMask);
+
+    D3D12_RT_FORMAT_ARRAY RtArray;
+    ZeroMemory(&RtArray, sizeof(RtArray));
+    RtArray.NumRenderTargets = (UINT)m_pShaderOp->RenderTargets.size();
+    for (size_t i = 0; i < RtArray.NumRenderTargets; ++i) {
+      ShaderOpResource *R = m_pShaderOp->GetResourceByName(m_pShaderOp->RenderTargets[i].Name);
+      RtArray.RTFormats[i] = R->Desc.Format;
+    }
+    MDesc.RTVFormats = CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS(RtArray);
+
+    D3D12_PIPELINE_STATE_STREAM_DESC PDesc = {};
+    PDesc.SizeInBytes = sizeof(MDesc);
+    PDesc.pPipelineStateSubobjectStream = &MDesc;
+
+    CComPtr<ID3D12Device2> pDevice2;
+    CHECK_HR(m_pDevice->QueryInterface(&pDevice2));
+
+    CHECK_HR(pDevice2->CreatePipelineState(&PDesc, IID_PPV_ARGS(&m_pPSO)));
+  }
+#endif
   else {
     CComPtr<ID3D10Blob> pVS, pDS, pHS, pGS, pPS;
     pPS = map_get_or_null(m_Shaders, m_pShaderOp->PS);
@@ -438,7 +501,7 @@ void ShaderOpTest::CreatePipelineState() {
     GDesc.NumRenderTargets = (UINT)m_pShaderOp->RenderTargets.size();
     GDesc.SampleMask = m_pShaderOp->SampleMask;
     for (size_t i = 0; i < m_pShaderOp->RenderTargets.size(); ++i) {
-      ShaderOpResource *R = m_pShaderOp->GetResourceByName(m_pShaderOp->RenderTargets[i]);
+      ShaderOpResource *R = m_pShaderOp->GetResourceByName(m_pShaderOp->RenderTargets[i].Name);
       GDesc.RTVFormats[i] = R->Desc.Format;
     }
     GDesc.SampleDesc.Count = 1; // TODO: read from file, set from shader operation; also apply to count
@@ -509,6 +572,9 @@ void ShaderOpTest::CreateResources() {
         }
       }
     }
+    if (!R.Desc.MipLevels)
+      R.Desc.MipLevels = 1;
+
 
     CComPtr<ID3D12Resource> pResource;
     CHECK_HR(m_pDevice->CreateCommittedResource(
@@ -527,7 +593,7 @@ void ShaderOpTest::CreateResources() {
 
       // Calculate size required for intermediate buffer
       UINT64 totalBytes;
-      m_pDevice->GetCopyableFootprints(&uploadDesc, 0, 1, 0, nullptr, nullptr, nullptr, &totalBytes);
+      m_pDevice->GetCopyableFootprints(&uploadDesc, 0, R.Desc.MipLevels, 0, nullptr, nullptr, nullptr, &totalBytes);
 
       if (!isBuffer) {
         // Assuming a simple linear layout here.
@@ -552,12 +618,27 @@ void ShaderOpTest::CreateResources() {
         SetObjectName(pIntermediate, uploadObjectName);
       }
 
-      D3D12_SUBRESOURCE_DATA transferData;
-      transferData.pData = values.data();
-      transferData.RowPitch = values.size() / R.Desc.Height;
-      transferData.SlicePitch = values.size();
-      UpdateSubresources<1>(pList, pResource.p, pIntermediate.p, 0, 0, 1,
-                            &transferData);
+      D3D12_SUBRESOURCE_DATA transferData[16];
+      UINT width = (UINT)R.Desc.Width;
+      UINT height = R.Desc.Height;
+      UINT pixelSize = GetByteSizeForFormat(R.Desc.Format);
+      BYTE *data = values.data();
+
+      VERIFY_IS_TRUE(R.Desc.MipLevels <= 16);
+
+      for (UINT i = 0; i < R.Desc.MipLevels; i++) {
+        if(!height) height = 1;
+        if(!width) width = 1;
+        transferData[i].pData = data;
+        transferData[i].RowPitch = width*pixelSize;
+        transferData[i].SlicePitch = width*height*pixelSize;
+        data += width*height*pixelSize;
+        height >>= 1;
+        width >>= 1;
+      }
+
+      UpdateSubresources<16>(pList, pResource.p, pIntermediate.p, 0, 0, R.Desc.MipLevels,
+                             transferData);
     }
 
     if (R.ReadBack) {
@@ -778,20 +859,26 @@ void ShaderOpTest::RunCommandList() {
     SetDescriptorHeaps(pList, m_DescriptorHeaps);
     SetRootValues(pList, m_pShaderOp->IsCompute());
 
+    D3D12_VIEWPORT viewport;
     if (!m_pShaderOp->RenderTargets.empty()) {
       // Use the first render target to set up the viewport and scissors.
-      ShaderOpResource *R = m_pShaderOp->GetResourceByName(m_pShaderOp->RenderTargets[0]);
-      D3D12_VIEWPORT viewport;
-      D3D12_RECT scissorRect;
+      ShaderOpRenderTarget& rt = m_pShaderOp->RenderTargets[0];
+      ShaderOpResource *R = m_pShaderOp->GetResourceByName(rt.Name);
+      if (rt.Viewport.Width != 0 && rt.Viewport.Height != 0 ) {
+        memcpy(&viewport, &rt.Viewport, sizeof(rt.Viewport));
+      }
+      else {
+        memset(&viewport, 0, sizeof(viewport));
+        viewport.Height = (FLOAT)R->Desc.Height;
+        viewport.Width = (FLOAT)R->Desc.Width;
+        viewport.MaxDepth = 1.0f;
+      }
+      pList->RSSetViewports(1, &viewport);
 
-      memset(&viewport, 0, sizeof(viewport));
-      viewport.Height = (FLOAT)R->Desc.Height;
-      viewport.Width = (FLOAT)R->Desc.Width;
-      viewport.MaxDepth = 1.0f;
+      D3D12_RECT scissorRect;
       memset(&scissorRect, 0, sizeof(scissorRect));
       scissorRect.right = (LONG)viewport.Width;
       scissorRect.bottom = (LONG)viewport.Height;
-      pList->RSSetViewports(1, &viewport);
       pList->RSSetScissorRects(1, &scissorRect);
     }
 
@@ -799,7 +886,7 @@ void ShaderOpTest::RunCommandList() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[8];
     UINT rtvHandleCount = (UINT)m_pShaderOp->RenderTargets.size();
     for (size_t i = 0; i < rtvHandleCount; ++i) {
-      auto &rt = m_pShaderOp->RenderTargets[i];
+      auto &rt = m_pShaderOp->RenderTargets[i].Name;
       ShaderOpDescriptorData &DData = m_DescriptorData[rt];
       rtvHandles[i] = DData.CPUHandle;
       RecordTransitionBarrier(pList, DData.ResData->Resource,
@@ -813,38 +900,55 @@ void ShaderOpTest::RunCommandList() {
     const float ClearColor[4] = { 0.0f, 0.2f, 0.4f, 1.0f };
     pList->ClearRenderTargetView(rtvHandles[0], ClearColor, 0, nullptr);
 
-    // TODO: set all of this from m_pShaderOp.
-    ShaderOpResourceData &VBufferData = this->m_ResourceData[m_pShaderOp->Strings.insert("VBuffer")];
+#if defined(NTDDI_WIN10_VB) && WDK_NTDDI_VERSION >= NTDDI_WIN10_VB
+    if (m_pShaderOp->MS) {
+#ifndef NDEBUG
+      D3D12_FEATURE_DATA_D3D12_OPTIONS7 O7;
+      DXASSERT_LOCALVAR(O7, SUCCEEDED(m_pDevice->CheckFeatureSupport((D3D12_FEATURE)D3D12_FEATURE_D3D12_OPTIONS7, &O7, sizeof(O7))), "mesh shader test enabled on platform without mesh support");
+#endif
+      CComPtr<ID3D12GraphicsCommandList6> pList6;
+      CHECK_HR(m_CommandList.List.p->QueryInterface(&pList6));
+      pList6->BeginQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+      pList6->DispatchMesh(1, 1, 1);
+      pList6->EndQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+      pList6->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+                              0, 1, m_pQueryBuffer, 0);
+    } else
+#endif
+    {
+      // TODO: set all of this from m_pShaderOp.
+      ShaderOpResourceData &VBufferData = this->m_ResourceData[m_pShaderOp->Strings.insert("VBuffer")];
 
-    D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-    for (ShaderOpResource &resource : m_pShaderOp->Resources) {
+      D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+      for (ShaderOpResource &resource : m_pShaderOp->Resources) {
         if (_strcmpi(resource.Name, "VBuffer") == 0) {
-            topology = resource.PrimitiveTopology;
-            break;
+          topology = resource.PrimitiveTopology;
+          break;
         }
+      }
+      pList->IASetPrimitiveTopology(topology);
+
+      // Calculate the stride in bytes from the inputs, assuming linear & contiguous.
+      UINT strideInBytes = 0;
+      for (auto && IE : m_pShaderOp->InputElements) {
+        strideInBytes += GetByteSizeForFormat(IE.Format);
+      }
+
+      D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+      vertexBufferView.BufferLocation = VBufferData.Resource->GetGPUVirtualAddress();
+      vertexBufferView.StrideInBytes = strideInBytes;
+      vertexBufferView.SizeInBytes = (UINT)VBufferData.ShaderOpRes->Desc.Width;
+      pList->IASetVertexBuffers(0, 1, &vertexBufferView);
+      UINT vertexCount = vertexBufferView.SizeInBytes / vertexBufferView.StrideInBytes;
+      UINT instanceCount = 1;
+      UINT vertexCountPerInstance = vertexCount / instanceCount;
+
+      pList->BeginQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+      pList->DrawInstanced(vertexCountPerInstance, instanceCount, 0, 0);
+      pList->EndQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+      pList->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+                              0, 1, m_pQueryBuffer, 0);
     }
-    pList->IASetPrimitiveTopology(topology);
-
-    // Calculate the stride in bytes from the inputs, assuming linear & contiguous.
-    UINT strideInBytes = 0;
-    for (auto && IE : m_pShaderOp->InputElements) {
-      strideInBytes += GetByteSizeForFormat(IE.Format);
-    }
-
-    D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
-    vertexBufferView.BufferLocation = VBufferData.Resource->GetGPUVirtualAddress();
-    vertexBufferView.StrideInBytes = strideInBytes;
-    vertexBufferView.SizeInBytes = (UINT)VBufferData.ShaderOpRes->Desc.Width;
-    pList->IASetVertexBuffers(0, 1, &vertexBufferView);
-    UINT vertexCount = vertexBufferView.SizeInBytes / vertexBufferView.StrideInBytes;
-    UINT instanceCount = 1;
-    UINT vertexCountPerInstance = vertexCount / instanceCount;
-
-    pList->BeginQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
-    pList->DrawInstanced(vertexCountPerInstance, instanceCount, 0, 0);
-    pList->EndQuery(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
-    pList->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
-                            0, 1, m_pQueryBuffer, 0);
   }
   CHECK_HR(pList->Close());
   ExecuteCommandList(m_CommandList.Queue, pList);
@@ -948,7 +1052,9 @@ void ShaderOpTest::SetupRenderTarget(ShaderOp *pShaderOp, ID3D12Device *pDevice,
   m_CommandList.Queue = pCommandQueue;
   // Simplification - add the render target name if missing, set it up 'by hand' if not.
   if (pShaderOp->RenderTargets.empty()) {
-    pShaderOp->RenderTargets.push_back(pShaderOp->Strings.insert("RTarget"));
+    ShaderOpRenderTarget RT;
+    RT.Name = pShaderOp->Strings.insert("RTarget");
+    pShaderOp->RenderTargets.push_back(RT);
     ShaderOpResource R;
     ZeroMemory(&R, sizeof(R));
     R.Desc = pRenderTarget->GetDesc();
@@ -1027,12 +1133,15 @@ private:
   HRESULT ReadAttrUINT64(IXmlReader *pReader, LPCWSTR pAttrName, UINT64 *pValue, UINT64 defaultValue = 0);
   HRESULT ReadAttrUINT16(IXmlReader *pReader, LPCWSTR pAttrName, UINT16 *pValue, UINT16 defaultValue = 0);
   HRESULT ReadAttrUINT(IXmlReader *pReader, LPCWSTR pAttrName, UINT *pValue, UINT defaultValue = 0);
+  HRESULT ReadAttrFloat(IXmlReader* pReader, LPCWSTR pAttrName, float* pValue, float defaultValue = 0);
   void ReadElementContentStr(IXmlReader *pReader, LPCSTR *ppValue);
   void ParseDescriptor(IXmlReader *pReader, ShaderOpDescriptor *pDesc);
   void ParseDescriptorHeap(IXmlReader *pReader, ShaderOpDescriptorHeap *pHeap);
   void ParseInputElement(IXmlReader *pReader, D3D12_INPUT_ELEMENT_DESC *pInputElement);
   void ParseInputElements(IXmlReader *pReader, std::vector<D3D12_INPUT_ELEMENT_DESC> *pInputElements);
-  void ParseRenderTargets(IXmlReader *pReader, std::vector<LPCSTR> *pRenderTargets);
+  void ParseRenderTargets(IXmlReader *pReader, std::vector<ShaderOpRenderTarget> *pRenderTargets);
+  void ParseRenderTarget(IXmlReader* pReader, ShaderOpRenderTarget *pRenderTarget);
+  void ParseViewport(IXmlReader* pReader, D3D12_VIEWPORT *pViewport);
   void ParseRootValue(IXmlReader *pReader, ShaderOpRootValue *pRootValue);
   void ParseRootValues(IXmlReader *pReader, std::vector<ShaderOpRootValue> *pRootValues);
   void ParseResource(IXmlReader *pReader, ShaderOpResource *pResource);
@@ -1559,6 +1668,20 @@ HRESULT ShaderOpParser::ReadAttrUINT16(IXmlReader *pReader, LPCWSTR pAttrName, U
   return hrRead;
 }
 
+HRESULT ShaderOpParser::ReadAttrFloat(IXmlReader* pReader, LPCWSTR pAttrName, float* pValue, float defaultValue) {
+  if (S_FALSE == CHECK_HR_RET(pReader->MoveToAttributeByName(pAttrName, nullptr))) {
+    *pValue = defaultValue;
+    return S_FALSE;
+  }
+  LPCWSTR pText;
+  CHECK_HR(pReader->GetValue(&pText, nullptr));
+  float d = (float)_wtof(pText);
+  if (errno == ERANGE) CHECK_HR(E_INVALIDARG);
+  *pValue = d;
+  CHECK_HR(pReader->MoveToElement());
+  return S_OK;
+}
+
 void ShaderOpParser::ReadElementContentStr(IXmlReader *pReader, LPCSTR *ppValue) {
   *ppValue = nullptr;
   if (pReader->IsEmptyElement())
@@ -1764,7 +1887,7 @@ void ShaderOpParser::ParseInputElements(IXmlReader *pReader, std::vector<D3D12_I
   }
 }
 
-void ShaderOpParser::ParseRenderTargets(IXmlReader *pReader, std::vector<LPCSTR> *pRenderTargets) {
+void ShaderOpParser::ParseRenderTargets(IXmlReader *pReader, std::vector<ShaderOpRenderTarget> *pRenderTargets) {
   if (!ReadAtElementName(pReader, L"RenderTargets"))
     return;
   if (pReader->IsEmptyElement()) return;
@@ -1782,11 +1905,64 @@ void ShaderOpParser::ParseRenderTargets(IXmlReader *pReader, std::vector<LPCSTR>
       LPCWSTR pLocalName;
       CHECK_HR(pReader->GetLocalName(&pLocalName, nullptr));
       if (0 == wcscmp(pLocalName, L"RenderTarget")) {
-        LPCSTR pName;
-        CHECK_HR(ReadAttrStr(pReader, L"Name", &pName));
-        pRenderTargets->push_back(pName);
+        ShaderOpRenderTarget RT;
+        ZeroMemory(&RT, sizeof(RT));
+        ParseRenderTarget(pReader, &RT);
+        pRenderTargets->push_back(RT);
       }
     }
+  }
+}
+
+void ShaderOpParser::ParseRenderTarget(IXmlReader* pReader, ShaderOpRenderTarget *pRenderTarget) {
+  if (!ReadAtElementName(pReader, L"RenderTarget"))
+    return;
+
+  CHECK_HR(ReadAttrStr(pReader, L"Name", &pRenderTarget->Name));
+
+  if (pReader->IsEmptyElement()) return;
+
+  UINT startDepth;
+  XmlNodeType nt;
+  CHECK_HR(pReader->GetDepth(&startDepth));
+  for (;;) {
+    UINT depth;
+    CHECK_HR(pReader->Read(&nt));
+    CHECK_HR(pReader->GetDepth(&depth));
+    if (nt == XmlNodeType_EndElement && depth == startDepth + 1)
+      return;
+    if (nt == XmlNodeType_Element) {
+      LPCWSTR pLocalName;
+      CHECK_HR(pReader->GetLocalName(&pLocalName, nullptr));
+      if (0 == wcscmp(pLocalName, L"Viewport")) {
+        ParseViewport(pReader, &pRenderTarget->Viewport);
+      }
+    }
+  }
+}
+
+void ShaderOpParser::ParseViewport(IXmlReader* pReader, D3D12_VIEWPORT *pViewport) {
+  if (!ReadAtElementName(pReader, L"Viewport"))
+    return;
+
+  CHECK_HR(ReadAttrFloat(pReader, L"TopLeftX", &pViewport->TopLeftX));
+  CHECK_HR(ReadAttrFloat(pReader, L"TopLeftY", &pViewport->TopLeftY));
+  CHECK_HR(ReadAttrFloat(pReader, L"Width",    &pViewport->Width));
+  CHECK_HR(ReadAttrFloat(pReader, L"Height",   &pViewport->Height));
+  CHECK_HR(ReadAttrFloat(pReader, L"MinDepth", &pViewport->MinDepth));
+  CHECK_HR(ReadAttrFloat(pReader, L"MaxDepth", &pViewport->MaxDepth));
+
+  if (pReader->IsEmptyElement()) return;
+
+  UINT startDepth;
+  XmlNodeType nt;
+  CHECK_HR(pReader->GetDepth(&startDepth));
+  for (;;) {
+    UINT depth;
+    CHECK_HR(pReader->Read(&nt));
+    CHECK_HR(pReader->GetDepth(&depth));
+    if (nt == XmlNodeType_EndElement && depth == startDepth + 1)
+      return;
   }
 }
 
@@ -1865,6 +2041,8 @@ void ShaderOpParser::ParseShaderOp(IXmlReader *pReader, ShaderOp *pShaderOp) {
     return;
   CHECK_HR(ReadAttrStr(pReader, L"Name", &pShaderOp->Name));
   CHECK_HR(ReadAttrStr(pReader, L"CS", &pShaderOp->CS));
+  CHECK_HR(ReadAttrStr(pReader, L"AS", &pShaderOp->AS));
+  CHECK_HR(ReadAttrStr(pReader, L"MS", &pShaderOp->MS));
   CHECK_HR(ReadAttrStr(pReader, L"VS", &pShaderOp->VS));
   CHECK_HR(ReadAttrStr(pReader, L"HS", &pShaderOp->HS));
   CHECK_HR(ReadAttrStr(pReader, L"DS", &pShaderOp->DS));

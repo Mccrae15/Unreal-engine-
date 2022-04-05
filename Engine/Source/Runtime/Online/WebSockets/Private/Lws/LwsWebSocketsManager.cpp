@@ -53,6 +53,9 @@ FLwsWebSocketsManager::FLwsWebSocketsManager()
 
 	ThreadMinimumSleepTimeInSeconds = 0.0f;
 	GConfig->GetDouble(TEXT("WebSockets.LibWebSockets"), TEXT("ThreadMinimumSleepTimeInSeconds"), ThreadMinimumSleepTimeInSeconds, GEngineIni);
+
+	GConfig->GetBool(TEXT("LwsWebSocket"), TEXT("bDisableDomainWhitelist"), bDisableDomainAllowlist, GEngineIni);
+	GConfig->GetBool(TEXT("LwsWebSocket"), TEXT("bDisableCertValidation"), bDisableCertValidation, GEngineIni);
 }
 
 FLwsWebSocketsManager& FLwsWebSocketsManager::Get()
@@ -74,7 +77,7 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 
 		// We need to hold on to the converted strings
 		ANSICHAR* Converted = static_cast<ANSICHAR*>(FMemory::Malloc(ConvertName.Length() + 1));
-		FCStringAnsi::Strcpy(Converted, ConvertName.Length(), ConvertName.Get());
+		FCStringAnsi::Strcpy(Converted, ConvertName.Length(), (const ANSICHAR*)ConvertName.Get());
 		lws_protocols LwsProtocol;
 		FMemory::Memset(&LwsProtocol, 0, sizeof(LwsProtocol));
 		LwsProtocol.name = Converted;
@@ -114,7 +117,7 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 	if (!ProxyAddress.IsEmpty())
 	{
 		Converter.Emplace(*ProxyAddress);
-		ContextInfo.http_proxy_address = Converter->Get();
+		ContextInfo.http_proxy_address = (const char*)Converter->Get();
 	}
 
 #if WITH_SSL
@@ -163,7 +166,7 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 
 	// Setup our game thread tick
 	FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FLwsWebSocketsManager::GameThreadTick);
-	TickHandle = FBackgroundableTicker::GetCoreTicker().AddTicker(TickDelegate, 0.0f);
+	TickHandle = FTSBackgroundableTicker::GetCoreTicker().AddTicker(TickDelegate, 0.0f);
 }
 
 void FLwsWebSocketsManager::ShutdownWebSockets()
@@ -171,7 +174,7 @@ void FLwsWebSocketsManager::ShutdownWebSockets()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FLwsWebSocketsManager_ShutdownWebSockets);
 	if (TickHandle.IsValid())
 	{
-		FBackgroundableTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		FTSBackgroundableTicker::GetCoreTicker().RemoveTicker(TickHandle);
 		TickHandle.Reset();
 	}
 
@@ -398,7 +401,7 @@ TSharedRef<IWebSocket> FLwsWebSocketsManager::CreateWebSocket(const FString& Url
 		UpgradeHeaderString += FString::Printf(TEXT("%s: %s\r\n"), *OneHeader.Key, *OneHeader.Value);
 	}
 
-	FLwsWebSocketRef Socket = MakeShared<FLwsWebSocket>(Url, Protocols, UpgradeHeaderString);
+	FLwsWebSocketRef Socket = MakeShared<FLwsWebSocket>(FLwsWebSocket::FPrivateToken{}, Url, Protocols, UpgradeHeaderString);
 	return Socket;
 }
 

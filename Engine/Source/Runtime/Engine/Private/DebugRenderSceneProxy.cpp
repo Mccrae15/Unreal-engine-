@@ -25,9 +25,9 @@ FDebugRenderSceneProxy::FDebugRenderSceneProxy(const UPrimitiveComponent* InComp
 {
 }
 
-void FDebugDrawDelegateHelper::RegisterDebugDrawDelgate()
+void FDebugDrawDelegateHelper::RegisterDebugDrawDelegateInternal()
 {
-	ensureMsgf(State != RegisteredState, TEXT("RegisterDebugDrawDelegate is already Registered!"));
+	ensureMsgf(State != RegisteredState, TEXT("DrawDelegate is already Registered!"));
 	if (State == InitializedState)
 	{
 		DebugTextDrawingDelegate = FDebugDrawDelegate::CreateRaw(this, &FDebugDrawDelegateHelper::DrawDebugLabels);
@@ -36,9 +36,28 @@ void FDebugDrawDelegateHelper::RegisterDebugDrawDelgate()
 	}
 }
 
-void FDebugDrawDelegateHelper::UnregisterDebugDrawDelgate()
+void FDebugDrawDelegateHelper::RequestRegisterDebugDrawDelegate(FRegisterComponentContext* Context)
 {
-	ensureMsgf(State != InitializedState, TEXT("UnregisterDebugDrawDelegate is in an invalid State: %i !"), State);
+	bDeferredRegister = Context != nullptr;
+
+	if (!bDeferredRegister)
+	{
+		RegisterDebugDrawDelegateInternal();
+	}
+}
+
+void FDebugDrawDelegateHelper::ProcessDeferredRegister()
+{
+	if (bDeferredRegister)
+	{
+		RegisterDebugDrawDelegateInternal();
+		bDeferredRegister = false;
+	}
+}
+
+void FDebugDrawDelegateHelper::UnregisterDebugDrawDelegate()
+{
+	ensureMsgf(State != InitializedState, TEXT("DrawDelegate is in an invalid State: %i !"), State);
 	if (State == RegisteredState)
 	{
 		check(DebugTextDrawingDelegate.IsBound());
@@ -47,13 +66,13 @@ void FDebugDrawDelegateHelper::UnregisterDebugDrawDelgate()
 	}
 }
 
-void  FDebugDrawDelegateHelper::ReregisterDebugDrawDelgate()
+void  FDebugDrawDelegateHelper::ReregisterDebugDrawDelegate()
 {
-	ensureMsgf(State != UndefinedState, TEXT("ReregisterDebugDrawDelgeate is in an invalid State: %i !"), State);
+	ensureMsgf(State != UndefinedState, TEXT("DrawDelegate is in an invalid State: %i !"), State);
 	if (State == RegisteredState)
 	{
-		UnregisterDebugDrawDelgate();
-		RegisterDebugDrawDelgate();
+		UnregisterDebugDrawDelegate();
+		RegisterDebugDrawDelegateInternal();
 	}
 }
 
@@ -88,6 +107,7 @@ void FDebugDrawDelegateHelper::DrawDebugLabels(UCanvas* Canvas, APlayerControlle
 		{
 			const FVector ScreenLoc = Canvas->Project(It->Location);
 			const FFontRenderInfo& FontInfo = TextWithoutShadowDistance >= 0 ? (FDebugRenderSceneProxy::PointInRange(It->Location, View, TextWithoutShadowDistance) ? FontRenderInfoWithShadow : FontRenderInfo) : FontRenderInfo;
+			Canvas->SetDrawColor(It->Color);
 			Canvas->DrawText(RenderFont, It->Text, ScreenLoc.X, ScreenLoc.Y, 1, 1, FontInfo);
 		}
 	}
@@ -245,14 +265,14 @@ void FDebugRenderSceneProxy::GetDynamicMeshElements(const TArray<const FSceneVie
 				}
 			}
 
-			for (auto It = Capsles.CreateConstIterator(); It; ++It)
+			for (auto It = Capsules.CreateConstIterator(); It; ++It)
 			{
-				if (PointInView(It->Location, View))
+				if (PointInView(It->Base, View))
 				{
 					if (DrawType == SolidAndWireMeshes || DrawType == WireMesh)
 					{
 						const float HalfAxis = FMath::Max<float>(It->HalfHeight - It->Radius, 1.f);
-						const FVector BottomEnd = It->Location + It->Radius * It->Z;
+						const FVector BottomEnd = It->Base + It->Radius * It->Z;
 						const FVector TopEnd = BottomEnd + (2 * HalfAxis) * It->Z;
 						const float CylinderHalfHeight = (TopEnd - BottomEnd).Size() * 0.5;
 						const FVector CylinderLocation = BottomEnd + CylinderHalfHeight * It->Z;
@@ -260,7 +280,7 @@ void FDebugRenderSceneProxy::GetDynamicMeshElements(const TArray<const FSceneVie
 					}
 					if (DrawType == SolidAndWireMeshes || DrawType == SolidMesh)
 					{
-						GetCapsuleMesh(It->Location, It->X, It->Y, It->Z, It->Color, It->Radius, It->HalfHeight, 16, MaterialCache[0][It->Color.WithAlpha(DrawAlpha)], SDPG_World, false, ViewIndex, Collector);
+						GetCapsuleMesh(It->Base, It->X, It->Y, It->Z, It->Color, It->Radius, It->HalfHeight, 16, MaterialCache[0][It->Color.WithAlpha(DrawAlpha)], SDPG_World, false, ViewIndex, Collector);
 					}
 				}
 			}
@@ -271,7 +291,7 @@ void FDebugRenderSceneProxy::GetDynamicMeshElements(const TArray<const FSceneVie
 				MeshBuilder.AddVertices(Mesh.Vertices);
 				MeshBuilder.AddTriangles(Mesh.Indices);
 
-				MeshBuilder.GetMesh(FMatrix::Identity, MaterialCache[Mesh.Color.A == 255 ? 1 : 0][Mesh.Color.WithAlpha(DrawAlpha)], SDPG_World, false, false, ViewIndex, Collector);
+				MeshBuilder.GetMesh(FMatrix::Identity, MaterialCache[Mesh.Color.A == 255 ? 1 : 0][Mesh.Color], SDPG_World, false, false, ViewIndex, Collector);
 			}
 
 		}

@@ -20,18 +20,16 @@
 			"Name" : "BinkMediaPlayer",
 			"Type" : "RuntimeNoCommandlet",
 			"LoadingPhase" : "PreLoadingScreen",
-			"BlacklistTargets": [ "Server" ],
-			"BlacklistPlatforms": [ 
+			"TargetDenyList": [ "Server" ],
+			"PlatformDenyList": [ 
 				"HoloLens",
-				"Lumin",
-				"tvOS",
-				"XboxOne"
+				"tvOS"
 			]
 		},
 		{
 			"Name" : "BinkMediaPlayerEditor",
 			"Type" : "Editor",
-			"BlacklistTargets": [ "Server" ]
+			"TargetDenyList": [ "Server" ]
 		}
     ]
 }

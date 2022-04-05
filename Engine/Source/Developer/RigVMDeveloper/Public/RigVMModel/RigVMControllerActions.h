@@ -50,7 +50,12 @@ struct FRigVMActionKey
 		UScriptStruct* ScriptStruct = ActionType::StaticStruct();
 		FRigVMActionKey Key;
 		ScriptStructPath = ScriptStruct->GetPathName();
-		ScriptStruct->ExportText(ExportedText, &InAction, nullptr, nullptr, PPF_None, nullptr);
+		
+		TArray<uint8, TAlignedHeapAllocator<16>> DefaultStructData;
+		DefaultStructData.AddZeroed(ScriptStruct->GetStructureSize());
+		ScriptStruct->InitializeDefaultValue(DefaultStructData.GetData());
+		
+		ScriptStruct->ExportText(ExportedText, &InAction, DefaultStructData.GetData(), nullptr, PPF_None, nullptr);
 	}
 };
 
@@ -71,7 +76,7 @@ private:
 	FRigVMActionWrapper& operator = (const FRigVMActionWrapper& Other) = delete;
 
 	UScriptStruct* ScriptStruct;
-	FRigVMByteArray Data;
+	TArray<uint8> Data;
 };
 
 /**
@@ -134,6 +139,11 @@ UCLASS()
 class URigVMActionStack : public UObject
 {
 	GENERATED_BODY()
+
+	virtual ~URigVMActionStack()
+	{
+		ensure(CurrentActions.IsEmpty());
+	}
 
 public:
 
@@ -295,18 +305,18 @@ struct FRigVMInverseAction : public FRigVMBaseAction
 };
 
 /**
- * An action adding a struct node to the graph.
+ * An action adding a unit node to the graph.
  */
 USTRUCT()
-struct FRigVMAddStructNodeAction : public FRigVMBaseAction
+struct FRigVMAddUnitNodeAction : public FRigVMBaseAction
 {
 	GENERATED_BODY()
 
 public:
 
-	FRigVMAddStructNodeAction();
-	FRigVMAddStructNodeAction(URigVMStructNode* InNode);
-	virtual ~FRigVMAddStructNodeAction() {};
+	FRigVMAddUnitNodeAction();
+	FRigVMAddUnitNodeAction(URigVMUnitNode* InNode);
+	virtual ~FRigVMAddUnitNodeAction() {};
 	virtual bool Undo(URigVMController* InController) override;
 	virtual bool Redo(URigVMController* InController) override;
 
@@ -609,18 +619,18 @@ public:
 };
 
 /**
- * An action adding an injected node to the graph.
+ * An action injecting a node into a pin
  */
 USTRUCT()
-struct FRigVMAddInjectedNodeAction : public FRigVMBaseAction
+struct FRigVMInjectNodeIntoPinAction : public FRigVMBaseAction
 {
 	GENERATED_BODY()
 
 public:
 
-	FRigVMAddInjectedNodeAction();
-	FRigVMAddInjectedNodeAction(URigVMInjectionInfo* InInjectionInfo);
-	virtual ~FRigVMAddInjectedNodeAction() {};
+	FRigVMInjectNodeIntoPinAction();
+	FRigVMInjectNodeIntoPinAction(URigVMInjectionInfo* InInjectionInfo);
+	virtual ~FRigVMInjectNodeIntoPinAction() {};
 	virtual bool Undo(URigVMController* InController) override;
 	virtual bool Redo(URigVMController* InController) override;
 
@@ -629,12 +639,6 @@ public:
 
 	UPROPERTY()
 	bool bAsInput;
-
-	UPROPERTY()
-	FString ScriptStructPath;
-
-	UPROPERTY()
-	FName MethodName;
 
 	UPROPERTY()
 	FName InputPinName;
@@ -657,7 +661,7 @@ struct FRigVMRemoveNodeAction : public FRigVMBaseAction
 public:
 
 	FRigVMRemoveNodeAction() {}
-	FRigVMRemoveNodeAction(URigVMNode* InNode);
+	FRigVMRemoveNodeAction(URigVMNode* InNode, URigVMController* InController);
 	virtual ~FRigVMRemoveNodeAction() {};
 	virtual bool Undo(URigVMController* InController) override;
 	virtual bool Redo(URigVMController* InController) override;
@@ -780,6 +784,97 @@ public:
 };
 
 /**
+ * An action setting a node's category in the graph.
+ */
+USTRUCT()
+struct FRigVMSetNodeCategoryAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMSetNodeCategoryAction()
+	{
+		OldCategory = NewCategory = FString();
+	}
+	FRigVMSetNodeCategoryAction(URigVMCollapseNode* InNode, const FString& InNewCategory);
+	virtual ~FRigVMSetNodeCategoryAction() {};
+	virtual bool Merge(const FRigVMBaseAction* Other);
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString NodePath;
+
+	UPROPERTY()
+	FString OldCategory;
+
+	UPROPERTY()
+	FString NewCategory;
+};
+
+
+/**
+ * An action setting a node's keywords in the graph.
+ */
+USTRUCT()
+struct FRigVMSetNodeKeywordsAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMSetNodeKeywordsAction()
+	{
+		OldKeywords = NewKeywords = FString();
+	}
+	FRigVMSetNodeKeywordsAction(URigVMCollapseNode* InNode, const FString& InNewKeywords);
+	virtual ~FRigVMSetNodeKeywordsAction() {};
+	virtual bool Merge(const FRigVMBaseAction* Other);
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString NodePath;
+
+	UPROPERTY()
+	FString OldKeywords;
+
+	UPROPERTY()
+	FString NewKeywords;
+};
+
+/**
+* An action setting a node's description in the graph.
+*/
+USTRUCT()
+struct FRigVMSetNodeDescriptionAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMSetNodeDescriptionAction()
+	{
+		OldDescription = NewDescription = FString();
+	}
+	FRigVMSetNodeDescriptionAction(URigVMCollapseNode* InNode, const FString& InNewDescription);
+	virtual ~FRigVMSetNodeDescriptionAction() {};
+	virtual bool Merge(const FRigVMBaseAction* Other);
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString NodePath;
+
+	UPROPERTY()
+	FString OldDescription;
+
+	UPROPERTY()
+	FString NewDescription;
+};
+
+/**
  * An action setting a comment node's text in the graph.
  */
 USTRUCT()
@@ -789,8 +884,8 @@ struct FRigVMSetCommentTextAction : public FRigVMBaseAction
 
 public:
 
-	FRigVMSetCommentTextAction() {}
-	FRigVMSetCommentTextAction(URigVMCommentNode* InNode, const FString& InNewText);
+	FRigVMSetCommentTextAction();
+	FRigVMSetCommentTextAction(URigVMCommentNode* InNode, const FString& InNewText, const int32& InNewFontSize, const bool& bInNewBubbleVisible, const bool& bInNewColorBubble);
 	virtual ~FRigVMSetCommentTextAction() {};
 	virtual bool Undo(URigVMController* InController) override;
 	virtual bool Redo(URigVMController* InController) override;
@@ -803,6 +898,24 @@ public:
 
 	UPROPERTY()
 	FString NewText;
+
+	UPROPERTY()
+	int32 OldFontSize;
+
+	UPROPERTY()
+	int32 NewFontSize;
+
+	UPROPERTY()
+	bool bOldBubbleVisible;
+
+	UPROPERTY()
+	bool bNewBubbleVisible;
+
+	UPROPERTY()
+	bool bOldColorBubble;
+
+	UPROPERTY()
+	bool bNewColorBubble;
 };
 
 /**
@@ -1079,8 +1192,8 @@ struct FRigVMChangePinTypeAction : public FRigVMBaseAction
 
 public:
 
-	FRigVMChangePinTypeAction() {}
-	FRigVMChangePinTypeAction(URigVMPin* InPin, const FString& InCppType, const FName& InCppTypeObjectPath);
+	FRigVMChangePinTypeAction();
+	FRigVMChangePinTypeAction(URigVMPin* InPin, const FString& InCppType, const FName& InCppTypeObjectPath, bool InSetupOrphanPins, bool InBreakLinks, bool InRemoveSubPins);
 	virtual ~FRigVMChangePinTypeAction() {};
 	virtual bool Undo(URigVMController* InController) override;
 	virtual bool Redo(URigVMController* InController) override;
@@ -1099,4 +1212,472 @@ public:
 
 	UPROPERTY()
 	FName NewCPPTypeObjectPath;
+
+	UPROPERTY()
+	bool bSetupOrphanPins;
+
+	UPROPERTY()
+	bool bBreakLinks;
+
+	UPROPERTY()
+	bool bRemoveSubPins;
+};
+
+/**
+ * An action to add a node from a text buffer
+ */
+USTRUCT()
+struct FRigVMImportNodeFromTextAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMImportNodeFromTextAction();
+	FRigVMImportNodeFromTextAction(URigVMNode* InNode, URigVMController* InController);
+	virtual ~FRigVMImportNodeFromTextAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FVector2D Position;
+
+	UPROPERTY()
+	FString NodePath;
+
+	UPROPERTY()
+	FString ExportedText;
+};
+
+/**
+ * An action to collapse a selection of nodes
+ */
+USTRUCT()
+struct FRigVMCollapseNodesAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMCollapseNodesAction();
+	FRigVMCollapseNodesAction(URigVMController* InController, const TArray<URigVMNode*>& InNodes, const FString& InNodePath);
+	virtual ~FRigVMCollapseNodesAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString LibraryNodePath;
+
+	UPROPERTY()
+	FString CollapsedNodesContent;
+
+	UPROPERTY()
+	TArray<FString> CollapsedNodesPaths;
+
+	UPROPERTY()
+	TArray<FString> CollapsedNodesLinks;
+};
+
+/**
+ * An action to expand a library node into its content
+ */
+USTRUCT()
+struct FRigVMExpandNodeAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMExpandNodeAction();
+	FRigVMExpandNodeAction(URigVMController* InController, URigVMLibraryNode* InLibraryNode);
+	virtual ~FRigVMExpandNodeAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString LibraryNodePath;
+
+	UPROPERTY()
+	FString LibraryNodeContent;
+
+	UPROPERTY()
+	TArray<FString> LibraryNodeLinks;
+
+	UPROPERTY()
+	TArray<FString> ExpandedNodePaths;
+};
+
+/**
+ * An action renaming a node in the graph.
+ */
+USTRUCT()
+struct FRigVMRenameNodeAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMRenameNodeAction() {}
+	FRigVMRenameNodeAction(const FName& InOldNodeName, const FName& InNewNodeName);
+	virtual ~FRigVMRenameNodeAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString OldNodeName;
+
+	UPROPERTY()
+	FString NewNodeName;
+};
+
+/**
+ * An action pushing a graph to the graph stack of the controller
+ */
+USTRUCT()
+struct FRigVMPushGraphAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMPushGraphAction() {}
+	FRigVMPushGraphAction(UObject* InGraph);
+	virtual ~FRigVMPushGraphAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FSoftObjectPath GraphPath;
+};
+
+/**
+ * An action popping a graph from the graph stack of the controller
+ */
+USTRUCT()
+struct FRigVMPopGraphAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMPopGraphAction() {}
+	FRigVMPopGraphAction(UObject* InGraph);
+	virtual ~FRigVMPopGraphAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FSoftObjectPath GraphPath;
+};
+
+
+/**
+ * An action exposing a pin as a parameter
+ */
+USTRUCT()
+struct FRigVMAddExposedPinAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMAddExposedPinAction() {}
+	FRigVMAddExposedPinAction(URigVMPin* InPin);
+	virtual ~FRigVMAddExposedPinAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString PinName;
+	
+	UPROPERTY()
+	ERigVMPinDirection Direction = ERigVMPinDirection::Input;
+
+	UPROPERTY()
+	FString CPPType;
+
+	UPROPERTY()
+	FString CPPTypeObjectPath;
+	
+	UPROPERTY()
+	FString DefaultValue;
+};
+
+/**
+ * An action exposing a pin as a parameter
+ */
+USTRUCT()
+struct FRigVMRemoveExposedPinAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMRemoveExposedPinAction() {}
+	FRigVMRemoveExposedPinAction(URigVMPin* InPin);
+	virtual ~FRigVMRemoveExposedPinAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString PinName;
+	
+	UPROPERTY()
+	ERigVMPinDirection Direction = ERigVMPinDirection::Input;
+
+	UPROPERTY()
+	FString CPPType;
+
+	UPROPERTY()
+	FString CPPTypeObjectPath;
+
+	UPROPERTY()
+	FString DefaultValue;
+};
+
+/**
+ * An action renaming an exposed in the graph.
+ */
+USTRUCT()
+struct FRigVMRenameExposedPinAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMRenameExposedPinAction() {}
+	FRigVMRenameExposedPinAction(const FName& InOldPinName, const FName& InNewPinName);
+	virtual ~FRigVMRenameExposedPinAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString OldPinName;
+
+	UPROPERTY()
+	FString NewPinName;
+};
+
+/**
+ * An action to reorder pins on a node
+ */
+USTRUCT()
+struct FRigVMSetPinIndexAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMSetPinIndexAction();
+	FRigVMSetPinIndexAction(URigVMPin* InPin, int32 InNewIndex);
+	virtual ~FRigVMSetPinIndexAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString PinPath;
+
+	UPROPERTY()
+	int32 OldIndex;
+
+	UPROPERTY()
+	int32 NewIndex;
+};
+
+/**
+* An action to remap a variable inside of a function reference node renaming a node in the graph.
+*/
+USTRUCT()
+struct FRigVMSetRemappedVariableAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMSetRemappedVariableAction() {}
+	FRigVMSetRemappedVariableAction(URigVMFunctionReferenceNode* InFunctionRefNode, const FName& InInnerVariableName,
+		const FName& InOldOuterVariableName, const FName& InNewOuterVariableName);
+	virtual ~FRigVMSetRemappedVariableAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString NodePath;
+
+	UPROPERTY()
+	FName InnerVariableName;
+
+	UPROPERTY()
+	FName OldOuterVariableName;
+
+	UPROPERTY()
+	FName NewOuterVariableName;
+};
+
+/**
+* An action to add a local variable.
+*/
+USTRUCT()
+struct FRigVMAddLocalVariableAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMAddLocalVariableAction() {}
+	FRigVMAddLocalVariableAction(const FRigVMGraphVariableDescription& InLocalVariable);
+	virtual ~FRigVMAddLocalVariableAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FRigVMGraphVariableDescription LocalVariable;
+};
+
+/**
+* An action to remove a local variable.
+*/
+USTRUCT()
+struct FRigVMRemoveLocalVariableAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMRemoveLocalVariableAction() {}
+	FRigVMRemoveLocalVariableAction(const FRigVMGraphVariableDescription& InLocalVariable);
+	virtual ~FRigVMRemoveLocalVariableAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FRigVMGraphVariableDescription LocalVariable;
+};
+
+/**
+* An action to rename a local variable.
+*/
+USTRUCT()
+struct FRigVMRenameLocalVariableAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMRenameLocalVariableAction() {}
+	FRigVMRenameLocalVariableAction(const FName& InOldName, const FName& InNewName);
+	virtual ~FRigVMRenameLocalVariableAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FName OldVariableName;
+
+	UPROPERTY()
+	FName NewVariableName;
+};
+
+/**
+* An action to change the type of a local variable.
+*/
+USTRUCT()
+struct FRigVMChangeLocalVariableTypeAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+	FRigVMChangeLocalVariableTypeAction();
+	FRigVMChangeLocalVariableTypeAction(const FRigVMGraphVariableDescription& InLocalVariable, const FString& InCPPType, UObject* InCPPTypeObject);
+	virtual ~FRigVMChangeLocalVariableTypeAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FRigVMGraphVariableDescription LocalVariable;
+
+	UPROPERTY()
+	FString CPPType;
+
+	UPROPERTY()
+	TObjectPtr<UObject> CPPTypeObject;
+};
+
+/**
+* An action to change the default value of a local variable.
+*/
+USTRUCT()
+struct FRigVMChangeLocalVariableDefaultValueAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+	FRigVMChangeLocalVariableDefaultValueAction();
+	FRigVMChangeLocalVariableDefaultValueAction(const FRigVMGraphVariableDescription& InLocalVariable, const FString& InDefaultValue);
+	virtual ~FRigVMChangeLocalVariableDefaultValueAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FRigVMGraphVariableDescription LocalVariable;
+
+	UPROPERTY()
+	FString DefaultValue;
+};
+
+/**
+* An action adding a array node to the graph.
+*/
+USTRUCT()
+struct FRigVMAddArrayNodeAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMAddArrayNodeAction();
+	FRigVMAddArrayNodeAction(URigVMArrayNode* InNode);
+	virtual ~FRigVMAddArrayNodeAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	ERigVMOpCode OpCode;
+	
+	UPROPERTY()
+	FString CPPType;
+
+	UPROPERTY()
+	FString CPPTypeObjectPath;
+
+	UPROPERTY()
+	FVector2D Position;
+
+	UPROPERTY()
+	FString NodePath;
+};
+
+/**
+ * An action to promote a function to collapse node or vice versa
+ */
+USTRUCT()
+struct FRigVMPromoteNodeAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMPromoteNodeAction();
+	FRigVMPromoteNodeAction(const URigVMNode* InNodeToPromote, const FString& InNodePath, const FString& InFunctionDefinitionPath);
+	virtual ~FRigVMPromoteNodeAction() {};
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FString LibraryNodePath;
+
+	UPROPERTY()
+	FString FunctionDefinitionPath;
+
+	UPROPERTY()
+	bool bFromFunctionToCollapseNode;
 };

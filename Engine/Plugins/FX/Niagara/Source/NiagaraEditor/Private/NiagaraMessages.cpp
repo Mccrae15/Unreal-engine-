@@ -49,6 +49,10 @@ TSharedRef<FTokenizedMessage> FNiagaraMessageCompileEvent::GenerateTokenizedMess
 	case FNiagaraCompileEventSeverity::Warning:
 		MessageSeverity = EMessageSeverity::Warning;
 		break;
+	case FNiagaraCompileEventSeverity::Display:
+		MessageSeverity = EMessageSeverity::Info;
+		break;
+	// log is still treated like an info
 	case FNiagaraCompileEventSeverity::Log:
 		MessageSeverity = EMessageSeverity::Info;
 		break;
@@ -153,7 +157,7 @@ FText FNiagaraMessageCompileEvent::GenerateMessageTitle() const
 	case FNiagaraCompileEventSeverity::Warning:
 		StackIssueSeverity = EStackIssueSeverity::Warning;
 		break;
-	case FNiagaraCompileEventSeverity::Log:
+	case FNiagaraCompileEventSeverity::Display:
 		StackIssueSeverity = EStackIssueSeverity::Info;
 		break;
 	default:
@@ -300,7 +304,7 @@ bool FNiagaraMessageJobCompileEvent::RecursiveGetScriptNamesAndAssetPathsFromCon
 
 	if (NodeGuid.IsValid())
 	{
-		UEdGraphNode* const* EventNodePtr = InGraphToSearch->Nodes.FindByPredicate([NodeGuid](UEdGraphNode* Node) { return Node->NodeGuid == NodeGuid; });
+		TObjectPtr<UEdGraphNode> const* EventNodePtr = InGraphToSearch->Nodes.FindByPredicate([NodeGuid](UEdGraphNode* Node) { return Node->NodeGuid == NodeGuid; });
 		if (EventNodePtr != nullptr)
 		{
 			OutContextNodeObjectKeys.AddUnique(FObjectKey(*EventNodePtr));

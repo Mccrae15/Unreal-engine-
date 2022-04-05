@@ -60,31 +60,45 @@ private:
 };
 
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FDistortionPassUniformParameters, )
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FDistortionPassUniformParameters, RENDERER_API)
 	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER(FVector4, DistortionParams)
+	SHADER_PARAMETER(FVector4f, DistortionParams)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileDistortionPassUniformParameters, )
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileDistortionPassUniformParameters, RENDERER_API)
 	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER(FVector4, DistortionParams)
+	SHADER_PARAMETER(FVector4f, DistortionParams)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 
-extern void SetupDistortionParams(FVector4& DistortionParams, const FViewInfo& View);
+extern void SetupDistortionParams(FVector4f& DistortionParams, const FViewInfo& View);
 
 class FDistortionMeshProcessor : public FMeshPassProcessor
 {
 public:
 
-	FDistortionMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
+	FDistortionMeshProcessor(
+		const FScene* Scene, 
+		const FSceneView* InViewIfDynamicMeshCommand, 
+		const FMeshPassProcessorRenderState& InPassDrawRenderState, 
+		const FMeshPassProcessorRenderState& InDistortionPassStateNoDepthTest,
+		FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
+	FMeshPassProcessorRenderState PassDrawRenderStateNoDepthTest;
 
 private:
-	void Process(
+	bool TryAddMeshBatch(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material);
+
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,

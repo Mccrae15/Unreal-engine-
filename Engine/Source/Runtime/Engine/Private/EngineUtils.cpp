@@ -10,6 +10,8 @@
 #include "Misc/PackageName.h"
 #include "Misc/EngineVersion.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/LightWeightInstanceSubsystem.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
 #include "EngineGlobals.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/Engine.h"
@@ -40,6 +42,20 @@ IMPLEMENT_HIT_PROXY(HTranslucentActor,HActor)
 
 #define LOCTEXT_NAMESPACE "EngineUtils"
 
+FTypedElementHandle HActor::GetElementHandle() const
+{
+#if WITH_EDITOR
+	if (PrimComponent)
+	{
+		return UEngineElementsLibrary::AcquireEditorComponentElementHandle(PrimComponent);
+	}
+	if (Actor)
+	{
+		return UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor);
+	}
+#endif	// WITH_EDITOR
+	return FTypedElementHandle();
+}
 
 #if !UE_BUILD_SHIPPING
 FContentComparisonHelper::FContentComparisonHelper()
@@ -278,15 +294,14 @@ bool EngineUtils::FindOrLoadAssetsByPath(const FString& Path, TArray<UObject*>& 
 		return false;
 	}
 
-	using FPackageNames = TArray<FName, TInlineAllocator<16>>;
+	using FPackageNames = TSet<FName>;
 
 	auto GetPackageNamesFromPath = [](const FString& InPath, FPackageNames& OutPackageNames)
 	{
 		// There is no filesystem support for packages when using the I/O dispatcher
-		if (FIoDispatcher::IsInitialized())
+		if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::LoadModulePtr<FAssetRegistryModule>(TEXT("AssetRegistry")))
 		{
-			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+			IAssetRegistry& AssetRegistry = AssetRegistryModule->Get();
 
 			TArray<FAssetData> Assets;
 			AssetRegistry.GetAssetsByPath(FName(*InPath), Assets, true);
@@ -300,28 +315,27 @@ bool EngineUtils::FindOrLoadAssetsByPath(const FString& Path, TArray<UObject*>& 
 				}
 			}
 		}
-		else
+
+		// Convert the package path to a filename with no extension (directory)
+		const FString FilePath = FPackageName::LongPackageNameToFilename(InPath);
+
+		// Gather the package files in that directory and subdirectories
+		TArray<FString> Filenames;
+		FPackageName::FindPackagesInDirectory(Filenames, FilePath);
+
+		// Cull out map files
+		for (const FString& Filename : Filenames)
 		{
-			// Convert the package path to a filename with no extension (directory)
-			const FString FilePath = FPackageName::LongPackageNameToFilename(InPath);
-
-			// Gather the package files in that directory and subdirectories
-			TArray<FString> Filenames;
-			FPackageName::FindPackagesInDirectory(Filenames, FilePath);
-
-			// Cull out map files
-			for (const FString& Filename : Filenames)
+			FStringView Extension = FPathViews::GetExtension(Filename, true);
+			if (Extension != FPackageName::GetMapPackageExtension())
 			{
-				FStringView Extension = FPathViews::GetExtension(Filename, true);
-				if (Extension != FPackageName::GetMapPackageExtension())
-				{
-					OutPackageNames.Emplace(*FPackageName::FilenameToLongPackageName(Filename));
-				}
+				OutPackageNames.Emplace(*FPackageName::FilenameToLongPackageName(Filename));
 			}
 		}
 	};
 
 	FPackageNames PackageNames;
+	PackageNames.Reserve(16);
 	GetPackageNamesFromPath(Path, PackageNames);
 	TCHAR PackageName[FName::StringBufferSize];
 
@@ -381,50 +395,8 @@ TArray<FSubLevelStatus> GetSubLevelsStatus( UWorld* World )
 		{
 			FSubLevelStatus LevelStatus = {};
 			LevelStatus.PackageName = LevelStreaming->GetWorldAssetPackageFName();
-			LevelStatus.LODIndex	= LevelStreaming->GetLevelLODIndex();
-
-			if (ULevel* Level = LevelStreaming->GetLoadedLevel())
-			{
-				if( World->ContainsLevel( Level ) == true )
-				{
-					if( World->GetCurrentLevelPendingVisibility() == Level )
-					{
-						LevelStatus.StreamingStatus = LEVEL_MakingVisible;
-					}
-					else
-					{
-						LevelStatus.StreamingStatus = LEVEL_Visible;
-					}
-				}
-				else
-				{
-					LevelStatus.StreamingStatus = LEVEL_Loaded;
-				}
-			}
-			else
-			{
-				// See whether the level's world object is still around.
-				UPackage* LevelPackage	= FindObjectFast<UPackage>(nullptr, LevelStatus.PackageName);
-				UWorld*	  LevelWorld	= nullptr;
-				if( LevelPackage )
-				{
-					LevelWorld = UWorld::FindWorldInPackage(LevelPackage);
-				}
-
-				if( LevelWorld )
-				{
-					LevelStatus.StreamingStatus = LEVEL_UnloadedButStillAround;
-				}
-				else if( LevelStreaming->HasLoadRequestPending() )
-				{
-					LevelStatus.StreamingStatus = LEVEL_Loading;
-				}
-				else
-				{
-					LevelStatus.StreamingStatus = LEVEL_Unloaded;
-				}
-			}
-
+			LevelStatus.LODIndex = LevelStreaming->GetLevelLODIndex();
+			LevelStatus.StreamingStatus = LevelStreaming->GetLevelStreamingStatus();
 			Result.Add(LevelStatus);
 		}
 	}
@@ -458,9 +430,9 @@ TArray<FSubLevelStatus> GetSubLevelsStatus( UWorld* World )
 
 				ULevel* LevelPlayerIsIn = nullptr;
 
-				if (AActor* HitActor = Hit.GetActor())
+				if (Hit.HitObjectHandle.IsValid())
 				{
-					LevelPlayerIsIn = HitActor->GetLevel();
+					LevelPlayerIsIn = FLightWeightInstanceSubsystem::Get().GetLevel(Hit.HitObjectHandle);
 				}
 				else if (UPrimitiveComponent* HitComponent = Hit.Component.Get())
 				{
@@ -523,19 +495,19 @@ void FConsoleOutputDevice::Serialize(const TCHAR* Text, ELogVerbosity::Type Verb
 /*-----------------------------------------------------------------------------
 	Serialized data stripping.
 -----------------------------------------------------------------------------*/
-FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InClassFlags /*= 0*/, int32 InVersion /*= VER_UE4_OLDEST_LOADABLE_PACKAGE */ )
+FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InClassFlags /*= 0*/, const FPackageFileVersion& InVersion /*= GOldestLoadablePackageFileUEVersion */ )
 	: GlobalStripFlags( 0 )
 	, ClassStripFlags( 0 )
 {
 	check(InVersion >= VER_UE4_OLDEST_LOADABLE_PACKAGE);
-	if (Ar.UE4Ver() >= InVersion)
+	if (Ar.UEVer().IsCompatible(InVersion))
 	{
 		if (Ar.IsCooking())
 		{
 			// When cooking GlobalStripFlags are automatically generated based on the current target
 			// platform's properties.
 			GlobalStripFlags |= Ar.CookingTarget()->HasEditorOnlyData() ? FStripDataFlags::None : FStripDataFlags::Editor;
-			GlobalStripFlags |= Ar.CookingTarget()->IsServerOnly() ? FStripDataFlags::Server : FStripDataFlags::None;
+			GlobalStripFlags |= !Ar.CookingTarget()->AllowAudioVisualData() ? FStripDataFlags::Server : FStripDataFlags::None;
 			ClassStripFlags = InClassFlags;
 		}
 		Ar << GlobalStripFlags;
@@ -543,12 +515,12 @@ FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InClassFlags /*= 0*/
 	}
 }
 
-FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion /*= VER_UE4_OLDEST_LOADABLE_PACKAGE */ )
+FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion /*= GOldestLoadablePackageFileUEVersion */)
 	: GlobalStripFlags( 0 )
 	, ClassStripFlags( 0 )
 {
 	check(InVersion >= VER_UE4_OLDEST_LOADABLE_PACKAGE);
-	if (Ar.UE4Ver() >= InVersion)
+	if (Ar.UEVer().IsCompatible(InVersion))
 	{
 		if (Ar.IsCooking())
 		{
@@ -564,7 +536,7 @@ FStripDataFlags::FStripDataFlags( class FArchive& Ar, uint8 InGlobalFlags, uint8
 /*-----------------------------------------------------------------------------
 Serialized data stripping.
 -----------------------------------------------------------------------------*/
-FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags /*= 0*/, int32 InVersion /*= VER_UE4_OLDEST_LOADABLE_PACKAGE */)
+FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFlags /*= 0*/, const FPackageFileVersion& InVersion /*= GOldestLoadablePackageFileUEVersion */)
 	: GlobalStripFlags(0)
 	, ClassStripFlags(0)
 {
@@ -572,14 +544,14 @@ FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFl
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
 
 	check(InVersion >= VER_UE4_OLDEST_LOADABLE_PACKAGE);
-	if (UnderlyingArchive.UE4Ver() >= InVersion)
+	if (UnderlyingArchive.UEVer().IsCompatible(InVersion))
 	{
 		if (UnderlyingArchive.IsCooking())
 		{
 			// When cooking GlobalStripFlags are automatically generated based on the current target
 			// platform's properties.
 			GlobalStripFlags |= UnderlyingArchive.CookingTarget()->HasEditorOnlyData() ? FStripDataFlags::None : FStripDataFlags::Editor;
-			GlobalStripFlags |= UnderlyingArchive.CookingTarget()->IsServerOnly() ? FStripDataFlags::Server : FStripDataFlags::None;
+			GlobalStripFlags |= !UnderlyingArchive.CookingTarget()->AllowAudioVisualData() ? FStripDataFlags::Server : FStripDataFlags::None;
 			ClassStripFlags = InClassFlags;
 		}
 		Record << SA_VALUE(TEXT("GlobalStripFlags"), GlobalStripFlags);
@@ -587,7 +559,7 @@ FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFl
 	}
 }
 
-FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, int32 InVersion /*= VER_UE4_OLDEST_LOADABLE_PACKAGE */)
+FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalFlags, uint8 InClassFlags, const FPackageFileVersion& InVersion /*= GOldestLoadablePackageFileUEVersion */)
 	: GlobalStripFlags(0)
 	, ClassStripFlags(0)
 {
@@ -595,7 +567,7 @@ FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalF
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
 
 	check(InVersion >= VER_UE4_OLDEST_LOADABLE_PACKAGE);
-	if (UnderlyingArchive.UE4Ver() >= InVersion)
+	if (UnderlyingArchive.UEVer().IsCompatible(InVersion))
 	{
 		if (UnderlyingArchive.IsCooking())
 		{

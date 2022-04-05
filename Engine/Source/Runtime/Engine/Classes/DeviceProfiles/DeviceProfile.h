@@ -9,6 +9,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/TextureLODSettings.h"
+#include "DeviceProfiles/DeviceProfileMatching.h"
 #include "DeviceProfile.generated.h"
 
 struct FPropertyChangedEvent;
@@ -31,7 +32,7 @@ class ENGINE_API UDeviceProfile : public UTextureLODSettings
 
 	/** The parent object of this profile, it is the object matching this DeviceType with the BaseProfileName */
 	UPROPERTY()
-	UObject* Parent;
+	TObjectPtr<UDeviceProfile> Parent;
 
 	/** Flag used in the editor to determine whether the profile is visible in the property matrix */
 	bool bVisible;
@@ -55,6 +56,10 @@ public:
 	/** The collection of CVars which is set from this profile */
 	UPROPERTY(EditAnywhere, config, Category=ConsoleVariables)
 	TArray<FString> CVars;
+
+	/** An array of conditions to test against and fragment names to select. */
+	UPROPERTY(EditAnywhere, config, Category = "DeviceProfile Matching Rules")
+	TArray<FDPMatchingRulestruct> MatchingRules;
 
 	/** Prefer to load the DP from its platform's hierarchy */
 	virtual const TCHAR* GetConfigOverridePlatform() const override
@@ -82,6 +87,11 @@ public:
 	 * Access to the device profiles Texture LOD Settings
 	 */
 	UTextureLODSettings* GetTextureLODSettings() const;
+
+	/**
+	 * Returns the parent device profile, optionally including the default object
+	 */
+	UDeviceProfile* GetParentProfile(bool bIncludeDefaultObject = false) const;
 	
 private:
 	// Make sure our TextureLODGroups array is sorted correctly and complete
@@ -108,7 +118,9 @@ public:
 	bool ModifyCVarValue(const FString& CVarName, const FString& CVarValue, bool bAddIfNonExistant = false);
 	FString GetCVarValue(const FString& CVarName) const;
 
-	/** Lazily generate a consolidated list of CVars, recursing up the device profile hierarchy */
+	/** Lazily generate a consolidated list of CVars, recursing up the device profile hierarchy 
+	 *  This will not include any cvars from the device's selected fragments.
+	*/
 	const TMap<FString, FString>& GetConsolidatedCVars() const;
 
 	/** 
@@ -145,5 +157,21 @@ private:
 private:
 	/** Consolidated CVars, lazy initialized - access via GetConsolidatedCVars */
 	mutable TMap<FString, FString> ConsolidatedCVars;
+
+#endif
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+public:
+	const TMap<FString, FString>& GetAllExpandedCVars();
+	const TMap<FString, FString>& GetAllPreviewCVars();
+	void AddExpandedCVars(const TMap<FString, FString>& CVarsToMerge);
+	void AddPreviewCVars(const TMap<FString, FString>& CVarsToMerge);
+	void ClearAllExpandedCVars();
+private:
+	/** Resolved CVars, including expanded scalability cvars used to properly emulate one platform on another */
+	TMap<FString, FString> AllExpandedCVars;
+
+	/** The set of cvars that can be previewed (a subset of AllExpandedCVars) */
+	TMap<FString, FString> AllPreviewCVars;
 #endif
 };

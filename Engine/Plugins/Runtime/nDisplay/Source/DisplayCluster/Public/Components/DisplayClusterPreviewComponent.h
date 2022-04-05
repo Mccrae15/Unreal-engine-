@@ -6,11 +6,13 @@
 
 #include "DisplayClusterConfigurationTypes_Base.h"
 
+#include "Render/Viewport/IDisplayClusterViewportManager.h"
+
 #include "DisplayClusterPreviewComponent.generated.h"
 
 class IDisplayClusterProjectionPolicy;
 class UTextureRenderTarget2D;
-class UTexture2D;
+class UTexture;
 class UDisplayClusterConfigurationViewport;
 class UMaterial;
 class UMaterialInstanceDynamic;
@@ -38,13 +40,16 @@ public:
 	virtual void DestroyComponent(bool bPromoteChildren = false) override;
 
 public:
-	bool InitializePreviewComponent(ADisplayClusterRootActor* RootActor, const FString& ViewportId, UDisplayClusterConfigurationViewport* ViewportConfig);
-
-	bool IsPreviewAvailable() const;
+	bool InitializePreviewComponent(ADisplayClusterRootActor* RootActor, const FString& ClusterNodeId, const FString& ViewportId, UDisplayClusterConfigurationViewport* ViewportConfig);
 
 	const FString& GetViewportId() const
 	{ 
 		return ViewportId; 
+	}
+
+	const FString& GetClusterNodeId() const
+	{
+		return ClusterNodeId;
 	}
 
 	UDisplayClusterConfigurationViewport* GetViewportConfig() const
@@ -58,43 +63,43 @@ public:
 	}
 
 	void UpdatePreviewResources();
-	void HandleRenderTargetTextureDeferredUpdate();
 
-	UMeshComponent* GetPreviewMesh() const
+	UMeshComponent* GetPreviewMesh()
 	{
+		UpdatePreviewMeshReference();
+
 		return PreviewMesh;
 	}
 
 	/** Create and retrieve a render texture 2d from the render target. */
-	UTexture2D* GetOrCreateRenderTexture2D();
+	UTexture* GetViewportPreviewTexture2D();
+
+	void ResetPreviewComponent(bool bInRestoreSceneMaterial);
 
 protected:
+	bool IsPreviewEnabled() const;
+
 	class IDisplayClusterViewport* GetCurrentViewport() const;
-	bool GetPreviewTextureSettings(FIntPoint& OutSize, float& OutGamma) const;
+	bool GetPreviewTextureSettings(FIntPoint& OutSize, EPixelFormat& OutTextureFormat, float& OutGamma, bool& bOutSRGB) const;
 
 	void UpdatePreviewRenderTarget();
-	bool UpdatePreviewMesh(bool bRestoreOriginalMaterial = false);
+	void ReleasePreviewRenderTarget();
 
-	bool UpdatePreviewTexture();
-	void RemovePreviewTexture();
+	bool UpdatePreviewMesh();
+	void ReleasePreviewMesh();
+	void UpdatePreviewMeshReference();
 
-	void InitializeInternals();
+	void InitializePreviewMaterial();
+	void ReleasePreviewMaterial();
+	void UpdatePreviewMaterial();
 
-	void UpdatePreviewMeshMaterial(bool bRestoreOriginalMaterial = false);
-
-protected:
-	// Set to true, when RTT surface updated
-	int32 RenderTargetSurfaceChangedCnt = 0;
-	bool bIsEditingProperty = false;
-
-private:
-	// The maximum dimension that the preview render target can be, which helps ensure good performance even if viewports are very large
-	static const uint32 MaxRenderTargetDimension;
-
+	void RestorePreviewMeshMaterial();
+	void SetPreviewMeshMaterial();
 #endif /* WITH_EDITOR */
 
 #if WITH_EDITORONLY_DATA
 protected:
+	// Texture for preview material
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Preview", meta = (DisplayName = "Render Target"))
 	UTextureRenderTarget2D* RenderTarget;
 
@@ -108,6 +113,9 @@ private:
 
 	UPROPERTY()
 	FString ViewportId;
+
+	UPROPERTY()
+	FString ClusterNodeId;
 
 	UPROPERTY()
 	UDisplayClusterConfigurationViewport* ViewportConfig = nullptr;
@@ -126,9 +134,6 @@ private:
 
 	UPROPERTY()
 	UMaterialInstanceDynamic* PreviewMaterialInstance = nullptr;
-
-	UPROPERTY(Transient)
-	UTexture2D* PreviewTexture;
 
 #endif /*WITH_EDITORONLY_DATA*/
 };

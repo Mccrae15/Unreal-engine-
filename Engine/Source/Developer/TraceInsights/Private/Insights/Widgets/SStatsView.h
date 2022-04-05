@@ -25,7 +25,7 @@ class FMenuBuilder;
 class FTimingGraphTrack;
 class FUICommandList;
 
-namespace Trace
+namespace TraceServices
 {
 	class IAnalysisSession;
 }
@@ -37,7 +37,7 @@ namespace Insights
 	class ITableCellValueSorter;
 
 	class FCounterAggregator;
-	class SAggregatorStatus;
+	class SAsyncOperationStatus;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -83,8 +83,6 @@ public:
 	void ResetStats();
 	void UpdateStats(double StartTime, double EndTime);
 
-	void ToggleGraphSeries(TSharedRef<FTimingGraphTrack> GraphTrack, FStatsNodeRef NodePtr);
-
 	FStatsNodePtr GetCounterNode(uint32 CounterId) const;
 	void SelectCounterNode(uint32 CounterId);
 
@@ -99,8 +97,11 @@ private:
 
 	void FinishAggregation();
 
-	/** Called when the analysis session has changed. */
+	/** Called when the session has changed. */
 	void InsightsManager_OnSessionChanged();
+
+	/** Called when the analysis was completed. */
+	void InsightsManager_OnSessionAnalysisCompleted();
 
 	/**
 	 * Populates OutSearchStrings with the strings that should be used in searching.
@@ -260,6 +261,13 @@ private:
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
+	TSharedPtr<FTimingGraphTrack> GetTimingViewMainGraphTrack() const;
+	void ToggleGraphSeries(TSharedRef<FTimingGraphTrack> GraphTrack, FStatsNodeRef NodePtr) const;
+	bool IsSeriesInTimingViewMainGraph(FStatsNodePtr CounterNode) const;
+	void ToggleTimingViewMainGraphEventSeries(FStatsNodePtr CounterNode) const;
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	/**
 	 * Ticks this widget.  Override in derived classes, but always call the parent implementation.
 	 *
@@ -273,8 +281,8 @@ private:
 	/** Table view model. */
 	TSharedPtr<Insights::FTable> Table;
 
-	/** A weak pointer to the profiler session used to populate this widget. */
-	TSharedPtr<const Trace::IAnalysisSession>/*Weak*/ Session;
+	/** The analysis session used to populate this widget. */
+	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	TSharedPtr<FUICommandList> CommandList;
 
@@ -372,7 +380,7 @@ private:
 	//////////////////////////////////////////////////
 
 	TSharedRef<Insights::FCounterAggregator> Aggregator;
-	TSharedPtr<Insights::SAggregatorStatus> AggregatorStatus;
+	TSharedPtr<Insights::SAsyncOperationStatus> AsyncOperationStatus;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

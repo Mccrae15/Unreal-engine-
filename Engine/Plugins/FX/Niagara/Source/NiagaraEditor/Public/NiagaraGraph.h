@@ -65,7 +65,7 @@ public:
 	TArray<FNiagaraGraphParameterReference> ParameterReferences;
 
 	UPROPERTY()
-	const UNiagaraGraph* Graph;
+	TObjectPtr<const UNiagaraGraph> Graph;
 
 	/** Returns true if this parameter was initially created by the user. */
 	bool WasCreatedByUser() const;
@@ -112,7 +112,7 @@ public:
 
 	/** The traversal of output to input nodes for this graph. This is not a recursive traversal, it just includes nodes from this graph.*/
 	UPROPERTY()
-	TArray<UNiagaraNode*> Traversal;
+	TArray<TObjectPtr<UNiagaraNode>> Traversal;
 
 	void PostLoad(UObject* Owner);
 
@@ -146,6 +146,7 @@ class UNiagaraGraph : public UEdGraph
 	//~ Begin UObject Interface
 	virtual void PostLoad() override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void BeginDestroy() override;
 	//~ End UObjet Interface
 	
 	/** Get the source that owns this graph */
@@ -153,6 +154,10 @@ class UNiagaraGraph : public UEdGraph
 
 	/** Determine if there are any nodes in this graph.*/
 	bool IsEmpty() const { return Nodes.Num() == 0; }
+
+	/** Creates a transient copy of this graph for compilation purposes. */
+	UNiagaraGraph* CreateCompilationCopy(const TArray<ENiagaraScriptUsage>& CompileUsages);
+	void ReleaseCompilationCopy();
 			
 	/** Find the first output node bound to the target usage type.*/
 	class UNiagaraNodeOutput* FindOutputNode(ENiagaraScriptUsage TargetUsageType, FGuid TargetUsageId = FGuid()) const;
@@ -202,7 +207,7 @@ class UNiagaraGraph : public UEdGraph
 	void FindInputNodes(TArray<class UNiagaraNodeInput*>& OutInputNodes, FFindInputNodeOptions Options = FFindInputNodeOptions()) const;
 
 	/** Returns a list of variable inputs for all static switch nodes in the graph. */
-	TArray<FNiagaraVariable> NIAGARAEDITOR_API FindStaticSwitchInputs(bool bReachableOnly = false) const;
+	TArray<FNiagaraVariable> NIAGARAEDITOR_API FindStaticSwitchInputs(bool bReachableOnly = false, const TArray<FNiagaraVariable>& InStaticVars = TArray<FNiagaraVariable>()) const;
 
 	/** Get an in-order traversal of a graph by the specified target output script usage.*/
 	void BuildTraversal(TArray<class UNiagaraNode*>& OutNodesTraversed, ENiagaraScriptUsage TargetUsage, FGuid TargetUsageId, bool bEvaluateStaticSwitches = false) const;
@@ -269,8 +274,8 @@ class UNiagaraGraph : public UEdGraph
 	/** Sets the meta-data associated with this variable. Creates a new UNiagaraScriptVariable if the target variable cannot be found. Illegal to call on FNiagaraVariables that are Niagara Constants. */
 	void SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& MetaData);
 
-	const TMap<FNiagaraVariable, UNiagaraScriptVariable*>& GetAllMetaData() const;
-	TMap<FNiagaraVariable, UNiagaraScriptVariable*>& GetAllMetaData();
+	NIAGARAEDITOR_API const TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& GetAllMetaData() const;
+	NIAGARAEDITOR_API TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& GetAllMetaData();
 
 	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const; // NOTE: The const is a lie! (This indirectly calls RefreshParameterReferences, which can recreate the entire map)
 
@@ -302,6 +307,13 @@ class UNiagaraGraph : public UEdGraph
 
 	/** Rename a pin inline in a graph. If this is the only instance used in the graph, then rename them all, otherwise make a duplicate. */
 	bool RenameParameterFromPin(const FNiagaraVariable& Parameter, FName NewName, UEdGraphPin* InPin);
+
+	/** Changes the type of existing graph parameters.
+	 *  Optionally creates orphaned pins for any connection that won't be kept, but tries to keep connections as long as types are matching.
+	 *  Changing multiple parameters at once helps with maintaining connections.
+	 *  CAUTION: Do not allow orphaned pins in the stack graphs, as they aren't user facing.
+	 */
+	void ChangeParameterType(const TArray<FNiagaraVariable>& ParametersToChange, const FNiagaraTypeDefinition& NewType, bool bAllowOrphanedPins = false);
 
 	/** Gets a delegate which is called whenever a contained data interfaces changes. */
 	FOnDataInterfaceChanged& OnDataInterfaceChanged();
@@ -396,7 +408,7 @@ private:
 	FOnGraphChanged OnGraphNeedsRecompile;
 
 	/** Find all nodes in the graph that can be reached during compilation. */
-	TArray<UEdGraphNode*> FindReachableNodes() const;
+	TArray<UEdGraphNode*> FindReachableNodes(const TArray<FNiagaraVariable>& InStaticVars) const;
 
 	/** Compares the values on the default pins with the metadata and syncs the two if necessary */
 	void ValidateDefaultPins();
@@ -424,7 +436,7 @@ private:
 
 	/** Storage of variables defined for use with this graph.*/
 	UPROPERTY()
-	mutable TMap<FNiagaraVariable, UNiagaraScriptVariable*> VariableToScriptVariable;
+	mutable TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> VariableToScriptVariable;
 	
 	/** A map of parameters in the graph to their referencers. */
 	UPROPERTY(Transient)
@@ -438,4 +450,6 @@ private:
 	bool bIsRenamingParameter;
 
 	mutable bool bParameterReferenceRefreshPending;
+
+	bool bIsForCompilationOnly = false;
 };

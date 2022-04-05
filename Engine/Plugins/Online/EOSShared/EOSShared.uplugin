@@ -15,10 +15,11 @@
 			"Name": "EOSShared",
 			"Type": "RuntimeNoCommandlet",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Android",
+				"IOS",
+				"Linux",
 				"Mac",
-				"Win32",
 				"Win64"
 			]
 		}

@@ -6,6 +6,7 @@
 #include "UObject/Object.h"
 #include "UObject/Package.h"
 #include "Algo/Find.h"
+#include "Algo/Reverse.h"
 #include "Engine/Level.h"
 #include "Components/ActorComponent.h"
 #include "Model.h"
@@ -18,48 +19,11 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorTransaction, Log, All);
 
-inline UObject* BuildSubobjectKey(UObject* InObj, TArray<FName>& OutHierarchyNames)
-{
-	auto UseOuter = [](const UObject* Obj)
-	{
-		if (Obj == nullptr)
-		{
-			return false;
-		}
-
-		const bool bIsCDO = Obj->HasAllFlags(RF_ClassDefaultObject);
-		const UObject* CDO = bIsCDO ? Obj : nullptr;
-		const bool bIsClassCDO = (CDO != nullptr) ? (CDO->GetClass()->ClassDefaultObject == CDO) : false;
-		if(!bIsClassCDO && CDO)
-		{
-			// Likely a trashed CDO, try to recover. Only known cause of this is
-			// ambiguous use of DSOs:
-			CDO = CDO->GetClass()->ClassDefaultObject;
-		}
-		const UActorComponent* AsComponent = Cast<UActorComponent>(Obj);
-		const bool bIsDSO = Obj->HasAnyFlags(RF_DefaultSubObject);
-		const bool bIsSCSComponent = AsComponent && AsComponent->IsCreatedByConstructionScript();
-		return (bIsCDO && bIsClassCDO) || bIsDSO || bIsSCSComponent;
-	};
-	
-	UObject* Outermost = nullptr;
-
-	UObject* Iter = InObj;
-	while (UseOuter(Iter))
-	{
-		OutHierarchyNames.Add(Iter->GetFName());
-		Iter = Iter->GetOuter();
-		Outermost = Iter;
-	}
-
-	return Outermost;
-}
-
 /*-----------------------------------------------------------------------------
 	A single transaction.
 -----------------------------------------------------------------------------*/
 
-FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor)
+FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, uint32 InElementAlignment, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor)
 	:	Object				( InObject )
 	,	CustomChange		( MoveTemp( InCustomChange ) )
 	,	Array				( InArray )
@@ -67,13 +31,10 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 	,	Count				( InCount )
 	,	Oper				( InOper )
 	,	ElementSize			( InElementSize )
+	,	ElementAlignment	( InElementAlignment )
 	,	DefaultConstructor	( InDefaultConstructor )
 	,	Serializer			( InSerializer )
 	,	Destructor			( InDestructor )
-	,	bRestored			( false )
-	,   bFinalized			( false )
-	,	bSnapshot			( false )
-	,	bWantsBinarySerialization ( true )
 {
 	// Blueprint compile-in-place can alter class layout so use tagged serialization for objects relying on a UBlueprint's Class
 	if (UBlueprintGeneratedClass* Class = Cast<UBlueprintGeneratedClass>(InObject->GetClass()))
@@ -86,6 +47,10 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 		bWantsBinarySerialization = false;
 	}
 
+	// Update any sub-object caches for use by ARO (to keep sub-objects alive during GC)
+	UObject* CurrentObject = Object.Get();
+	checkSlow(CurrentObject == InObject);
+
 	// Don't bother saving the object state if we have a custom change which can perform the undo operation
 	if( CustomChange.IsValid() )
 	{
@@ -96,7 +61,7 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 	}
 	else
 	{
-		SerializedObject.SetObject(Object.Get());
+		SerializedObject.SetObject(CurrentObject);
 		FWriter Writer( SerializedObject, bWantsBinarySerialization );
 		SerializeContents( Writer, Oper );
 	}
@@ -107,15 +72,17 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 	if( Array )
 	{
 		const bool bWasArIgnoreOuterRef = Ar.ArIgnoreOuterRef;
-		if (Object.SubObjectHierarchyID.Num() != 0)
+		if (Object.IsSubObjectReference())
 		{
 			Ar.ArIgnoreOuterRef = true;
 		}
 
-		//UE_LOG( LogEditorTransaction, Log, TEXT("Array %s %i*%i: %i"), Object ? *Object->GetFullName() : TEXT("Invalid Object"), Index, ElementSize, InOper);
+		UObject* CurrentObject = Object.Get();
 
-		check((SIZE_T)Array >= (SIZE_T)Object.Get() + sizeof(UObject));
-		check((SIZE_T)Array + sizeof(FScriptArray) <= (SIZE_T)Object.Get() + Object->GetClass()->GetPropertiesSize());
+		//UE_LOG( LogEditorTransaction, Log, TEXT("Array %s %i*%i: %i"), CurrentObject ? *CurrentObject->GetFullName() : TEXT("Invalid Object"), Index, ElementSize, InOper);
+
+		check((SIZE_T)Array >= (SIZE_T)CurrentObject + sizeof(UObject));
+		check((SIZE_T)Array + sizeof(FScriptArray) <= (SIZE_T)CurrentObject + CurrentObject->GetClass()->GetPropertiesSize());
 		check(ElementSize!=0);
 		check(DefaultConstructor!=NULL);
 		check(Serializer!=NULL);
@@ -131,7 +98,7 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 				{
 					Destructor( (uint8*)Array->GetData() + i*ElementSize );
 				}
-				Array->Remove( Index, Count, ElementSize );
+				Array->Remove( Index, Count, ElementSize, ElementAlignment );
 			}
 		}
 		else
@@ -139,7 +106,7 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 			// "Undo/Redo Modify" or "Saving remove order" or "Undoing remove order" or "Redoing add order".
 			if( InOper==-1 && Ar.IsLoading() )
 			{
-				Array->InsertZeroed( Index, Count, ElementSize );
+				Array->InsertZeroed( Index, Count, ElementSize, ElementAlignment );
 				for( int32 i=Index; i<Index+Count; i++ )
 				{
 					DefaultConstructor( (uint8*)Array->GetData() + i*ElementSize );
@@ -158,7 +125,7 @@ void FTransaction::FObjectRecord::SerializeContents( FArchive& Ar, int32 InOper 
 	}
 	else
 	{
-		//UE_LOG(LogEditorTransaction, Log,  TEXT("Object %s"), *Object->GetFullName());
+		//UE_LOG(LogEditorTransaction, Log,  TEXT("Object %s"), *Object.Get()->GetFullName());
 		check(Index==0);
 		check(ElementSize==0);
 		check(DefaultConstructor==NULL);
@@ -175,7 +142,7 @@ void FTransaction::FObjectRecord::SerializeObject( FArchive& Ar )
 	if (CurrentObject)
 	{
 		const bool bWasArIgnoreOuterRef = Ar.ArIgnoreOuterRef;
-		if (Object.SubObjectHierarchyID.Num() != 0)
+		if (Object.IsSubObjectReference())
 		{
 			Ar.ArIgnoreOuterRef = true;
 		}
@@ -380,14 +347,11 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 		NewSerializedObject.SerializedObjectIndices.MultiFind(InPropertyName, NewSerializedObjectIndices, true);
 
 		bool bAreObjectPointersIdentical = OldSerializedObjectIndices.Num() == NewSerializedObjectIndices.Num();
-		if (bAreObjectPointersIdentical)
+		for (int32 ObjIndex = 0; ObjIndex < OldSerializedObjectIndices.Num() && bAreObjectPointersIdentical; ++ObjIndex)
 		{
-			for (int32 ObjIndex = 0; ObjIndex < OldSerializedObjectIndices.Num() && bAreObjectPointersIdentical; ++ObjIndex)
-			{
-				const UObject* OldObjectPtr = OldSerializedObject.ReferencedObjects.IsValidIndex(OldSerializedObjectIndices[ObjIndex]) ? OldSerializedObject.ReferencedObjects[OldSerializedObjectIndices[ObjIndex]].Get() : nullptr;
-				const UObject* NewObjectPtr = NewSerializedObject.ReferencedObjects.IsValidIndex(NewSerializedObjectIndices[ObjIndex]) ? NewSerializedObject.ReferencedObjects[NewSerializedObjectIndices[ObjIndex]].Get() : nullptr;
-				bAreObjectPointersIdentical = OldObjectPtr == NewObjectPtr;
-			}
+			const FPersistentObjectRef& OldObjectRef = OldSerializedObject.ReferencedObjects.IsValidIndex(OldSerializedObjectIndices[ObjIndex]) ? OldSerializedObject.ReferencedObjects[OldSerializedObjectIndices[ObjIndex]] : FPersistentObjectRef();
+			const FPersistentObjectRef& NewObjectRef = NewSerializedObject.ReferencedObjects.IsValidIndex(NewSerializedObjectIndices[ObjIndex]) ? NewSerializedObject.ReferencedObjects[NewSerializedObjectIndices[ObjIndex]] : FPersistentObjectRef();
+			bAreObjectPointersIdentical = OldObjectRef == NewObjectRef;
 		}
 		return bAreObjectPointersIdentical;
 	};
@@ -401,14 +365,11 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 		NewSerializedObject.SerializedNameIndices.MultiFind(InPropertyName, NewSerializedNameIndices, true);
 
 		bool bAreNamesIdentical = OldSerializedNameIndices.Num() == NewSerializedNameIndices.Num();
-		if (bAreNamesIdentical)
+		for (int32 ObjIndex = 0; ObjIndex < OldSerializedNameIndices.Num() && bAreNamesIdentical; ++ObjIndex)
 		{
-			for (int32 ObjIndex = 0; ObjIndex < OldSerializedNameIndices.Num() && bAreNamesIdentical; ++ObjIndex)
-			{
-				const FName& OldName = OldSerializedObject.ReferencedNames.IsValidIndex(OldSerializedNameIndices[ObjIndex]) ? OldSerializedObject.ReferencedNames[OldSerializedNameIndices[ObjIndex]] : FName();
-				const FName& NewName = NewSerializedObject.ReferencedNames.IsValidIndex(NewSerializedNameIndices[ObjIndex]) ? NewSerializedObject.ReferencedNames[NewSerializedNameIndices[ObjIndex]] : FName();
-				bAreNamesIdentical = OldName == NewName;
-			}
+			const FName& OldName = OldSerializedObject.ReferencedNames.IsValidIndex(OldSerializedNameIndices[ObjIndex]) ? OldSerializedObject.ReferencedNames[OldSerializedNameIndices[ObjIndex]] : FName();
+			const FName& NewName = NewSerializedObject.ReferencedNames.IsValidIndex(NewSerializedNameIndices[ObjIndex]) ? NewSerializedObject.ReferencedNames[NewSerializedNameIndices[ObjIndex]] : FName();
+			bAreNamesIdentical = OldName == NewName;
 		}
 		return bAreNamesIdentical;
 	};
@@ -433,10 +394,10 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 
 	if (OldSerializedObject.SerializedProperties.Num() > 0 || NewSerializedObject.SerializedProperties.Num() > 0)
 	{
-		int32 StartOfOldPropertyBlock = INT_MAX;
-		int32 StartOfNewPropertyBlock = INT_MAX;
-		int32 EndOfOldPropertyBlock = -1;
-		int32 EndOfNewPropertyBlock = -1;
+		int64 StartOfOldPropertyBlock = INT64_MAX;
+		int64 StartOfNewPropertyBlock = INT64_MAX;
+		int64 EndOfOldPropertyBlock = -1;
+		int64 EndOfNewPropertyBlock = -1;
 
 		for (const TPair<FName, FSerializedProperty>& NewNamePropertyPair : NewSerializedObject.SerializedProperties)
 		{
@@ -497,8 +458,8 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 			// Compare the data before the property block to see if something else in the object has changed
 			if (!OutDeltaChange.bHasNonPropertyChanges)
 			{
-				const int32 OldHeaderSize = FMath::Min(StartOfOldPropertyBlock, OldSerializedObject.Data.Num());
-				const int32 CurrentHeaderSize = FMath::Min(StartOfNewPropertyBlock, NewSerializedObject.Data.Num());
+				const int64 OldHeaderSize = FMath::Min(StartOfOldPropertyBlock, OldSerializedObject.Data.Num());
+				const int64 CurrentHeaderSize = FMath::Min(StartOfNewPropertyBlock, NewSerializedObject.Data.Num());
 
 				bool bIsHeaderIdentical = OldHeaderSize == CurrentHeaderSize;
 				if (bIsHeaderIdentical && CurrentHeaderSize > 0)
@@ -515,8 +476,8 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 			// Compare the data after the property block to see if something else in the object has changed
 			if (!OutDeltaChange.bHasNonPropertyChanges)
 			{
-				const int32 OldFooterSize = OldSerializedObject.Data.Num() - FMath::Max(EndOfOldPropertyBlock, 0);
-				const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - FMath::Max(EndOfNewPropertyBlock, 0);
+				const int64 OldFooterSize = OldSerializedObject.Data.Num() - FMath::Max<int64>(EndOfOldPropertyBlock, 0);
+				const int64 CurrentFooterSize = NewSerializedObject.Data.Num() - FMath::Max<int64>(EndOfNewPropertyBlock, 0);
 
 				bool bIsFooterIdentical = OldFooterSize == CurrentFooterSize;
 				if (bIsFooterIdentical && CurrentFooterSize > 0)
@@ -609,10 +570,18 @@ void FTransaction::RemoveRecords( int32 Count /* = 1  */ )
 {
 	if ( Count > 0 && Records.Num() >= Count )
 	{
-		// Remove anything from the ObjectMap which is about to be removed from the Records array
+		// Remove anything from the ObjectRecordMap which is about to be removed from the Records array
 		for (int32 Index = 0; Index < Count; Index++)
 		{
-			ObjectMap.Remove( Records[Records.Num() - Count + Index].Object.Get() );
+			FObjectRecord& Record = Records[Records.Num() - Count + Index];
+			if (FObjectRecords* ObjectRecords = ObjectRecordsMap.Find(Record.Object))
+			{
+				ObjectRecords->Records.RemoveSingle(&Record);
+				if (ObjectRecords->Records.Num() == 0)
+				{
+					ObjectRecordsMap.Remove(Record.Object);
+				}
+			}
 		}
 
 		Records.RemoveAt( Records.Num() - Count, Count );
@@ -625,10 +594,10 @@ void FTransaction::RemoveRecords( int32 Count /* = 1  */ )
 void FTransaction::DumpObjectMap(FOutputDevice& Ar) const
 {
 	Ar.Logf( TEXT("===== DumpObjectMap %s ==== "), *Title.ToString() );
-	for ( auto It = ObjectMap.CreateConstIterator(); It; ++It )
+	for ( auto It = ObjectRecordsMap.CreateConstIterator(); It; ++It )
 	{
-		const UObject* CurrentObject	= It.Key();
-		const int32 SaveCount				= It.Value();
+		const UObject* CurrentObject	= It.Key().Get();
+		const int32 SaveCount			= It.Value().SaveCount;
 		Ar.Logf( TEXT("%i\t: %s"), SaveCount, *CurrentObject->GetPathName() );
 	}
 	Ar.Logf( TEXT("=== EndDumpObjectMap %s === "), *Title.ToString() );
@@ -645,90 +614,166 @@ FArchive& operator<<( FArchive& Ar, FTransaction::FObjectRecord& R )
 	return Ar;
 }
 
-FTransaction::FObjectRecord::FPersistentObjectRef::FPersistentObjectRef(UObject* InObject)
-	: ReferenceType(EReferenceType::Unknown)
-	, Object(nullptr)
+FTransaction::FPersistentObjectRef::FPersistentObjectRef(UObject* InObject)
 {
-	check(InObject);
-	UObject* Outermost = BuildSubobjectKey(InObject, SubObjectHierarchyID);
-
-	if (SubObjectHierarchyID.Num()>0)
+	RootObject = InObject;
 	{
-		check(Outermost);
-		//check(Outermost != GetTransientPackage());
+		auto UseOuter = [](const UObject* Obj)
+		{
+			if (Obj == nullptr)
+			{
+				return false;
+			}
+
+			const bool bIsCDO = Obj->HasAllFlags(RF_ClassDefaultObject);
+			const UObject* CDO = bIsCDO ? Obj : nullptr;
+			const bool bIsClassCDO = (CDO != nullptr) ? (CDO->GetClass()->ClassDefaultObject == CDO) : false;
+			if (!bIsClassCDO && CDO)
+			{
+				// Likely a trashed CDO, try to recover
+				// Only known cause of this is ambiguous use of DSOs
+				CDO = CDO->GetClass()->ClassDefaultObject;
+			}
+			const UActorComponent* AsComponent = Cast<UActorComponent>(Obj);
+			const bool bIsDSO = Obj->HasAnyFlags(RF_DefaultSubObject);
+			const bool bIsSCSComponent = AsComponent && AsComponent->IsCreatedByConstructionScript();
+			return (bIsCDO && bIsClassCDO) || bIsDSO || bIsSCSComponent;
+		};
+
+		while (UseOuter(RootObject))
+		{
+			SubObjectHierarchyIDs.Add(RootObject->GetFName());
+			RootObject = RootObject->GetOuter();
+		}
+	}
+	check(RootObject);
+
+	if (SubObjectHierarchyIDs.Num() > 0)
+	{
 		ReferenceType = EReferenceType::SubObject;
-		Object = Outermost;
+		Algo::Reverse(SubObjectHierarchyIDs);
 	}
 	else
 	{
-		SubObjectHierarchyID.Empty();
 		ReferenceType = EReferenceType::RootObject;
-		Object = InObject;
 	}
 
 	// Make sure that when we look up the object we find the same thing:
 	checkSlow(Get() == InObject);
 }
 
-UObject* FTransaction::FObjectRecord::FPersistentObjectRef::Get() const
+UObject* FTransaction::FPersistentObjectRef::Get() const
 {
 	if (ReferenceType == EReferenceType::SubObject)
 	{
-		check (SubObjectHierarchyID.Num() > 0)
-		// find the subobject:
-		UObject* CurrentObject = Object;
-		bool bFoundTargetSubObject = (SubObjectHierarchyID.Num() == 0);
-		if (!bFoundTargetSubObject)
+		check(SubObjectHierarchyIDs.Num() > 0);
+
+		UObject* CurrentObject = nullptr;
+
+		// Do we have a valid cached pointer?
+		if (!CachedRootObject.IsExplicitlyNull() && SubObjectHierarchyIDs.Num() == CachedSubObjectHierarchy.Num())
 		{
-			// Current increasing depth into sub-objects, starts at 1 to avoid the sub-object found and placed in NextObject.
-			int SubObjectDepth = SubObjectHierarchyID.Num() - 1;
-			UObject* NextObject = CurrentObject;
-			while (NextObject != nullptr && !bFoundTargetSubObject)
+			// Root object is a pointer test
 			{
-				// Look for any UObject with the CurrentObject's outer to find the next sub-object:
-				NextObject = StaticFindObjectFast(UObject::StaticClass(), CurrentObject, SubObjectHierarchyID[SubObjectDepth]);
-				bFoundTargetSubObject = SubObjectDepth == 0;
-				--SubObjectDepth;
-				CurrentObject = NextObject;
+				CurrentObject = CachedRootObject.GetEvenIfUnreachable();
+				if (CurrentObject != RootObject)
+				{
+					CurrentObject = nullptr;
+				}
+			}
+
+			// All other sub-objects are a name test
+			for (int32 SubObjectIndex = 0; CurrentObject && SubObjectIndex < SubObjectHierarchyIDs.Num(); ++SubObjectIndex)
+			{
+				CurrentObject = CachedSubObjectHierarchy[SubObjectIndex].GetEvenIfUnreachable();
+				if (CurrentObject && CurrentObject->GetFName() != SubObjectHierarchyIDs[SubObjectIndex])
+				{
+					CurrentObject = nullptr;
+				}
 			}
 		}
+		if (CurrentObject)
+		{
+			return CurrentObject;
+		}
 
-		return bFoundTargetSubObject ? CurrentObject : nullptr;
+		// Cached pointer is invalid
+		CachedRootObject.Reset();
+		CachedSubObjectHierarchy.Reset();
+
+		// Try to find and cache the subobject
+		CachedRootObject = RootObject;
+		CurrentObject = RootObject;
+		for (int32 SubObjectIndex = 0; CurrentObject && SubObjectIndex < SubObjectHierarchyIDs.Num(); ++SubObjectIndex)
+		{
+			CurrentObject = StaticFindObjectFast(UObject::StaticClass(), CurrentObject, SubObjectHierarchyIDs[SubObjectIndex]);
+			CachedSubObjectHierarchy.Add(CurrentObject);
+		}
+		if (CurrentObject)
+		{
+			check(!CachedRootObject.IsExplicitlyNull() && SubObjectHierarchyIDs.Num() == CachedSubObjectHierarchy.Num());
+			return CurrentObject;
+		}
+
+		// Cached pointer is invalid
+		CachedRootObject.Reset();
+		CachedSubObjectHierarchy.Reset();
+
+		return nullptr;
 	}
 
-	return Object;
+	return RootObject;
+}
+
+void FTransaction::FPersistentObjectRef::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	Collector.AddReferencedObject(RootObject);
+
+	if (ReferenceType == EReferenceType::SubObject)
+	{
+		// We can't refresh the resolved pointers during ARO, as it's not safe to call FindObject to update the cache if stale
+		// Instead we'll just ARO whatever we may have cached, as this may result in the resolved pointers being updated anyway
+		// Note: This is needed as sub-objects may be subject to GC while inside the transaction buffer, as the references from their root 
+		// object may have been removed (eg, a component on an actor will no longer be referenced by the actor after a delete operation)
+		for (TWeakObjectPtr<UObject>& CachedSubObject : CachedSubObjectHierarchy)
+		{
+			UObject* CachedSubObjectPtr = CachedSubObject.GetEvenIfUnreachable();
+			Collector.AddReferencedObject(CachedSubObjectPtr);
+			CachedSubObject = CachedSubObjectPtr;
+		}
+	}
 }
 
 void FTransaction::FObjectRecord::AddReferencedObjects( FReferenceCollector& Collector )
 {
-	UObject* Obj = Object.Object;
-	Collector.AddReferencedObject(Obj);
-	Object.Object = Obj;
+	Object.AddReferencedObjects(Collector);
 
-	auto AddSerializedObjectReferences = [](FSerializedObject& InSerializedObject, FReferenceCollector& InCollector)
+	auto AddSerializedObjectReferences = [&Collector](FSerializedObject& InSerializedObject)
 	{
 		for (FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
 		{
-			UObject* RefObj = ReferencedObject.Object;
-			InCollector.AddReferencedObject(RefObj);
-			ReferencedObject.Object = RefObj;
+			ReferencedObject.AddReferencedObjects(Collector);
 		}
 
 		if (InSerializedObject.ObjectAnnotation.IsValid())
 		{
-			InSerializedObject.ObjectAnnotation->AddReferencedObjects(InCollector);
+			InSerializedObject.ObjectAnnotation->AddReferencedObjects(Collector);
 		}
 	};
-	AddSerializedObjectReferences(SerializedObject, Collector);
-	AddSerializedObjectReferences(SerializedObjectFlip, Collector);
-	AddSerializedObjectReferences(SerializedObjectSnapshot, Collector);
+	AddSerializedObjectReferences(SerializedObject);
+	AddSerializedObjectReferences(SerializedObjectFlip);
+	AddSerializedObjectReferences(SerializedObjectSnapshot);
+
+	if (CustomChange.IsValid())
+	{
+		CustomChange->AddReferencedObjects(Collector);
+	}
 }
 
 bool FTransaction::FObjectRecord::ContainsPieObject() const
 {
 	{
-		UObject* Obj = Object.Object;
-
+		const UObject* Obj = Object.Get();
 		if(Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
 		{
 			return true;
@@ -739,7 +784,7 @@ bool FTransaction::FObjectRecord::ContainsPieObject() const
 	{
 		for (const FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
 		{
-			const UObject* Obj = ReferencedObject.Object;
+			const UObject* Obj = ReferencedObject.Get();
 			if (Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
 			{
 				return true;
@@ -784,7 +829,11 @@ void FTransaction::AddReferencedObjects( FReferenceCollector& Collector )
 	{
 		ObjectRecord.AddReferencedObjects( Collector );
 	}
-	Collector.AddReferencedObjects(ObjectMap);
+
+	for (TTuple<FPersistentObjectRef, FObjectRecords>& ObjectRecordsPair : ObjectRecordsMap)
+	{
+		ObjectRecordsPair.Key.AddReferencedObjects(Collector);
+	}
 }
 
 void FTransaction::SaveObject( UObject* Object )
@@ -792,24 +841,22 @@ void FTransaction::SaveObject( UObject* Object )
 	check(Object);
 	Object->CheckDefaultSubobjects();
 
-	int32* SaveCount = ObjectMap.Find(Object);
-	if ( !SaveCount )
+	FObjectRecords& ObjectRecords = ObjectRecordsMap.FindOrAdd(FPersistentObjectRef(Object));
+	if (ObjectRecords.Records.Num() == 0)
 	{
-		ObjectMap.Add(Object,1);
 		// Save the object.
-		Records.Add(new FObjectRecord( this, Object, nullptr, nullptr, 0, 0, 0, 0, nullptr, nullptr, nullptr));
+		FObjectRecord* UndoRecord = ObjectRecords.Records.Add_GetRef(new FObjectRecord(this, Object, nullptr, nullptr, 0, 0, 0, 0, 0, nullptr, nullptr, nullptr));
+		Records.Add(UndoRecord);
 	}
-	else
-	{
-		++(*SaveCount);
-	}
+	++ObjectRecords.SaveCount;
 }
 
-void FTransaction::SaveArray( UObject* Object, FScriptArray* Array, int32 Index, int32 Count, int32 Oper, int32 ElementSize, STRUCT_DC DefaultConstructor, STRUCT_AR Serializer, STRUCT_DTOR Destructor )
+void FTransaction::SaveArray( UObject* Object, FScriptArray* Array, int32 Index, int32 Count, int32 Oper, int32 ElementSize, uint32 ElementAlignment, STRUCT_DC DefaultConstructor, STRUCT_AR Serializer, STRUCT_DTOR Destructor )
 {
 	check(Object);
 	check(Array);
 	check(ElementSize);
+	check(ElementAlignment);
 	check(DefaultConstructor);
 	check(Serializer);
 	check(Object->IsValidLowLevel());
@@ -823,23 +870,19 @@ void FTransaction::SaveArray( UObject* Object, FScriptArray* Array, int32 Index,
 	if( Object->HasAnyFlags(RF_Transactional) && !Object->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
 	{
 		// Save the array.
-		Records.Add(new FObjectRecord( this, Object, nullptr, Array, Index, Count, Oper, ElementSize, DefaultConstructor, Serializer, Destructor ));
+		Records.Add(new FObjectRecord( this, Object, nullptr, Array, Index, Count, Oper, ElementSize, ElementAlignment, DefaultConstructor, Serializer, Destructor ));
 	}
 }
 
-void FTransaction::StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange )
+void FTransaction::StoreUndo(UObject* Object, TUniquePtr<FChange> UndoChange)
 {
-	check( Object );
+	check(Object);
 	Object->CheckDefaultSubobjects();
 
-	int32* SaveCount = ObjectMap.Find( Object );
-	if( !SaveCount )
-	{
-		ObjectMap.Add( Object, 0 );
-	}
-
 	// Save the undo record
-	Records.Add(new FObjectRecord( this, Object, MoveTemp( UndoChange ), nullptr, 0, 0, 0, 0, nullptr, nullptr, nullptr));
+	FObjectRecords& ObjectRecords = ObjectRecordsMap.FindOrAdd(FPersistentObjectRef(Object));
+	FObjectRecord* UndoRecord = ObjectRecords.Records.Add_GetRef(new FObjectRecord(this, Object, MoveTemp(UndoChange), nullptr, 0, 0, 0, 0, 0, nullptr, nullptr, nullptr));
+	Records.Add(UndoRecord);
 }
 
 void FTransaction::SetPrimaryObject(UObject* InObject)
@@ -852,16 +895,17 @@ void FTransaction::SetPrimaryObject(UObject* InObject)
 
 void FTransaction::SnapshotObject( UObject* InObject, TArrayView<const FProperty*> Properties )
 {
-	if (InObject && ObjectMap.Contains(InObject))
-	{
-		FObjectRecord* FoundObjectRecord = Algo::FindByPredicate(Records, [InObject](const FObjectRecord& ObjRecord)
-		{
-			return ObjRecord.Object.Get() == InObject;
-		});
+	check(InObject);
 
-		if (FoundObjectRecord)
+	if (const FObjectRecords* ObjectRecords = ObjectRecordsMap.Find(FPersistentObjectRef(InObject)))
+	{
+		for (FObjectRecord* Record : ObjectRecords->Records)
 		{
-			FoundObjectRecord->Snapshot(this, Properties);
+			checkSlow(Record->Object.Get() == InObject);
+			if (!Record->CustomChange)
+			{
+				Record->Snapshot(this, Properties);
+			}
 		}
 	}
 }

@@ -223,6 +223,7 @@ void* FGPUDefragAllocator::Allocate(int64 AllocationSize, int32 Alignment, TStat
 
 	check(IsAligned(AllocatedChunk->Base, Alignment));
 
+	MemoryTrace_Alloc((uint64)AllocatedChunk->Base, AllocationSize, Alignment);
 	LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocatedChunk->Base, AllocationSize));
 
 	return AllocatedChunk->Base;
@@ -354,6 +355,7 @@ void* GBestFitAllocatorFreePointer = nullptr;
 */
 void FGPUDefragAllocator::Free(void* Pointer)
 {
+	MemoryTrace_Free((uint64)Pointer);
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 	if (Pointer)
 	{
@@ -1592,7 +1594,7 @@ void FGPUDefragAllocator::DumpAllocs(FOutputDevice& Ar/*=*GLog*/)
 
 	// Fragmentation and allocation size visualization.
 	int64				NumBlocks = MemorySize / AllocationAlignment;
-	int64				Dimension = 1 + NumBlocks / FMath::TruncToInt(FMath::Sqrt(NumBlocks));
+	int64				Dimension = 1 + NumBlocks / FMath::TruncToInt(FMath::Sqrt(static_cast<float>(NumBlocks)));
 	TArray<FColor>	AllocationVisualization;
 	AllocationVisualization.AddZeroed(Dimension * Dimension);
 	int64				VisIndex = 0;

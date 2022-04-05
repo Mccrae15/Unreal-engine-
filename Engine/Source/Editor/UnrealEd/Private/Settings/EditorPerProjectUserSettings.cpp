@@ -14,7 +14,6 @@ UEditorPerProjectUserSettings::UEditorPerProjectUserSettings(const FObjectInitia
 	: Super(ObjectInitializer)
 {
 	//Default to high quality
-	MaterialQualityLevel = 1;
 	BlueprintFavorites = CreateDefaultSubobject<UBlueprintPaletteFavorites>(TEXT("BlueprintFavorites"));
 	SCSViewportCameraSpeed = 4;
 	AssetViewerProfileIndex = 0;
@@ -28,9 +27,10 @@ UEditorPerProjectUserSettings::UEditorPerProjectUserSettings(const FObjectInitia
 	SwarmNumOfConcurrentJobs = 16;
 	SwarmMaxUploadChunkSizeInMB = 100;
 	SwarmIntermediateFolder = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir() + TEXT("Simplygon/"));
-	PreviewFeatureLevel = (int32)ERHIFeatureLevel::SM5;
+	PreviewFeatureLevel = GMaxRHIFeatureLevel;
 	PreviewShaderFormatName = NAME_None;
 	bPreviewFeatureLevelActive = false;
+	bPreviewFeatureLevelWasDefault = true;
 	PreviewDeviceProfileName = NAME_None;
 }
 
@@ -38,9 +38,16 @@ void UEditorPerProjectUserSettings::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	//Ensure the material quality cvar is set to the settings loaded.
-	static IConsoleVariable* MaterialQualityLevelVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MaterialQualityLevel"));
-	MaterialQualityLevelVar->Set(MaterialQualityLevel, ECVF_SetByScalability);
+	// if we last saved as the default or we somehow are loading a preview feature level higher than we can support,
+	// fall back to the current session's maximum feature level
+	if (bPreviewFeatureLevelWasDefault || PreviewFeatureLevel > GMaxRHIFeatureLevel)
+	{
+		PreviewFeatureLevel = GMaxRHIFeatureLevel;
+		PreviewShaderFormatName = NAME_None;
+		bPreviewFeatureLevelActive = false;
+		bPreviewFeatureLevelWasDefault = true;
+		PreviewDeviceProfileName = NAME_None;
+	}
 }
 
 #if WITH_EDITOR

@@ -14,6 +14,7 @@
 #include "Styling/CoreStyle.h"
 #include "Types/ReflectionMetadata.h"
 #include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 
 #define LOCTEXT_NAMESPACE "ConsoleSlateDebuggerUpdate"
 
@@ -25,6 +26,7 @@ FConsoleSlateDebuggerUpdate::FConsoleSlateDebuggerUpdate()
 	, bDisplayUpdateFromPaint(false)
 	, bShowLegend(false)
 	, bShowQuad(false)
+	, bDebugGameWindowOnly(true)
 	, WidgetUpdateFlagsFilter(EWidgetUpdateFlags::AnyUpdate)
 	, DrawVolatilePaintColor(FColorList::Red)
 	, DrawRepaintColor(FColorList::Yellow)
@@ -33,7 +35,8 @@ FConsoleSlateDebuggerUpdate::FConsoleSlateDebuggerUpdate()
 	, DrawWidgetNameColor(FColorList::Red)
 	, MaxNumberOfWidgetInList(20)
 	, InvalidationRootIdFilter(-1)
-	, CacheDuration(2.0)
+	, CacheDuration(2.0f)
+	, PIEWindowTag("PIEWindow")
 	, StartCommand(
 		TEXT("SlateDebugger.Update.Start"),
 		TEXT("Start the update widget debug tool. It shows when widgets are updated."),
@@ -67,6 +70,10 @@ FConsoleSlateDebuggerUpdate::FConsoleSlateDebuggerUpdate()
 		TEXT("SlateDebugger.Update.SetInvalidationRootIdFilter"),
 		InvalidationRootIdFilter,
 		TEXT("Option to show only the widgets that are part of an invalidation root."))
+	, OnlyGameWindow(
+		TEXT("SlateDebugger.Update.OnlyGameWindow"),
+		bDebugGameWindowOnly,
+		TEXT("Option to only the debug the game window"))
 {
 	GConfig->GetBool(TEXT("SlateDebugger.Update"), TEXT("bDisplayWidgetsNameList"), bDisplayWidgetsNameList, *GEditorPerProjectIni);
 	GConfig->GetBool(TEXT("SlateDebugger.Update"), TEXT("bUseWidgetPathAsName"), bUseWidgetPathAsName, *GEditorPerProjectIni);
@@ -351,7 +358,15 @@ void FConsoleSlateDebuggerUpdate::HandleWidgetUpdate(const FSlateDebuggingWidget
 
 void FConsoleSlateDebuggerUpdate::HandlePaintDebugInfo(const FPaintArgs& InArgs, const FGeometry& InAllottedGeometry, FSlateWindowElementList& InOutDrawElements, int32& InOutLayerId)
 {
+
 	++InOutLayerId;
+
+	// Exclude all windows but the game window
+	SWindow* WindowToDrawIn = InOutDrawElements.GetPaintWindow();
+	if (bDebugGameWindowOnly && (WindowToDrawIn->GetType() != EWindowType::GameWindow && WindowToDrawIn->GetTag() != PIEWindowTag))
+	{
+		return;
+	}
 
 	const FConsoleSlateDebuggerUtility::TSWindowId PaintWindow = FConsoleSlateDebuggerUtility::GetId(InOutDrawElements.GetPaintWindow());
 	int32 NumberOfWidget = 0;
@@ -389,7 +404,7 @@ void FConsoleSlateDebuggerUpdate::HandlePaintDebugInfo(const FPaintArgs& InArgs,
 	{
 		if (Itt.Value.WindowId == PaintWindow)
 		{
-			const double LerpValue = FMath::Clamp((SlateApplicationCurrentTime - Itt.Value.LastInvalidationTime) / CacheDuration, 0.0, 1.0);
+			const float LerpValue = FMath::Clamp((float)(SlateApplicationCurrentTime - Itt.Value.LastInvalidationTime) / CacheDuration, 0.f, 1.f);
 			const FGeometry Geometry = FGeometry::MakeRoot(Itt.Value.PaintSize, FSlateLayoutTransform(1.f, Itt.Value.PaintLocation));
 			const FPaintGeometry PaintGeometry = Geometry.ToPaintGeometry();
 			FLinearColor Color = DrawVolatilePaintColor;

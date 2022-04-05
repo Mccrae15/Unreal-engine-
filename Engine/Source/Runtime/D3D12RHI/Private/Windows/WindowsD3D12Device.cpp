@@ -5,8 +5,10 @@
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "WindowsD3D12Adapter.h"
 #include "Modules/ModuleManager.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsPlatformCrashContext.h"
 #include <delayimp.h>
 #if !PLATFORM_HOLOLENS && !PLATFORM_CPU_ARM_FAMILY
 #include "amd_ags.h"
@@ -20,6 +22,14 @@
 	#include "nvShaderExtnEnums.h"
 #else
 	#define NV_API_ENABLE 0
+#endif
+
+#if INTEL_EXTENSIONS
+	#define INTC_IGDEXT_D3D12 1
+
+	THIRD_PARTY_INCLUDES_START
+	#include "igdext.h"
+	THIRD_PARTY_INCLUDES_END
 #endif
 #include "Windows/HideWindowsPlatformTypes.h"
 
@@ -40,12 +50,33 @@ IMPLEMENT_MODULE(FD3D12DynamicRHIModule, D3D12RHI);
 
 extern bool D3D12RHI_ShouldCreateWithD3DDebug();
 extern bool D3D12RHI_ShouldCreateWithWarp();
+extern bool D3D12RHI_AllowSoftwareFallback();
 extern bool D3D12RHI_ShouldAllowAsyncResourceCreation();
 extern bool D3D12RHI_ShouldForceCompatibility();
 
 FD3D12DynamicRHI* GD3D12RHI = nullptr;
 
+bool GUseInternalTransitions = true;
+static FAutoConsoleVariableRef CVarUseInternalTransitions(
+	TEXT("r.D3D12.UseInternalTransitions"),
+	GUseInternalTransitions,
+	TEXT("Use the D3D12 RHI internal transitions to drive all resource transitions"),
+	ECVF_ReadOnly
+);
+
+#if UE_BUILD_SHIPPING || UE_BUILD_TEST
+bool GValidateInternalTransitions = false;
+#else
+bool GValidateInternalTransitions = true;
+#endif
+static FAutoConsoleVariableRef CVarValidateInternalTransitions(
+	TEXT("r.D3D12.ValidateInternalTransitions"),
+	GValidateInternalTransitions,
+	TEXT("Use the D3D12 RHI internal transitions to validate the engine pushed RHI transitions")
+);
+
 #if NV_AFTERMATH
+bool GDX12NVAfterMathModuleLoaded = false;
 // Disabled by default since introduces stalls between render and driver threads
 int32 GDX12NVAfterMathEnabled = 0;
 static FAutoConsoleVariableRef CVarDX12NVAfterMathBufferSize(
@@ -80,6 +111,18 @@ static FAutoConsoleVariableRef CVarMinDriverVersionForRayTracingNVIDIA(
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
+#define DXR_ALLOW_EMULATED_RAYTRACING 0
+
+#if DXR_ALLOW_EMULATED_RAYTRACING
+int32 GAllowEmulatedRayTracing = 0;
+static FAutoConsoleVariableRef CVarAllowEmulatedRayTracing(
+	TEXT("r.D3D12.DXR.AllowEmulatedRayTracing"),
+	GAllowEmulatedRayTracing,
+	TEXT("Allows ray tracing emulation support on NVIDIA cards with the Pascal architecture (default=0)."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+#endif
+
 // Use AGS_MAKE_VERSION() macro to define the version.
 // i.e. AGS_MAKE_VERSION(major, minor, patch) ((major << 22) | (minor << 12) | patch)
 int32 GMinimumDriverVersionForRayTracingAMD = 0;
@@ -98,6 +141,32 @@ static FAutoConsoleVariableRef CVarAllowAsyncCompute(
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
+int32 GAllowShaderModel6 = 0;
+static FAutoConsoleVariableRef CVarAllowShaderModel6(
+	TEXT("r.D3D12.AllowShaderModel6"),
+	GAllowShaderModel6,
+	TEXT("Allows the usage of SM6 feature level."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarExperimentalShaderModels(
+	TEXT("r.D3D12.ExperimentalShaderModels"),
+	0,
+	TEXT("Controls whether D3D12 experimental shader models should be allowed. Not available in shipping builds. (default = 0)."),
+	ECVF_ReadOnly
+);
+#endif // !UE_BUILD_SHIPPING
+
+#if D3D12RHI_SUPPORTS_WIN_PIX
+int32 GAutoAttachPIX = 0;
+static FAutoConsoleVariableRef CVarAutoAttachPIX(
+	TEXT("r.D3D12.AutoAttachPIX"),
+	GAutoAttachPIX,
+	TEXT("Automatically attach PIX on startup"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+#endif // D3D12RHI_SUPPORTS_WIN_PIX
 
 static inline int D3D12RHI_PreferAdapterVendor()
 {
@@ -126,7 +195,6 @@ static bool bIsQuadBufferStereoEnabled = false;
 /** This function is used as a SEH filter to catch only delay load exceptions. */
 static bool IsDelayLoadException(PEXCEPTION_POINTERS ExceptionPointers)
 {
-#if WINVER > 0x502	// Windows SDK 7.1 doesn't define VcppException
 	switch (ExceptionPointers->ExceptionRecord->ExceptionCode)
 	{
 	case VcppException(ERROR_SEVERITY_ERROR, ERROR_MOD_NOT_FOUND):
@@ -135,9 +203,6 @@ static bool IsDelayLoadException(PEXCEPTION_POINTERS ExceptionPointers)
 	default:
 		return EXCEPTION_CONTINUE_SEARCH;
 	}
-#else
-	return EXCEPTION_EXECUTE_HANDLER;
-#endif
 }
 
 /**
@@ -175,11 +240,43 @@ static D3D_FEATURE_LEVEL GetRequiredD3DFeatureLevel()
 	return D3D_FEATURE_LEVEL_11_0;
 }
 
+static D3D_SHADER_MODEL FindHighestShaderModel(ID3D12Device* Device)
+{
+	// Because we can't guarantee older Windows versions will know about newer shader models, we need to check them all
+	// in descending order and return the first result that succeeds.
+	const D3D_SHADER_MODEL ShaderModelsToCheck[] =
+	{
+#if !PLATFORM_HOLOLENS
+		D3D_SHADER_MODEL_6_6,
+#endif
+		D3D_SHADER_MODEL_6_5,
+		D3D_SHADER_MODEL_6_4,
+		D3D_SHADER_MODEL_6_3,
+		D3D_SHADER_MODEL_6_2,
+		D3D_SHADER_MODEL_6_1,
+		D3D_SHADER_MODEL_6_0,
+	};
+
+	D3D12_FEATURE_DATA_SHADER_MODEL FeatureShaderModel{};
+	for (const D3D_SHADER_MODEL ShaderModelToCheck : ShaderModelsToCheck)
+	{
+		FeatureShaderModel.HighestShaderModel = ShaderModelToCheck;
+
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &FeatureShaderModel, sizeof(FeatureShaderModel))))
+		{
+			return FeatureShaderModel.HighestShaderModel;
+		}
+	}
+
+	// Last ditch effort, the minimum requirement for DX12 is 5.1
+	return D3D_SHADER_MODEL_5_1;
+}
+
 /**
  * Attempts to create a D3D12 device for the adapter using at minimum MinFeatureLevel.
  * If creation is successful, true is returned and the max supported feature level is set in OutMaxFeatureLevel.
  */
-static bool SafeTestD3D12CreateDevice(IDXGIAdapter* Adapter, D3D_FEATURE_LEVEL MinFeatureLevel, D3D_FEATURE_LEVEL& OutMaxFeatureLevel, uint32& OutNumDeviceNodes)
+static bool SafeTestD3D12CreateDevice(IDXGIAdapter* Adapter, D3D_FEATURE_LEVEL MinFeatureLevel, D3D_FEATURE_LEVEL& OutMaxFeatureLevel, D3D_SHADER_MODEL& OutMaxShaderModel, uint32& OutNumDeviceNodes)
 {
 	const D3D_FEATURE_LEVEL FeatureLevels[] =
 	{
@@ -204,6 +301,8 @@ static bool SafeTestD3D12CreateDevice(IDXGIAdapter* Adapter, D3D_FEATURE_LEVEL M
 			{
 				MaxFeatureLevel = FeatureLevelCaps.MaxSupportedFeatureLevel;
 			}
+
+			OutMaxShaderModel = FindHighestShaderModel(pDevice);
 
 			OutMaxFeatureLevel = MaxFeatureLevel;
 			OutNumDeviceNodes = pDevice->GetNodeCount();
@@ -273,6 +372,18 @@ static bool SupportsHDROutput(FD3D12DynamicRHI* D3DRHI)
 	return bSupportsHDROutput;
 }
 
+static bool ShouldEnableExperimentalShaderModels()
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarExperimentalShaderModels.GetValueOnAnyThread() == 1)
+	{
+		return true;
+	}
+#endif // !UE_BUILD_SHIPPING
+
+	return false;
+}
+
 bool FD3D12DynamicRHIModule::IsSupported()
 {
 #if !PLATFORM_HOLOLENS
@@ -282,16 +393,52 @@ bool FD3D12DynamicRHIModule::IsSupported()
 	}
 #endif
 
+	if (ShouldEnableExperimentalShaderModels())
+	{
+		// Experimental features must be enabled before doing anything else with D3D.
+
+		UUID ExperimentalFeatures[] =
+		{
+			D3D12ExperimentalShaderModels
+		};
+		HRESULT hr = D3D12EnableExperimentalFeatures(UE_ARRAY_COUNT(ExperimentalFeatures), ExperimentalFeatures, nullptr, nullptr);
+		if (SUCCEEDED(hr))
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 experimental shader models enabled"));
+		}
+	}
+
 	// If not computed yet
 	if (ChosenAdapters.Num() == 0)
 	{
 		FindAdapter();
 	}
 
+	bool bBlockD3D12 = false;
+#if UE_BUILD_SHIPPING
+	FString BlockedIHVString;
+	if (ChosenAdapters.Num() > 0 && ChosenAdapters[0].IsValid() && GConfig->GetString(TEXT("SystemSettings"), TEXT("RHI.BlockIHVD3D12"), BlockedIHVString, GEngineIni))
+	{
+		TArray<FString> BlockedIHVs;
+		BlockedIHVString.ParseIntoArray(BlockedIHVs, TEXT(","));
+
+		const TCHAR* VendorId = RHIVendorIdToString(EGpuVendorId(ChosenAdapters[0]->GetD3DAdapterDesc().VendorId));
+		for (const FString& BlockedVendor : BlockedIHVs)
+		{
+			if (BlockedVendor.Equals(VendorId, ESearchCase::IgnoreCase))
+			{
+				bBlockD3D12 = true;
+				break;
+			}
+		}
+	}
+#endif
+
 	// The hardware must support at least 11.0.
 	return ChosenAdapters.Num() > 0
 		&& ChosenAdapters[0]->GetDesc().IsValid()
-		&& ChosenAdapters[0]->GetDesc().MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_11_0;
+		&& ChosenAdapters[0]->GetDesc().MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_11_0
+		&& !bBlockD3D12;
 }
 
 namespace D3D12RHI
@@ -360,18 +507,19 @@ void FD3D12DynamicRHIModule::FindAdapter()
 	int32 CVarExplicitAdapterValue = HmdGraphicsAdapterLuid == 0 ? (CVarGraphicsAdapter ? CVarGraphicsAdapter->GetValueOnGameThread() : -1) : -2;
 	FParse::Value(FCommandLine::Get(), TEXT("graphicsadapter="), CVarExplicitAdapterValue);
 
-	const bool bFavorNonIntegrated = CVarExplicitAdapterValue == -1;
+	const bool bFavorDiscreteAdapter = CVarExplicitAdapterValue == -1;
 
 	TRefCountPtr<IDXGIAdapter> TempAdapter;
 	const D3D_FEATURE_LEVEL MinRequiredFeatureLevel = GetRequiredD3DFeatureLevel();
 
-	FD3D12AdapterDesc FirstWithoutIntegratedAdapter;
+	FD3D12AdapterDesc FirstDiscreteAdapter;
 	FD3D12AdapterDesc FirstAdapter;
 
 	bool bIsAnyAMD = false;
 	bool bIsAnyIntel = false;
 	bool bIsAnyNVIDIA = false;
 	bool bRequestedWARP = D3D12RHI_ShouldCreateWithWarp();
+	bool bAllowSoftwareRendering = D3D12RHI_AllowSoftwareFallback();
 
 	int GpuPreferenceInt = DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
 	FParse::Value(FCommandLine::Get(), TEXT("-gpupreference="), GpuPreferenceInt);
@@ -392,8 +540,10 @@ void FD3D12DynamicRHIModule::FindAdapter()
 		if (TempAdapter)
 		{
 			D3D_FEATURE_LEVEL MaxSupportedFeatureLevel = static_cast<D3D_FEATURE_LEVEL>(0);
+			D3D_SHADER_MODEL MaxSupportedShaderModel = D3D_SHADER_MODEL_5_1;
 			uint32 NumNodes = 0;
-			if (SafeTestD3D12CreateDevice(TempAdapter, MinRequiredFeatureLevel, MaxSupportedFeatureLevel, NumNodes))
+
+			if (SafeTestD3D12CreateDevice(TempAdapter, MinRequiredFeatureLevel, MaxSupportedFeatureLevel, MaxSupportedShaderModel, NumNodes))
 			{
 				check(NumNodes > 0);
 				// Log some information about the available D3D12 adapters.
@@ -402,10 +552,11 @@ void FD3D12DynamicRHIModule::FindAdapter()
 				uint32 OutputCount = CountAdapterOutputs(TempAdapter);
 
 				UE_LOG(LogD3D12RHI, Log,
-					TEXT("Found D3D12 adapter %u: %s (Max supported Feature Level %s)"),
+					TEXT("Found D3D12 adapter %u: %s (Max supported Feature Level %s, shader model %d.%d)"),
 					AdapterIndex,
 					AdapterDesc.Description,
-					GetFeatureLevelString(MaxSupportedFeatureLevel)
+					GetFeatureLevelString(MaxSupportedFeatureLevel),
+					(MaxSupportedShaderModel>>4), (MaxSupportedShaderModel & 0xF)
 					);
 				UE_LOG(LogD3D12RHI, Log,
 					TEXT("Adapter has %uMB of dedicated video memory, %uMB of dedicated system memory, and %uMB of shared system memory, %d output[s]"),
@@ -442,10 +593,10 @@ void FD3D12DynamicRHIModule::FindAdapter()
 				// PerfHUD is for performance profiling
 				const bool bIsPerfHUD = !FCString::Stricmp(AdapterDesc.Description, TEXT("NVIDIA PerfHUD"));
 
-				FD3D12AdapterDesc CurrentAdapter(AdapterDesc, AdapterIndex, MaxSupportedFeatureLevel, NumNodes, GpuPreference);
+				FD3D12AdapterDesc CurrentAdapter(AdapterDesc, AdapterIndex, MaxSupportedFeatureLevel, MaxSupportedShaderModel, NumNodes, bIsIntegrated, GpuPreference);
 				
-				// If requested WARP, then reject all other adapters. If WARP not requested, then reject the WARP device.
-				const bool bSkipRequestedWARP = (bRequestedWARP && !bIsWARP) || (!bRequestedWARP && bIsWARP);
+				// If requested WARP, then reject all other adapters. If WARP not requested, then reject the WARP device if software rendering support is disallowed
+				const bool bSkipWARP = (bRequestedWARP && !bIsWARP) || (!bRequestedWARP && bIsWARP && !bAllowSoftwareRendering);
 
 				// we don't allow the PerfHUD adapter
 				const bool bSkipPerfHUDAdapter = bIsPerfHUD && !bAllowPerfHUD;
@@ -456,17 +607,17 @@ void FD3D12DynamicRHIModule::FindAdapter()
 				// the user wants a specific adapter, not this one
 				const bool bSkipExplicitAdapter = CVarExplicitAdapterValue >= 0 && AdapterIndex != CVarExplicitAdapterValue;
 
-				const bool bSkipAdapter = bSkipRequestedWARP || bSkipPerfHUDAdapter || bSkipHmdGraphicsAdapter || bSkipExplicitAdapter;
+				const bool bSkipAdapter = bSkipWARP || bSkipPerfHUDAdapter || bSkipHmdGraphicsAdapter || bSkipExplicitAdapter;
 
 				if (!bSkipAdapter)
 				{
-					if (!bIsIntegrated && !FirstWithoutIntegratedAdapter.IsValid())
+					if (!bIsWARP && !bIsIntegrated && !FirstDiscreteAdapter.IsValid())
 					{
-						FirstWithoutIntegratedAdapter = CurrentAdapter;
+						FirstDiscreteAdapter = CurrentAdapter;
 					}
-					else if (PreferredVendor == AdapterDesc.VendorId && FirstWithoutIntegratedAdapter.IsValid())
+					else if (PreferredVendor == AdapterDesc.VendorId && FirstDiscreteAdapter.IsValid())
 					{
-						FirstWithoutIntegratedAdapter = CurrentAdapter;
+						FirstDiscreteAdapter = CurrentAdapter;
 					}
 
 					if (!FirstAdapter.IsValid())
@@ -482,34 +633,35 @@ void FD3D12DynamicRHIModule::FindAdapter()
 		}
 	}
 
-#if WITH_EDITOR
-	if (bIsAnyIntel || bIsAnyNVIDIA)
+#if PLATFORM_DESKTOP
+	// Problem is fixed in Windows 1903+
+	if (!FWindowsPlatformMisc::VerifyWindowsVersion(10, 0, 18362))
 	{
-		UE_LOG(LogD3D12RHI, Log, TEXT("Forcing D3D12.AsyncDeferredDeletion=0 as a workaround for a deadlock."));
+		UE_LOG(LogD3D12RHI, Log, TEXT("Forcing D3D12.AsyncDeferredDeletion=0 as a workaround for a deadlock on older versions of Windows."));
 
 		extern D3D12RHI_API int32 GD3D12AsyncDeferredDeletion;
 		GD3D12AsyncDeferredDeletion = 0;
 	}
-#endif
+#endif // PLATFORM_DESKTOP
 
 	TSharedPtr<FD3D12Adapter> NewAdapter;
-	if (bFavorNonIntegrated)
+	if (bFavorDiscreteAdapter)
 	{
 		// We assume Intel is integrated graphics (slower than discrete) than NVIDIA or AMD cards and rather take a different one
-		if (FirstWithoutIntegratedAdapter.IsValid())
+		if (FirstDiscreteAdapter.IsValid())
 		{
-			NewAdapter = TSharedPtr<FD3D12Adapter>(new FD3D12Adapter(FirstWithoutIntegratedAdapter));
+			NewAdapter = TSharedPtr<FD3D12Adapter>(new FWindowsD3D12Adapter(FirstDiscreteAdapter));
 			ChosenAdapters.Add(NewAdapter);
 		}
 		else
 		{
-			NewAdapter = TSharedPtr<FD3D12Adapter>(new FD3D12Adapter(FirstAdapter));
+			NewAdapter = TSharedPtr<FD3D12Adapter>(new FWindowsD3D12Adapter(FirstAdapter));
 			ChosenAdapters.Add(NewAdapter);
 		}
 	}
 	else
 	{
-		NewAdapter = TSharedPtr<FD3D12Adapter>(new FD3D12Adapter(FirstAdapter));
+		NewAdapter = TSharedPtr<FD3D12Adapter>(new FWindowsD3D12Adapter(FirstAdapter));
 		ChosenAdapters.Add(NewAdapter);
 	}
 
@@ -523,12 +675,40 @@ void FD3D12DynamicRHIModule::FindAdapter()
 	}
 }
 
+static bool DoesAnyAdapterSupportSM6(const TArray<TSharedPtr<FD3D12Adapter>>& Adapters)
+{
+	for (const TSharedPtr<FD3D12Adapter>& Adapter : Adapters)
+	{
+		// TODO: D3D_FEATURE_LEVEL_12_2
+		if (Adapter->GetFeatureLevel() >= D3D_FEATURE_LEVEL_12_1 && Adapter->GetHighestShaderModel() >= D3D_SHADER_MODEL_6_5)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 {
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2_REMOVED] = SP_NumPlatforms;
+#if PLATFORM_HOLOLENS
+	GMaxRHIFeatureLevel = ERHIFeatureLevel::ES3_1;
+	GMaxRHIShaderPlatform = SP_D3D_ES3_1_HOLOLENS;
+#endif
+
+	const bool bAllowSM6 = GAllowShaderModel6
+		|| (RequestedFeatureLevel != ERHIFeatureLevel::Num && RequestedFeatureLevel >= ERHIFeatureLevel::SM6);
+
+#if PLATFORM_HOLOLENS
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_D3D_ES3_1_HOLOLENS;
+#else
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_PCD3D_ES3_1;
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
+#endif
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_PCD3D_SM5;
+	if (bAllowSM6)
+	{
+		GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM6] = SP_PCD3D_SM6;
+	}
 
 	ERHIFeatureLevel::Type PreviewFeatureLevel;
 	if (!GIsEditor && RHIGetPreviewFeatureLevel(PreviewFeatureLevel))
@@ -541,9 +721,13 @@ FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedF
 	else
 	{
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		if (RequestedFeatureLevel < ERHIFeatureLevel::Num)	
+		if (RequestedFeatureLevel < ERHIFeatureLevel::SM6)	
 		{
 			GMaxRHIFeatureLevel = RequestedFeatureLevel;
+		}
+		else if (bAllowSM6 && DoesAnyAdapterSupportSM6(ChosenAdapters))
+		{
+			GMaxRHIFeatureLevel = ERHIFeatureLevel::SM6;
 		}
 	}
 
@@ -554,11 +738,17 @@ FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedF
 	GMaxRHIShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
 	check(GMaxRHIShaderPlatform != SP_NumPlatforms);
 
-#if USE_PIX
+#if D3D12RHI_SUPPORTS_WIN_PIX
 	bool bPixEventEnabled = (WindowsPixDllHandle != nullptr);
 #else
 	bool bPixEventEnabled = false;
 #endif // USE_PIX
+	
+	if (ChosenAdapters.Num() > 0 && ChosenAdapters[0].IsValid())
+	{
+		FGenericCrashContext::SetEngineData(TEXT("RHI.IntegratedGPU"), ChosenAdapters[0].Get()->GetDesc().bIsIntegrated ? TEXT("true") : TEXT("false"));
+		GRHIDeviceIsIntegrated = ChosenAdapters[0].Get()->GetDesc().bIsIntegrated;
+	}
 
 	GD3D12RHI = new FD3D12DynamicRHI(ChosenAdapters, bPixEventEnabled);
 #if ENABLE_RHI_VALIDATION
@@ -574,42 +764,48 @@ void FD3D12DynamicRHIModule::StartupModule()
 {
 #if NV_AFTERMATH
 	// Note - can't check device type here, we'll check for that before actually initializing Aftermath
-	FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
-	if (LoadLibraryW(*(AftermathBinariesRoot + "GFSDK_Aftermath_Lib.x64.dll")) == nullptr)
+	const FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
+	
+	FPlatformProcess::PushDllDirectory(*AftermathBinariesRoot);
+	void* Handle = FPlatformProcess::GetDllHandle(TEXT("GFSDK_Aftermath_Lib.x64.dll"));
+	FPlatformProcess::PopDllDirectory(*AftermathBinariesRoot);
+
+	if (Handle == nullptr)
 	{
 		UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to load GFSDK_Aftermath_Lib.x64.dll"));
-		GDX12NVAfterMathEnabled = 0;
+		GDX12NVAfterMathModuleLoaded = false;
 		return;
 	}
 	else
 	{
 		UE_LOG(LogD3D12RHI, Log, TEXT("Aftermath initialized"));
-		GDX12NVAfterMathEnabled = 1;
+		GDX12NVAfterMathModuleLoaded = true;
 	}
 #endif
 
-#if USE_PIX
+#if D3D12RHI_SUPPORTS_WIN_PIX
 #if PLATFORM_CPU_ARM_FAMILY
-	static FString WindowsPixDllRelativePath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/WinPixEventRuntime/arm64"));
+	static FString WindowsPixDllRelativePath = FPaths::Combine(FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/WinPixEventRuntime/arm64"));
 #else
-	static FString WindowsPixDllRelativePath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/WinPixEventRuntime/x64"));
+	static FString WindowsPixDllRelativePath = FPaths::Combine(FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/WinPixEventRuntime/x64"));
 #endif
-	static FString WindowsPixDll("WinPixEventRuntime.dll");
-	UE_LOG(LogD3D12RHI, Log, TEXT("Loading %s for PIX profiling (from %s)."), WindowsPixDll.GetCharArray().GetData(), WindowsPixDllRelativePath.GetCharArray().GetData());
-	WindowsPixDllHandle = FPlatformProcess::GetDllHandle(*FPaths::Combine(*WindowsPixDllRelativePath, *WindowsPixDll));
+	static const TCHAR* WindowsPixDll = TEXT("WinPixEventRuntime.dll");
+
+	UE_LOG(LogD3D12RHI, Log, TEXT("Loading %s for PIX profiling (from %s)."), WindowsPixDll, *WindowsPixDllRelativePath);
+	WindowsPixDllHandle = FPlatformProcess::GetDllHandle(*FPaths::Combine(WindowsPixDllRelativePath, WindowsPixDll));
 	if (WindowsPixDllHandle == nullptr)
 	{
 		const int32 ErrorNum = FPlatformMisc::GetLastError();
 		TCHAR ErrorMsg[1024];
 		FPlatformMisc::GetSystemErrorMessage(ErrorMsg, 1024, ErrorNum);
-		UE_LOG(LogD3D12RHI, Error, TEXT("Failed to get %s handle: %s (%d)"), WindowsPixDll.GetCharArray().GetData(), ErrorMsg, ErrorNum);
+		UE_LOG(LogD3D12RHI, Error, TEXT("Failed to get %s handle: %s (%d)"), WindowsPixDll, ErrorMsg, ErrorNum);
 	}
 #endif
 }
 
 void FD3D12DynamicRHIModule::ShutdownModule()
 {
-#if USE_PIX
+#if D3D12RHI_SUPPORTS_WIN_PIX
 	if (WindowsPixDllHandle)
 	{
 		FPlatformProcess::FreeDllHandle(WindowsPixDllHandle);
@@ -618,8 +814,68 @@ void FD3D12DynamicRHIModule::ShutdownModule()
 #endif
 }
 
+static bool IsRayTracingEmulated(uint32 DeviceId)
+{
+	uint32 EmulatedRayTracingIds[] =
+	{
+		0x1B80, // "NVIDIA GeForce GTX 1080"
+		0x1B81, // "NVIDIA GeForce GTX 1070"
+		0x1B82, // "NVIDIA GeForce GTX 1070 Ti"
+		0x1B83, // "NVIDIA GeForce GTX 1060 6GB"
+		0x1B84, // "NVIDIA GeForce GTX 1060 3GB"
+		0x1C01, // "NVIDIA GeForce GTX 1050 Ti"
+		0x1C02, // "NVIDIA GeForce GTX 1060 3GB"
+		0x1C03, // "NVIDIA GeForce GTX 1060 6GB"
+		0x1C04, // "NVIDIA GeForce GTX 1060 5GB"
+		0x1C06, // "NVIDIA GeForce GTX 1060 6GB"
+		0x1C08, // "NVIDIA GeForce GTX 1050"
+		0x1C81, // "NVIDIA GeForce GTX 1050"
+		0x1C82, // "NVIDIA GeForce GTX 1050 Ti"
+		0x1C83, // "NVIDIA GeForce GTX 1050"
+		0x1B06, // "NVIDIA GeForce GTX 1080 Ti"
+		0x1B00, // "NVIDIA TITAN X (Pascal)"
+		0x1B02, // "NVIDIA TITAN Xp"
+		0x1D81, // "NVIDIA TITAN V"
+	};
+
+	for (int Index = 0; Index < UE_ARRAY_COUNT(EmulatedRayTracingIds); ++Index)
+	{
+		if (DeviceId == EmulatedRayTracingIds[Index])
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void DisableRayTracingSupport()
+{
+	GRHISupportsRayTracing = false;
+	GRHISupportsRayTracingPSOAdditions = false;
+	GRHISupportsRayTracingDispatchIndirect = false;
+	GRHISupportsRayTracingAsyncBuildAccelerationStructure = false;
+	GRHISupportsRayTracingAMDHitToken = false;
+	GRHISupportsInlineRayTracing = false;
+	GRHISupportsRayTracingShaders = false;
+}
+
 void FD3D12DynamicRHI::Init()
 {
+#if D3D12RHI_SUPPORTS_WIN_PIX
+	// PIX GPU capture dll: makes PIX be able to attach to our process. !GetModuleHandle() is required because PIX may already be attached.
+	if (GAutoAttachPIX || FParse::Param(FCommandLine::Get(), TEXT("attachPIX")))
+	{
+		// If PIX is not already attached, load its dll to auto attach ourselves
+		if (!FPlatformProcess::GetDllHandle(L"WinPixGpuCapturer.dll"))
+		{
+			// This should always be loaded from the installed PIX directory.
+			// This function does assume it's installed under Program Files so we may have to revisit for custom install locations.
+			WinPixGpuCapturerHandle = PIXLoadLatestWinPixGpuCapturerLibrary();
+		}
+	}
+#endif
+
 	for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
 	{
 		Adapter->Initialize(this);
@@ -647,7 +903,7 @@ void FD3D12DynamicRHI::Init()
 		check(AmdSupportedExtensionFlags == 0);
 
 		// agsInit should be called before D3D device creation
-		agsInit(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdAgsGpuInfo);
+		agsInitialize(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdAgsGpuInfo);
 	}
 #endif
 
@@ -662,19 +918,26 @@ void FD3D12DynamicRHI::Init()
 #if AMD_API_ENABLE
 	// Warn if we are trying to use RGP frame markers but are either running on a non-AMD device
 	// or using an older AMD driver without RGP marker support
-	if (GEmitRgpFrameMarkers && !IsRHIDeviceAMD())
+	if (IsRHIDeviceAMD())
+	{
+		if (bAllowVendorDevice)
+		{
+			static_assert(sizeof(AGSDX12ReturnedParams::ExtensionsSupported) == sizeof(uint32));
+			AGSDX12ReturnedParams::ExtensionsSupported AMDSupportedExtensions;
+			FMemory::Memcpy(&AMDSupportedExtensions, &AmdSupportedExtensionFlags, sizeof(uint32));
+
+			if (GEmitRgpFrameMarkers && AMDSupportedExtensions.userMarkers == 0)
+		    {
+			    UE_LOG(LogD3D12RHI, Warning, TEXT("Attempting to use RGP frame markers without driver support. Update AMD driver."));
+		    }
+
+			GRHISupportsAtomicUInt64 = AMDSupportedExtensions.intrinsics19 != 0;  // "intrinsics19" includes AtomicU64
+			GRHISupportsAtomicUInt64 = GRHISupportsAtomicUInt64 && AMDSupportedExtensions.UAVBindSlot != 0;
+		}
+	}
+	else if (GEmitRgpFrameMarkers)
 	{
 		UE_LOG(LogD3D12RHI, Warning, TEXT("Attempting to use RGP frame markers on a non-AMD device."));
-	}
-	else if (GEmitRgpFrameMarkers && (AmdSupportedExtensionFlags & AGS_DX12_EXTENSION_USER_MARKERS) == 0)
-	{
-		UE_LOG(LogD3D12RHI, Warning, TEXT("Attempting to use RGP frame markers without driver support. Update AMD driver."));
-	}
-
-	if (IsRHIDeviceAMD() && bAllowVendorDevice)
-	{
-		GRHISupportsAtomicUInt64 = (AmdSupportedExtensionFlags & AGS_DX12_EXTENSION_INTRINSIC_ATOMIC_U64) != 0;
-		GRHISupportsAtomicUInt64 = GRHISupportsAtomicUInt64 && (AmdSupportedExtensionFlags & AGS_DX12_EXTENSION_INTRINSIC_UAV_BIND_SLOT) != 0;
 	}
 #endif
 
@@ -698,8 +961,7 @@ void FD3D12DynamicRHI::Init()
 		&& !FPlatformMisc::VerifyWindowsVersion(10, 0, GMinimumWindowsBuildVersionForRayTracing)
 		&& !bIsRunningNvidiaGFN)
 	{
-		GRHISupportsRayTracing = false;
-
+		DisableRayTracingSupport();
 		UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because it requires Windows 10 version %u"), (uint32)GMinimumWindowsBuildVersionForRayTracing);
 	}
 #endif
@@ -707,12 +969,11 @@ void FD3D12DynamicRHI::Init()
 #if NV_API_ENABLE
 	if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
 	{
-		NvAPI_Status NvStatus;
-		NvStatus = NvAPI_Initialize();
+		const NvAPI_Status NvStatus = NvAPI_Initialize();
 		if (NvStatus == NVAPI_OK)
 		{
-			NvStatus = NvAPI_D3D12_IsNvShaderExtnOpCodeSupported(GetAdapter().GetD3DDevice(), NV_EXTN_OP_UINT64_ATOMIC, &GRHISupportsAtomicUInt64);
-			if (NvStatus != NVAPI_OK)
+			NvAPI_Status NvStatusAtomicU64 = NvAPI_D3D12_IsNvShaderExtnOpCodeSupported(GetAdapter().GetD3DDevice(), NV_EXTN_OP_UINT64_ATOMIC, &GRHISupportsAtomicUInt64);
+			if (NvStatusAtomicU64 != NVAPI_OK)
 			{
 				UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to query support for 64 bit atomics"));
 			}
@@ -722,22 +983,49 @@ void FD3D12DynamicRHI::Init()
 			UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to initialize NVAPI"));
 		}
 
-		// Disable ray tracing for old Nvidia drivers
-		if (GRHISupportsRayTracing
-			&& GMinimumDriverVersionForRayTracingNVIDIA > 0
-			&& NvStatus == NVAPI_OK)
-		{
-			NvU32 DriverVersion = UINT32_MAX;
-			NvAPI_ShortString BranchString("");
-			if (NvAPI_SYS_GetDriverAndBranchVersion(&DriverVersion, BranchString) == NVAPI_OK)
-			{
-				if (DriverVersion < (uint32)GMinimumDriverVersionForRayTracingNVIDIA)
-				{
-					GRHISupportsRayTracing = false;
+		NvU32 DriverVersion = UINT32_MAX;
 
-					UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because the driver is too old"));
-				}
+		if (NvStatus == NVAPI_OK)
+		{
+			NvAPI_ShortString BranchString("");
+			if (NvAPI_SYS_GetDriverAndBranchVersion(&DriverVersion, BranchString) != NVAPI_OK)
+			{
+				UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to query NVIDIA driver version"));
 			}
+		}
+
+		// Disable ray tracing for old Nvidia drivers
+		if (GRHISupportsRayTracing 
+			&& GMinimumDriverVersionForRayTracingNVIDIA > 0
+			&& DriverVersion < (uint32)GMinimumDriverVersionForRayTracingNVIDIA)
+		{
+			DisableRayTracingSupport();
+			UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because the driver is too old"));
+		}
+
+		// Disable indirect ray tracing dispatch on drivers that have a known bug.
+		if (GRHISupportsRayTracingDispatchIndirect 
+			&& DriverVersion < (uint32)46611)
+		{
+			GRHISupportsRayTracingDispatchIndirect = false;
+			UE_LOG(LogD3D12RHI, Warning,
+				TEXT("Indirect ray tracing dispatch is disabled because of known bugs in the current driver. ")
+				TEXT("Please update to NVIDIA driver version 466.11 or newer."));
+		}
+
+	if (GRHISupportsRayTracing
+		&& IsRayTracingEmulated(AdapterDesc.DeviceId))
+		{
+#if DXR_ALLOW_EMULATED_RAYTRACING
+		if (!GAllowEmulatedRayTracing)
+		{
+			DisableRayTracingSupport();
+			UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled for NVIDIA cards with the Pascal architecture. This can be overridden with the following CVar: r.D3D12.DXR.AllowEmulatedRayTracing=1"));
+		}
+#else
+		DisableRayTracingSupport();
+		UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled for NVIDIA cards with the Pascal architecture."));
+#endif // DXR_ALLOW_EMULATED_RAYTRACING
 		}
 	}
 #endif
@@ -745,18 +1033,113 @@ void FD3D12DynamicRHI::Init()
 #if AMD_API_ENABLE
 	if (GRHISupportsRayTracing
 		&& IsRHIDeviceAMD()
-		&& GMinimumDriverVersionForRayTracingAMD > 0
 		&& AmdAgsContext
 		&& AmdAgsGpuInfo.radeonSoftwareVersion)
 	{
-		if (agsCheckDriverVersion(AmdAgsGpuInfo.radeonSoftwareVersion, GMinimumDriverVersionForRayTracingAMD) == AGS_SOFTWAREVERSIONCHECK_OLDER)
+		if (GMinimumDriverVersionForRayTracingAMD > 0 
+			&& agsCheckDriverVersion(AmdAgsGpuInfo.radeonSoftwareVersion, GMinimumDriverVersionForRayTracingAMD) == AGS_SOFTWAREVERSIONCHECK_OLDER)
 		{
-			GRHISupportsRayTracing = false;
-
+			DisableRayTracingSupport();
 			UE_LOG(LogD3D12RHI, Warning, TEXT("Ray tracing is disabled because the driver is too old"));
+		}
+
+		if (GRHISupportsRayTracing)
+		{
+			static_assert(sizeof(AGSDX12ReturnedParams::ExtensionsSupported) == sizeof(uint32));
+			AGSDX12ReturnedParams::ExtensionsSupported AMDSupportedExtensions;
+			FMemory::Memcpy(&AMDSupportedExtensions, &AmdSupportedExtensionFlags, sizeof(uint32));
+
+			GRHISupportsRayTracingAMDHitToken = AMDSupportedExtensions.rayHitToken;
+			UE_LOG(LogD3D12RHI, Log, TEXT("AMD hit token extension is %s"), GRHISupportsRayTracingAMDHitToken ? TEXT("supported") : TEXT("not supported"));
 		}
 	}
 #endif // AMD_API_ENABLE
+
+#if INTEL_EXTENSIONS
+	if (IsRHIDeviceIntel() && bAllowVendorDevice)
+	{
+		const INTCExtensionVersion AtomicsRequiredVersion = { 3, 4, 1 }; //version 3.4.1
+		INTCExtensionVersion* SupportedExtensionsVersions = nullptr;
+		uint32_t SupportedExtensionsVersionCount = 0;
+		INTCExtensionInfo INTCExtensionInfo{};
+
+		if (FAILED(INTC_LoadExtensionsLibrary(false)))
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("Failed to load Intel Extensions Library"));
+		}
+
+		if (SUCCEEDED(INTC_D3D12_GetSupportedVersions(GetAdapter().GetD3DDevice(), nullptr, &SupportedExtensionsVersionCount)))
+		{
+			SupportedExtensionsVersions = new INTCExtensionVersion[SupportedExtensionsVersionCount]{};
+		}
+
+		if (SUCCEEDED(INTC_D3D12_GetSupportedVersions(GetAdapter().GetD3DDevice(), SupportedExtensionsVersions, &SupportedExtensionsVersionCount)) && SupportedExtensionsVersions != nullptr)
+		{
+			for (uint32_t i = 0; i < SupportedExtensionsVersionCount; i++)
+			{
+				if ((SupportedExtensionsVersions[i].HWFeatureLevel >= AtomicsRequiredVersion.HWFeatureLevel) &&
+					(SupportedExtensionsVersions[i].APIVersion >= AtomicsRequiredVersion.APIVersion) &&
+					(SupportedExtensionsVersions[i].Revision >= AtomicsRequiredVersion.Revision))
+				{
+					UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions loaded requested version: %u.%u.%u"),
+						SupportedExtensionsVersions[i].HWFeatureLevel,
+						SupportedExtensionsVersions[i].APIVersion,
+						SupportedExtensionsVersions[i].Revision);
+
+					INTCExtensionInfo.RequestedExtensionVersion = SupportedExtensionsVersions[i];
+					GRHISupportsAtomicUInt64 = true;
+					break;
+				}
+			}
+		}
+
+		check(IntelExtensionContext == nullptr);
+		INTCExtensionAppInfo AppInfo{};
+		AppInfo.pEngineName = TEXT("Unreal Engine");
+		AppInfo.EngineVersion = 5;
+
+		HRESULT hr = INTC_D3D12_CreateDeviceExtensionContext(GetAdapter().GetD3DDevice(), &IntelExtensionContext, &INTCExtensionInfo, &AppInfo);
+
+		bool bEnabled = false;
+		if (SUCCEEDED(hr))
+		{
+			bEnabled = true;
+			UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions Framework enabled"));
+		}
+		else if (hr == E_OUTOFMEMORY)
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions Framework not supported by driver"));
+		}
+		else if (hr == E_INVALIDARG)
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions Framework passed invalid creation arguments"));
+		}
+
+		if (!bEnabled && IntelExtensionContext)
+		{
+			hr = INTC_DestroyDeviceExtensionContext(&IntelExtensionContext);
+
+			if (hr == S_OK)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions Framework unloaded"));
+			}
+			else if (hr == E_INVALIDARG)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("Intel Extensions Framework error when unloading"));
+			}
+
+			IntelExtensionContext = nullptr;
+		}
+
+		if (SupportedExtensionsVersions != nullptr)
+		{
+			delete[] SupportedExtensionsVersions;
+		}
+
+	}
+#endif // INTEL_EXTENSIONS
+
+	GRHIPersistentThreadGroupCount = 1440; // TODO: Revisit based on vendor/adapter/perf query
 
 	GTexturePoolSize = 0;
 
@@ -883,10 +1266,6 @@ void FD3D12DynamicRHI::Init()
 	// - Standalones are added to the deferred deletion queue of its parent FD3D12Adapter
 	GRHIForceNoDeletionLatencyForStreamingTextures = !!PLATFORM_WINDOWS;
 
-#if 0//D3D12_RHI_RAYTRACING
-	GRHISupportsRayTracing = GetAdapter().GetD3DRayTracingDevice() != nullptr;
-#endif
-
 	D3D12_FEATURE_DATA_D3D12_OPTIONS6 options = {};
 	HRESULT hr = GetAdapter().GetD3DDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &options, sizeof(options));
 	if(hr == S_OK && options.VariableShadingRateTier != D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED)
@@ -914,6 +1293,8 @@ void FD3D12DynamicRHI::Init()
 		GRHIVariableRateShadingImageTileMaxWidth = 1;
 		GRHIVariableRateShadingImageTileMaxHeight = 1;
 	}
+
+	GRHISupportsUAVFormatAliasing = (GetAdapter().GetResourceHeapTier() > D3D12_RESOURCE_HEAP_TIER_1 && IsRHIDeviceNVIDIA());
 
 	// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().
 	GRHICommandList.GetImmediateCommandList().SetContext(::RHIGetDefaultContext());
@@ -982,7 +1363,7 @@ void FD3D12Device::Initialize()
 
 void FD3D12Device::InitPlatformSpecific()
 {
-	CommandListManager = new FD3D12CommandListManager(this, D3D12_COMMAND_LIST_TYPE_DIRECT, ED3D12CommandQueueType::Default);
+	CommandListManager = new FD3D12CommandListManager(this, D3D12_COMMAND_LIST_TYPE_DIRECT, ED3D12CommandQueueType::Direct);
 	CopyCommandListManager = new FD3D12CommandListManager(this, D3D12_COMMAND_LIST_TYPE_COPY, ED3D12CommandQueueType::Copy);
 	AsyncCommandListManager = new FD3D12CommandListManager(this, D3D12_COMMAND_LIST_TYPE_COMPUTE, ED3D12CommandQueueType::Async);
 }
@@ -999,6 +1380,16 @@ TRefCountPtr<ID3D12StateObject> FD3D12Device::DeserializeRayTracingStateObject(D
 	TRefCountPtr<ID3D12StateObject> Result;
 	return Result;
 }
+
+bool FD3D12Device::GetRayTracingPipelineInfo(ID3D12StateObject* Pipeline, FD3D12RayTracingPipelineInfo* OutInfo)
+{
+	// Return a safe default result on Windows, as there is no API to query interesting pipeline metrics.
+	FD3D12RayTracingPipelineInfo Result = {};
+	*OutInfo = Result;
+
+	return false;
+}
+
 #endif // D3D12_RHI_RAYTRACING
 
 /**
@@ -1148,3 +1539,68 @@ bool FD3D12DynamicRHI::RHIGetAvailableResolutions(FScreenResolutionArray& Resolu
 
 	return true;
 }
+
+void FWindowsD3D12Adapter::CreateCommandSignatures()
+{
+	ID3D12Device* Device = GetD3DDevice();
+
+#if D3D12_RHI_RAYTRACING
+
+	if (GRHISupportsRayTracing)
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 D3D12Caps5 = {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &D3D12Caps5, sizeof(D3D12Caps5))))
+		{
+			if (D3D12Caps5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1)
+			{
+				GRHISupportsRayTracingDispatchIndirect = true;
+			}
+		}
+	}
+
+	if (GRHISupportsRayTracingDispatchIndirect)
+	{
+		D3D12_COMMAND_SIGNATURE_DESC SignatureDesc = {};
+		SignatureDesc.NumArgumentDescs = 1;
+		SignatureDesc.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
+		SignatureDesc.NodeMask = FRHIGPUMask::All().GetNative();
+
+		D3D12_INDIRECT_ARGUMENT_DESC ArgumentDesc[1] = {};
+		ArgumentDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+		SignatureDesc.pArgumentDescs = ArgumentDesc;
+
+		checkf(DispatchRaysIndirectCommandSignature == nullptr, TEXT("Indirect ray tracing dispatch command signature is expected to be initialized by FWindowsD3D12Adapter."));
+		VERIFYD3D12RESULT(Device->CreateCommandSignature(&SignatureDesc, nullptr, IID_PPV_ARGS(DispatchRaysIndirectCommandSignature.GetInitReference())));
+	}
+
+#endif // D3D12_RHI_RAYTRACING
+
+	// Create windows-specific indirect compute dispatch command signature
+	{
+		D3D12_COMMAND_SIGNATURE_DESC CommandSignatureDesc = {};
+		CommandSignatureDesc.NumArgumentDescs = 1;
+		CommandSignatureDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+		CommandSignatureDesc.NodeMask = FRHIGPUMask::All().GetNative();
+
+		D3D12_INDIRECT_ARGUMENT_DESC IndirectParameterDesc[1] = {};
+		IndirectParameterDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+		CommandSignatureDesc.pArgumentDescs = IndirectParameterDesc;
+
+		checkf(DispatchIndirectComputeCommandSignature == nullptr, TEXT("Indirect compute dispatch command signature is expected to be initialized by FWindowsD3D12Adapter."));
+		VERIFYD3D12RESULT(Device->CreateCommandSignature(&CommandSignatureDesc, nullptr, IID_PPV_ARGS(DispatchIndirectComputeCommandSignature.GetInitReference())));
+
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+		if (GRHISupportsMeshShadersTier0)
+		{
+			IndirectParameterDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
+			CommandSignatureDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+			VERIFYD3D12RESULT(Device->CreateCommandSignature(&CommandSignatureDesc, nullptr, IID_PPV_ARGS(DispatchIndirectMeshCommandSignature.GetInitReference())));
+		}
+#endif
+	}
+
+	// Create all the generic / cross-platform command signatures
+
+	FD3D12Adapter::CreateCommandSignatures();
+}
+

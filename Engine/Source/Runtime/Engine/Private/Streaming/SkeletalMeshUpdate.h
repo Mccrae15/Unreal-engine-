@@ -34,6 +34,8 @@ struct FSkelMeshUpdateContext
 	FSkeletalMeshRenderData* RenderData;
 	/** The array view of streamable LODs from the asset. Takes into account FStreamableRenderResourceState::AssetLODBias and FStreamableRenderResourceState::MaxNumLODs. */
 	TArrayView<FSkeletalMeshLODRenderData*> LODResourcesView;
+	/** Cached value of mesh its LOD bias (MinLOD for SkeletalMesh). */
+	int32 AssetLODBias = 0;
 
 	/** The thread on which the context was created. */
 	EThreadType CurrentThread;
@@ -70,14 +72,13 @@ protected:
 	/** Correspond to the buffers in FSkeletalMeshLODRenderData */
 	struct FIntermediateBuffers
 	{
-		FVertexBufferRHIRef TangentsVertexBuffer;
-		FVertexBufferRHIRef TexCoordVertexBuffer;
-		FVertexBufferRHIRef PositionVertexBuffer;
-		FVertexBufferRHIRef ColorVertexBuffer;
+		FBufferRHIRef TangentsVertexBuffer;
+		FBufferRHIRef TexCoordVertexBuffer;
+		FBufferRHIRef PositionVertexBuffer;
+		FBufferRHIRef ColorVertexBuffer;
 		FSkinWeightRHIInfo SkinWeightVertexBuffer;
-		FVertexBufferRHIRef ClothVertexBuffer;
-		FIndexBufferRHIRef IndexBuffer;
-		FIndexBufferRHIRef AdjacencyIndexBuffer;
+		FBufferRHIRef ClothVertexBuffer;
+		FBufferRHIRef IndexBuffer;
 		TArray<TPair<FName, FSkinWeightRHIInfo>> AltSkinWeightVertexBuffers;
 
 		void CreateFromCPUData_RenderThread(FSkeletalMeshLODRenderData& LODResource);

@@ -35,8 +35,6 @@ void SNiagaraBakerViewportToolbar::Construct(const FArguments& InArgs)
 	[
 		SNew( SBorder )
 		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
-		// Color and opacity is changed based on whether or not the mouse cursor is hovering over the toolbar area
-		.ColorAndOpacity( this, &SViewportToolBar::OnGetColorAndOpacity )
 		.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
 		[
 			SNew( SVerticalBox )
@@ -81,7 +79,7 @@ void SNiagaraBakerViewportToolbar::Construct(const FArguments& InArgs)
 		SNew(SEditorViewportToolBarButton)
 		.Cursor(EMouseCursor::Default)
 		.ButtonType(EUserInterfaceActionType::Button)
-		.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.MenuButtonWarning"))
+		.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 		.OnClicked(
 			FOnClicked::CreateLambda(
 				[WeakViewModel=WeakViewModel]()
@@ -94,13 +92,13 @@ void SNiagaraBakerViewportToolbar::Construct(const FArguments& InArgs)
 				}
 			)
 		)
-		.ToolTipText(LOCTEXT("CaptureToolTip", "Captures the Baker."))
+		.ToolTipText(LOCTEXT("BakeToolTip", "Runs the bake process."))
 		.Content()
 		[
 			SNew(STextBlock)
 			.Font(FEditorStyle::GetFontStyle("EditorViewportToolBar.Font"))
-			.Text(LOCTEXT("Capture", "Capture"))
-			.ColorAndOpacity(FLinearColor::Black)
+			.Text(LOCTEXT("Bake", "Bake"))
+			.ColorAndOpacity(FLinearColor::White)
 		]
 	];
 	
@@ -115,6 +113,60 @@ TSharedRef<SWidget> SNiagaraBakerViewportToolbar::GenerateOptionsMenu() const
 	// Show options for preview & flip book
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ShowOptions", "Show Options"));
 	{
+		MenuBuilder.AddMenuEntry(
+			FText(LOCTEXT("AlphaBlend", "Alpha Blend")),
+			FText(LOCTEXT("AlphaBlendTooltip", "If we should use alpha blend or opaque to render previews.")),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda(
+					[WeakViewport=WeakViewport]()
+					{
+						if ( auto Viewport = WeakViewport.Pin() )
+						{
+							Viewport->SetAlphaBlendEnabled(!Viewport->IsAlphaBlendEnabled());
+						}
+					}
+				),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda(
+					[WeakViewport = WeakViewport]()
+					{
+						auto Viewport = WeakViewport.Pin();
+						return Viewport && Viewport->IsAlphaBlendEnabled();
+					}
+				)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+
+		MenuBuilder.AddMenuEntry(
+			FText(LOCTEXT("Checkerboard", "Checkboard")),
+			FText(LOCTEXT("CheckerboardTooltip", "Should the background be a checkerboard or not.")),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda(
+					[WeakViewport=WeakViewport]()
+					{
+						if ( auto Viewport = WeakViewport.Pin() )
+						{
+							Viewport->SetCheckerboardEnabled(!Viewport->IsCheckerboardEnabled());
+						}
+					}
+				),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda(
+					[WeakViewport = WeakViewport]()
+					{
+						auto Viewport = WeakViewport.Pin();
+						return Viewport && Viewport->IsCheckerboardEnabled();
+					}
+				)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+
 		MenuBuilder.AddMenuEntry(
 			FText(LOCTEXT("ShowInfoText", "Info Text")),
 			FText(LOCTEXT("ShowInfoTextTooltip", "When enabled information will be overlaid on each display.")),
@@ -204,18 +256,15 @@ TSharedRef<SWidget> SNiagaraBakerViewportToolbar::GenerateOptionsMenu() const
 		const UNiagaraBakerSettings* BakerSettings = ViewModel->GetBakerSettings();
 		for ( int32 i=0; i < BakerSettings->OutputTextures.Num(); ++i )
 		{
-			FString TextureName;
-			if ( BakerSettings->OutputTextures[i].OutputName.IsNone() )
+			TStringBuilder<128> TextureName;
+			TextureName.Appendf(TEXT("Texture(%d)"), i);
+			if (UTexture2D* GeneratedTexture = BakerSettings->OutputTextures[i].GeneratedTexture)
 			{
-				TextureName = FString::Printf(TEXT("Output Texture %d"), i);
+				TextureName.Appendf(TEXT(" - %s"), *BakerSettings->OutputTextures[i].GeneratedTexture->GetName());
 			}
-			else
-			{
-				TextureName = BakerSettings->OutputTextures[i].OutputName.ToString();
-			}
-
+			
 			MenuBuilder.AddMenuEntry(
-				FText::FromString(TextureName),
+				FText::FromStringView(TextureName.ToView()),
 				FText(),
 				FSlateIcon(),
 				FUIAction(

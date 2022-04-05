@@ -15,6 +15,7 @@
 #include "WebRemoteControlEditorRoutes.h"
 
 struct FHttpServerRequest;
+class FMemoryWriter;
 class IHttpRouter;
 class FWebSocketMessageHandler;
 
@@ -45,6 +46,7 @@ public:
 	virtual FSimpleMulticastDelegate& OnHttpServerStopped() override { return OnHttpServerStoppedDelegate; }
 	virtual FOnWebServerStarted& OnWebSocketServerStarted() override { return OnWebSocketServerStartedDelegate; }
 	virtual FSimpleMulticastDelegate& OnWebSocketServerStopped() override { return OnWebSocketServerStoppedDelegate; }
+	virtual void SetExternalRemoteWebSocketLoggerConnection(TSharedPtr<class INetworkingWebSocket> WebSocketLoggerConnection);
 	//~ End IWebRemoteControlModule Interface
 
 	/**
@@ -104,6 +106,9 @@ private:
 	/** Unregister console commands. */
 	void UnregisterConsoleCommands();
 
+	/** Checking ApiKey using Md5. */
+	bool CheckPassphrase(const FString& HashedPassphrase) const;
+
 	//~ Route handlers
 	bool HandleInfoRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleBatchRequest(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
@@ -126,6 +131,7 @@ private:
 	bool HandleSearchObjectRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleEntityMetadataOperationsRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleEntitySetLabelRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandlePassphraseRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	//~ Websocket route handlers
 	void HandleWebSocketHttpMessage(const struct FRemoteControlWebSocketMessage& WebSocketMessage);
@@ -138,6 +144,8 @@ private:
 	void UnregisterSettings();
 	void OnSettingsModified(UObject* Settings, FPropertyChangedEvent& PropertyChangedEvent);
 #endif
+
+	void LogRequestExternally(int32 RequestId, const TCHAR* Stage);
 
 private:
 	/** Console commands handles. */
@@ -183,6 +191,9 @@ private:
 	 * Mappings of preprocessors delegate handles generated from the WebRC module to the ones generated from the Http Module.
 	 */
 	TMap<FDelegateHandle, FDelegateHandle> PreprocessorsHandleMappings;
+
+	/** An external web socket logger*/
+	TUniquePtr<class FWebRemoteControlExternalLogger> ExternalLogger;
 
 	//~ Server started stopped delegates.
 	FOnWebServerStarted OnHttpServerStartedDelegate;

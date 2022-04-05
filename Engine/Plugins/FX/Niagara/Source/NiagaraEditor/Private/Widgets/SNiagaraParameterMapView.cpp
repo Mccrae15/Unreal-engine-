@@ -226,8 +226,8 @@ void SNiagaraParameterMapView::Construct(const FArguments& InArgs, const TArray<
 				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
 				.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ParameterMapPanel")))
 				[
-					FilterBox.ToSharedRef()
-				]
+							FilterBox.ToSharedRef()
+						]
 			]
 		
 			+ SVerticalBox::Slot()
@@ -859,8 +859,7 @@ TSharedRef<SWidget> SNiagaraParameterMapView::CreateAddToSectionButton(const Nia
 {
 	TSharedPtr<SComboButton> Button;
 	SAssignNew(Button, SComboButton)
-	.ButtonStyle(FEditorStyle::Get(), "RoundButton")
-	.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+	.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 	.ContentPadding(FMargin(2, 0))
 	.OnGetMenuContent(this, &SNiagaraParameterMapView::OnGetParameterMenu, InSection)
 	.IsEnabled(this, &SNiagaraParameterMapView::ParameterAddEnabled)
@@ -870,27 +869,9 @@ TSharedRef<SWidget> SNiagaraParameterMapView::CreateAddToSectionButton(const Nia
 	.AddMetaData<FTagMetaData>(FTagMetaData(MetaDataTag))
 	.ButtonContent()
 	[
-		SNew(SHorizontalBox)
-
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.Padding(FMargin(0, 1))
-		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("Plus"))
-		]
-
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(2,0,0,0))
-		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFontBold())
-			.Text(AddNewText)
-			.Visibility(this, &SNiagaraParameterMapView::OnAddButtonTextVisibility, WeakRowWidget, InSection)
-			.ShadowOffset(FVector2D(1,1))
-		]
+		.Image(FAppStyle::Get().GetBrush("Icons.PlusCircle"))
+		.ColorAndOpacity(FSlateColor::UseForeground())
 	];
 	AddParameterButtons[InSection] = Button;
 
@@ -1006,7 +987,7 @@ void SNiagaraParameterMapView::GetAllGraphsInSystem(TArray<UNiagaraGraph*>& OutR
 
 	for (int i = 0; i < CachedSystem->GetNumEmitters(); i++)
 	{
-		FNiagaraEmitterHandle Handle = CachedSystem->GetEmitterHandle(i);
+		const FNiagaraEmitterHandle& Handle = CachedSystem->GetEmitterHandle(i);
 		UNiagaraScriptSource* EmitterSource = Cast<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource);
 		OutResult.Add(EmitterSource->NodeGraph);
 	}
@@ -1705,7 +1686,7 @@ void SNiagaraParameterMapView::OnCopyParameterMetadata()
 					if (ParameterScriptVariable != nullptr)
 					{
 						UNiagaraClipboardContent* ClipboardContent = UNiagaraClipboardContent::Create();
-						ClipboardContent->ScriptVariables.Add(ParameterScriptVariable);
+						ClipboardContent->ScriptVariables.Add({*ParameterScriptVariable});
 						FNiagaraEditorModule::Get().GetClipboard().SetClipboardContent(ClipboardContent);
 						break;
 					}
@@ -1757,7 +1738,7 @@ void SNiagaraParameterMapView::OnPasteParameterMetadata()
 			for (UNiagaraScriptVariable* TargetScriptVariable : TargetScriptVariables)
 			{
 				TargetScriptVariable->Modify();
-				TargetScriptVariable->Metadata.CopyUserEditableMetaData(ClipboardContent->ScriptVariables[0]->Metadata);
+				TargetScriptVariable->Metadata.CopyUserEditableMetaData(ClipboardContent->ScriptVariables[0].ScriptVariable->Metadata);
 				TargetScriptVariable->PostEditChange();
 			}
 		}
@@ -1803,7 +1784,7 @@ void SNiagaraParameterMapView::RenameParameter(TSharedPtr<FNiagaraParameterActio
 			}
 		}
 	}
-	else if (ToolkitType == SYSTEM)
+	else if (ToolkitType == SYSTEM) //-V547
 	{
 		UNiagaraSystem* System = CachedSystem.Get();
 		if (System != nullptr)
@@ -1877,7 +1858,7 @@ void SNiagaraParameterMapView::RenameParameter(TSharedPtr<FNiagaraParameterActio
 		// Handle renaming any renderer properties that might match.
 		if (bSuccess)
 		{
-			if (Parameter.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace) || Parameter.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+			if (Parameter.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString) || Parameter.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 			{
 				FGraphPanelSelectionSet Objs = SelectedScriptObjects->GetSelectedObjects();
 				for (UObject* SelectedObj : Objs)
@@ -2434,7 +2415,7 @@ void SNiagaraAddParameterMenu::AddParameterSelected(FNiagaraVariable NewVariable
 		}
 		else if (NewVariable.GetType().GetStruct() != nullptr)
 		{
-			TypeDisplayName = NewVariable.GetType().GetStruct()->GetDisplayNameText().ToString();
+			TypeDisplayName = NewVariable.GetType().GetNameText().ToString();
 		}
 		else if (NewVariable.GetType().GetClass() != nullptr)
 		{

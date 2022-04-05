@@ -30,9 +30,6 @@ public:
 	uint8 bRemoveDegenerates:1;
 
 	UPROPERTY()
-	uint8 bBuildAdjacencyBuffer:1;
-
-	UPROPERTY()
 	uint8 bUseHighPrecisionTangentBasis:1;
 
 	UPROPERTY()
@@ -70,7 +67,7 @@ public:
 	FName MaterialSlotName;
 
 	UPROPERTY()
-	class UMaterialInterface* MaterialInterface;
+	TObjectPtr<class UMaterialInterface> MaterialInterface;
 
 	void Apply( FStaticMaterial* Destination, FDatasmithStaticMaterialTemplate* PreviousTemplate );
 	void Load( const FStaticMaterial& Source );

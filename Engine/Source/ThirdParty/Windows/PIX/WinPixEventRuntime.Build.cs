@@ -15,9 +15,16 @@ public class WinPixEventRuntime : ModuleRules
 
 			PublicSystemIncludePaths.Add(Path.Combine( WinPixDir, "include") );
 
+			PublicDefinitions.Add("WITH_PIX_EVENT_RUNTIME=1");
             PublicDelayLoadDLLs.Add("WinPixEventRuntime.dll");
             PublicAdditionalLibraries.Add( Path.Combine( WinPixDir, "Lib/" + Target.WindowsPlatform.Architecture.ToString() + "/WinPixEventRuntime.lib") );
             RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Windows/WinPixEventRuntime/" + Target.WindowsPlatform.Architecture.ToString() + "/WinPixEventRuntime.dll");
+
+			// see pixeventscommon.h - MSVC has no support for __has_feature(address_sanitizer) so need to define this manually
+			if (Target.WindowsPlatform.Compiler != WindowsCompiler.Clang && Target.WindowsPlatform.bEnableAddressSanitizer)
+			{
+				PublicDefinitions.Add("PIX_ENABLE_BLOCK_ARGUMENT_COPY=0");
+			}
         }
 	}
 }

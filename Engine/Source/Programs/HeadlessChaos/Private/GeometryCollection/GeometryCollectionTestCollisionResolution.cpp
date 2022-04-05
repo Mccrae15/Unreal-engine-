@@ -95,8 +95,7 @@ namespace GeometryCollectionTest
 			EXPECT_TRUE(Collection->DynamicCollection->Simplicials[0]->Size() != 0);
 
 			EXPECT_LT(FMath::Abs(Collection->RestCollection->Transform[0].GetTranslation().Z - (Radius + 10.f)), KINDA_SMALL_NUMBER);
-			// ball settles within 10% of radius (The ball will sink deeper than expected due to contact position averaging within CullDistance)
-			EXPECT_LT(FMath::Abs(Collection->DynamicCollection->Transform[0].GetTranslation().Z - Radius), Radius * 0.1f); 
+			EXPECT_NEAR(Collection->DynamicCollection->Transform[0].GetTranslation().Z, Radius, KINDA_SMALL_NUMBER); 
 		}
 	}
 
@@ -261,11 +260,6 @@ namespace GeometryCollectionTest
 
 	}
 
-
-	void CollisionResolution_SimplicialCubeToAnalyticCube()
-	{
-
-	}
 
 
 	GTEST_TEST(AllTraits,GeometryCollection_CollisionResolution_SimplicialSphereToAnalyticSphere)
@@ -529,7 +523,8 @@ namespace GeometryCollectionTest
 			//const FReal ExpectedRestingDistance = UnitTest.Solver->GetEvolution()->GetGravityForces().GetAcceleration().Size() * UnitTest.Dt * UnitTest.Dt;
 
 			// The error in the resting distance depends on the number of pushout iterations, which is very low by default
-			const FReal RestingDistanceTolerance = 1.0f;
+			// It also depends on whether manifolds are used for collision (no manifolds means larger errors)
+			const FReal RestingDistanceTolerance = 2.0f;
 
 			// validate the tetahedron collides and moved away from the static floor
 			FVec3 RestTranslation = Collection->RestCollection->Transform[0].GetTranslation();

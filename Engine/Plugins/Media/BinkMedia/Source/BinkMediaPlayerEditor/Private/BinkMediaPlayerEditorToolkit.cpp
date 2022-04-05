@@ -4,6 +4,7 @@
 #include "BinkMediaPlayerEditorToolkit.h"
 #include "BinkMediaPlayerEditorPCH.h"
 #include "Factories.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
@@ -40,31 +41,17 @@ void FBinkMediaPlayerEditorToolkit::Initialize( UBinkMediaPlayer* InMediaPlayer,
 		FExecuteAction::CreateSP(this, &FBinkMediaPlayerEditorToolkit::HandleRewindMediaActionExecute),
 		FCanExecuteAction::CreateSP(this, &FBinkMediaPlayerEditorToolkit::HandleRewindMediaActionCanExecute));
 
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("BinkMediaPlayerEditor")
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("BinkMediaPlayerEditor_Layout_v2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 				->SetOrientation(Orient_Horizontal)
 				->Split
 				(
-					FTabManager::NewSplitter()
-						->SetOrientation(Orient_Vertical)
+					FTabManager::NewStack()
+						->AddTab(ViewerTabId, ETabState::OpenedTab)
+						->SetHideTabWell(true)
 						->SetSizeCoefficient(0.66f)
-						->Split
-						(
-							FTabManager::NewStack()
-								->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-								->SetHideTabWell(true)
-								->SetSizeCoefficient(0.1f)
-								
-						)
-						->Split
-						(
-							FTabManager::NewStack()
-								->AddTab(ViewerTabId, ETabState::OpenedTab)
-								->SetHideTabWell(true)
-								->SetSizeCoefficient(0.9f)
-						)
 				)
 				->Split
 				(

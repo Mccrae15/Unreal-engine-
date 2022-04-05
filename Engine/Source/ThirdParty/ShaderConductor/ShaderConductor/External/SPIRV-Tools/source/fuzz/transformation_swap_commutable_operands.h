@@ -15,9 +15,9 @@
 #ifndef SOURCE_FUZZ_TRANSFORMATION_SWAP_COMMUTABLE_OPERANDS_H_
 #define SOURCE_FUZZ_TRANSFORMATION_SWAP_COMMUTABLE_OPERANDS_H_
 
-#include "source/fuzz/fact_manager.h"
 #include "source/fuzz/protobufs/spirvfuzz_protobufs.h"
 #include "source/fuzz/transformation.h"
+#include "source/fuzz/transformation_context.h"
 #include "source/opt/ir_context.h"
 
 namespace spvtools {
@@ -26,18 +26,22 @@ namespace fuzz {
 class TransformationSwapCommutableOperands : public Transformation {
  public:
   explicit TransformationSwapCommutableOperands(
-      const protobufs::TransformationSwapCommutableOperands& message);
+      protobufs::TransformationSwapCommutableOperands message);
 
   TransformationSwapCommutableOperands(
       const protobufs::InstructionDescriptor& instruction_descriptor);
 
   // - |message_.instruction_descriptor| must identify an existing
   // commutative instruction
-  bool IsApplicable(opt::IRContext* context,
-                    const FactManager& fact_manager) const override;
+  bool IsApplicable(
+      opt::IRContext* ir_context,
+      const TransformationContext& transformation_context) const override;
 
   // Swaps the commutable operands.
-  void Apply(opt::IRContext* context, FactManager* fact_manager) const override;
+  void Apply(opt::IRContext* ir_context,
+             TransformationContext* transformation_context) const override;
+
+  std::unordered_set<uint32_t> GetFreshIds() const override;
 
   protobufs::Transformation ToMessage() const override;
 

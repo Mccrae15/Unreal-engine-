@@ -27,12 +27,12 @@ SamplerState Samplers_3;
 Texture2D Textures_4;
 SamplerState Samplers_4;
 // 0 is for neutral, 1 for Textures_1, 2 for ...
-float LUTWeights[5];
+DECLARE_SCALAR_ARRAY(float, LUTWeights, 5);
 half3 ColorScale;
 half4 OverlayColor;
 
-uint bIsTemperatureWhiteBalance;
 uint bUseMobileTonemapper;
+uint bIsTemperatureWhiteBalance;
 
 static const float LUTSize = 32;
 
@@ -92,6 +92,7 @@ float4 ColorOffsetHighlights;
 
 float  ColorCorrectionShadowsMax;
 float  ColorCorrectionHighlightsMin;
+float  ColorCorrectionHighlightsMax;
 
 float3 ColorCorrect( float3 WorkingColor,
 	float4 ColorSaturation,
@@ -130,7 +131,7 @@ float3 ColorCorrectAll( float3 WorkingColor )
 		ColorGammaHighlights*ColorGamma, 
 		ColorGainHighlights*ColorGain, 
 		ColorOffsetHighlights+ColorOffset);
-	float CCWeightHighlights = smoothstep(ColorCorrectionHighlightsMin, 1, Luma);
+	float CCWeightHighlights = smoothstep(ColorCorrectionHighlightsMin, ColorCorrectionHighlightsMax, Luma);
 
 	// Midtone CC
 	float3 CCColorMidtones = ColorCorrect(WorkingColor, 
@@ -231,37 +232,34 @@ float4 CombineLUTsCommon(float2 InUV, uint InLayerIndex)
 	float3 ColorAP1 = mul( sRGB_2_AP1, BalancedColor );
 
 	// Expand bright saturated colors outside the sRGB gamut to fake wide gamut rendering.
-    if (!bUseMobileTonemapper)
+ 	float  LumaAP1 = dot( ColorAP1, AP1_RGB2Y );
+	float3 ChromaAP1 = ColorAP1 / LumaAP1;
+
+	float ChromaDistSqr = dot( ChromaAP1 - 1, ChromaAP1 - 1 );
+	float ExpandAmount = ( 1 - exp2( -4 * ChromaDistSqr ) ) * ( 1 - exp2( -4 * ExpandGamut * LumaAP1*LumaAP1 ) );
+
+	// Bizarre matrix but this expands sRGB to between P3 and AP1
+	// CIE 1931 chromaticities:	x		y
+	//				Red:		0.6965	0.3065
+	//				Green:		0.245	0.718
+	//				Blue:		0.1302	0.0456
+	//				White:		0.3127	0.329
+	const float3x3 Wide_2_XYZ_MAT = 
 	{
-		float  LumaAP1 = dot( ColorAP1, AP1_RGB2Y );
-		float3 ChromaAP1 = ColorAP1 / LumaAP1;
+		0.5441691,  0.2395926,  0.1666943,
+		0.2394656,  0.7021530,  0.0583814,
+		-0.0023439,  0.0361834,  1.0552183,
+	};
 
-		float ChromaDistSqr = dot( ChromaAP1 - 1, ChromaAP1 - 1 );
-		float ExpandAmount = ( 1 - exp2( -4 * ChromaDistSqr ) ) * ( 1 - exp2( -4 * ExpandGamut * LumaAP1*LumaAP1 ) );
+	const float3x3 Wide_2_AP1 = mul( XYZ_2_AP1_MAT, Wide_2_XYZ_MAT );
+	const float3x3 ExpandMat = mul( Wide_2_AP1, AP1_2_sRGB );
 
-		// Bizarre matrix but this expands sRGB to between P3 and AP1
-		// CIE 1931 chromaticities:	x		y
-		//				Red:		0.6965	0.3065
-		//				Green:		0.245	0.718
-		//				Blue:		0.1302	0.0456
-		//				White:		0.3127	0.329
-		const float3x3 Wide_2_XYZ_MAT = 
-		{
-			0.5441691,  0.2395926,  0.1666943,
-			0.2394656,  0.7021530,  0.0583814,
-			-0.0023439,  0.0361834,  1.0552183,
-		};
-
-		const float3x3 Wide_2_AP1 = mul( XYZ_2_AP1_MAT, Wide_2_XYZ_MAT );
-		const float3x3 ExpandMat = mul( Wide_2_AP1, AP1_2_sRGB );
-
-		float3 ColorExpand = mul( ExpandMat, ColorAP1 );
-		ColorAP1 = lerp( ColorAP1, ColorExpand, ExpandAmount );
-	}
+	float3 ColorExpand = mul( ExpandMat, ColorAP1 );
+	ColorAP1 = lerp( ColorAP1, ColorExpand, ExpandAmount );
 
 	ColorAP1 = ColorCorrectAll( ColorAP1 );
 
-	// Store for Legacy tonemap later and for Linear HDR output without tone curve
+	// Store for Linear HDR output without tone curve
 	float3 GradedColor = mul( AP1_2_sRGB, ColorAP1 );
 
 	const float3x3 BlueCorrect =
@@ -292,15 +290,6 @@ float4 CombineLUTsCommon(float2 InUV, uint InLayerIndex)
 	// Convert from AP1 to sRGB and clip out-of-gamut values
 	float3 FilmColor = max(0, mul( AP1_2_sRGB, ColorAP1 ));
 
-#if FEATURE_LEVEL > FEATURE_LEVEL_ES3_1 // Mobile path uses separate shader for legacy tone mapper
-	BRANCH
-	if (bUseMobileTonemapper)
-	{
-		// Legacy tone mapper
-		FilmColor = FilmPostProcess(GradedColor);
-	}
-#endif // FEATURE_LEVEL > FEATURE_LEVEL_ES3_1
-
 #if BLENDCOUNT > 1
 	{
 		// Legacy LDR LUT color grading
@@ -312,23 +301,23 @@ float4 CombineLUTsCommon(float2 InUV, uint InLayerIndex)
 
 		float3 UVW = GammaColor * (15.0 / 16.0) + (0.5f / 16.0);
 
-		GammaColor = LUTWeights[0] * GammaColor;
+		GammaColor = GET_SCALAR_ARRAY_ELEMENT(LUTWeights, 0) * GammaColor;
 
 		// BLENDCOUNT is the number of LUT that are blended together including the neutral one
 	#if BLENDCOUNT >= 2
-		GammaColor += LUTWeights[1] * UnwrappedTexture3DSample( Textures_1, Samplers_1, UVW, 16 ).rgb;
+		GammaColor += GET_SCALAR_ARRAY_ELEMENT(LUTWeights, 1) * UnwrappedTexture3DSample( Textures_1, Samplers_1, UVW, 16 ).rgb;
 	#endif
 
 	#if BLENDCOUNT >= 3
-		GammaColor += LUTWeights[2] * UnwrappedTexture3DSample( Textures_2, Samplers_2, UVW, 16 ).rgb;
+		GammaColor += GET_SCALAR_ARRAY_ELEMENT(LUTWeights, 2) * UnwrappedTexture3DSample( Textures_2, Samplers_2, UVW, 16 ).rgb;
 	#endif
 
 	#if BLENDCOUNT >= 4
-		GammaColor += LUTWeights[3] * UnwrappedTexture3DSample( Textures_3, Samplers_3, UVW, 16 ).rgb;
+		GammaColor += GET_SCALAR_ARRAY_ELEMENT(LUTWeights, 3) * UnwrappedTexture3DSample( Textures_3, Samplers_3, UVW, 16 ).rgb;
 	#endif
 
 	#if BLENDCOUNT >= 5
-		GammaColor += LUTWeights[4] * UnwrappedTexture3DSample( Textures_4, Samplers_4, UVW, 16 ).rgb;
+		GammaColor += GET_SCALAR_ARRAY_ELEMENT(LUTWeights, 4) * UnwrappedTexture3DSample( Textures_4, Samplers_4, UVW, 16 ).rgb;
 	#endif
 
 		// Back to linear space, AP1 gamut
@@ -339,7 +328,7 @@ float4 CombineLUTsCommon(float2 InUV, uint InLayerIndex)
 	// apply math color correction on top to texture based solution
 	FilmColor = ColorCorrection( FilmColor );
 
-	// blend with custom LDR color, used for Fade track in Matinee
+	// blend with custom LDR color, used for Fade track in Cinematics
 	float3 FilmColorNoGamma = lerp( FilmColor * ColorScale, OverlayColor.rgb, OverlayColor.a );
 	// Apply Fade track to linear outputs also
 	GradedColor = lerp(GradedColor * ColorScale, OverlayColor.rgb, OverlayColor.a);

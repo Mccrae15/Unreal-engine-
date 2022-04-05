@@ -249,7 +249,7 @@ namespace Audio
 	// to determine how many values can be SIMD'd.
 	const int32 FUniformPartitionConvolution::NumSimdMask = 0xFFFFFFFC;
 
-	void FUniformPartitionConvolution::VectorComplexMultiplyAdd(const AlignedFloatBuffer& InA, const AlignedFloatBuffer& InB, AlignedFloatBuffer& Out) const
+	void FUniformPartitionConvolution::VectorComplexMultiplyAdd(const FAlignedFloatBuffer& InA, const FAlignedFloatBuffer& InB, FAlignedFloatBuffer& Out) const
 	{
 		check(InA.Num() == InB.Num());
 		check(Out.Num() == InA.Num());
@@ -298,11 +298,8 @@ namespace Audio
 			Temp1 = VectorMultiply(Temp1, Temp3);
 
 			// Temp1 = -A1iB1i, A1rB1i, -A2iB2i, A2rb2i
-			Temp1 = VectorMultiply(Temp1, SignFlip);
-
-
 			// Temp1 = A1rB1r - A1iB1i, A1iB1r + A1rB1i, A2rB2r - A2iB2i, A2iB2r + A2rB2i
-			Temp1 = VectorAdd(VectorInA, Temp1);
+			Temp1 = VectorMultiplyAdd(Temp1, SignFlip, VectorInA);
 
 			// VectorOut = O1r + A1rB1r - A1iB1i, O1i + A1iB1r + A1rB1i, O2r + A2rB2r - A2iB2i, O2i + A2iB2r + A2rB2i
 			VectorRegister VectorOut = VectorLoadAligned(&OutData[i]);
@@ -321,7 +318,7 @@ namespace Audio
 	}
 
 	// Multiply aligned buffer by constant gain.
-	void FUniformPartitionConvolution::VectorMultiplyByConstant(const AlignedFloatBuffer& InBuffer, float InConstant, AlignedFloatBuffer& OutBuffer) const
+	void FUniformPartitionConvolution::VectorMultiplyByConstant(const FAlignedFloatBuffer& InBuffer, float InConstant, FAlignedFloatBuffer& OutBuffer) const
 	{
 		check(InBuffer.Num() == OutBuffer.Num());
 
@@ -372,7 +369,7 @@ namespace Audio
 		FMemory::Memcpy(InputData, InSamples, BlockSize * sizeof(float));
 	}
 
-	const AlignedFloatBuffer& FUniformPartitionConvolution::FInput::GetTransformedBlock() const
+	const FAlignedFloatBuffer& FUniformPartitionConvolution::FInput::GetTransformedBlock() const
 	{
 		return OutputBuffer;
 	}
@@ -405,7 +402,7 @@ namespace Audio
 	{
 	}
 
-	AlignedFloatBuffer& FUniformPartitionConvolution::FOutput::GetTransformedBlock(int32 InBlockIndex)
+	FAlignedFloatBuffer& FUniformPartitionConvolution::FOutput::GetTransformedBlock(int32 InBlockIndex)
 	{
 		// Make block index relative to head index.
 		InBlockIndex = (HeadBlockIndex + InBlockIndex) % NumBlocks;
@@ -421,14 +418,14 @@ namespace Audio
 		HeadBlockIndex = (HeadBlockIndex + 1) % NumBlocks;
 
 		// Set tail block to zero
-		AlignedFloatBuffer& TailBuffer = Blocks[TailBlockIndex];
+		FAlignedFloatBuffer& TailBuffer = Blocks[TailBlockIndex];
 		FMemory::Memset(TailBuffer.GetData(), 0, NumFFTOutputFloats * sizeof(float));
 
 	}
 
 	void FUniformPartitionConvolution::FOutput::PopBlock(float* OutSamples)
 	{
-		const AlignedFloatBuffer& HeadBuffer = Blocks[HeadBlockIndex];
+		const FAlignedFloatBuffer& HeadBuffer = Blocks[HeadBlockIndex];
 		float* OutputData = OutputBuffer.GetData();
 
 		FFTAlgorithm->InverseComplexToReal(HeadBuffer.GetData(), OutputData);
@@ -520,7 +517,7 @@ namespace Audio
 		}
 	}
 
-	const AlignedFloatBuffer& FUniformPartitionConvolution::FImpulseResponse::GetTransformedBlock(int32 InBlockIndex) const
+	const FAlignedFloatBuffer& FUniformPartitionConvolution::FImpulseResponse::GetTransformedBlock(int32 InBlockIndex) const
 	{
 		return Blocks[InBlockIndex];
 	}

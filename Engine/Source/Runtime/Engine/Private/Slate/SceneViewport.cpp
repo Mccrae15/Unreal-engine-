@@ -534,6 +534,20 @@ FReply FSceneViewport::AcquireFocusAndCapture(FIntPoint MousePosition, EFocusCau
 		{
 			bCursorHiddenDueToCapture = true;
 			MousePosBeforeHiddenDueToCapture = MousePosition;
+			
+			// The slate app will correct mouse positions for non-standard screen / viewport resolution combos
+			// We want to save the mouse position pre-correction so it isn't applied twice when restoring mouse position
+			TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(ViewportWidgetRef);
+			if (FSlateApplication::Get().GetTransformFullscreenMouseInput() && !GIsEditor && Window.IsValid() && Window->GetWindowMode() == EWindowMode::Fullscreen)
+			{
+				FDisplayMetrics CachedDisplayMetrics;
+				FSlateApplication::Get().GetCachedDisplayMetrics(CachedDisplayMetrics);
+				FVector2D WindowSize = Window->GetSizeInScreen();
+				FVector2D DisplaySize = { (float)CachedDisplayMetrics.PrimaryDisplayWidth, (float)CachedDisplayMetrics.PrimaryDisplayHeight };
+				FVector2D CorrectionScale = DisplaySize / WindowSize;
+				MousePosBeforeHiddenDueToCapture = { (int32)(MousePosition.X * CorrectionScale.X), (int32)(MousePosition.Y * CorrectionScale.Y) };
+			}
+
 		}
 
 		if ( bCursorHiddenDueToCapture || !bShouldShowMouseCursor )
@@ -1351,12 +1365,8 @@ void FSceneViewport::ResizeFrame(uint32 NewWindowSizeX, uint32 NewWindowSizeY, E
 				IHeadMountedDisplay::MonitorInfo MonitorInfo;
 				if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->GetHMDMonitorInfo(MonitorInfo))
 				{
-#if PLATFORM_PS4 || PLATFORM_ANDROID
-					// Only do the resolution check on PS4/Morpheus. On desktop, this breaks the mirror window logic.
-					if (MonitorInfo.DesktopX > 0 || MonitorInfo.DesktopY > 0 || MonitorInfo.ResolutionX > 0 || MonitorInfo.ResolutionY > 0)
-#else
-					if (MonitorInfo.DesktopX > 0 || MonitorInfo.DesktopY > 0)
-#endif
+					// Desktop platfoms generally don't check the monitor resolution.
+					if (MonitorInfo.DesktopX > 0 || MonitorInfo.DesktopY > 0 || (MonitorInfo.bShouldTestResolution && (MonitorInfo.ResolutionX > 0 || MonitorInfo.ResolutionY > 0)))
 					{
 						NewWindowSize.X = MonitorInfo.ResolutionX;
 						NewWindowSize.Y = MonitorInfo.ResolutionY;
@@ -1985,7 +1995,7 @@ void FSceneViewport::InitDynamicRHI()
 		}
 #endif
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("BufferedRT"));
 		FTexture2DRHIRef BufferedRTRHI;
 		FTexture2DRHIRef BufferedSRVRHI;
 

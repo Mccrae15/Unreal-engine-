@@ -30,7 +30,7 @@ void FDummySkeletalMeshVertexBuffer::CleanUp()
 */
 FArchive& operator<<(FArchive& Ar, FDummySkeletalMeshVertexBuffer& VertexBuffer)
 {
-	FStripDataFlags StripFlags(Ar, 0, VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX);
+	FStripDataFlags StripFlags(Ar, 0, FPackageFileVersion::CreateUE4Version(VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX));
 
 	Ar << VertexBuffer.NumTexCoords;
 	Ar << VertexBuffer.bUseFullPrecisionUVs;
@@ -39,7 +39,7 @@ FArchive& operator<<(FArchive& Ar, FDummySkeletalMeshVertexBuffer& VertexBuffer)
 
 	Ar.UsingCustomVersion(FSkeletalMeshCustomVersion::GUID);
 
-	if (Ar.UE4Ver() >= VER_UE4_SUPPORT_GPUSKINNING_8_BONE_INFLUENCES && Ar.CustomVer(FSkeletalMeshCustomVersion::GUID) < FSkeletalMeshCustomVersion::UseSeparateSkinWeightBuffer)
+	if (Ar.UEVer() >= VER_UE4_SUPPORT_GPUSKINNING_8_BONE_INFLUENCES && Ar.CustomVer(FSkeletalMeshCustomVersion::GUID) < FSkeletalMeshCustomVersion::UseSeparateSkinWeightBuffer)
 	{
 		Ar << bBackCompatExtraBoneInfluences;
 	}

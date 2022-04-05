@@ -7,7 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "MaterialExpressionThinTranslucentMaterialOutput.generated.h"
 
-/** Material output expression for writing single layer water volume material properties. */
+/** Material output expression for setting absorption properties of thin translucent materials. */
 UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
 class UMaterialExpressionThinTranslucentMaterialOutput : public UMaterialExpressionCustomOutput
 {
@@ -22,6 +22,7 @@ public:
 	//~ Begin UMaterialExpression Interface
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
 	//~ End UMaterialExpression Interface
 #endif
 

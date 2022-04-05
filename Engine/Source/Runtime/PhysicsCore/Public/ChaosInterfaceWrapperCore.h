@@ -78,7 +78,7 @@ struct FPhysicsOverlapInputAdapater
 /** This is used to add debug data to scene query visitors in non-shipping builds */
 struct FQueryDebugParams
 {
-#if !(UE_BUILD_TEST || UE_BUILD_SHIPPING) 
+#if CHAOS_DEBUG_DRAW
 	FQueryDebugParams()
 		: bDebugQuery(false)
 		, bExternalQuery(true) { }
@@ -106,9 +106,9 @@ FORCEINLINE ECollisionShapeType GetType(const Chaos::FImplicitObject& InGeometry
 	return GetImplicitType(InGeometry);
 }
 
-PHYSICSCORE_API float GetRadius(const Chaos::FCapsule& InCapsule);
+PHYSICSCORE_API Chaos::FReal GetRadius(const Chaos::FCapsule& InCapsule);
 
-PHYSICSCORE_API float GetHalfHeight(const Chaos::FCapsule& InCapsule);
+PHYSICSCORE_API Chaos::FReal GetHalfHeight(const Chaos::FCapsule& InCapsule);
 
 
 inline bool HadInitialOverlap(const FLocationHit& Hit)
@@ -126,7 +126,7 @@ inline Chaos::FGeometryParticle* GetActor(const FActorShape& Hit)
 	return Hit.Actor;
 }
 
-inline float GetDistance(const FLocationHit& Hit)
+inline Chaos::FReal GetDistance(const FLocationHit& Hit)
 {
 	return Hit.Distance;
 }

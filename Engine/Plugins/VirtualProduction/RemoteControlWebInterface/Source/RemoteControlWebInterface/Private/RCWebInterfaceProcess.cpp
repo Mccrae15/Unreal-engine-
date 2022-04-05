@@ -6,8 +6,13 @@
 #include "Interfaces/IPluginManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/CommandLine.h"
+#include "Modules/ModuleManager.h"
+#include "IWebRemoteControlModule.h"
+#include "IWebSocketNetworkingModule.h"
+#include "INetworkingWebSocket.h"
+#include "SocketSubsystem.h"
 
 
 #define LOCTEXT_NAMESPACE "RemoteControlWebInterface"
@@ -55,6 +60,8 @@ void FRemoteControlWebInterfaceProcess::Shutdown()
 {
 	Status = EStatus::Stopped;
 
+	SetExternalLoggerEnabled(false);
+
 	if (Process.IsValid())
 	{
 		FPlatformProcess::TerminateProc(Process, true);
@@ -74,14 +81,37 @@ FRemoteControlWebInterfaceProcess::EStatus FRemoteControlWebInterfaceProcess::Ge
 	return Status.load();
 }
 
+void FRemoteControlWebInterfaceProcess::SetExternalLoggerEnabled(bool bEnableExternalLog)
+{
+	TSharedPtr<INetworkingWebSocket> WebSocketLoggerConnection;
+	if (bEnableExternalLog)
+	{
+		const URemoteControlSettings* RCSettings = GetDefault<URemoteControlSettings>();
+
+		TSharedRef<FInternetAddr> Address = ISocketSubsystem::Get()->CreateInternetAddr();
+
+		bool bIsValidIp = false;
+		Address->SetIp(TEXT("127.0.0.1"), bIsValidIp);
+		Address->SetPort(RCSettings->RemoteControlWebInterfacePort + 2);
+		WebSocketLoggerConnection = FModuleManager::LoadModuleChecked<IWebSocketNetworkingModule>(TEXT("WebSocketNetworking")).CreateConnection(*Address);
+	}
+
+
+	IWebRemoteControlModule* WebRemoteControlModule = FModuleManager::GetModulePtr<IWebRemoteControlModule>("WebRemoteControl");
+	if (WebRemoteControlModule)
+	{
+		WebRemoteControlModule->SetExternalRemoteWebSocketLoggerConnection(WebSocketLoggerConnection);
+	}
+}
+
 uint32 FRemoteControlWebInterfaceProcess::Run()
 {
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
 #if PLATFORM_WINDOWS
-	const FString StartScript = Root / TEXT("Start.bat");
+	FString StartScript = Root / TEXT("Start.bat");
 #else
-	const FString StartScript = Root / TEXT("Start.sh");
+	FString StartScript = Root / TEXT("Start.sh");
 #endif
 
 	FText ErrorTitle = LOCTEXT("RemoteControlWebInterface_ErrorTitle", "Failed to Launch the Remote Control Web Interface");
@@ -109,6 +139,11 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 		Args.Append(TEXT("--build "));
 	}
 
+	if (RCSettings->bWebAppLogRequestDuration)
+	{
+		Args.Append(TEXT("--log "));
+	}
+
 	void* ReadPipe = nullptr;
 	void* WritePipe = nullptr;
 
@@ -125,6 +160,11 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 
 	check(ReadPipe);
 	check(WritePipe);
+	
+#if PLATFORM_MAC
+	Args = FString::Printf(TEXT("-l %s %s"), *StartScript, *Args);
+	StartScript = TEXT("/bin/sh");
+#endif // PLATFORM_MAC
 
 	Process = FPlatformProcess::CreateProc(
 		*StartScript,	/* Path to start script */
@@ -186,6 +226,12 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 							FText::FromString(CompleteMessage),
 							true);
 						Status = EStatus::Running;
+
+
+						if (RCSettings->bWebAppLogRequestDuration)
+						{
+							SetExternalLoggerEnabled(true);
+						}
 					}
 					else
 					{
@@ -221,7 +267,7 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 	{
 		TaskNotification->SetComplete(
 			ErrorTitle,
-			LOCTEXT("RemoteControlWebInterface_LaunchFailed", "WebApp exited"),
+			LOCTEXT("RemoteControlWebInterface_AppExited", "WebApp exited"),
 			false
 		);
 	}

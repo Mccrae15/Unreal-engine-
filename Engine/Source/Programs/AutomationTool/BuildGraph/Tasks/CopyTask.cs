@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,8 +9,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -47,6 +49,12 @@ namespace BuildGraph.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.TagList)]
 		public string Tag;
+
+		/// <summary>
+		/// Whether or not to throw an error if no files were found to copy
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool ErrorIfNotFound = false;
 	}
 
 	/// <summary>
@@ -78,10 +86,10 @@ namespace BuildGraph.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Parse all the source patterns
-			FilePattern SourcePattern = new FilePattern(CommandUtils.RootDirectory, Parameters.From);
+			FilePattern SourcePattern = new FilePattern(Unreal.RootDirectory, Parameters.From);
 
 			// Parse the target pattern
-			FilePattern TargetPattern = new FilePattern(CommandUtils.RootDirectory, Parameters.To);
+			FilePattern TargetPattern = new FilePattern(Unreal.RootDirectory, Parameters.To);
 
 			// Apply the filter to the source files
 			HashSet<FileReference> Files = null;
@@ -111,7 +119,14 @@ namespace BuildGraph.Tasks
 			// Check we got some files
 			if(TargetFileToSourceFile.Count == 0)
 			{
-				CommandUtils.LogInformation("No files found matching '{0}'", SourcePattern);
+				if (Parameters.ErrorIfNotFound)
+				{
+					CommandUtils.LogError("No files found matching '{0}'", SourcePattern);
+				}
+				else
+				{
+					CommandUtils.LogInformation("No files found matching '{0}'", SourcePattern);
+				}
 				return;
 			}
 
@@ -161,7 +176,7 @@ namespace BuildGraph.Tasks
 			{
 				CommandUtils.LogLog("  {0} -> {1}", FilePair.Value, FilePair.Key);
 			}
-			CommandUtils.ThreadedCopyFiles(FilePairs.Select(x => x.Value.FullName).ToList(), FilePairs.Select(x => x.Key.FullName).ToList(), bQuiet: true);
+			CommandUtils.ThreadedCopyFiles(FilePairs.Select(x => x.Value.FullName).ToList(), FilePairs.Select(x => x.Key.FullName).ToList(), bQuiet: true, bRetry: true);
 
 			// Update the list of build products
 			BuildProducts.UnionWith(TargetFileToSourceFile.Keys);

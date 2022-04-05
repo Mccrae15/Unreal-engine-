@@ -82,7 +82,7 @@ namespace Chaos
 	class CHAOS_API FPBDRigidsSolver : public FPhysicsSolverBase
 	{
 
-		FPBDRigidsSolver(const EMultiBufferMode BufferingModeIn, UObject* InOwner);
+		FPBDRigidsSolver(const EMultiBufferMode BufferingModeIn, UObject* InOwner, FReal AsyncDt);
 		virtual ~FPBDRigidsSolver();
 
 	public:
@@ -179,12 +179,7 @@ namespace Chaos
 		const FReal GetSolverTime() const { return MTime; }
 
 		/**/
-		void SetMaxDeltaTime(const FReal InMaxDeltaTime) { MMaxDeltaTime = InMaxDeltaTime; }
 		FReal GetLastDt() const { return MLastDt; }
-		FReal GetMaxDeltaTime() const { return MMaxDeltaTime; }
-		FReal GetMinDeltaTime() const { return MMinDeltaTime; }
-		void SetMaxSubSteps(const int32 InMaxSubSteps) { MMaxSubSteps = InMaxSubSteps; }
-		int32 GetMaxSubSteps() const { return MMaxSubSteps; }
 
 		/**/
 		void SetIterations(const int32 InNumIterations) { GetEvolution()->SetNumIterations(InNumIterations); }
@@ -193,7 +188,8 @@ namespace Chaos
 		void SetCollisionPushOutPairIterations(const int32 InNumIterations) { GetEvolution()->GetCollisionConstraints().SetPushOutPairIterations(InNumIterations); }
 		void SetJointPairIterations(const int32 InNumIterations) { GetJointConstraints().SetNumPairIterations(InNumIterations); }
 		void SetJointPushOutPairIterations(const int32 InNumIterations) {GetJointConstraints().SetNumPushOutPairIterations(InNumIterations); }
-		void SetCollisionCullDistance(const FReal InCullDistance) { GetEvolution()->GetBroadPhase().SetCullDistance(InCullDistance); }
+		void SetCollisionCullDistance(const FReal InCullDistance) { GetEvolution()->GetNarrowPhase().SetBoundsExpansion(InCullDistance); }
+		void SetCollisionMaxPushOutVelocity(const FReal InMaxPushOutVelocity) { GetEvolution()->GetCollisionConstraints().SetMaxPushOutVelocity(InMaxPushOutVelocity); }
 		void SetUseContactGraph(const bool bInUseContactGraph) { GetEvolution()->GetCollisionConstraintsRule().SetUseContactGraph(bInUseContactGraph); }
 
 		/**/
@@ -204,16 +200,35 @@ namespace Chaos
 			GetEvolution()->GetRigidClustering().SetGenerateClusterBreaking(bDoGenerate);
 		}
 		void SetGenerateTrailingData(bool bDoGenerate) { GetEventFilters()->SetGenerateTrailingEvents(bDoGenerate); }
+		void SetGenerateRemovalData(bool bDoGenerate) { GetEventFilters()->SetGenerateRemovalEvents(bDoGenerate); }
 		void SetCollisionFilterSettings(const FSolverCollisionFilterSettings& InCollisionFilterSettings) { GetEventFilters()->GetCollisionFilter()->UpdateFilterSettings(InCollisionFilterSettings); }
 		void SetBreakingFilterSettings(const FSolverBreakingFilterSettings& InBreakingFilterSettings) { GetEventFilters()->GetBreakingFilter()->UpdateFilterSettings(InBreakingFilterSettings); }
 		void SetTrailingFilterSettings(const FSolverTrailingFilterSettings& InTrailingFilterSettings) { GetEventFilters()->GetTrailingFilter()->UpdateFilterSettings(InTrailingFilterSettings); }
+		void SetRemovalFilterSettings(const FSolverRemovalFilterSettings& InRemovalFilterSettings) { GetEventFilters()->GetRemovalFilter()->UpdateFilterSettings(InRemovalFilterSettings); }
+
+		/**
+		 * @brief True if the simulation is running in deterministic mode
+		 * This will be true if determinism is explicitly requested (via SetIsDeterministic()) or if required
+		 * by some otyher system like Rewind/Resim support.
+		*/
+		bool IsDetemerministic() const;
+
+		/**
+		 * @brief Request that the sim be determinitic (or not)
+		 * @note Even if set to false, the sim may still be deterministic if some other feature is enabled and requires it.
+		 * @see IsDetemerministic()
+		*/
+		void SetIsDeterministic(const bool bInIsDeterministic);
 
 		/**/
-		FJointConstraints& GetJointConstraints() { return JointConstraints; }
-		const FJointConstraints& GetJointConstraints() const { return JointConstraints; }
+		FJointConstraints& GetJointConstraints() { return MEvolution->GetJointConstraints(); }
+		const FJointConstraints& GetJointConstraints() const { return MEvolution->GetJointConstraints(); }
 
-		FPBDSuspensionConstraints& GetSuspensionConstraints() { return SuspensionConstraints; }
-		const FPBDSuspensionConstraints& GetSuspensionConstraints() const { return SuspensionConstraints; }
+		FPBDSuspensionConstraints& GetSuspensionConstraints() { return MEvolution->GetSuspensionConstraints(); }
+		const FPBDSuspensionConstraints& GetSuspensionConstraints() const { return MEvolution->GetSuspensionConstraints(); }
+		void SetSuspensionTarget(Chaos::FSuspensionConstraint* GTConstraint, const FVector& TargetPos, const FVector& Normal, bool Enabled);
+
+		void EnableRewindCapture(int32 NumFrames, bool InUseCollisionResimCache, TUniquePtr<IRewindCallback>&& RewindCallback = TUniquePtr<IRewindCallback>());
 
 		/**/
 		FPBDRigidsEvolution* GetEvolution() { return MEvolution.Get(); }
@@ -221,27 +236,7 @@ namespace Chaos
 
 		FParticlesType& GetParticles() { return Particles; }
 		const FParticlesType& GetParticles() const { return Particles; }
-
-		void AddParticleToProxy(const Chaos::FGeometryParticleHandle* Particle, IPhysicsProxyBase* Proxy)
-		{
-			if (!MParticleToProxy.Find(Particle))
-			{
-				MParticleToProxy.Add(Particle, TSet<IPhysicsProxyBase*>());
-			}
-			MParticleToProxy[Particle].Add(Proxy); 
-		}
 		
-		void RemoveParticleToProxy(const Chaos::FGeometryParticleHandle* Particle)
-		{
-			MParticleToProxy.Remove(Particle);
-		}
-		
-		const TSet<IPhysicsProxyBase*> * GetProxies(const Chaos::FGeometryParticleHandle* Handle) const
-		{
-			const TSet<IPhysicsProxyBase*>* PhysicsProxyPtr = MParticleToProxy.Find(Handle);
-			return PhysicsProxyPtr ? PhysicsProxyPtr : nullptr;
-		}
-
 		/**/
 		FEventManager* GetEventManager() { return MEventManager.Get(); }
 
@@ -254,7 +249,6 @@ namespace Chaos
 
 		/**/
 		void PostTickDebugDraw(FReal Dt) const;
-		void UpdateCounters() const;
 
 		// Visual debugger (VDB) push methods
 		void PostEvolutionVDBPush() const;
@@ -262,6 +256,11 @@ namespace Chaos
 		TArray<FGeometryCollectionPhysicsProxy*>& GetGeometryCollectionPhysicsProxies_Internal()
 		{
 			return GeometryCollectionPhysicsProxies_Internal;
+		}
+
+		const TArray<FJointConstraintPhysicsProxy*>& GetJointConstraintPhysicsProxies_Internal() const
+		{
+			return JointConstraintPhysicsProxies_Internal;
 		}
 
 		/** Events hooked up to the Chaos material manager */
@@ -312,6 +311,10 @@ namespace Chaos
 		/** Update the particles forces based on field evaluation */
 		void FieldForcesUpdateCallback();
 
+		// Update the counter in Stats and the CSV profiler
+		void UpdateStatCounters() const;
+		void UpdateExpensiveStatCounters() const;
+
 	private:
 
 		/**/
@@ -322,25 +325,25 @@ namespace Chaos
 		virtual void PushPhysicsState(const FReal ExternalDt, const int32 NumSteps, const int32 NumExternalSteps) override;
 		virtual void SetExternalTimestampConsumed_Internal(const int32 Timestamp) override;
 
+		void UpdateIsDeterministic();
+
 		//
 		// Solver Data
 		//
 		int32 CurrentFrame;
 		FReal MTime;
 		FReal MLastDt;
-		FReal MMaxDeltaTime;
-		FReal MMinDeltaTime;
-		int32 MMaxSubSteps;
 		bool bHasFloor;
 		bool bIsFloorAnalytic;
 		FReal FloorHeight;
+		bool bIsDeterministic;
 
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
 		FParticlesType Particles;
 		TUniquePtr<FPBDRigidsEvolution> MEvolution;
 		TUniquePtr<FEventManager> MEventManager;
 		TUniquePtr<FSolverEventFilters> MSolverEventFilters;
 		TUniquePtr<FDirtyParticlesBuffer> MDirtyParticlesBuffer;
-		TMap<const Chaos::FGeometryParticleHandle*, TSet<IPhysicsProxyBase*> > MParticleToProxy;
 
 		//
 		// Proxies
@@ -348,15 +351,6 @@ namespace Chaos
 		TSharedPtr<FCriticalSection> MCurrentLock;
 		TArray< FGeometryCollectionPhysicsProxy* > GeometryCollectionPhysicsProxies_Internal; // PT
 		TArray< FJointConstraintPhysicsProxy* > JointConstraintPhysicsProxies_Internal; // PT
-
-		//
-		//  Constraints
-		//
-		FPBDJointConstraints JointConstraints;
-		TPBDConstraintIslandRule<FPBDJointConstraints> JointConstraintRule;
-
-		FPBDSuspensionConstraints SuspensionConstraints;
-		TPBDConstraintIslandRule<FPBDSuspensionConstraints> SuspensionConstraintRule;
 
 		TUniquePtr<FPerSolverFieldSystem> PerSolverField;
 
@@ -377,9 +371,13 @@ namespace Chaos
 		{
 			FSingleParticlePhysicsProxy* Proxy;
 			int32 DestroyOnStep;
+			FGeometryParticleHandle* Handle;
+			FUniqueIdx UniqueIdx;
 		};
 
 		TArray<FPendingDestroyInfo> PendingDestroyPhysicsProxy;
+		TArray<FGeometryCollectionPhysicsProxy*> PendingDestroyGeometryCollectionPhysicsProxy;
+
 
 		void ProcessSinglePushedData_Internal(FPushPhysicsData& PushData);
 		virtual void ProcessPushedData_Internal(FPushPhysicsData& PushData) override;

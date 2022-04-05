@@ -53,8 +53,7 @@ private:
 	TSharedRef<SWidget> ConstructComponentWidget(int32 Index)
 	{
 		return SNew(SNumericEntryBox<float>)
-		.Font(FNiagaraEditorStyle::Get().GetFontStyle("NiagaraEditor.ParameterFont"))
-		.OverrideTextMargin(2)
+		.Font(FAppStyle::Get().GetFontStyle("PropertyWindow.NormalFont"))
 		.MinValue(TOptional<float>())
 		.MaxValue(TOptional<float>())
 		.MaxSliderValue(TOptional<float>())
@@ -125,13 +124,13 @@ public:
 	virtual void UpdateInternalValueFromStruct(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec2Struct(), TEXT("Struct type not supported."));
-		VectorValue = *((FVector2D*)Struct->GetStructMemory());
+		VectorValue = *((FVector2f*)Struct->GetStructMemory());
 	}
 
 	virtual void UpdateStructFromInternalValue(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec2Struct(), TEXT("Struct type not supported."));
-		*((FVector2D*)Struct->GetStructMemory()) = VectorValue;
+		*((FVector2f*)Struct->GetStructMemory()) = VectorValue;
 	}
 
 protected:
@@ -146,7 +145,7 @@ protected:
 	}
 
 private:
-	FVector2D VectorValue;
+	FVector2f VectorValue;
 };
 
 TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorVector2TypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType) const
@@ -162,15 +161,15 @@ bool FNiagaraEditorVector2TypeUtilities::CanHandlePinDefaults() const
 FString FNiagaraEditorVector2TypeUtilities::GetPinDefaultStringFromValue(const FNiagaraVariable& AllocatedVariable) const
 {
 	checkf(AllocatedVariable.IsDataAllocated(), TEXT("Can not generate a default value string for an unallocated variable."));
-	return AllocatedVariable.GetValue<FVector2D>().ToString();
+	return AllocatedVariable.GetValue<FVector2f>().ToString();
 }
 
 bool FNiagaraEditorVector2TypeUtilities::SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const
 {
-	FVector2D VectorValue = FVector2D::ZeroVector;
+	FVector2f VectorValue = FVector2f::ZeroVector;
 	if (VectorValue.InitFromString(StringValue) || !Variable.IsDataAllocated())
 	{
-		Variable.SetValue<FVector2D>(VectorValue);
+		Variable.SetValue<FVector2f>(VectorValue);
 		return true;
 	}
 	return false;
@@ -181,9 +180,9 @@ FText FNiagaraEditorVector2TypeUtilities::GetSearchTextFromValue(const FNiagaraV
 	return FText::FromString(GetPinDefaultStringFromValue(AllocatedVariable));
 }
 
-FText FNiagaraEditorVector2TypeUtilities::GetStackDisplayText(FNiagaraVariable& Variable) const
+FText FNiagaraEditorVector2TypeUtilities::GetStackDisplayText(const FNiagaraVariable& Variable) const
 {
-	FVector2D Value = Variable.GetValue<FVector2D>();
+	FVector2f Value = Variable.GetValue<FVector2f>();
 	return FText::Format(FText::FromString("({0}, {1})"), Value.X, Value.Y);
 }
 
@@ -202,14 +201,14 @@ public:
 
 	virtual void UpdateInternalValueFromStruct(TSharedRef<FStructOnScope> Struct) override
 	{
-		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec3Struct(), TEXT("Struct type not supported."));
-		VectorValue = *((FVector*)Struct->GetStructMemory());
+		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec3Struct() || Struct->GetStruct() == FNiagaraTypeDefinition::GetPositionStruct(), TEXT("Struct type not supported."));	// LWC_TODO: Support for FVector3d likely required here.
+		VectorValue = *((FVector3f*)Struct->GetStructMemory());
 	}
 
 	virtual void UpdateStructFromInternalValue(TSharedRef<FStructOnScope> Struct) override
 	{
-		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec3Struct(), TEXT("Struct type not supported."));
-		*((FVector*)Struct->GetStructMemory()) = VectorValue;
+		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec3Struct() || Struct->GetStruct() == FNiagaraTypeDefinition::GetPositionStruct(), TEXT("Struct type not supported."));
+		*((FVector3f*)Struct->GetStructMemory()) = VectorValue;
 	}
 
 protected:
@@ -224,7 +223,7 @@ protected:
 	}
 
 private:
-	FVector VectorValue;
+	FVector3f VectorValue;
 };
 
 TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorVector3TypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType) const
@@ -242,17 +241,17 @@ FString FNiagaraEditorVector3TypeUtilities::GetPinDefaultStringFromValue(const F
 	checkf(AllocatedVariable.IsDataAllocated(), TEXT("Can not generate a default value string for an unallocated variable."));
 
 	// NOTE: We can not use ToString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0' syntax.
-	FVector Value = AllocatedVariable.GetValue<FVector>();
+	FVector3f Value = AllocatedVariable.GetValue<FVector3f>();
 	return FString::Printf(TEXT("%3.3f,%3.3f,%3.3f"), Value.X, Value.Y, Value.Z);
 }
 
 bool FNiagaraEditorVector3TypeUtilities::SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const
 {
 	// NOTE: We can not use InitFromString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0' syntax.
-	FVector Value = FVector::ZeroVector;
+	FVector3f Value = FVector3f::ZeroVector;
 	if (FDefaultValueHelper::ParseVector(StringValue, Value) || !Variable.IsDataAllocated())
 	{
-		Variable.SetValue<FVector>(Value);
+		Variable.SetValue<FVector3f>((FVector3f)Value);
 		return true;
 	}
 	return false;
@@ -263,9 +262,9 @@ FText FNiagaraEditorVector3TypeUtilities::GetSearchTextFromValue(const FNiagaraV
 	return FText::FromString(GetPinDefaultStringFromValue(AllocatedVariable));
 }
 
-FText FNiagaraEditorVector3TypeUtilities::GetStackDisplayText(FNiagaraVariable& Variable) const
+FText FNiagaraEditorVector3TypeUtilities::GetStackDisplayText(const FNiagaraVariable& Variable) const
 {
-	FVector Value = Variable.GetValue<FVector>();
+	FVector3f Value = Variable.GetValue<FVector3f>();
 	return FText::Format(FText::FromString("({0}, {1}, {2})"), Value.X, Value.Y, Value.Z);
 }
 
@@ -285,13 +284,13 @@ public:
 	virtual void UpdateInternalValueFromStruct(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec4Struct(), TEXT("Struct type not supported."));
-		VectorValue = *((FVector4*)Struct->GetStructMemory());
+		VectorValue = *((FVector4f*)Struct->GetStructMemory());
 	}
 
 	virtual void UpdateStructFromInternalValue(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetVec4Struct(), TEXT("Struct type not supported."));
-		*((FVector4*)Struct->GetStructMemory()) = VectorValue;
+		*((FVector4f*)Struct->GetStructMemory()) = VectorValue;
 	}
 
 protected:
@@ -306,7 +305,7 @@ protected:
 	}
 
 private:
-	FVector4 VectorValue;
+	FVector4f VectorValue;
 };
 
 TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorVector4TypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType) const
@@ -323,17 +322,17 @@ FString FNiagaraEditorVector4TypeUtilities::GetPinDefaultStringFromValue(const F
 {
 	checkf(AllocatedVariable.IsDataAllocated(), TEXT("Can not generate a default value string for an unallocated variable."));
 	// NOTE: We can not use ToString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0,W=0' syntax.
-	FVector4 Value = AllocatedVariable.GetValue<FVector4>();
+	FVector4f Value = AllocatedVariable.GetValue<FVector4f>();
 	return FString::Printf(TEXT("%3.3f,%3.3f,%3.3f,%3.3f"), Value.X, Value.Y, Value.Z, Value.W);
 }
 
 bool FNiagaraEditorVector4TypeUtilities::SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const
 {
 	// NOTE: We can not use InitFromString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0,W=0' syntax.
-	FVector4 Value(0, 0, 0, 0);
+	FVector4f Value(0, 0, 0, 0);
 	if (FDefaultValueHelper::ParseVector4(StringValue, Value) || !Variable.IsDataAllocated())
 	{
-		Variable.SetValue<FVector4>(Value);
+		Variable.SetValue<FVector4f>(Value);
 		return true;
 	}
 	return false;
@@ -345,9 +344,9 @@ FText FNiagaraEditorVector4TypeUtilities::GetSearchTextFromValue(const FNiagaraV
 	return FText::FromString(GetPinDefaultStringFromValue(AllocatedVariable));
 }
 
-FText FNiagaraEditorVector4TypeUtilities::GetStackDisplayText(FNiagaraVariable& Variable) const
+FText FNiagaraEditorVector4TypeUtilities::GetStackDisplayText(const FNiagaraVariable& Variable) const
 {
-	FVector4 Value = Variable.GetValue<FVector4>();
+	FVector4f Value = Variable.GetValue<FVector4f>();
 	return FText::Format(FText::FromString("({0}, {1}, {2}, {3})"), Value.X, Value.Y, Value.Z, Value.W);
 }
 
@@ -367,13 +366,13 @@ public:
 	virtual void UpdateInternalValueFromStruct(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetQuatStruct(), TEXT("Struct type not supported."));
-		VectorValue = *((FQuat*)Struct->GetStructMemory());
+		VectorValue = *((FQuat4f*)Struct->GetStructMemory());
 	}
 
 	virtual void UpdateStructFromInternalValue(TSharedRef<FStructOnScope> Struct) override
 	{
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetQuatStruct(), TEXT("Struct type not supported."));
-		*((FQuat*)Struct->GetStructMemory()) = VectorValue;
+		*((FQuat4f*)Struct->GetStructMemory()) = VectorValue;
 	}
 
 protected:
@@ -417,7 +416,7 @@ protected:
 	}
 
 private:
-	FQuat VectorValue;
+	FQuat4f VectorValue;
 };
 
 TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorQuatTypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType) const
@@ -434,18 +433,18 @@ FString FNiagaraEditorQuatTypeUtilities::GetPinDefaultStringFromValue(const FNia
 {
 	checkf(AllocatedVariable.IsDataAllocated(), TEXT("Can not generate a default value string for an unallocated variable."));
 	// NOTE: We can not use ToString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0,W=0' syntax.
-	FQuat Value = AllocatedVariable.GetValue<FQuat>();
+	FQuat4f Value = AllocatedVariable.GetValue<FQuat4f>();
 	return FString::Printf(TEXT("%3.3f,%3.3f,%3.3f,%3.3f"), Value.X, Value.Y, Value.Z, Value.W);
 }
 
 bool FNiagaraEditorQuatTypeUtilities::SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const
 {
 	// NOTE: We can not use InitFromString() here since the vector pin control doesn't use the standard 'X=0,Y=0,Z=0,W=0' syntax.
-	FVector4 Value(0, 0, 0, 0);
+	FVector4f Value(0, 0, 0, 0);
 	if (FDefaultValueHelper::ParseVector4(StringValue, Value) || !Variable.IsDataAllocated())
 	{
-		FQuat Quat(Value.X, Value.Y, Value.Z, Value.W);
-		Variable.SetValue<FQuat>(Quat);
+		FQuat4f Quat(Value.X, Value.Y, Value.Z, Value.W);
+		Variable.SetValue<FQuat4f>(Quat);
 		return true;
 	}
 	return false;
@@ -456,16 +455,16 @@ FText FNiagaraEditorQuatTypeUtilities::GetSearchTextFromValue(const FNiagaraVari
 	return FText::FromString(GetPinDefaultStringFromValue(AllocatedVariable));
 }
 
-FText FNiagaraEditorQuatTypeUtilities::GetStackDisplayText(FNiagaraVariable& Variable) const
+FText FNiagaraEditorQuatTypeUtilities::GetStackDisplayText(const FNiagaraVariable& Variable) const
 {
-	FQuat Value = Variable.GetValue<FQuat>();
+	FQuat4f Value = Variable.GetValue<FQuat4f>();
 	return FText::Format(FText::FromString("({0}, {1}, {2}, {3})"), Value.X, Value.Y, Value.Z, Value.W);
 }
 
 void FNiagaraEditorQuatTypeUtilities::UpdateVariableWithDefaultValue(FNiagaraVariable& Variable) const
 {
 	checkf(Variable.GetType().GetStruct() == FNiagaraTypeDefinition::GetQuatStruct(), TEXT("Struct type not supported."));
-	Variable.SetValue<FQuat>(FQuat(0, 0, 0, 1));
+	Variable.SetValue<FQuat4f>(FQuat4f(0, 0, 0, 1));
 }
 
 bool FNiagaraEditorNiagaraIDTypeUtilities::CanHandlePinDefaults() const

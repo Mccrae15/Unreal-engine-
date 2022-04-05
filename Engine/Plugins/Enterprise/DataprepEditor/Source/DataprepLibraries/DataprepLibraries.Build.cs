@@ -15,6 +15,7 @@ namespace UnrealBuildTool.Rules
 					"DataprepCore",
 					"DataprepEditor",
 					"DatasmithContent",
+					"EditorFramework",
 					"EditorScriptingUtilities",
 					"EditorStyle",
 					"Engine",
@@ -29,6 +30,7 @@ namespace UnrealBuildTool.Rules
 					"ToolMenus",
 					"UnrealEd",
 					"PhysicsCore",
+					"StaticMeshEditor"
 				}
 			);
 

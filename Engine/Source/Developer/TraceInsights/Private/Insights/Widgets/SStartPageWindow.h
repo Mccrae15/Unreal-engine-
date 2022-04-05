@@ -2,30 +2,22 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Framework/Docking/TabManager.h"
-#include "GenericPlatform/GenericPlatformMisc.h"
-#include "Input/Reply.h"
-#include "Layout/Visibility.h"
-#include "Misc/Guid.h"
-#include "SlateFwd.h"
-#include "Trace/StoreClient.h"
-#include "TraceServices/ModuleService.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Styling/SlateTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Views/SListView.h"
 
-// Insights
-#include "Insights/InsightsManager.h"
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class FActiveTimerHandle;
-class SVerticalBox;
+class ITableRow;
 class SEditableTextBox;
+class SNotificationList;
+class SSearchBox;
+class STableViewBase;
+class SVerticalBox;
 
 namespace Insights
 {
@@ -49,9 +41,9 @@ typedef TWeakPtr<class SNotificationItem> SNotificationItemWeak;
 struct FTraceViewModel
 {
 	uint32 TraceId = 0;
+	int32 TraceIndex = -1; // debug
 
 	uint64 ChangeSerial = 0;
-	int32 TraceIndex = -1; // debug
 
 	FText Name;
 	FText Uri;
@@ -59,15 +51,18 @@ struct FTraceViewModel
 	FDateTime Timestamp = 0;
 	uint64 Size = 0;
 
-	bool bIsLive = false;
-	uint32 IpAddress = 0;
-
-	bool bIsMetadataUpdated = false;
 	FText Platform;
 	FText AppName;
 	FText CommandLine;
+	FText Branch;
+	FText BuildVersion;
+	uint32 Changelist = 0;
 	EBuildConfiguration ConfigurationType = EBuildConfiguration::Unknown;
 	EBuildTargetType TargetType = EBuildTargetType::Unknown;
+
+	bool bIsMetadataUpdated = false;
+	bool bIsLive = false;
+	uint32 IpAddress = 0;
 
 	FTraceViewModel() = default;
 
@@ -83,17 +78,19 @@ struct FTraceViewModel
 	}
 };
 
-/** Implements the Start Page window. */
-class SStartPageWindow : public SCompoundWidget
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** Implements the Trace Store window. */
+class STraceStoreWindow : public SCompoundWidget
 {
 public:
 	/** Default constructor. */
-	SStartPageWindow();
+	STraceStoreWindow();
 
 	/** Virtual destructor. */
-	virtual ~SStartPageWindow();
+	virtual ~STraceStoreWindow();
 
-	SLATE_BEGIN_ARGS(SStartPageWindow) {}
+	SLATE_BEGIN_ARGS(STraceStoreWindow) {}
 	SLATE_END_ARGS()
 
 	/** Constructs this widget. */
@@ -102,13 +99,22 @@ public:
 	void OpenSettings();
 	void CloseSettings();
 
+	void GetExtraCommandLineParams(FString& OutParams) const;
+
+	void SetEnableAutomaticTesting(bool InValue) { bEnableAutomaticTesting = InValue; };
+	bool GetEnableAutomaticTesting() const { return bEnableAutomaticTesting; };
+
+	void SetEnableDebugTools(bool InValue) { bEnableDebugTools = InValue; };
+	bool GetEnableDebugTools() const { return bEnableDebugTools; };
+
+	void SetStartProcessWithStompMalloc(bool InValue) { bStartProcessWithStompMalloc = InValue; };
+	bool GetStartProcessWithStompMalloc() const { return bStartProcessWithStompMalloc; };
+
 private:
 	TSharedRef<SWidget> ConstructSessionsPanel();
 	TSharedRef<SWidget> ConstructLoadPanel();
 	TSharedRef<SWidget> ConstructTraceStoreDirectoryPanel();
 	TSharedRef<SWidget> ConstructAutoStartPanel();
-	TSharedRef<SWidget> ConstructRecorderPanel();
-	TSharedRef<SWidget> ConstructConnectPanel();
 
 	/** Generate a new row for the Traces list view. */
 	TSharedRef<ITableRow> TraceList_OnGenerateRow(TSharedPtr<FTraceViewModel> InTrace, const TSharedRef<STableViewBase>& OwnerTable);
@@ -161,20 +167,6 @@ private:
 
 	FText GetTraceStoreDirectory() const;
 	FReply ExploreTraceStoreDirectory_OnClicked();
-
-	//////////////////////////////////////////////////
-	// Recorder
-
-	FText GetRecorderStatusText() const;
-	EVisibility StartTraceRecorder_Visibility() const;
-	EVisibility StopTraceRecorder_Visibility() const;
-	FReply StartTraceRecorder_OnClicked();
-	FReply StopTraceRecorder_OnClicked();
-
-	//////////////////////////////////////////////////
-	// New Connection
-
-	FReply Connect_OnClicked();
 
 	//////////////////////////////////////////////////
 
@@ -235,7 +227,7 @@ private:
 	 */
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)  override;
 
-public:
+private:
 	/** Widget for the non-intrusive notifications. */
 	TSharedPtr<SNotificationList> NotificationList;
 
@@ -248,11 +240,9 @@ public:
 	/** The number of seconds the profiler has been active */
 	float DurationActive;
 
-private:
 	/** The handle to the active update duration tick */
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
 
-	/** Holds all widgets for the profiler window like menu bar, toolbar and tabs. */
 	TSharedPtr<SVerticalBox> MainContentPanel;
 
 	int32 LiveSessionCount;
@@ -274,8 +264,71 @@ private:
 	TSharedPtr<SListView<TSharedPtr<FTraceViewModel>>> TraceListView;
 	TSharedPtr<FTraceViewModel> SelectedTrace;
 
-	TSharedPtr<SEditableTextBox> HostTextBox;
-
 	FString SplashScreenOverlayTraceFile;
 	float SplashScreenOverlayFadeTime;
+
+	bool bEnableAutomaticTesting = false;
+	bool bEnableDebugTools = false;
+	bool bStartProcessWithStompMalloc = false;
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** Implements the Connection window. */
+class SConnectionWindow : public SCompoundWidget
+{
+public:
+	/** Default constructor. */
+	SConnectionWindow();
+
+	/** Virtual destructor. */
+	virtual ~SConnectionWindow();
+
+	SLATE_BEGIN_ARGS(SConnectionWindow) {}
+	SLATE_END_ARGS()
+
+	/** Constructs this widget. */
+	void Construct(const FArguments& InArgs);
+
+private:
+	TSharedRef<SWidget> ConstructConnectPanel();
+	FReply Connect_OnClicked();
+
+private:
+	TSharedPtr<SVerticalBox> MainContentPanel;
+	TSharedPtr<SEditableTextBox> TraceRecorderAddressTextBox;
+	TSharedPtr<SEditableTextBox> RunningInstanceAddressTextBox;
+	TSharedPtr<SEditableTextBox> ChannelsTextBox;
+
+	/** Widget for the non-intrusive notifications. */
+	TSharedPtr<SNotificationList> NotificationList;
+
+	/** Holds all active and visible notifications, stored as FGuid -> SNotificationItemWeak. */
+	TMap<FString, SNotificationItemWeak> ActiveNotifications;
+
+	FGraphEventRef ConnectTask;
+
+	std::atomic<bool> bIsConnecting;
+	std::atomic<bool> bIsConnectedSuccessfully;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** Implements the Launcher window. */
+class SLauncherWindow : public SCompoundWidget
+{
+public:
+	/** Default constructor. */
+	SLauncherWindow();
+
+	/** Virtual destructor. */
+	virtual ~SLauncherWindow();
+
+	SLATE_BEGIN_ARGS(SLauncherWindow) {}
+	SLATE_END_ARGS()
+
+	/** Constructs this widget. */
+	void Construct(const FArguments& InArgs);
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////

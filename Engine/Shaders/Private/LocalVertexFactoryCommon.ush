@@ -12,7 +12,7 @@ struct FVertexFactoryInterpolantsVSToPS
 	half4	Color : COLOR0;
 #endif
 
-#if USE_INSTANCING
+#if USE_INSTANCING || USE_INSTANCE_CULLING
 	// x = per-instance random, y = per-instance fade out amount, z = hide/show flag, w dither fade cutoff
 	float4  PerInstanceParams : COLOR1;
 #endif
@@ -36,9 +36,23 @@ struct FVertexFactoryInterpolantsVSToPS
 		nointerpolation uint LightmapDataIndex : LIGHTMAP_ID;
 	#endif
 #endif
-#if HAIR_STRAND_MESH_FACTORY || HAIR_CARD_MESH_FACTORY
-	nointerpolation uint HairPrimitiveId	: HAIR_PRIMITIVE_ID; // Control point ID
-	float2 HairPrimitiveUV					: HAIR_PRIMITIVE_UV; // U: parameteric distance between the two surrounding control points. V: parametric distance along the width.
+#if HAIR_STRAND_MESH_FACTORY
+		nointerpolation uint HairPrimitiveId		: HAIR_PRIMITIVE_ID;	// Control point ID
+		float2 HairPrimitiveUV						: HAIR_PRIMITIVE_UV;	// U: parameteric distance between the two surrounding control points. V: parametric distance along the width.
+#endif
+#if HAIR_CARD_MESH_FACTORY
+	float2 HairPrimitiveUV							: HAIR_PRIMITIVE_UV;	// Atlas UV
+	float2 HairPrimitiveRootUV						: HAIR_PRIMITIVE_ROOTUV;// UV at the root point of the cards
+	float4 HairPrimitiveMaterial					: HAIR_PRIMITIVE_MATERIAL;
+	float  HairPrimitiveLength						: HAIR_PRIMITIVE_LENGTH;
+	nointerpolation float HairPrimitiveGroupIndex	: HAIR_PRIMITIVE_GROUPINDEX;
+#endif
+
+#if HAS_INSTANCE_LOCAL_TO_WORLD_PS
+	nointerpolation float4 InstanceLocalToWorld[3] : INSTANCE_LOCAL_TO_WORLD;
+#endif
+#if HAS_INSTANCE_WORLD_TO_LOCAL_PS
+	nointerpolation float4 InstanceWorldToLocal[3] : INSTANCE_WORLD_TO_LOCAL;
 #endif
 };
 
@@ -150,3 +164,37 @@ void SetLightmapDataIndex(inout FVertexFactoryInterpolantsVSToPS Interpolants, u
 	Interpolants.LightmapDataIndex = LightmapDataIndex;
 #endif
 }
+
+#if HAS_INSTANCE_LOCAL_TO_WORLD_PS
+void SetInstanceLocalToWorld(inout FVertexFactoryInterpolantsVSToPS Interpolants, FLWCMatrix InstanceLocalToWorld)
+{
+	float4x4 InstanceLocalToTranslatedWorld = LWCMultiplyTranslation(InstanceLocalToWorld, ResolvedView.PrevPreViewTranslation);
+	float4x4 InstanceLocalToTranslatedWorldT = transpose(InstanceLocalToTranslatedWorld);
+	Interpolants.InstanceLocalToWorld[0] = InstanceLocalToTranslatedWorldT[0];
+	Interpolants.InstanceLocalToWorld[1] = InstanceLocalToTranslatedWorldT[1];
+	Interpolants.InstanceLocalToWorld[2] = InstanceLocalToTranslatedWorldT[2];
+}
+
+FLWCMatrix GetInstanceLocalToWorld(FVertexFactoryInterpolantsVSToPS Interpolants)
+{
+	float4x4 InstanceLocalToTranslatedWorld = transpose(float4x4(Interpolants.InstanceLocalToWorld[0], Interpolants.InstanceLocalToWorld[1], Interpolants.InstanceLocalToWorld[2], float4(0.0f, 0.0f, 0.0f, 1.0f)));
+	return LWCMultiplyTranslation(InstanceLocalToTranslatedWorld, LWCNegate(ResolvedView.PrevPreViewTranslation));
+}
+#endif
+
+#if HAS_INSTANCE_WORLD_TO_LOCAL_PS
+void SetInstanceWorldToLocal(inout FVertexFactoryInterpolantsVSToPS Interpolants, FLWCInverseMatrix InstanceWorldToLocal)
+{
+	float4x4 InstanceTranslatedWorldToLocal = LWCMultiplyTranslation(LWCNegate(ResolvedView.PrevPreViewTranslation), InstanceWorldToLocal);
+	float4x4 InstanceTranslatedWorldToLocalT = transpose(InstanceTranslatedWorldToLocal);
+	Interpolants.InstanceWorldToLocal[0] = InstanceTranslatedWorldToLocalT[0];
+	Interpolants.InstanceWorldToLocal[1] = InstanceTranslatedWorldToLocalT[1];
+	Interpolants.InstanceWorldToLocal[2] = InstanceTranslatedWorldToLocalT[2];
+}
+
+FLWCInverseMatrix GetInstanceWorldToLocal(FVertexFactoryInterpolantsVSToPS Interpolants)
+{
+	float4x4 InstanceTranslatedWorldToLocal = transpose(float4x4(Interpolants.InstanceWorldToLocal[0], Interpolants.InstanceWorldToLocal[1], Interpolants.InstanceWorldToLocal[2], float4(0.0f, 0.0f, 0.0f, 1.0f)));
+	return LWCMultiplyTranslation(ResolvedView.PrevPreViewTranslation, InstanceTranslatedWorldToLocal);
+}
+#endif

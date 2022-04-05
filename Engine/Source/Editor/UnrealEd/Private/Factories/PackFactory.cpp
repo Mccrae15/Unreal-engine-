@@ -5,7 +5,7 @@
 =============================================================================*/
 
 #include "Factories/PackFactory.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -92,7 +92,7 @@ namespace PackFactoryHelper
 		}
 
 		int64 WorkingSize = Entry.CompressionBlockSize;
-		int32 MaxCompressionBlockSize = FCompression::CompressMemoryBound(PakFile.GetInfo().GetCompressionMethod(Entry.CompressionMethodIndex), WorkingSize);
+		int32 MaxCompressionBlockSize = FCompression::GetMaximumCompressedSize(PakFile.GetInfo().GetCompressionMethod(Entry.CompressionMethodIndex), WorkingSize);
 		WorkingSize += MaxCompressionBlockSize;
 		if (PersistentBuffer.Num() < WorkingSize)
 		{
@@ -247,7 +247,7 @@ namespace PackFactoryHelper
 				}
 					
 				InputSettingsCDO->SaveKeyMappings();
-				InputSettingsCDO->UpdateDefaultConfigFile();
+				InputSettingsCDO->TryUpdateDefaultConfigFile();
 			}
 		}
 
@@ -683,7 +683,19 @@ UObject* UPackFactory::FactoryCreateBinary
 					ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
 					if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("PackFactory", "CannotCompileWithLiveCoding", "Unable to compile source code while Live Coding is enabled. Please close the editor and build from your IDE."));
+						if (bProjectHadSourceFiles)
+						{
+							if (!LiveCoding->Compile(ELiveCodingCompileFlags::WaitForCompletion, nullptr))
+							{
+								FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("PackFactory", "LiveCodingFailedToCompile", "Failed to compile sources, please close the editor and build from your IDE."));
+							}
+						}
+						else
+						{
+							FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("PackFactory", "LiveCodingNoSources", "Project now includes sources, please close the editor and build from your IDE."));
+						}
+
+						// Don't allow hot-reload to try to compile
 						bCompileSource = false;
 					}
 				}
@@ -702,7 +714,7 @@ UObject* UPackFactory::FactoryCreateBinary
 					}
 					else
 					{
-						// We didn't previously have source, so the UBT target name will be UE4Editor, and attempts to recompile will end up building the wrong target. Now that we have source,
+						// We didn't previously have source, so the UBT target name will be UnrealEditor, and attempts to recompile will end up building the wrong target. Now that we have source,
 						// we need to change the UBT target to be the newly created editor module
 						FPlatformMisc::SetUBTTargetName(*(FString(FApp::GetProjectName()) + TEXT("Editor")));
 

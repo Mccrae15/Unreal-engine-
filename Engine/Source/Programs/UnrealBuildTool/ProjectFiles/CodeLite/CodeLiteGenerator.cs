@@ -6,19 +6,11 @@ using System.Text;
 using System.IO;
 using System.Xml;
 using System.Xml.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using System.Linq;
 
 namespace UnrealBuildTool
 {
-	// Represents a folder within the master project. TODO Not using at the moment.
-	class CodeLiteFolder : MasterProjectFolder
-	{
-		public CodeLiteFolder(ProjectFileGenerator InitOwnerProjectFileGenerator, string InitFolderName)
-			: base(InitOwnerProjectFileGenerator, InitFolderName)
-		{
-		}
-	}
-
 	enum CodeliteProjectFileFormat
 	{
 		CodeLite9,
@@ -32,7 +24,7 @@ namespace UnrealBuildTool
 		public string CodeCompletionPreProcessorFileName = "CodeLitePreProcessor.txt";
 		CodeliteProjectFileFormat ProjectFileFormat = CodeliteProjectFileFormat.CodeLite10;
 
-		public CodeLiteGenerator(FileReference InOnlyGameProject, CommandLineArguments CommandLine)
+		public CodeLiteGenerator(FileReference? InOnlyGameProject, CommandLineArguments CommandLine)
 			: base(InOnlyGameProject)
 		{
 			if(CommandLine.HasOption("-cl10"))
@@ -55,15 +47,15 @@ namespace UnrealBuildTool
 				return ".project";
 			}
 		}
-		protected override bool WriteMasterProjectFile(ProjectFile UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
 		{
-			string SolutionFileName = MasterProjectName + SolutionExtension;
-			string CodeCompletionFile = MasterProjectName + CodeCompletionFileName;
-			string CodeCompletionPreProcessorFile = MasterProjectName + CodeCompletionPreProcessorFileName;
+			string SolutionFileName = PrimaryProjectName + SolutionExtension;
+			string CodeCompletionFile = PrimaryProjectName + CodeCompletionFileName;
+			string CodeCompletionPreProcessorFile = PrimaryProjectName + CodeCompletionPreProcessorFileName;
 
-			string FullCodeLiteMasterFile = Path.Combine(MasterProjectPath.FullName, SolutionFileName);
-			string FullCodeLiteCodeCompletionFile = Path.Combine(MasterProjectPath.FullName, CodeCompletionFile);
-			string FullCodeLiteCodeCompletionPreProcessorFile = Path.Combine(MasterProjectPath.FullName, CodeCompletionPreProcessorFile);
+			string FullCodeLitePrimaryFile = Path.Combine(PrimaryProjectPath.FullName, SolutionFileName);
+			string FullCodeLiteCodeCompletionFile = Path.Combine(PrimaryProjectPath.FullName, CodeCompletionFile);
+			string FullCodeLiteCodeCompletionPreProcessorFile = Path.Combine(PrimaryProjectPath.FullName, CodeCompletionPreProcessorFile);
 
 			//
 			// HACK 
@@ -75,7 +67,7 @@ namespace UnrealBuildTool
 
 			foreach (ProjectFile CurProject in GeneratedProjectFiles)
 			{
-				CodeLiteProject Project = CurProject as CodeLiteProject;
+				CodeLiteProject? Project = CurProject as CodeLiteProject;
 				if (Project == null)
 				{
 					continue;
@@ -117,7 +109,7 @@ namespace UnrealBuildTool
 			settings.Indent = true;
 
 			XElement CodeLiteWorkspace = new XElement("CodeLite_Workspace");
-			XAttribute CodeLiteWorkspaceName = new XAttribute("Name", MasterProjectName);
+			XAttribute CodeLiteWorkspaceName = new XAttribute("Name", PrimaryProjectName);
 			XAttribute CodeLiteWorkspaceSWTLW = new XAttribute("SWTLW", "Yes"); // This flag will only work in CodeLite version > 8.0. See below
 			CodeLiteWorkspace.Add(CodeLiteWorkspaceName);
 			CodeLiteWorkspace.Add(CodeLiteWorkspaceSWTLW);
@@ -143,9 +135,9 @@ namespace UnrealBuildTool
 			//
 			// Write project file information into CodeLite's workspace file.
 			//
-			XElement CodeLiteWorkspaceTargetEngine = null;
-			XElement CodeLiteWorkspaceTargetPrograms = null;
-			XElement CodeLiteWorkspaceTargetGame = null;
+			XElement? CodeLiteWorkspaceTargetEngine = null;
+			XElement? CodeLiteWorkspaceTargetPrograms = null;
+			XElement? CodeLiteWorkspaceTargetGame = null;
 
 			foreach (ProjectFile CurProject in AllProjectFiles)
 			{
@@ -162,10 +154,10 @@ namespace UnrealBuildTool
 				//
 				// Iterate through all targets.
 				//
-				foreach (ProjectTarget CurrentTarget in CurProject.ProjectTargets)
+				foreach (ProjectTarget CurrentTarget in CurProject.ProjectTargets.OfType<ProjectTarget>())
 				{
 					string[] tmp = CurrentTarget.ToString().Split('.');
-					string ProjectTargetFileName = CurProject.ProjectFilePath.Directory.MakeRelativeTo(MasterProjectPath) + "/" + tmp[0] + ProjectExtension;
+					string ProjectTargetFileName = CurProject.ProjectFilePath.Directory.MakeRelativeTo(PrimaryProjectPath) + "/" + tmp[0] + ProjectExtension;
 					String ProjectName = tmp[0];
 
 
@@ -182,15 +174,15 @@ namespace UnrealBuildTool
 					//
 					if (ProjectFileFormat == CodeliteProjectFileFormat.CodeLite10)
 					{
-						if ((CurrentTarget.TargetRules.Type == TargetType.Client) ||
+						if ((CurrentTarget.TargetRules!.Type == TargetType.Client) ||
 						    (CurrentTarget.TargetRules.Type == TargetType.Server) ||
 						    (CurrentTarget.TargetRules.Type == TargetType.Editor) ||
 						    (CurrentTarget.TargetRules.Type == TargetType.Game))
 						{
-							if (ProjectName.Equals("UE4Client") ||
-								ProjectName.Equals("UE4Server") ||
-								ProjectName.Equals("UE4Game") ||
-								ProjectName.Equals("UE4Editor"))
+							if (ProjectName.Equals("UnrealClient") ||
+								ProjectName.Equals("UnrealServer") ||
+								ProjectName.Equals("UnrealGame") ||
+								ProjectName.Equals("UnrealEditor"))
 							{
 								if (CodeLiteWorkspaceTargetEngine == null)
 								{
@@ -271,7 +263,7 @@ namespace UnrealBuildTool
 							continue;
 						}
 
-						foreach (ProjectTarget target in CurProject.ProjectTargets)
+						foreach (ProjectTarget target in CurProject.ProjectTargets.OfType<ProjectTarget>())
 						{
 							string[] tmp = target.ToString().Split('.');
 							String ProjectName = tmp[0];
@@ -289,35 +281,30 @@ namespace UnrealBuildTool
 			}
 
 			CodeLiteWorkspace.Add(CodeLiteWorkspaceBuildMatrix);
-			CodeLiteWorkspace.Save(FullCodeLiteMasterFile);
+			CodeLiteWorkspace.Save(FullCodeLitePrimaryFile);
 
 			return true;
 		}
 
-		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath)
+		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath, DirectoryReference BaseDir)
 		{
-			return new CodeLiteProject(InitFilePath, OnlyGameProject);
+			return new CodeLiteProject(InitFilePath, BaseDir, OnlyGameProject);
 		}
 
-		public override MasterProjectFolder AllocateMasterProjectFolder(ProjectFileGenerator InitOwnerProjectFileGenerator, string InitFolderName)
-		{
-			return new CodeLiteFolder(InitOwnerProjectFileGenerator, InitFolderName);
-		}
-
-		public override void CleanProjectFiles(DirectoryReference InMasterProjectDirectory, string InMasterProjectName, DirectoryReference InIntermediateProjectFilesDirectory)
+		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesDirectory)
 		{
 			// TODO Delete all files here. Not finished yet.
-			string SolutionFileName = InMasterProjectName + SolutionExtension;
-			string CodeCompletionFile = InMasterProjectName + CodeCompletionFileName;
-			string CodeCompletionPreProcessorFile = InMasterProjectName + CodeCompletionPreProcessorFileName;
+			string SolutionFileName = InPrimaryProjectName + SolutionExtension;
+			string CodeCompletionFile = InPrimaryProjectName + CodeCompletionFileName;
+			string CodeCompletionPreProcessorFile = InPrimaryProjectName + CodeCompletionPreProcessorFileName;
 
-			FileReference FullCodeLiteMasterFile = FileReference.Combine(InMasterProjectDirectory, SolutionFileName);
-			FileReference FullCodeLiteCodeCompletionFile = FileReference.Combine(InMasterProjectDirectory, CodeCompletionFile);
-			FileReference FullCodeLiteCodeCompletionPreProcessorFile = FileReference.Combine(InMasterProjectDirectory, CodeCompletionPreProcessorFile);
+			FileReference FullCodeLitePrimaryFile = FileReference.Combine(InPrimaryProjectDirectory, SolutionFileName);
+			FileReference FullCodeLiteCodeCompletionFile = FileReference.Combine(InPrimaryProjectDirectory, CodeCompletionFile);
+			FileReference FullCodeLiteCodeCompletionPreProcessorFile = FileReference.Combine(InPrimaryProjectDirectory, CodeCompletionPreProcessorFile);
 
-			if (FileReference.Exists(FullCodeLiteMasterFile))
+			if (FileReference.Exists(FullCodeLitePrimaryFile))
 			{
-				FileReference.Delete(FullCodeLiteMasterFile);
+				FileReference.Delete(FullCodeLitePrimaryFile);
 			}
 			if (FileReference.Exists(FullCodeLiteCodeCompletionFile))
 			{

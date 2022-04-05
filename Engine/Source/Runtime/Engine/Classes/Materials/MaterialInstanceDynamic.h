@@ -13,6 +13,10 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 {
 	GENERATED_UCLASS_BODY()
 
+#if WITH_EDITOR
+	virtual void UpdateCachedData() override;
+#endif
+
 	/** Set a MID scalar (float) parameter value */
 	UFUNCTION(BlueprintCallable, meta=(Keywords = "SetFloatParameterValue"), Category="Rendering|Material")
 	void SetScalarParameterValue(FName ParameterName, float Value);
@@ -36,11 +40,11 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	bool SetVectorParameterByIndex(int32 ParameterIndex, const FLinearColor& Value);
 
 	/** Get the current scalar (float) parameter value from an MID */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetScalarParameterValue", ScriptName = "GetScalarParameterValue", Keywords = "GetFloatParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Scalar Parameter Value", ScriptName = "GetScalarParameterValue", Keywords = "GetFloatParameterValue"), Category="Rendering|Material")
 	float K2_GetScalarParameterValue(FName ParameterName);
 
 	/** Get the current scalar (float) parameter value from an MID, using MPI (to allow access to layer parameters) */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "GetScalarParameterValueByInfo", ScriptName = "GetScalarParameterValueByInfo", Keywords = "GetFloatParameterValue"), Category = "Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get Scalar Parameter Value By Info", ScriptName = "GetScalarParameterValueByInfo", Keywords = "GetFloatParameterValue"), Category = "Rendering|Material")
 	float K2_GetScalarParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo);
 
 	/** Set an MID texture parameter value */
@@ -51,28 +55,47 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
 	void SetTextureParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, class UTexture* Value);
 
+	/** Set an MID texture parameter value */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetRuntimeVirtualTextureParameterValue(FName ParameterName, class URuntimeVirtualTexture* Value);
+
+	/** Set an MID texture parameter value using MPI (to allow access to layer parameters) */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetRuntimeVirtualTextureParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture* Value);
+
 	/** Get the current MID texture parameter value */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetTextureParameterValue", ScriptName = "GetTextureParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Texture Parameter Value", ScriptName = "GetTextureParameterValue"), Category="Rendering|Material")
 	class UTexture* K2_GetTextureParameterValue(FName ParameterName);
 
 	/** Get the current MID texture parameter value, using MPI (to allow access to layer parameters) */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "GetTextureParameterValueByInfo", ScriptName = "GetTextureParameterValueByInfo"), Category = "Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get Texture Parameter Value By Info", ScriptName = "GetTextureParameterValueByInfo"), Category = "Rendering|Material")
 	class UTexture* K2_GetTextureParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo);
 
 	/** Set an MID vector parameter value */
 	UFUNCTION(BlueprintCallable, meta=(Keywords = "SetColorParameterValue"), Category="Rendering|Material")
 	void SetVectorParameterValue(FName ParameterName, FLinearColor Value);
 
+	// Conveniences to keep general FLinearColor constructors explicit without adding extra burden to existing users of this function (where the conversion is straightforward).
+	inline void SetVectorParameterValue(FName ParameterName, const FVector& Value) { SetVectorParameterValue(ParameterName, FLinearColor(Value)); }
+	inline void SetVectorParameterValue(FName ParameterName, const FVector4& Value) { SetVectorParameterValue(ParameterName, FLinearColor(Value)); }
+
+	/** Set an MID vector parameter value */
+	UFUNCTION(BlueprintCallable, meta = (Keywords = "SetVectorParameterValue"), Category = "Rendering|Material")
+	void SetDoubleVectorParameterValue(FName ParameterName, FVector Value);
+
 	/** Set an MID vector parameter value, using MPI (to allow access to layer parameters) */
 	UFUNCTION(BlueprintCallable, meta = (Keywords = "SetColorParameterValue"), Category = "Rendering|Material")
 	void SetVectorParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, FLinearColor Value);
 
+	inline void SetVectorParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, const FVector& Value) { SetVectorParameterValueByInfo(ParameterInfo, FLinearColor(Value)); }
+	inline void SetVectorParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, const FVector4& Value) { SetVectorParameterValueByInfo(ParameterInfo, FLinearColor(Value)); }
+
 	/** Get the current MID vector parameter value */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetVectorParameterValue", ScriptName = "GetVectorParameterValue", Keywords = "GetColorParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Vector Parameter Value", ScriptName = "GetVectorParameterValue", Keywords = "GetColorParameterValue"), Category="Rendering|Material")
 	FLinearColor K2_GetVectorParameterValue(FName ParameterName);
 
 	/** Get the current MID vector parameter value, using MPI (to allow access to layer parameters) */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "GetVectorParameterValueByInfo", ScriptName = "GetVectorParameterValueByInfo", Keywords = "GetColorParameterValue"), Category = "Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get VectorParameter Value By Info", ScriptName = "GetVectorParameterValueByInfo", Keywords = "GetColorParameterValue"), Category = "Rendering|Material")
 	FLinearColor K2_GetVectorParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo);
 	
 	/**
@@ -84,7 +107,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	 * @param SourceB value that is used for Alpha=1, silently ignores the case if 0
 	 * @param Alpha usually in the range 0..1, values outside the range extrapolate
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "InterpolateMaterialInstanceParameters", ScriptName = "InterpolateMaterialInstanceParameters"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Interpolate Material Instance Parameters", ScriptName = "InterpolateMaterialInstanceParameters"), Category="Rendering|Material")
 	void K2_InterpolateMaterialInstanceParams(UMaterialInstance* SourceA, UMaterialInstance* SourceB, float Alpha);
 
 	/**
@@ -94,7 +117,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	 * faster copy process but will only copy dynamic scalar, vector and texture parameters on clients.
 	 * @param bQuickParametersOnly Copy scalar, vector and texture parameters only. Much faster but may not include required data
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "CopyMaterialInstanceParameters", ScriptName = "CopyMaterialInstanceParameters"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Copy Material Instance Parameters", ScriptName = "CopyMaterialInstanceParameters"), Category="Rendering|Material")
 	void K2_CopyMaterialInstanceParameters(UMaterialInterface* Source, bool bQuickParametersOnly = false);
 
 	/**
@@ -111,7 +134,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	 * The output is the object itself (this).
 	 * @param Source ignores the call if 0
 	 */
-	UFUNCTION(meta=(DisplayName = "CopyInterpParameters"), Category="Rendering|Material")
+	UFUNCTION(meta=(DisplayName = "Copy Interp Parameters"), Category="Rendering|Material")
 	void CopyInterpParameters(UMaterialInstance* Source);
 
 	/**
@@ -139,7 +162,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	 * Copy parameter values from another material instance. This will copy only
 	 * parameters explicitly overridden in that material instance!!
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "CopyParameterOverrides"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Copy Parameter Overrides"), Category="Rendering|Material")
 	void CopyParameterOverrides(UMaterialInstance* MaterialInstance);
 		
 	/**
@@ -157,6 +180,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	virtual bool IsShadingModelFromMaterialExpression() const override;
 	virtual EBlendMode GetBlendMode() const override;
 	virtual bool IsTwoSided() const override;
+	virtual bool IsTranslucencyWritingVelocity() const override;
 	virtual bool IsDitheredLODTransition() const override;
 	virtual bool IsMasked() const override;
 
@@ -170,5 +194,8 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	// This overrides does the remapping before looking at the parent data.
 	virtual float GetTextureDensity(FName TextureName, const struct FMeshUVChannelInfo& UVChannelData) const override;
 
+private:
+	void InitializeMID(class UMaterialInterface* ParentMaterial);
+	void UpdateCachedDataDynamic();
 };
 

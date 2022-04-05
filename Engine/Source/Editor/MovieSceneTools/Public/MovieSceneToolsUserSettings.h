@@ -41,6 +41,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=General, meta=(EditCondition=bDrawThumbnails))
 	EThumbnailQuality Quality;
 
+	/** Temporal history for the view required for advanced features(e.g., eye adaptation) on all thumbnails*/
+	FSceneViewStateReference ViewState;
+
 	DECLARE_EVENT(UMovieSceneUserThumbnailSettings, FOnForceRedraw)
 	FOnForceRedraw& OnForceRedraw() { return OnForceRedrawEvent; }
 	void BroadcastRedrawThumbnails() const { OnForceRedrawEvent.Broadcast(); }
@@ -64,7 +67,7 @@ public:
 	bool bMatchByNameOnly;
 
 	/** Whether to force the front axis to be align with X instead of -Y. */
-	UPROPERTY(EditAnywhere, config, Category=Import, meta= (ToolTip = "Convert the scene from FBX coordinate system to UE4 coordinate system with front X axis instead of -Y"))
+	UPROPERTY(EditAnywhere, config, Category=Import, meta= (ToolTip = "Convert the scene from FBX coordinate system to UE coordinate system with front X axis instead of -Y"))
 	bool bForceFrontXAxis;
 
 	/** Convert the scene from FBX unit to UE unit(centimeter)*/
@@ -214,7 +217,7 @@ public:
 	TArray< FControlFindReplaceString> FindAndReplaceStrings;
 
 	/** Whether to force the front axis to be align with X instead of -Y. */
-	UPROPERTY(EditAnywhere, config, Category = "Import Options", meta = (ToolTip = "Convert the scene from FBX coordinate system to UE4 coordinate system with front X axis instead of -Y"))
+	UPROPERTY(EditAnywhere, config, Category = "Import Options", meta = (ToolTip = "Convert the scene from FBX coordinate system to UE coordinate system with front X axis instead of -Y"))
 	bool bForceFrontXAxis;
 
 	/** Convert the scene from FBX unit to UE unit(centimeter)*/

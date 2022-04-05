@@ -10,6 +10,7 @@
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
 #include "EdGraph/EdGraphPin.h"
+#include "Containers/SortedMap.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
@@ -505,7 +506,7 @@ struct ENGINE_API FEventGraphFastCallPair
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UFunction* FunctionToPatch = nullptr;
+	TObjectPtr<UFunction> FunctionToPatch = nullptr;
 
 	UPROPERTY()
 	int32 EventGraphCallOffset = 0;
@@ -527,7 +528,7 @@ struct ENGINE_API FBlueprintComponentChangedPropertyInfo
 
 	/** The parent struct (owner) of the changed property. */
 	UPROPERTY()
-	UStruct* PropertyScope;
+	TObjectPtr<UStruct> PropertyScope;
 
 	/** Default constructor. */
 	FBlueprintComponentChangedPropertyInfo()
@@ -607,14 +608,14 @@ struct FBPComponentClassOverride
 
 	/** The class to use when constructing the component. */
 	UPROPERTY()
-	UClass* ComponentClass;
+	TObjectPtr<const UClass> ComponentClass;
 
 	FBPComponentClassOverride()
 		: ComponentClass(nullptr)
 	{
 	}
 
-	FBPComponentClassOverride(FName InComponentName, UClass* InComponentClass)
+	FBPComponentClassOverride(FName InComponentName, const UClass* InComponentClass)
 		: ComponentName(InComponentName)
 		, ComponentClass(InComponentClass)
 	{
@@ -626,7 +627,7 @@ struct FBPComponentClassOverride
 	}
 };
 
-UCLASS()
+UCLASS(NeedsDeferredDependencyLoading)
 class ENGINE_API UBlueprintGeneratedClass : public UClass
 {
 	GENERATED_UCLASS_BODY()
@@ -636,9 +637,11 @@ public:
 	UPROPERTY(AssetRegistrySearchable)
 	int32	NumReplicatedProperties;
 
+	// @todo: BP2CPP_remove
 	/** Flag used to indicate if this class has a nativized parent in a cooked build. */
+	UE_DEPRECATED(5.0, "This flag is no longer in use and will be removed.")
 	UPROPERTY()
-	uint8 bHasNativizedParent:1;
+	uint8 bHasNativizedParent_DEPRECATED:1;
 
 	/** Flag used to indicate if this class has data to support the component instancing fast path. */
 	UPROPERTY()
@@ -647,7 +650,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Used to check if this class has sparse data that can be serialized. This will be false when loading the data if it hasn't already been saved out. */
 	UPROPERTY()
-	uint32 bIsSparseClassDataSerializable : 1;
+	uint8 bIsSparseClassDataSerializable:1;
 #endif // WITH_EDITORONLY_DATA
 
 private:
@@ -657,15 +660,15 @@ private:
 public:
 	/** Array of objects containing information for dynamically binding delegates to functions in this blueprint */
 	UPROPERTY()
-	TArray<class UDynamicBlueprintBinding*> DynamicBindingObjects;
+	TArray<TObjectPtr<class UDynamicBlueprintBinding>> DynamicBindingObjects;
 
 	/** Array of component template objects, used by AddComponent function */
 	UPROPERTY()
-	TArray<class UActorComponent*> ComponentTemplates;
+	TArray<TObjectPtr<class UActorComponent>> ComponentTemplates;
 
 	/** Array of templates for timelines that should be created */
 	UPROPERTY()
-	TArray<class UTimelineTemplate*> Timelines;
+	TArray<TObjectPtr<class UTimelineTemplate>> Timelines;
 
 	/** Array of blueprint overrides of component classes in parent classes */
 	UPROPERTY()
@@ -673,19 +676,19 @@ public:
 
 	/** 'Simple' construction script - graph of components to instance */
 	UPROPERTY()
-	class USimpleConstructionScript* SimpleConstructionScript;
+	TObjectPtr<class USimpleConstructionScript> SimpleConstructionScript;
 
 	/** Stores data to override (in children classes) components (created by SCS) from parent classes */
 	UPROPERTY()
-	class UInheritableComponentHandler* InheritableComponentHandler;
+	TObjectPtr<class UInheritableComponentHandler> InheritableComponentHandler;
 
 	UPROPERTY()
-	class UStructProperty* UberGraphFramePointerProperty_DEPRECATED;
+	TObjectPtr<class UStructProperty> UberGraphFramePointerProperty_DEPRECATED;
 	
 	FStructProperty* UberGraphFramePointerProperty;
 
 	UPROPERTY()
-	UFunction* UberGraphFunction;
+	TObjectPtr<UFunction> UberGraphFunction;
 
 #if VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 	uint32 UberGraphFunctionKey;
@@ -700,14 +703,14 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)
-	UObject* OverridenArchetypeForCDO;
+	TObjectPtr<UObject> OverridenArchetypeForCDO;
 
 	/** Property guid map */
 	UPROPERTY()
 	TMap<FName,FGuid> PropertyGuids;
 
 	UPROPERTY(Transient)
-	TArray<UFunction*> CalledFunctions;
+	TArray<TObjectPtr<UFunction>> CalledFunctions;
 #endif //WITH_EDITORONLY_DATA
 
 	// Mapping of changed properties & data to apply when instancing components in a cooked build (one entry per named AddComponent node template for fast lookup at runtime).
@@ -809,8 +812,10 @@ protected:
 	*/
 	static void InitArrayPropertyFromCustomList(const FArrayProperty* ArrayProperty, const FCustomPropertyListNode* InPropertyList, uint8* DataPtr, const uint8* DefaultDataPtr);
 
+	// @todo: BP2CPP_remove
 	/** Check for and handle manual application of default value overrides to component subobjects that were inherited from a nativized parent class */
-	static void CheckAndApplyComponentTemplateOverrides(UObject* InClassDefaultObject);
+	UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
+	static void CheckAndApplyComponentTemplateOverrides(UObject* InClassDefaultObject) {}
 
 public:
 
@@ -851,6 +856,8 @@ public:
 
 	/** called to gather blueprint replicated properties */
 	virtual void GetLifetimeBlueprintReplicationList(TArray<class FLifetimeProperty>& OutLifetimeProps) const;
+
+	UE_DEPRECATED(5.0, "To be removed in a future release.")
 	/** called prior to replication of an instance of this BP class */
 	virtual void InstancePreReplication(UObject* Obj, class IRepChangedPropertyTracker& ChangedPropertyTracker) const
 	{
@@ -873,6 +880,15 @@ private:
 	TIndirectArray<FCustomPropertyListNode> CustomPropertyListForPostConstruction;
 	/** In some cases UObject::ConditionalPostLoad() code calls PostLoadDefaultObject() on a class that's still being serialized. */
 	FCriticalSection SerializeAndPostLoadCritical;
+
+	using FEditorTags = TSortedMap<FName, FString, FDefaultAllocator, FNameFastLess>;
+
+#if WITH_EDITORONLY_DATA
+	void GetEditorTags(FEditorTags& Tags) const;
+
+	/** Editor-only asset registry tags on cooked BPGC */
+	FEditorTags CookedEditorTags;
+#endif // WITH_EDITORONLY_DATA
 };
 
 #include "UObject/DefineUPropertyMacros.h"

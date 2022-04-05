@@ -10,7 +10,8 @@
 #include "Misc/Guid.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/StaticMeshComponent.h"
-
+#include "Elements/SMInstance/SMInstanceManager.h"
+#include "PrimitiveInstanceUpdateCommand.h"
 #include "InstancedStaticMeshComponent.generated.h"
 
 class FLightingBuildOptions;
@@ -28,56 +29,6 @@ class FStaticLightingTextureMapping_InstancedStaticMesh;
 class FInstancedLightMap2D;
 class FInstancedShadowMap2D;
 class FStaticMeshInstanceData;
-
-struct FInstanceUpdateCmdBuffer
-{
-	enum EUpdateCommandType
-	{
-		Add,
-		Update,
-		Hide,
-		EditorData,
-		LightmapData,
-		CustomData,
-	};
-	
-	struct FInstanceUpdateCommand
-	{
-		int32 InstanceIndex;
-		EUpdateCommandType Type;
-		FMatrix XForm;
-		
-		FColor HitProxyColor;
-		bool bSelected;
-
-		FVector2D LightmapUVBias;
-		FVector2D ShadowmapUVBias;
-
-		TArray<float> CustomDataFloats;
-	};
-	
-	FInstanceUpdateCmdBuffer();
-	
-	// Commands that can modify render data in place
-	void HideInstance(int32 RenderIndex);
-	void AddInstance(const FMatrix& InTransform);
-	void UpdateInstance(int32 RenderIndex, const FMatrix& InTransform);
-	void SetEditorData(int32 RenderIndex, const FColor& Color, bool bSelected);
-	void SetLightMapData(int32 RenderIndex, const FVector2D& LightmapUVBias);
-	void SetShadowMapData(int32 RenderIndex, const FVector2D& ShadowmapUVBias);
-	void SetCustomData(int32 RenderIndex, const TArray<float>& CustomDataFloats);
-	void ResetInlineCommands();
-	int32 NumInlineCommands() const { return Cmds.Num(); }
-
-	// Command that can't be in-lined and should cause full buffer rebuild
-	void Edit();
-	void Reset();
-	int32 NumTotalCommands() const { return NumEdits; };
-	
-	TArray<FInstanceUpdateCommand> Cmds;
-	int32 NumAdds;
-	int32 NumEdits;
-};
 
 USTRUCT()
 struct FInstancedStaticMeshInstanceData
@@ -119,11 +70,25 @@ struct FInstancedStaticMeshMappingInfo
 	}
 };
 
+USTRUCT()
+struct FInstancedStaticMeshRandomSeed
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	int32 StartInstanceIndex = 0;
+
+	UPROPERTY()
+	int32 RandomSeed = 0;
+};
+
 /** A component that efficiently renders multiple instances of the same StaticMesh. */
 UCLASS(ClassGroup = Rendering, meta = (BlueprintSpawnableComponent), Blueprintable)
-class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
+class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent, public ISMInstanceManager
 {
 	GENERATED_UCLASS_BODY()
+
+	friend class ALightWeightInstanceManager;
 	
 	/** Needs implementation in InstancedStaticMesh.cpp to compile UniquePtr for forward declared class */
 	UInstancedStaticMeshComponent(FVTableHelper& Helper);
@@ -132,6 +97,11 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	/** Array of instances, bulk serialized. */
 	UPROPERTY(EditAnywhere, SkipSerialization, DisplayName="Instances", Category=Instances, meta=(MakeEditWidget=true, EditFixedOrder))
 	TArray<FInstancedStaticMeshInstanceData> PerInstanceSMData;
+	
+	// TODO: KevinO cleanup
+	/** Array of prev instance transforms. Must match the length of PerInstanceSMData or have 0 elements */
+	UPROPERTY(Transient)
+	TArray<FMatrix> PerInstancePrevTransform;
 
 	/** Defines the number of floats that will be available per instance for custom data */
 	UPROPERTY(EditAnywhere, Category=Instances, AdvancedDisplay)
@@ -149,6 +119,10 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	this is set to zero (default), it will be populated automatically by the editor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=InstancedStaticMeshComponent)
 	int32 InstancingRandomSeed=0;
+
+	/** Additional random seeds ranges. Each seed entry will be applied from AdditionalRandomSeeds[i].StartInstanceIndex to AdditionalRandomSeeds[i+1].StartInstanceIndex -1 */
+	UPROPERTY()
+	TArray<FInstancedStaticMeshRandomSeed> AdditionalRandomSeeds;
 
 	/** Distance from camera at which each instance begins to fade out. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Culling)
@@ -168,17 +142,21 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	/** Returns the render instance buffer index. */
 	FORCEINLINE int32 GetRenderIndex(int32 InInstanceIndex) const { return InstanceReorderTable.IsValidIndex(InInstanceIndex) ? InstanceReorderTable[InInstanceIndex] : InInstanceIndex; }
 
-	/** Add an instance to this component. Transform is given in local space of this component. */
+	/** Add an instance to this component. Transform is given in local space of this component unless bWorldSpace is set. */
 	UFUNCTION(BlueprintCallable, Category="Components|InstancedStaticMesh")
-	virtual int32 AddInstance(const FTransform& InstanceTransform);
+	virtual int32 AddInstance(const FTransform& InstanceTransform, bool bWorldSpace = false);
 
-	/** Add multiple instances to this component. Transform is given in local space of this component. */
+	/** Add multiple instances to this component. Transform is given in local space of this component unless bWorldSpace is set. */
 	UFUNCTION(BlueprintCallable, Category="Components|InstancedStaticMesh")
-	virtual TArray<int32> AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices);
+	virtual TArray<int32> AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices, bool bWorldSpace = false);
 
 	/** Add an instance to this component. Transform is given in world space. */
-	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
-	int32 AddInstanceWorldSpace(const FTransform& WorldTransform);
+	UE_DEPRECATED(5.0, "Use AddInstance or AddInstances with bWorldSpace set to true.")
+	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh", meta=(DeprecatedFunction, DeprecationMessage="Use 'Add Instance' or 'Add Instances' with 'World Space' set to true."))
+	int32 AddInstanceWorldSpace(const FTransform& WorldTransform)
+	{
+		return AddInstance(WorldTransform, /*bWorldSpace*/true);
+	}
 
 	/** Update custom data for specific instance */
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
@@ -193,6 +171,10 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	/** Get the transform for the instance specified. Instance is returned in local space of this component unless bWorldSpace is set.  Returns True on success. */
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
 	bool GetInstanceTransform(int32 InstanceIndex, FTransform& OutInstanceTransform, bool bWorldSpace = false) const;
+	
+	// TODO: KevinO cleanup
+	/** Get the prev transform for the instance specified. Only works if PerInstancePrevTransform has been setup and updated through BatchUpdateInstancesTransforms */
+	bool GetInstancePrevTransform(int32 InstanceIndex, FTransform& OutInstanceTransform, bool bWorldSpace = false) const;
 
 	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport) override;
 
@@ -201,7 +183,7 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	/** Get material, UV density and bounds for a given material index. */
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const override;
 	/** Build the data to compute accuracte StreaminTexture data. */
-	virtual bool BuildTextureStreamingData(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources) override;
+	virtual bool BuildTextureStreamingDataImpl(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources, bool& bOutSupportsBuildTextureStreamingData) override;
 	/** Get the StreaminTexture data. */
 	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
 
@@ -231,6 +213,29 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
 	virtual bool BatchUpdateInstancesTransforms(int32 StartInstanceIndex, const TArray<FTransform>& NewInstancesTransforms, bool bWorldSpace=false, bool bMarkRenderStateDirty=false, bool bTeleport=false);
 
+	// TODO: KevinO cleanup
+	/**
+	* Update the transform for an array of instances. Overloaded version which takes an array of NewPreviousFrameTransforms.
+	*/
+	virtual bool BatchUpdateInstancesTransforms(int32 StartInstanceIndex, const TArray<FTransform>& NewInstancesTransforms, const TArray<FTransform>& NewInstancesPrevTransforms, bool bWorldSpace = false, bool bMarkRenderStateDirty = false, bool bTeleport = false);
+
+	/**
+	* Lightweight interface to add, remove and update instances.
+	*
+	* @param AddInstanceTransforms				The transforms of the new instances to add.
+	* @param RemoveInstanceIds					The ids of the instances to remove.
+	* @param UpdateInstanceIds					The ids of the new instances to update.
+	* @param UpdateInstanceTransforms			The transforms of the new instances to update.
+	* @param UpdateInstancePreviousTransforms	The transforms of the new instances to update.
+	* @return									True on success
+	*/
+	virtual bool UpdateInstances(
+		const TArray<int32>& UpdateInstanceIds, 
+		const TArray<FTransform>& UpdateInstanceTransforms, 
+		const TArray<FTransform>& UpdateInstancePreviousTransforms,
+		int32 NumCustomFloats,
+		const TArray<float>& CustomFloatData);
+
 	/**
 	* Update the transform for a number of instances.
 	*
@@ -247,9 +252,13 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 
 	virtual bool BatchUpdateInstancesData(int32 StartInstanceIndex, int32 NumInstances, FInstancedStaticMeshInstanceData* StartInstanceData, bool bMarkRenderStateDirty = false, bool bTeleport = false);
 
-	/** Remove the instance specified. Returns True on success. Note that this will leave the array in order, but may shrink it. */
+	/** Remove the instance specified. Returns True on success. */
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
 	virtual bool RemoveInstance(int32 InstanceIndex);
+
+	/** Remove the instances specified. Returns True on success. */
+	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
+	virtual bool RemoveInstances(const TArray<int32>& InstancesToRemove);
 
 	/** Clear all instances being rendered by this component. */
 	UFUNCTION(BlueprintCallable, Category="Components|InstancedStaticMesh")
@@ -258,6 +267,10 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 	/** Get the number of instances in this component. */
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
 	int32 GetInstanceCount() const;
+
+	/** Does the given index map to a valid instance in this component? */
+	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
+	bool IsValidInstance(int32 InstanceIndex) const;
 
 	/** Sets the fading start and culling end distances for this component. */
 	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
@@ -275,13 +288,11 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent
 
 	virtual void PostLoad() override;
 	virtual void OnRegister() override;
+	virtual bool SupportsRemoveSwap() const { return false; }
 
 public:
 	/** Render data will be initialized on PostLoad or on demand. Released on the rendering thread. */
 	TSharedPtr<FPerInstanceRenderData, ESPMode::ThreadSafe> PerInstanceRenderData;
-
-	/** Recorded modifications to per-instance data */
-	FInstanceUpdateCmdBuffer InstanceUpdateCmdBuffer;
 
 	/** 
 	 *  Buffers with per-instance data laid out for rendering. 
@@ -302,10 +313,15 @@ public:
 
 	//~ Begin UActorComponent Interface
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
+	virtual void GetComponentChildElements(TArray<FTypedElementHandle>& OutElementHandles, const bool bAllowCreate = true) override;
+	virtual bool IsHLODRelevant() const override;
+	virtual void SendRenderInstanceData_Concurrent() override;
 	//~ End UActorComponent Interface
 
 	//~ Begin UPrimitiveComponent Interface
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+	virtual FMatrix GetRenderMatrix() const override;
+	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true, int32 Index = INDEX_NONE) const override;
 protected:
 	virtual void OnCreatePhysicsState() override;
 	virtual void OnDestroyPhysicsState() override;
@@ -316,6 +332,7 @@ public:
 	virtual bool SupportsStaticLighting() const override { return true; }
 #if WITH_EDITOR
 	virtual void GetStaticLightingInfo(FStaticLightingPrimitiveInfo& OutPrimitiveInfo,const TArray<ULightComponent*>& InRelevantLights,const FLightingBuildOptions& Options) override;
+	virtual FBox GetStreamingBounds() const override;
 #endif
 	virtual void GetLightAndShadowMapMemoryUsage( int32& LightMapMemoryUsage, int32& ShadowMapMemoryUsage ) const override;
 
@@ -325,6 +342,7 @@ public:
 	//~ Begin UNavRelevantInterface Interface
 	virtual void GetNavigationData(FNavigationRelevantData& Data) const override;
 	virtual FBox GetNavigationBounds() const override;
+	virtual bool IsNavigationRelevant() const override;
 	//~ End UPrimitiveComponent Interface
 
 	//~ Begin UObject Interface
@@ -336,6 +354,13 @@ public:
 	virtual void PostEditUndo() override;
 #endif
 	//~ End UObject Interface
+
+	/**
+	 * Get the translated space for instance transforms to be passed to the renderer.
+	 * In the renderer data structures we only have floating point precision for instance transforms relative to their owning primitive. The primitive transform itself has double precision.
+	 * Some ISM that are authored in world space need to adjust the local space to keep instance transforms within precision limits.
+	 */
+	virtual FVector GetTranslatedInstanceSpaceOrigin() const { return FVector::Zero(); }
 
 	/** Applies the cached component instance data to a newly blueprint constructed component. */
 	virtual void ApplyComponentInstanceData(struct FInstancedStaticMeshComponentInstanceData* ComponentInstanceData);
@@ -362,7 +387,20 @@ public:
 
 	void GetInstancesMinMaxScale(FVector& MinScale, FVector& MaxScale) const;
 
-	void FlushInstanceUpdateCommands();
+	void FlushInstanceUpdateCommands(bool bFlushInstanceUpdateCmdBuffer);
+
+	TArray<int32> PerInstanceIds;
+
+	/** Used to cache a unique identifier for each instance.  These are provided
+	*	by the interface UpdateInstances.  This is a map from unique id to index
+	*	into the PerInstanceSMData array.
+	*/
+	TMap<int32, int32> InstanceIdToInstanceIndexMap;
+
+	// This is here because in void FScene::UpdatePrimitiveInstance(UPrimitiveComponent* Primitive) we want access
+	// to the instances updates through the primitive component in a generic way.
+	/** Recorded modifications to per-instance data */
+	FInstanceUpdateCmdBuffer InstanceUpdateCmdBuffer;
 
 private:
 
@@ -386,10 +424,10 @@ protected:
 	virtual bool SupportsPartialNavigationUpdate() const { return false; }
 
 	/** Internal version of AddInstance */
-	int32 AddInstanceInternal(int32 InstanceIndex, FInstancedStaticMeshInstanceData* InNewInstanceData, const FTransform& InstanceTransform);
+	int32 AddInstanceInternal(int32 InstanceIndex, FInstancedStaticMeshInstanceData* InNewInstanceData, const FTransform& InstanceTransform, bool bWorldSpace);
 
 	/** Internal implementation of AddInstances */
-	TArray<int32> AddInstancesInternal(int32 Count, const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices);
+	TArray<int32> AddInstancesInternal(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices, bool bWorldSpace);
 
 	/** Internal version of RemoveInstance */	
 	bool RemoveInstanceInternal(int32 InstanceIndex, bool InstanceAlreadyRemoved);
@@ -421,9 +459,26 @@ protected:
 	/** Creates rendering buffer from serialized data, if any */
 	virtual void OnPostLoadPerInstanceData();
 
+	//~ ISMInstanceManager interface
+	virtual bool CanEditSMInstance(const FSMInstanceId& InstanceId) const override;
+	virtual bool CanMoveSMInstance(const FSMInstanceId& InstanceId, const ETypedElementWorldType InWorldType) const override;
+	virtual bool GetSMInstanceTransform(const FSMInstanceId& InstanceId, FTransform& OutInstanceTransform, bool bWorldSpace = false) const override;
+	virtual bool SetSMInstanceTransform(const FSMInstanceId& InstanceId, const FTransform& InstanceTransform, bool bWorldSpace = false, bool bMarkRenderStateDirty = false, bool bTeleport = false) override;
+	virtual void NotifySMInstanceMovementStarted(const FSMInstanceId& InstanceId) override;
+	virtual void NotifySMInstanceMovementOngoing(const FSMInstanceId& InstanceId) override;
+	virtual void NotifySMInstanceMovementEnded(const FSMInstanceId& InstanceId) override;
+	virtual void NotifySMInstanceSelectionChanged(const FSMInstanceId& InstanceId, const bool bIsSelected) override;
+	virtual bool DeleteSMInstances(TArrayView<const FSMInstanceId> InstanceIds) override;
+	virtual bool DuplicateSMInstances(TArrayView<const FSMInstanceId> InstanceIds, TArray<FSMInstanceId>& OutNewInstanceIds) override;
+
 	friend FStaticLightingTextureMapping_InstancedStaticMesh;
 	friend FInstancedLightMap2D;
 	friend FInstancedShadowMap2D;
+
+#if STATS
+	/** Used for dynamic stats */
+	TStatId StatId;
+#endif
 };
 
 /** InstancedStaticMeshInstance hit proxy */
@@ -436,10 +491,11 @@ struct HInstancedStaticMeshInstance : public HHitProxy
 	HInstancedStaticMeshInstance(UInstancedStaticMeshComponent* InComponent, int32 InInstanceIndex) : HHitProxy(HPP_World), Component(InComponent), InstanceIndex(InInstanceIndex) {}
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FTypedElementHandle GetElementHandle() const override;
 
 	virtual EMouseCursor::Type GetMouseCursor() override
 	{
-		return EMouseCursor::CardinalCross;
+		return EMouseCursor::Crosshairs;
 	}
 };
 
@@ -491,7 +547,7 @@ public:
 public:
 	/** Mesh being used by component */
 	UPROPERTY()
-	UStaticMesh* StaticMesh = nullptr;
+	TObjectPtr<UStaticMesh> StaticMesh = nullptr;
 
 	// Static lighting info
 	UPROPERTY()
@@ -508,4 +564,11 @@ public:
 	/* The cached random seed */
 	UPROPERTY()
 	int32 InstancingRandomSeed = 0;
+
+	/* Additional random seeds */
+	UPROPERTY()
+	TArray<FInstancedStaticMeshRandomSeed> AdditionalRandomSeeds;
+
+	UPROPERTY()
+	bool bHasPerInstanceHitProxies = false;
 };

@@ -7,12 +7,13 @@
 #include "IAudioEndpoint.h"
 #include "ISoundfieldEndpoint.h"
 #include "SampleBufferIO.h"
-#include "SoundModulationDestination.h"
 #include "SoundEffectSubmix.h"
+#include "SoundModulationDestination.h"
 #include "SoundSubmixSend.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "DSP/SpectrumAnalyzer.h"
+#include "AudioLinkSettingsAbstract.h"
 
 #include "SoundSubmix.generated.h"
 
@@ -169,9 +170,17 @@ public:
 	UEdGraph* SoundSubmixGraph;
 #endif
 
+	// Auto-manage enabling and disabling the submix as a CPU optimization. It will be disabled if the submix and all child submixes are silent. It will re-enable if a sound is sent to the submix or a child submix is audible.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = AutoDisablement)
+	bool bAutoDisable = true;
+
+	// The minimum amount of time to wait before automatically disabling a submix if it is silent. Will immediately re-enable if source audio is sent to it. 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AutoDisablement, meta = (EditCondition = "bAutoDisable"))
+	float AutoDisableTime = 0.01f;
+
 	// Child submixes to this sound mix
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = SoundSubmix)
-	TArray<USoundSubmixBase*> ChildSubmixes;
+	TArray<TObjectPtr<USoundSubmixBase>> ChildSubmixes;
 
 protected:
 	//~ Begin UObject Interface.
@@ -220,7 +229,7 @@ class ENGINE_API USoundSubmixWithParentBase : public USoundSubmixBase
 public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = SoundSubmix)
-	USoundSubmixBase* ParentSubmix;
+	TObjectPtr<USoundSubmixBase> ParentSubmix;
 
 	/**
 	* Set the parent submix of this SoundSubmix, removing it as a child from its previous owner
@@ -260,11 +269,11 @@ public:
 	uint8 bMuteWhenBackgrounded : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SoundSubmix)
-	TArray<USoundEffectSubmixPreset*> SubmixEffectChain;
+	TArray<TObjectPtr<USoundEffectSubmixPreset>> SubmixEffectChain;
 
 	/** Optional settings used by plugins which support ambisonics file playback. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SoundSubmix)
-	USoundfieldEncodingSettingsBase* AmbisonicsPluginSettings;
+	TObjectPtr<USoundfieldEncodingSettingsBase> AmbisonicsPluginSettings;
 
 	/** The attack time in milliseconds for the envelope follower. Delegate callbacks can be registered to get the envelope value of sounds played with this submix. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = EnvelopeFollower, meta = (ClampMin = "0", UIMin = "0"))
@@ -274,47 +283,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = EnvelopeFollower, meta = (ClampMin = "0", UIMin = "0"))
 	int32 EnvelopeFollowerReleaseTime;
 
-	/** Whether to treat submix gain levels as linear or decibel values. */
-	UPROPERTY(EditAnywhere, Category = SubmixLevel, meta = (InlineCategoryProperty))
-	EGainParamMode GainMode;
-
-	/** The output volume of the submix. Applied after submix effects and analysis are performed.*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0", EditCondition = "GainMode == EGainParamMode::Linear", DisplayName = "Output Volume", EditConditionHides))
+	/** Deprecated -- The output volume of the submix. Applied after submix effects and analysis are performed.*/
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "5.0 - Removed in favor of OutputVolumeModulation."))
 	float OutputVolume;
 
-	/** The wet level of the submix. Applied after submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0", EditCondition = "GainMode == EGainParamMode::Linear", DisplayName = "Wet Level", EditConditionHides))
+	/** Deprecated -- The wet level of the submix. Applied after submix effects and analysis are performed. */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "5.0 - Removed in favor of WetLevelModulation."))
 	float WetLevel;
 
-	/** The dry level of the submix. Applied before submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0", EditCondition = "GainMode == EGainParamMode::Linear", DisplayName = "Dry Level", EditConditionHides))
+	/** Deprecated -- The dry level of the submix. Applied before submix effects and analysis are performed. */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "5.0 - Removed in favor of DryLevelModulation."))
 	float DryLevel;
 
-#if WITH_EDITORONLY_DATA
-	/** The output volume of the submix (in dB). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "-160.0", ClampMax = "0.0", UIMin = "-60.0", UIMax = "0.0", EditCondition = "GainMode == EGainParamMode::Decibels", DisplayName = "Output Volume (dB)", EditConditionHides))
-	float OutputVolumeDB;
-
-	/** The wet level of the submix  (in dB). Applied after submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "-160.0", ClampMax = "0.0", UIMin = "-60.0", UIMax = "0.0", EditCondition = "GainMode == EGainParamMode::Decibels", DisplayName = "Wet Level (dB)", EditConditionHides))
-	float WetLevelDB;
-
-	/** The dry level of the submix  (in dB)s. Applied before submix effects and analysis are performed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (ClampMin = "-160.0", ClampMax = "0.0", UIMin = "-60.0", UIMax = "0.0", EditCondition = "GainMode == EGainParamMode::Decibels", DisplayName = "Dry Level (dB)", EditConditionHides))
-	float DryLevelDB;
-#endif
-
-	/** Modulation to apply to the submix Output Volume (in dB)*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Modulation, meta = (DisplayName = "Output Volume Modulation", AudioParam = "Volume"))
+	/** The output volume of the submix in Decibels. Applied after submix effects and analysis are performed.*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Output Volume (dB)", AudioParam = "Volume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings OutputVolumeModulation;
 
-	/** Modulation to apply to the submix Wet Level (in dB)*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Modulation, meta = (DisplayName = "Wet Level Modulation", AudioParam = "Volume"))
+	/** The wet level of the submixin Decibels. Applied after submix effects and analysis are performed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Wet Level (dB)", AudioParam = "Volume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings WetLevelModulation;
 
-	/** Modulation to apply to the submix Dry Level (in dB)*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Modulation, meta = (DisplayName = "Dry Level Modulation", AudioParam = "Volume"))
+	/** The dry level of the submix in Decibels. Applied before submix effects and analysis are performed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixLevel, meta = (DisplayName = "Dry Level (dB)", AudioParam = "Volume", ClampMin = "-96.0", ClampMax = "0.0", UIMin = "-96.0", UIMax = "0.0"))
 	FSoundModulationDestinationSettings DryLevelModulation;
+	
+	/** Optional Audio Link Settings Object */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AudioLink)
+	TObjectPtr<UAudioLinkSettingsAbstract> AudioLinkSettings;
 
 	// Blueprint delegate for when a recorded file is finished exporting.
 	UPROPERTY(BlueprintAssignable)
@@ -380,22 +375,31 @@ public:
 
 	void StartSpectralAnalysis(FAudioDevice* InDevice, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
 
-	/** Start spectrum analysis of the audio output. */
+	/** Stop spectrum analysis of the audio output. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
 	void StopSpectralAnalysis(const UObject* WorldContextObject);
 
 	void StopSpectralAnalysis(FAudioDevice* InDevice);
 
-	/** Sets the output volume of the submix. This dynamic volume acts as a multiplier on the OutputVolume property of this submix.  */
-	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	/** Sets the output volume of the submix in linear gain. This dynamic volume acts as a multiplier on the OutputVolume property of this submix.  */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixOutputVolume (linear gain)"))
 	void SetSubmixOutputVolume(const UObject* WorldContextObject, float InOutputVolume);
+
+	/** Sets the output volume of the submix in linear gain. This dynamic level acts as a multiplier on the WetLevel property of this submix.  */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixWetLevel (linear gain)"))
+	void SetSubmixWetLevel(const UObject* WorldContextObject, float InWetLevel);
+
+	/** Sets the output volume of the submix in linear gain. This dynamic level acts as a multiplier on the DryLevel property of this submix.  */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject", DisplayName = "SetSubmixDryLevel (linear gain)"))
+	void SetSubmixDryLevel(const UObject* WorldContextObject, float InDryLevel);
 
 	static FSoundSpectrumAnalyzerSettings GetSpectrumAnalyzerSettings(EFFTSize FFTSize, EFFTPeakInterpolationMethod InterpolationMethod, EFFTWindowType WindowType, float HopSize, EAudioSpectrumType SpectrumType);
 
 	static FSoundSpectrumAnalyzerDelegateSettings GetSpectrumAnalysisDelegateSettings(const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, float UpdateRate, float DecibelNoiseFloor, bool bDoNormalize, bool bDoAutoRange, float AutoRangeAttackTime, float AutoRangeReleaseTime);
 protected:
 
-	virtual void PostLoad() override;
+	virtual void Serialize(FArchive& Ar) override;
+
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
@@ -423,15 +427,13 @@ public:
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category = Soundfield)
 	FName SoundfieldEncodingFormat;
 
-	//TODO: Make this editable only if SoundfieldEncodingFormat is non-default,
-	// and filter classes based on ISoundfieldFactory::GetCustomSettingsClass().
+	/** Which encoding settings to use the sound field. */
 	UPROPERTY(EditAnywhere, Category = Soundfield)
-	USoundfieldEncodingSettingsBase* EncodingSettings;
+	TObjectPtr<USoundfieldEncodingSettingsBase> EncodingSettings;
 
-	// TODO: make this editable only if SoundfieldEncodingFormat is non-default
-	// and filter classes based on USoundfieldProcessorBase::SupportsFormat.
+	/** Soundfield effect chain to use for the sound field. */
 	UPROPERTY(EditAnywhere, Category = Soundfield)
-	TArray<USoundfieldEffectBase*> SoundfieldEffectChain;
+	TArray<TObjectPtr<USoundfieldEffectBase>> SoundfieldEffectChain;
 
 	// Traverses parent submixes until we find a submix that doesn't inherit it's soundfield format.
 	FName GetSubmixFormat() const;
@@ -472,10 +474,8 @@ public:
 	UPROPERTY()
 	TSubclassOf<UAudioEndpointSettingsBase> EndpointSettingsClass;
 
-	//TODO: Make this editable only if EndpointType is non-default,
-	// and filter classes based on ISoundfieldFactory::GetCustomSettingsClass().
 	UPROPERTY(EditAnywhere, Category = Endpoint)
-	UAudioEndpointSettingsBase* EndpointSettings;
+	TObjectPtr<UAudioEndpointSettingsBase> EndpointSettings;
 
 };
 
@@ -508,19 +508,17 @@ public:
 	// This function goes through every child submix and the parent submix to ensure that they have a compatible format.
 	void SanitizeLinks();
 
-	//TODO: Make this editable only if EndpointType is non-default,
-	// and filter classes based on ISoundfieldFactory::GetCustomSettingsClass().
 	UPROPERTY(EditAnywhere, Category = Endpoint)
-	USoundfieldEndpointSettingsBase* EndpointSettings;
+	TObjectPtr<USoundfieldEndpointSettingsBase> EndpointSettings;
 
 	UPROPERTY()
 	TSubclassOf<USoundfieldEncodingSettingsBase> EncodingSettingsClass;
 
 	UPROPERTY(EditAnywhere, Category = Soundfield)
-	USoundfieldEncodingSettingsBase* EncodingSettings;
+	TObjectPtr<USoundfieldEncodingSettingsBase> EncodingSettings;
 
 	UPROPERTY(EditAnywhere, Category = Soundfield)
-	TArray<USoundfieldEffectBase*> SoundfieldEffectChain;
+	TArray<TObjectPtr<USoundfieldEffectBase>> SoundfieldEffectChain;
 
 protected:
 #if WITH_EDITOR

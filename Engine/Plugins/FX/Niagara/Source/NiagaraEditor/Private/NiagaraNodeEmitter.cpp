@@ -22,14 +22,14 @@
 #define LOCTEXT_NAMESPACE "NiagaraNodeEmitter"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - Module - NiagaraNodeEmitter_Compile"), STAT_NiagaraEditor_Module_NiagaraNodeEmitter_Compile, STATGROUP_NiagaraEditor);
-
+#define NIAGARA_SCOPE_CYCLE_COUNTER(x) //SCOPE_CYCLE_COUNTER(x)
 
 void UNiagaraNodeEmitter::PostInitProperties()
 {
 	Super::PostInitProperties();
 	PinPendingRename = nullptr;
-	CachedGraph = nullptr;
-	CachedScriptSource = nullptr;
+	CachedGraphWeakPtr = nullptr;
+	CachedScriptSourceWeakPtr = nullptr;
 }
 
 UNiagaraSystem* UNiagaraNodeEmitter::GetOwnerSystem() const
@@ -212,7 +212,7 @@ UNiagaraScriptSource* UNiagaraNodeEmitter::GetScriptSource() const
 		return Source;
 	}
 
-	return Cast<UNiagaraScriptSource>(CachedScriptSource);
+	return Cast<UNiagaraScriptSource>(CachedScriptSourceWeakPtr.Get());
 }
 
 UNiagaraGraph* UNiagaraNodeEmitter::GetCalledGraph() const
@@ -240,7 +240,7 @@ UNiagaraGraph* UNiagaraNodeEmitter::GetCalledGraph() const
 		}
 	}
 
-	if (CachedGraph != nullptr)
+	if (UNiagaraGraph* CachedGraph = CachedGraphWeakPtr.Get())
 	{
 		return CachedGraph;
 	}
@@ -283,8 +283,8 @@ void UNiagaraNodeEmitter::SyncEnabledState()
 void UNiagaraNodeEmitter::SetCachedVariablesForCompilation(const FName& InUniqueName, UNiagaraGraph* InGraph, UNiagaraScriptSourceBase* InSource)
 {
 	CachedUniqueName = InUniqueName;
-	CachedGraph = InGraph;
-	CachedScriptSource = InSource;
+	CachedGraphWeakPtr = InGraph;
+	CachedScriptSourceWeakPtr = InSource;
 }
 
 
@@ -362,7 +362,12 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 			FNiagaraParameterMapHistoryBuilder ChildBuilder;
 			ChildBuilder.ConstantResolver = OutHistory.ConstantResolver;
 			ChildBuilder.RegisterEncounterableVariables(OutHistory.GetEncounterableVariables());
-			ChildBuilder.EnableScriptWhitelist(true, GetUsage());
+			ChildBuilder.EnableScriptAllowList(true, GetUsage());
+
+			TArray<FNiagaraVariable> LocalStaticVars;
+			FNiagaraParameterUtilities::FilterToRelevantStaticVariables(OutHistory.StaticVariables, LocalStaticVars, *EmitterUniqueName, TEXT("Emitter"), true);
+			ChildBuilder.RegisterExternalStaticVariables(LocalStaticVars);
+
 			FString LocalEmitterName = TEXT("Emitter");
 			ChildBuilder.EnterEmitter(LocalEmitterName, Graph, this);
 			for (UNiagaraNodeOutput* OutputNode : OutputNodes)
@@ -392,10 +397,16 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 					OutHistory.Histories[ParamMapIdx].PerVariableReadHistory[ExistingIdx].Append(History.PerVariableReadHistory[SrcVarIdx]);
 					OutHistory.Histories[ParamMapIdx].PerVariableWriteHistory[ExistingIdx].Append(History.PerVariableWriteHistory[SrcVarIdx]);
 					OutHistory.Histories[ParamMapIdx].PerVariableWarnings[ExistingIdx].Append(History.PerVariableWarnings[SrcVarIdx]);	
+					for (int32 PerConstantIdx = 0; PerConstantIdx < History.PerVariableConstantValue[SrcVarIdx].Num(); PerConstantIdx++)
+					{	
+						const FString& ConstantStr = History.PerVariableConstantValue[SrcVarIdx][PerConstantIdx];
+						OutHistory.Histories[ParamMapIdx].PerVariableConstantValue[ExistingIdx].AddUnique(ConstantStr);	
+					}
 				}
 				OutHistory.Histories[ParamMapIdx].ParameterCollections.Append(History.ParameterCollections);
 				OutHistory.Histories[ParamMapIdx].ParameterCollectionNamespaces.Append(History.ParameterCollectionNamespaces);
 				OutHistory.Histories[ParamMapIdx].ParameterCollectionVariables.Append(History.ParameterCollectionVariables);
+				OutHistory.Histories[ParamMapIdx].PinToConstantValues.Append(History.PinToConstantValues);
 			}
 		}
 
@@ -415,7 +426,7 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 
 void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int32>& Outputs)
 {
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_Module_NiagaraNodeEmitter_Compile);
+	NIAGARA_SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_Module_NiagaraNodeEmitter_Compile);
 	FPinCollectorArray InputPins;
 	GetInputPins(InputPins);
 	InputPins.RemoveAll([](UEdGraphPin* InputPin) { return (InputPin->PinType.PinCategory != UEdGraphSchema_Niagara::PinCategoryType) && (InputPin->PinType.PinCategory != UEdGraphSchema_Niagara::PinCategoryEnum); });
@@ -492,11 +503,14 @@ void UNiagaraNodeEmitter::GatherExternalDependencyData(ENiagaraScriptUsage InMas
 
 	if (CalledGraph && IsNodeEnabled()) // Skip if disabled
 	{
+		CalledGraph->RebuildCachedCompileIds();
 		ENiagaraScriptUsage TargetUsage = InMasterUsage == ENiagaraScriptUsage::SystemSpawnScript ? ENiagaraScriptUsage::EmitterSpawnScript : ENiagaraScriptUsage::EmitterUpdateScript;
-		InReferencedCompileHashes.Add(CalledGraph->GetCompileDataHash(TargetUsage, FGuid(0,0,0,0)));
+		FNiagaraCompileHash Hash = CalledGraph->GetCompileDataHash(TargetUsage, FGuid(0,0,0,0));
+		InReferencedCompileHashes.AddUnique(Hash);
 		InReferencedObjs.Add(CalledGraph->GetPathName());
 		CalledGraph->GatherExternalDependencyData(TargetUsage, FGuid(0, 0, 0, 0), InReferencedCompileHashes, InReferencedObjs);
 	}
 }
 
+#undef NIAGARA_SCOPE_CYCLE_COUNTER
 #undef LOCTEXT_NAMESPACE // NiagaraNodeEmitter

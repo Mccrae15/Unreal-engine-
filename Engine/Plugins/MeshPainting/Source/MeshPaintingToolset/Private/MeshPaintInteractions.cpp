@@ -11,76 +11,110 @@
 #include "MeshPaintAdapterFactory.h"
 #include "EngineUtils.h"
 #include "Editor.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Interfaces/TypedElementObjectInterface.h"
 #if WITH_EDITOR
 #include "HitProxies.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "MeshSelection"
 
-FInputRayHit UMeshPaintSelectionMechanic::IsHitByClick(const FInputDeviceRay& ClickPos)
+FInputRayHit UMeshPaintSelectionMechanic::IsHitByClick(const FInputDeviceRay& ClickPos, bool bIsFallbackClick)
 {
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetParentTool()->GetToolManager()))
+	IMeshPaintSelectionInterface* Interface = Cast<IMeshPaintSelectionInterface>(GetParentTool());
+	if (!bAddToSelectionSet || !Interface->AllowsMultiselect())
 	{
-		IMeshPaintSelectionInterface* Interface = Cast<IMeshPaintSelectionInterface>(GetParentTool());
-		if (!bAddToSelectionSet || !Interface->AllowsMultiselect())
-		{
-			CachedClickedComponents.Empty();
-			CachedClickedActors.Empty();
-		}
-		return FindClickedComponentsAndCacheAdapters(ClickPos, MeshToolManager) ? FInputRayHit(0.0f) : FInputRayHit();
+		CachedClickedComponents.Empty();
+		CachedClickedActors.Empty();
 	}
-	return FInputRayHit();
+
+	// for fallback clicks, assume we must be adding to our selection set
+	if (bIsFallbackClick)
+	{
+		if (Interface->AllowsMultiselect() && bAddToSelectionSet)
+		{
+			return FindClickedComponentsAndCacheAdapters(ClickPos) ? FInputRayHit(0.0f) : FInputRayHit();
+		}
+		else
+		{
+			return FInputRayHit();
+		}
+	}
+	return FindClickedComponentsAndCacheAdapters(ClickPos) ? FInputRayHit(0.0f) : FInputRayHit();
 }
 
 void UMeshPaintSelectionMechanic::OnClicked(const FInputDeviceRay& ClickPos)
 {
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetParentTool()->GetToolManager()))
+	if (UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>())
 	{
 		for (UMeshComponent* MeshComponent : CachedClickedComponents)
 		{
-			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshToolManager->GetAdapterForComponent(MeshComponent);
+			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter;
+			if (MeshComponent)
+			{
+				MeshAdapter = MeshPaintingSubsystem->GetAdapterForComponent(MeshComponent);
+			}
 			IMeshPaintSelectionInterface* Interface = Cast<IMeshPaintSelectionInterface>(GetParentTool());
 			if (MeshComponent && MeshComponent->IsVisible() && MeshAdapter.IsValid() && MeshAdapter->IsValid() && Interface->IsMeshAdapterSupported(MeshAdapter))
 			{
-				MeshToolManager->AddPaintableMeshComponent(MeshComponent);
+				MeshPaintingSubsystem->AddPaintableMeshComponent(MeshComponent);
 				MeshAdapter->OnAdded();
 			}
 
-			MeshToolManager->BeginUndoTransaction(LOCTEXT("MeshSelection", "Select Mesh"));
+			GetParentTool()->GetToolManager()->BeginUndoTransaction(LOCTEXT("MeshSelection", "Select Mesh"));
 
 
 			FSelectedOjectsChangeList NewSelection;
 			// TODO add CTRL handling
-			NewSelection.ModificationType = bAddToSelectionSet ? ESelectedObjectsModificationType::Add : ESelectedObjectsModificationType::Replace;
+			const bool bShouldAddToSelection = bAddToSelectionSet && Interface->AllowsMultiselect();
+			NewSelection.ModificationType = bShouldAddToSelection ? ESelectedObjectsModificationType::Add : ESelectedObjectsModificationType::Replace;
 			NewSelection.Actors.Append(CachedClickedActors);
-			MeshToolManager->RequestSelectionChange(NewSelection);
-			MeshToolManager->EndUndoTransaction();
+			GetParentTool()->GetToolManager()->RequestSelectionChange(NewSelection);
+			GetParentTool()->GetToolManager()->EndUndoTransaction();
 		}
 	}
 }
 
-bool UMeshPaintSelectionMechanic::FindClickedComponentsAndCacheAdapters(const FInputDeviceRay& ClickPos, class UMeshToolManager* MeshToolManager)
+bool UMeshPaintSelectionMechanic::FindClickedComponentsAndCacheAdapters(const FInputDeviceRay& ClickPos)
 {
 	bool bFoundValidComponents = false;
 #if WITH_EDITOR
-	if (HHitProxy* HitProxy = MeshToolManager->GetContextQueriesAPI()->GetHitProxy(ClickPos.ScreenPosition.X, ClickPos.ScreenPosition.Y))
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (!MeshPaintingSubsystem)
 	{
-		if (HitProxy->IsA(HActor::StaticGetType()))
+		return bFoundValidComponents;
+	}
+
+	FViewport* FocusedViewport = GetParentTool()->GetToolManager()->GetContextQueriesAPI()->GetFocusedViewport();
+	if (FocusedViewport)
+	{
+		if (HHitProxy* HitProxy = FocusedViewport->GetHitProxy(ClickPos.ScreenPosition.X, ClickPos.ScreenPosition.Y))
 		{
-			HActor* ActorProxy = (HActor*)HitProxy;
-			AActor* Actor = ActorProxy->Actor;
-			TArray<UActorComponent*> CandidateComponents = Actor->K2_GetComponentsByClass(UMeshComponent::StaticClass());
-			for (UActorComponent* CandidateComponent : CandidateComponents)
+			if (TTypedElement<ITypedElementObjectInterface> ObjectInterface = UTypedElementRegistry::GetInstance()->GetElement<ITypedElementObjectInterface>(HitProxy->GetElementHandle()))
 			{
-				UMeshComponent* MeshComponent = Cast<UMeshComponent>(CandidateComponent);
-				TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = FMeshPaintComponentAdapterFactory::CreateAdapterForMesh(MeshComponent, 0);
-				IMeshPaintSelectionInterface* Interface = Cast<IMeshPaintSelectionInterface>(GetParentTool());
-				if (MeshAdapter.IsValid() && Interface->IsMeshAdapterSupported(MeshAdapter))
+				if (AActor* Actor = ObjectInterface.GetObjectAs<UActorComponent>()->GetOwner())
 				{
-					MeshToolManager->AddToComponentToAdapterMap(MeshComponent, MeshAdapter);
-					CachedClickedComponents.AddUnique(MeshComponent);
-					CachedClickedActors.AddUnique(Cast<AActor>(MeshComponent->GetOuter()));
-					bFoundValidComponents = true;
+					TArray<UActorComponent*> CandidateComponents = Actor->K2_GetComponentsByClass(UMeshComponent::StaticClass());
+					for (UActorComponent* CandidateComponent : CandidateComponents)
+					{
+						UMeshComponent* MeshComponent = Cast<UMeshComponent>(CandidateComponent);
+						TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshPaintingSubsystem->GetAdapterForComponent(MeshComponent);
+						if (!MeshAdapter.IsValid())
+						{
+							MeshAdapter = FMeshPaintComponentAdapterFactory::CreateAdapterForMesh(MeshComponent, 0);
+							if (MeshAdapter)
+							{
+								MeshPaintingSubsystem->AddToComponentToAdapterMap(MeshComponent, MeshAdapter);
+							}
+						}
+						IMeshPaintSelectionInterface* Interface = Cast<IMeshPaintSelectionInterface>(GetParentTool());
+						if (MeshAdapter.IsValid() && Interface->IsMeshAdapterSupported(MeshAdapter))
+						{
+							CachedClickedComponents.AddUnique(MeshComponent);
+							CachedClickedActors.AddUnique(Cast<AActor>(MeshComponent->GetOuter()));
+							bFoundValidComponents = true;
+						}
+					}
 				}
 			}
 		}
@@ -88,4 +122,6 @@ bool UMeshPaintSelectionMechanic::FindClickedComponentsAndCacheAdapters(const FI
 #endif
 	return bFoundValidComponents;
 }
+
+
 #undef LOCTEXT_NAMESPACE

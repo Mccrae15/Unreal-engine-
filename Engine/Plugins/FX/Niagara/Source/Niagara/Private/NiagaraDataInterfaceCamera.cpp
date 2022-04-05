@@ -6,6 +6,7 @@
 #include "Internationalization/Internationalization.h"
 #include "NiagaraSystemInstance.h"
 #include "GameFramework/PlayerController.h"
+#include "ShaderParameterUtils.h"
 
 #if WITH_EDITORONLY_DATA
 #include "EditorViewportClient.h"
@@ -20,6 +21,8 @@ struct FNiagaraCameraDIFunctionVersion
 	{
 		InitialVersion = 0,
         AddedPreViewTranslation = 1,
+		AddedBufferSizeInvSizeForGPU = 2,
+		LWCConversion = 3,
 
         VersionPlusOne,
         LatestVersion = VersionPlusOne - 1
@@ -33,6 +36,7 @@ const FName UNiagaraDataInterfaceCamera::GetCameraPropertiesName(TEXT("GetCamera
 const FName UNiagaraDataInterfaceCamera::GetFieldOfViewName(TEXT("GetFieldOfView"));
 const FName UNiagaraDataInterfaceCamera::CalculateDistancesName(TEXT("CalculateParticleDistancesCPU"));
 const FName UNiagaraDataInterfaceCamera::QueryClosestName(TEXT("QueryClosestParticlesCPU"));
+const FName UNiagaraDataInterfaceCamera::GetTAAJitterName(TEXT("GetTAAJitter"));
 
 UNiagaraDataInterfaceCamera::UNiagaraDataInterfaceCamera(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -75,6 +79,8 @@ bool UNiagaraDataInterfaceCamera::PerInstanceTick(void* PerInstanceData, FNiagar
 	PIData->ParticlesSortedByDistance.StableSort([](const FDistanceData& A, const FDistanceData& B) { return A.DistanceSquared < B.DistanceSquared; });
 
 	// grab the current camera data
+	FNiagaraLWCConverter LWCConverter = SystemInstance->GetLWCConverter();
+	PIData->LWCConverter = LWCConverter;
 	UWorld* World = SystemInstance->GetWorldManager()->GetWorld();
 	if (World && PlayerControllerIndex < World->GetNumPlayerControllers())
 	{
@@ -82,9 +88,9 @@ bool UNiagaraDataInterfaceCamera::PerInstanceTick(void* PerInstanceData, FNiagar
 		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
 		{
 			APlayerController* PlayerController = Iterator->Get();
-			if (i == PlayerControllerIndex && PlayerController)
+			if (i == PlayerControllerIndex && PlayerController && PlayerController->PlayerCameraManager)
 			{
-				PIData->CameraLocation = PlayerController->PlayerCameraManager->GetCameraLocation();
+				PIData->CameraLocation = LWCConverter.ConvertWorldToSimulationPosition(PlayerController->PlayerCameraManager->GetCameraLocation());
 				PIData->CameraRotation = PlayerController->PlayerCameraManager->GetCameraRotation();
 				PIData->CameraFOV = PlayerController->PlayerCameraManager->GetFOVAngle();
 				return false;
@@ -96,14 +102,14 @@ bool UNiagaraDataInterfaceCamera::PerInstanceTick(void* PerInstanceData, FNiagar
 	if (GCurrentLevelEditingViewportClient)
 	{
 		const FViewportCameraTransform& ViewTransform = GCurrentLevelEditingViewportClient->GetViewTransform();
-		PIData->CameraLocation = ViewTransform.GetLocation();
+		PIData->CameraLocation = LWCConverter.ConvertWorldToSimulationPosition(ViewTransform.GetLocation());
 		PIData->CameraRotation = ViewTransform.GetRotation();
 		PIData->CameraFOV = GCurrentLevelEditingViewportClient->ViewFOV;
 		return false;
 	}
 #endif
 
-	PIData->CameraLocation = FVector::ZeroVector;
+	PIData->CameraLocation = FNiagaraPosition(ForceInitToZero);
 	PIData->CameraRotation = FRotator(0);
 	PIData->CameraFOV = 0;
 	
@@ -122,7 +128,7 @@ void UNiagaraDataInterfaceCamera::GetFunctions(TArray<FNiagaraFunctionSignature>
 	Sig.bRequiresContext = false;
 	Sig.bSupportsCPU = false;
 	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Camera interface")));
-	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("View Position World")), LOCTEXT("ViewPositionWorldDescription", "The camera position in world space."));
+	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("View Position World")), LOCTEXT("ViewPositionWorldDescription", "The camera position in world space."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("View Forward Vector")), LOCTEXT("ViewForwardVectorDescription", "The world space direction that the camera is pointing."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("View Up Vector")), LOCTEXT("ViewUpVectorDescription", "The camera's up direction in world space."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("View Right Vector")), LOCTEXT("ViewRightVectorDescription", "The camera's right direction in world space."));
@@ -131,6 +137,8 @@ void UNiagaraDataInterfaceCamera::GetFunctions(TArray<FNiagaraFunctionSignature>
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Temporal AA Jitter (Current Frame)")), LOCTEXT("TemporalAACurrentDescription", "Returns the movement of the current frame view due to AA jittering"));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Temporal AA Jitter (Previous Frame)")), LOCTEXT("TemporalAAPreviousDescription", "Returns the movement of the previous frame view due to AA jittering"));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("PreViewTranslation")), LOCTEXT("PreViewTranslationDescription", "Returns the translation to apply for the various 'Translated XX to XX' transforms."));
+	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Buffer Size And Inverse Size")), LOCTEXT("BufferSizeAndInverseSizeDescription", "Returns a vec4 - the x and y values are width and height of the buffer; the z and w values are the inverse width and height."));
+	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Viewport Offset")), LOCTEXT("ViewportOffsetDescription", "Returns the viewport offset in the buffer."));
 	OutFunctions.Add(Sig);
 
 
@@ -196,7 +204,7 @@ void UNiagaraDataInterfaceCamera::GetFunctions(TArray<FNiagaraFunctionSignature>
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
 	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Camera interface")));
-	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Camera Position World")), LOCTEXT("CameraPositionWorldDescription", "The camera position in world space."));
+	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Camera Position World")), LOCTEXT("CameraPositionWorldDescription", "The camera position in world space."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Forward Vector World")), LOCTEXT("ForwardVectorWorldDescription", "The world space direction that the camera is pointing."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Up Vector World")), LOCTEXT("UpVectorWorldDescription", "The camera's up direction in world space."));
 	Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Right Vector World")), LOCTEXT("RightVectorWorldDescription", "The camera's right direction in world space."));
@@ -229,31 +237,40 @@ void UNiagaraDataInterfaceCamera::GetFunctions(TArray<FNiagaraFunctionSignature>
 	Sig.bRequiresExecPin = true;
 	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Camera interface")));
 	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIDDef(), TEXT("Particle ID")));
-	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Particle Position World")));
+	Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Particle Position World")));
+	OutFunctions.Add(Sig);
+
+	Sig = FNiagaraFunctionSignature();
+	Sig.Name = GetTAAJitterName;
+#if WITH_EDITORONLY_DATA
+	Sig.Description = NSLOCTEXT("Niagara", "GetTAAJitterDescription", "This function returns the TAA jitter values of the currently active camera.");
+	Sig.FunctionVersion = FNiagaraCameraDIFunctionVersion::LatestVersion;
+#endif
+	Sig.bMemberFunction = true;
+	Sig.bRequiresContext = false;
+	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Camera interface")));
+	Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Current TAA Jitter (clip)")));
+	Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Previous TAA Jitter (clip)")));
 	OutFunctions.Add(Sig);
 }
 
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceCamera::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> ArgsSample;
-	ArgsSample.Add(TEXT("FunctionName"), FunctionInfo.InstanceName);
-
+	TMap<FString, FStringFormatArg> ArgsSample =
+	{
+		{TEXT("FunctionName"), FunctionInfo.InstanceName},
+		{TEXT("NDIGetContextName"), TEXT("NDICAMERA_MAKE_CONTEXT(") + ParamInfo.DataInterfaceHLSLSymbol + TEXT(")")},
+	};
+	
 	if (FunctionInfo.DefinitionName == GetViewPropertiesName)
 	{
 		static const TCHAR *FormatSample = TEXT(R"(
-			void {FunctionName}(out float3 Out_ViewPositionWorld, out float3 Out_ViewForwardVector, out float3 Out_ViewUpVector, out float3 Out_ViewRightVector, out float4 Out_ViewSizeAndInverseSize, out float4 Out_ScreenToViewSpace, out float2 Out_Current_TAAJitter, out float2 Out_Previous_TAAJitter, out float3 Out_PreViewTranslation)
+			void {FunctionName}(out float3 Out_ViewPositionWorld, out float3 Out_ViewForwardVector, out float3 Out_ViewUpVector, out float3 Out_ViewRightVector, out float4 Out_ViewSizeAndInverseSize, out float4 Out_ScreenToViewSpace, out float2 Out_Current_TAAJitter, out float2 Out_Previous_TAAJitter, out float3 Out_PreViewTranslation, out float4 Out_BufferSizeAndInverseSize, out float2 Out_ViewportOffset)
 			{
-				Out_ViewPositionWorld.xyz = View.WorldViewOrigin.xyz;
-				Out_ViewForwardVector.xyz = View.ViewForward.xyz;
-				Out_ViewUpVector.xyz = View.ViewUp.xyz;
-				Out_ViewRightVector.xyz = View.ViewRight.xyz;
-				Out_ViewSizeAndInverseSize = View.ViewSizeAndInvSize;
-				Out_ScreenToViewSpace = View.ScreenToViewSpace;
-				Out_Current_TAAJitter = View.TemporalAAJitter.xy;
-				Out_Previous_TAAJitter = View.TemporalAAJitter.zw;
-				Out_PreViewTranslation = View.PreViewTranslation;
-			} 
+				{NDIGetContextName}
+				DICamera_GetViewProperties(DIContext, Out_ViewPositionWorld, Out_ViewForwardVector, Out_ViewUpVector, Out_ViewRightVector, Out_ViewSizeAndInverseSize, Out_ScreenToViewSpace, Out_Current_TAAJitter, Out_Previous_TAAJitter, Out_PreViewTranslation, Out_BufferSizeAndInverseSize, Out_ViewportOffset);
+			}
 		)");
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
 		return true;
@@ -275,14 +292,8 @@ bool UNiagaraDataInterfaceCamera::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 			void {FunctionName}(out float4x4 Out_WorldToClipTransform, out float4x4 Out_TranslatedWorldToClipTransform, out float4x4 Out_ClipToWorldTransform, out float4x4 Out_ClipToViewTransform,
 				out float4x4 Out_ClipToTranslatedWorldTransform, out float4x4 Out_ScreenToWorldTransform, out float4x4 Out_ScreenToTranslatedWorldTransform, out float4x4 Out_ClipToPreviousClipTransform)
 			{
-				Out_WorldToClipTransform = View.WorldToClip;
-				Out_TranslatedWorldToClipTransform = View.TranslatedWorldToClip;
-				Out_ClipToWorldTransform = View.ClipToWorld;
-				Out_ClipToViewTransform = View.ClipToView;
-				Out_ClipToTranslatedWorldTransform = View.ClipToTranslatedWorld;
-				Out_ScreenToWorldTransform = View.ScreenToWorld;
-				Out_ScreenToTranslatedWorldTransform = View.ScreenToTranslatedWorld;
-				Out_ClipToPreviousClipTransform = View.ClipToPrevClip;
+				{NDIGetContextName}
+				DICamera_GetClipSpaceTransforms(DIContext, Out_WorldToClipTransform, Out_TranslatedWorldToClipTransform, Out_ClipToWorldTransform, Out_ClipToViewTransform, Out_ClipToTranslatedWorldTransform, Out_ScreenToWorldTransform, Out_ScreenToTranslatedWorldTransform, Out_ClipToPreviousClipTransform);
 			}
 		)");
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
@@ -294,12 +305,8 @@ bool UNiagaraDataInterfaceCamera::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 			void {FunctionName}(out float4x4 Out_TranslatedWorldToViewTransform, out float4x4 Out_ViewToTranslatedWorldTransform, out float4x4 Out_TranslatedWorldToCameraViewTransform,
 				out float4x4 Out_CameraViewToTranslatedWorldTransform, out float4x4 Out_ViewToClipTransform, out float4x4 Out_ViewToClipNoAATransform)
 			{
-				Out_TranslatedWorldToViewTransform = View.TranslatedWorldToView;
-				Out_ViewToTranslatedWorldTransform = View.ViewToTranslatedWorld;
-				Out_TranslatedWorldToCameraViewTransform = View.TranslatedWorldToCameraView;
-				Out_CameraViewToTranslatedWorldTransform = View.CameraViewToTranslatedWorld;
-				Out_ViewToClipTransform = View.ViewToClip;
-				Out_ViewToClipNoAATransform = View.ViewToClipNoAA;
+				{NDIGetContextName}
+				DICamera_GetViewSpaceTransforms(DIContext, Out_TranslatedWorldToViewTransform, Out_ViewToTranslatedWorldTransform, Out_TranslatedWorldToCameraViewTransform, Out_CameraViewToTranslatedWorldTransform, Out_ViewToClipTransform, Out_ViewToClipNoAATransform);
 			}
 		)");
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
@@ -309,11 +316,21 @@ bool UNiagaraDataInterfaceCamera::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 	{
 		static const TCHAR *FormatSample = TEXT(R"(
 			void {FunctionName}(out float3 Out_CameraPositionWorld, out float3 Out_ViewForwardVector, out float3 Out_ViewUpVector, out float3 Out_ViewRightVector)
-			{				
-				Out_CameraPositionWorld.xyz = View.WorldCameraOrigin.xyz;
-				Out_ViewForwardVector.xyz = View.ViewForward.xyz;
-				Out_ViewUpVector.xyz = View.ViewUp.xyz;
-				Out_ViewRightVector.xyz = View.ViewRight.xyz;
+			{
+				{NDIGetContextName}
+				DICamera_GetCameraProperties(DIContext, Out_CameraPositionWorld, Out_ViewForwardVector, Out_ViewUpVector, Out_ViewRightVector);
+			}
+		)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+		return true;
+	}
+	if (FunctionInfo.DefinitionName == GetTAAJitterName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {FunctionName}(out float2 Out_CurrentJitter, out float2 Out_PreviousJitter)
+			{
+				Out_CurrentJitter = View.TemporalAAJitter.xy;
+				Out_PreviousJitter = View.TemporalAAJitter.zw;
 			}
 		)");
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
@@ -333,16 +350,63 @@ bool UNiagaraDataInterfaceCamera::UpgradeFunctionCall(FNiagaraFunctionSignature&
 	}
 
 	// Added a new output to the gpu properties
-	if (FunctionSignature.FunctionVersion < FNiagaraCameraDIFunctionVersion::AddedPreViewTranslation && FunctionSignature.Name == GetViewPropertiesName)
+	if (FunctionSignature.FunctionVersion < FNiagaraCameraDIFunctionVersion::AddedPreViewTranslation && FunctionSignature.Name == GetViewPropertiesName && FunctionSignature.Outputs.Num() == 8)
 	{
 		FunctionSignature.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("PreViewTranslation")), LOCTEXT("PreViewTranslationDescription", "Returns the translation to apply for the various 'Translated XX to XX' transforms."));
 		bWasChanged = true;
 	}
 	
+	// Added a few new outputs for GPU properties
+	if (FunctionSignature.FunctionVersion < FNiagaraCameraDIFunctionVersion::AddedBufferSizeInvSizeForGPU && FunctionSignature.Name == GetViewPropertiesName)
+	{
+		ensure(FunctionSignature.Outputs.Num() == 9);
+		FunctionSignature.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Buffer Size And Inverse Size")), LOCTEXT("BufferSizeAndInverseSizeDescription", "Returns a vec4 - the x and y values are width and height of the buffer; the z and w values are the inverse width and height."));
+		FunctionSignature.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("Viewport Offset")), LOCTEXT("ViewportOffsetDescription", "Returns the viewport offset in the buffer."));
+
+		bWasChanged = true;
+	}
+
+	// LWC upgrades
+	if (FunctionSignature.FunctionVersion < FNiagaraCameraDIFunctionVersion::LWCConversion)
+	{
+		TArray<FNiagaraFunctionSignature> AllFunctions;
+		GetFunctions(AllFunctions);
+		for (const FNiagaraFunctionSignature& Sig : AllFunctions)
+		{
+			if (FunctionSignature.Name == Sig.Name)
+			{
+				FunctionSignature = Sig;
+				return true;
+			}
+		}
+	}
+
 	// Set latest version
     FunctionSignature.FunctionVersion = FNiagaraCameraDIFunctionVersion::LatestVersion;
 
 	return bWasChanged;
+}
+
+bool UNiagaraDataInterfaceCamera::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	if (!Super::AppendCompileHash(InVisitor))
+	{
+		return false;
+	}
+	FSHAHash Hash = GetShaderFileHash((TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceCamera.ush")), EShaderPlatform::SP_PCD3D_SM5);
+	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceCameraHLSLSource"), Hash.ToString());
+	return true;
+}
+
+void UNiagaraDataInterfaceCamera::GetCommonHLSL(FString& OutHLSL)
+{
+	OutHLSL += TEXT("#include \"/Plugin/FX/Niagara/Private/NiagaraDataInterfaceCamera.ush\"\n");
+}
+
+void UNiagaraDataInterfaceCamera::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+{
+	Super::GetParameterDefinitionHLSL(ParamInfo, OutHLSL);
+	OutHLSL += TEXT("NDICAMERA_DECLARE_CONSTANTS(") + ParamInfo.DataInterfaceHLSLSymbol + TEXT(")\n");
 }
 #endif
 
@@ -350,9 +414,6 @@ DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetClosestParticles);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, CalculateParticleDistances);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetCameraFOV);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetCameraProperties);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetViewPropertiesGPU);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetClipSpaceTransformsGPU);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetViewSpaceTransformsGPU);
 void UNiagaraDataInterfaceCamera::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
 {
 	if (BindingInfo.Name == GetFieldOfViewName)
@@ -371,38 +432,26 @@ void UNiagaraDataInterfaceCamera::GetVMExternalFunction(const FVMExternalFunctio
 	{
 		NDI_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetCameraProperties)::Bind(this, OutFunc);
 	}
-	else if (BindingInfo.Name == GetViewSpaceTransformsName)
-	{
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetViewSpaceTransformsGPU)::Bind(this, OutFunc);
-	}
-	else if (BindingInfo.Name == GetClipSpaceTransformsName)
-	{
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetClipSpaceTransformsGPU)::Bind(this, OutFunc);
-	}
-	else if (BindingInfo.Name == GetViewPropertiesName)
-	{
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceCamera, GetViewPropertiesGPU)::Bind(this, OutFunc);
-	}
 	else
 	{
-		UE_LOG(LogNiagara, Error, TEXT("Could not find data interface external function. Received Name: %s"), *BindingInfo.Name.ToString());
+		UE_LOG(LogNiagara, Display, TEXT("Could not find data interface external function in %s. Received Name: %s"), *GetPathNameSafe(this), *BindingInfo.Name.ToString());
 	}
 }
 
-void UNiagaraDataInterfaceCamera::GetCameraFOV(FVectorVMContext& Context)
+void UNiagaraDataInterfaceCamera::GetCameraFOV(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutFov(Context);
 
 	float Fov = InstData.Get()->CameraFOV;
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		*OutFov.GetDestAndAdvance() = Fov;
 	}
 }
 
-void UNiagaraDataInterfaceCamera::GetCameraProperties(FVectorVMContext& Context)
+void UNiagaraDataInterfaceCamera::GetCameraProperties(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
 
@@ -432,7 +481,7 @@ void UNiagaraDataInterfaceCamera::GetCameraProperties(FVectorVMContext& Context)
 	const FVector Up = RotationMatrix.GetScaledAxis(EAxis::Z);
 	const FVector Right = RotationMatrix.GetScaledAxis(EAxis::Y);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		*CamPosX.GetDestAndAdvance() = XPos;
 		*CamPosY.GetDestAndAdvance() = YPos;
@@ -452,7 +501,7 @@ void UNiagaraDataInterfaceCamera::GetCameraProperties(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceCamera::GetClosestParticles(FVectorVMContext& Context)
+void UNiagaraDataInterfaceCamera::GetClosestParticles(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
 
@@ -460,10 +509,10 @@ void UNiagaraDataInterfaceCamera::GetClosestParticles(FVectorVMContext& Context)
 	FNDIInputParam<int32> CountParam(Context);
 	FNDIOutputParam<FNiagaraBool> ResultOutParam(Context);
 
-	int32 Count = Context.NumInstances > 0 ? CountParam.GetAndAdvance() : 0;
+	int32 Count = Context.GetNumInstances() > 0 ? CountParam.GetAndAdvance() : 0;
 	if (Count == 0 || InstData->ParticlesSortedByDistance.Num() == 0)
 	{
-		for (int32 i = 0; i < Context.NumInstances; ++i)
+		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 		{
 			ResultOutParam.SetAndAdvance(false);
 		}
@@ -478,25 +527,25 @@ void UNiagaraDataInterfaceCamera::GetClosestParticles(FVectorVMContext& Context)
 	}
 
 	// Assign each particles their result
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		FNiagaraID ParticleID = ParticleIDParam.GetAndAdvance();
 		ResultOutParam.SetAndAdvance(ClosestParticleIDs.Contains(ParticleID));
 	}
 }
 
-void UNiagaraDataInterfaceCamera::CalculateParticleDistances(FVectorVMContext& Context)
+void UNiagaraDataInterfaceCamera::CalculateParticleDistances(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
 
 	FNDIInputParam<FNiagaraID> IDParam(Context);
-	FNDIInputParam<FVector> ParticlePosParam(Context);
+	FNDIInputParam<FNiagaraPosition> ParticlePosParam(Context);
 
-	FVector CameraPos = InstData->CameraLocation;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	FVector CameraPos = (FVector)InstData->CameraLocation;
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		FDistanceData DistanceData;
-		FVector ParticlePos = ParticlePosParam.GetAndAdvance();
+		FVector ParticlePos = InstData->LWCConverter.ConvertSimulationPositionToWorld(ParticlePosParam.GetAndAdvance());
 		DistanceData.ParticleID = IDParam.GetAndAdvance();
 		DistanceData.DistanceSquared = (ParticlePos - CameraPos).SizeSquared();
 		InstData->DistanceSortQueue.Enqueue(DistanceData);
@@ -519,121 +568,8 @@ void UNiagaraDataInterfaceCamera::GetFeedback(UNiagaraSystem* Asset, UNiagaraCom
 	{
 		return;
 	}
-
-	// we need to check if the DI is used to access camera properties in a cpu context to warn the user that
-	// the Niagara viewport does not support cpu cameras and it only works correctly in the level viewport and PIE
-
-	TArray<UNiagaraScript*> Scripts;
-	Scripts.Add(Asset->GetSystemSpawnScript());
-	Scripts.Add(Asset->GetSystemUpdateScript());
-	for (auto&& EmitterHandle : Asset->GetEmitterHandles())
-	{
-		if (EmitterHandle.GetInstance()->SimTarget == ENiagaraSimTarget::GPUComputeSim)
-		{
-			// Ignore gpu emitters
-			continue;
-		}
-		TArray<UNiagaraScript*> OutScripts;
-		EmitterHandle.GetInstance()->GetScripts(OutScripts, false);
-		Scripts.Append(OutScripts);
-	}
-
-	// Check if any CPU script uses camera functions
-	//TODO: This is the same as in the skel mesh DI, it doesn't guarantee that the DI used by these functions are THIS DI.
-	// Has a possibility of false positives
-	bool bHasCameraAccessWarning = [this, &Scripts]()
-	{
-		for (const auto Script : Scripts)
-		{
-			for (const auto& Info : Script->GetVMExecutableData().DataInterfaceInfo)
-			{
-				if (Info.MatchesClass(GetClass()))
-				{
-					for (const auto& Func : Info.RegisteredFunctions)
-					{
-						if (Func.Name == GetCameraPropertiesName || Func.Name == GetFieldOfViewName)
-						{
-							return true;
-						}
-					}
-				}
-			}
-		}
-		return false;
-	}();
-
-	if (bHasCameraAccessWarning)
-	{
-		FNiagaraDataInterfaceFeedback CPUAccessNotAllowedWarning(
-         LOCTEXT("CPUCameraAccessWarning", "The cpu camera is bound to a player controller and will therefore not work correctly in the Niagara viewport.\nTo correctly preview the effect, use it in the level editor or switch to a GPU emitter."),
-         LOCTEXT("CPUCameraAccessWarningSummary", "Camera properties cannot be previewed on CPU emitters!"),
-         FNiagaraDataInterfaceFix());
-
-		Warnings.Add(CPUAccessNotAllowedWarning);
-	}
 }
-
 #endif
-
-// ------- Dummy implementations for CPU execution ------------
-
-void UNiagaraDataInterfaceCamera::GetViewPropertiesGPU(FVectorVMContext& Context)
-{
-	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
-	TArray<VectorVM::FExternalFuncRegisterHandler<float>> OutParams;
-	OutParams.Reserve(24);
-	for (int i = 0; i < 24; i++)
-	{
-		OutParams.Emplace(Context);
-	}
-
-	for (int32 k = 0; k < Context.NumInstances; ++k)
-	{
-		for (int i = 0; i < 24; i++)
-		{
-			*OutParams[i].GetDestAndAdvance() = 0;
-		}
-	}
-}
-
-void UNiagaraDataInterfaceCamera::GetClipSpaceTransformsGPU(FVectorVMContext& Context)
-{
-	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
-	TArray<VectorVM::FExternalFuncRegisterHandler<float>> OutParams;
-	OutParams.Reserve(128);
-	for (int i = 0; i < 128; i++)
-	{
-		OutParams.Emplace(Context);
-	}
-
-	for (int32 k = 0; k < Context.NumInstances; ++k)
-	{
-		for (int i = 0; i < 128; i++)
-		{
-			*OutParams[i].GetDestAndAdvance() = 0;
-		}
-	}
-}
-
-void UNiagaraDataInterfaceCamera::GetViewSpaceTransformsGPU(FVectorVMContext& Context)
-{
-	VectorVM::FUserPtrHandler<FCameraDataInterface_InstanceData> InstData(Context);
-	TArray<VectorVM::FExternalFuncRegisterHandler<float>> OutParams;
-	OutParams.Reserve(96);
-	for (int i = 0; i < 96; i++)
-	{
-		OutParams.Emplace(Context);
-	}
-
-	for (int32 k = 0; k < Context.NumInstances; ++k)
-	{
-		for (int i = 0; i < 96; i++)
-		{
-			*OutParams[i].GetDestAndAdvance() = 0;
-		}
-	}
-}
-
 
 bool UNiagaraDataInterfaceCamera::CopyToInternal(UNiagaraDataInterface* Destination) const
 {
@@ -658,5 +594,35 @@ bool UNiagaraDataInterfaceCamera::Equals(const UNiagaraDataInterface* Other) con
 	return OtherTyped->PlayerControllerIndex == PlayerControllerIndex &&
 		OtherTyped->bRequireCurrentFrameData == bRequireCurrentFrameData ;
 }
+
+struct FNiagaraDataInterfaceParametersCS_Camera : public FNiagaraDataInterfaceParametersCS
+{
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Camera, NonVirtual);
+
+	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
+	{
+		SystemLWCTileParam.Bind(ParameterMap, *(SystemLWCTileName + ParameterInfo.DataInterfaceHLSLSymbol));
+	}
+
+	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
+	{
+		check(IsInRenderingThread());
+
+		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
+		SetShaderValue(RHICmdList, ComputeShaderRHI, SystemLWCTileParam, Context.SystemLWCTile);
+	}
+
+private:
+	// LWC data
+	LAYOUT_FIELD(FShaderParameter, SystemLWCTileParam);
+
+	static const FString SystemLWCTileName;
+};
+
+// LWC
+const FString FNiagaraDataInterfaceParametersCS_Camera::SystemLWCTileName(TEXT("SystemLWCTile_"));
+
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Camera);
+IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceCamera, FNiagaraDataInterfaceParametersCS_Camera);
 
 #undef LOCTEXT_NAMESPACE

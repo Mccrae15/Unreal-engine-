@@ -27,6 +27,8 @@ public:
 	virtual bool TestCanResetToBaseWithMessage(FText& OutCanResetToBaseMessage) const override;
 	virtual void ResetToBase() override;
 
+	void SetSimulationStageEnabled(bool bIsEnabled);
+
 protected:
 	virtual void FinalizeInternal() override;
 
@@ -45,7 +47,7 @@ private:
 	mutable TOptional<bool> bCanResetToBaseCache;
 
 	UPROPERTY()
-	UNiagaraStackObject* SimulationStageObject;
+	TObjectPtr<UNiagaraStackObject> SimulationStageObject;
 };
 
 UCLASS()
@@ -64,12 +66,16 @@ public:
 		UNiagaraSimulationStageBase* InSimulationStage);
 
 	UNiagaraSimulationStageBase* GetSimulationStage() const;
-
+	const TObjectPtr<UNiagaraStackSimulationStagePropertiesItem>& GetSimulationStagePropertiesItem() const { return SimulationStageProperties; }
 	void SetOnModifiedSimulationStages(FOnModifiedSimulationStages OnModifiedSimulationStages);
 
 	virtual bool SupportsDelete() const override { return true; }
 	virtual bool TestCanDeleteWithMessage(FText& OutCanDeleteMessage) const override;
 	virtual void Delete() override;
+
+	virtual bool SupportsInheritance() const override { return true; }
+	virtual bool GetIsInherited() const override;
+	virtual FText GetInheritanceMessage() const override;
 
 	virtual bool CanDrag() const override { return true; }
 
@@ -99,5 +105,5 @@ private:
 	FOnModifiedSimulationStages OnModifiedSimulationStagesDelegate;
 
 	UPROPERTY()
-	UNiagaraStackSimulationStagePropertiesItem* SimulationStageProperties;
+	TObjectPtr<UNiagaraStackSimulationStagePropertiesItem> SimulationStageProperties;
 };

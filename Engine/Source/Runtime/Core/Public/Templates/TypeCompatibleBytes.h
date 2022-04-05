@@ -45,6 +45,8 @@ struct TAlignedBytes<Size,1>
 #endif
 
 // Implement TAlignedBytes for these alignments.
+IMPLEMENT_ALIGNED_STORAGE(64);
+IMPLEMENT_ALIGNED_STORAGE(32);
 IMPLEMENT_ALIGNED_STORAGE(16);
 IMPLEMENT_ALIGNED_STORAGE(8);
 IMPLEMENT_ALIGNED_STORAGE(4);
@@ -60,6 +62,7 @@ struct TTypeCompatibleBytes :
 		alignof(ElementType)
 		>
 {
+	using ElementTypeAlias_NatVisHelper = ElementType;
 	ElementType*		GetTypedPtr()		{ return (ElementType*)this;  }
 	const ElementType*	GetTypedPtr() const	{ return (const ElementType*)this; }
 };

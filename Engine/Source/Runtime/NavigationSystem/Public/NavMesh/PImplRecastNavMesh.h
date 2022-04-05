@@ -32,6 +32,7 @@ class FRecastNavMeshGenerator;
 
 #define RECAST_VERY_SMALL_AGENT_RADIUS 0.0f
 
+// LWC_TODO_AI: Costs and pathing distance should be FReal. Not until after 5.0!
 /** Engine Private! - Private Implementation details of ARecastNavMesh */
 class NAVIGATIONSYSTEM_API FPImplRecastNavMesh
 {
@@ -118,13 +119,13 @@ public:
 	
 	/** Project single point and grab all vertical intersections */
 	bool ProjectPointMulti(const FVector& Point, TArray<FNavLocation>& OutLocations, const FVector& Extent,
-		float MinZ, float MaxZ, const FNavigationQueryFilter& Filter, const UObject* Owner) const;
+		FVector::FReal MinZ, FVector::FReal MaxZ, const FNavigationQueryFilter& Filter, const UObject* Owner) const;
 
 	/** Returns nearest navmesh polygon to Loc, or INVALID_NAVMESHREF if Loc is not on the navmesh. */
 	NavNodeRef FindNearestPoly(FVector const& Loc, FVector const& Extent, const FNavigationQueryFilter& Filter, const UObject* Owner) const;
 
 	/** Finds the polygons along the navigation graph that touch the specified circle. Return true if found any. */
-	bool FindPolysAroundCircle(const FVector& CenterPos, const NavNodeRef CenterNodeRef, const float Radius, const FNavigationQueryFilter& Filter, const UObject* Owner, TArray<NavNodeRef>* OutPolys = nullptr, TArray<NavNodeRef>* OutPolysParent = nullptr, TArray<float>* OutPolysCost = nullptr, int32* OutPolysCount = nullptr) const;
+	bool FindPolysAroundCircle(const FVector& CenterPos, const NavNodeRef CenterNodeRef, const FVector::FReal Radius, const FNavigationQueryFilter& Filter, const UObject* Owner, TArray<NavNodeRef>* OutPolys = nullptr, TArray<NavNodeRef>* OutPolysParent = nullptr, TArray<float>* OutPolysCost = nullptr, int32* OutPolysCount = nullptr) const;
 
 	/** Retrieves all polys within given pathing distance from StartLocation.
 	 *	@NOTE query is not using string-pulled path distance (for performance reasons),

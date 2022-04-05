@@ -18,13 +18,16 @@
 #include "SAnimCurveViewer.h"
 #include "SAnimationSequenceBrowser.h"
 #include "SAnimationEditorViewport.h"
-#include "SRetargetManager.h"
+#include "SPoseWatchManager.h"
+#include "SRetargetSources.h"
 #include "SKismetInspector.h"
 #include "Widgets/Input/SButton.h"
 #include "PersonaPreviewSceneDescription.h"
 #include "IPersonaPreviewScene.h"
 #include "PreviewSceneCustomizations.h"
 #include "Engine/PreviewMeshCollection.h"
+#include "PoseWatchManagerPublicTypes.h"
+#include "PoseWatchManagerDefaultMode.h"
 
 #define LOCTEXT_NAMESPACE "PersonaModes"
 
@@ -62,6 +65,8 @@ const FName FPersonaTabs::SkeletonSlotNamesID("SkeletonSlotNames");
 const FName FPersonaTabs::SkeletonSlotGroupNamesID("SkeletonSlotGroupNames");
 const FName FPersonaTabs::BlendProfileManagerID("BlendProfileManager");
 const FName FPersonaTabs::AnimMontageSectionsID("AnimMontageSections");
+
+const FName FPersonaTabs::PoseWatchManagerID("PoseWatchManager");
 
 const FName FPersonaTabs::AdvancedPreviewSceneSettingsID("AdvancedPreviewTab");
 
@@ -155,11 +160,10 @@ TSharedRef<SWidget> FMorphTargetTabSummoner::CreateTabBody(const FWorkflowTabSpa
 /////////////////////////////////////////////////////
 // FAnimCurveViewerTabSummoner
 
-FAnimCurveViewerTabSummoner::FAnimCurveViewerTabSummoner(TSharedPtr<class FAssetEditorToolkit> InHostingApp, const TSharedRef<IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectsSelected InOnObjectsSelected)
+FAnimCurveViewerTabSummoner::FAnimCurveViewerTabSummoner(TSharedPtr<class FAssetEditorToolkit> InHostingApp, const TSharedRef<IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FOnObjectsSelected InOnObjectsSelected)
 	: FWorkflowTabFactory(FPersonaTabs::AnimCurveViewID, InHostingApp)
 	, EditableSkeleton(InEditableSkeleton)
 	, PreviewScene(InPreviewScene)
-	, OnPostUndo(InOnPostUndo)
 	, OnObjectsSelected(InOnObjectsSelected)
 {
 	TabLabel = LOCTEXT("AnimCurveViewTabTitle", "Anim Curves");
@@ -174,7 +178,7 @@ FAnimCurveViewerTabSummoner::FAnimCurveViewerTabSummoner(TSharedPtr<class FAsset
 
 TSharedRef<SWidget> FAnimCurveViewerTabSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
 {
-	return SNew(SAnimCurveViewer, EditableSkeleton.Pin().ToSharedRef(), PreviewScene.Pin().ToSharedRef(), OnPostUndo, OnObjectsSelected);
+	return SNew(SAnimCurveViewer, EditableSkeleton.Pin().ToSharedRef(), PreviewScene.Pin().ToSharedRef(), OnObjectsSelected);
 }
 
 /////////////////////////////////////////////////////
@@ -316,25 +320,25 @@ FTabSpawnerEntry& FPreviewViewportSummoner::RegisterTabSpawner(TSharedRef<FTabMa
 /////////////////////////////////////////////////////
 // FRetargetManagerTabSummoner
 
-FRetargetManagerTabSummoner::FRetargetManagerTabSummoner(TSharedPtr<class FAssetEditorToolkit> InHostingApp, const TSharedRef<IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo)
+FRetargetSourcesTabSummoner::FRetargetSourcesTabSummoner(TSharedPtr<class FAssetEditorToolkit> InHostingApp, const TSharedRef<IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo)
 	: FWorkflowTabFactory(FPersonaTabs::RetargetManagerID, InHostingApp)
 	, EditableSkeleton(InEditableSkeleton)
 	, PreviewScene(InPreviewScene)
 	, OnPostUndo(InOnPostUndo)
 {
-	TabLabel = LOCTEXT("RetargetManagerTabTitle", "Retarget Manager");
+	TabLabel = LOCTEXT("RetargetSourcesTabTitle", "Retarget Sources");
 	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.Tabs.RetargetManager");
 
 	EnableTabPadding();
 	bIsSingleton = true;
 
-	ViewMenuDescription = LOCTEXT("RetargetManagerTabView", "Retarget Manager");
-	ViewMenuTooltip = LOCTEXT("RetargetManagerTabView_ToolTip", "Manages different options for retargeting");
+	ViewMenuDescription = LOCTEXT("RetargetSourcesTabView", "Retarget Sources");
+	ViewMenuTooltip = LOCTEXT("RetargetSourcesTabView_ToolTip", "Retarget Sources indicate what proportions a sequence was authored with so that animation is correctly retargeted to other proportions.\n\nThese become 'Retarget Source' options on sequences.\n\nRetarget Sources are only needed when an animation sequence is authored on a skeletal mesh with proportions that are different than the default skeleton asset.");
 }
 
-TSharedRef<SWidget> FRetargetManagerTabSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
+TSharedRef<SWidget> FRetargetSourcesTabSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
 {
-	return SNew(SRetargetManager, EditableSkeleton.Pin().ToSharedRef(), PreviewScene.Pin().ToSharedRef(), OnPostUndo);
+	return SNew(SRetargetSources, EditableSkeleton.Pin().ToSharedRef(), PreviewScene.Pin().ToSharedRef(), OnPostUndo);
 }
 
 
@@ -465,47 +469,37 @@ TSharedRef<SWidget> FAnimBlueprintPreviewEditorSummoner::CreateTabBody(const FWo
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
-				.Padding(FMargin( 0.f, 0.f, 2.f, 0.f ))
+				.AutoWidth()
+				.Padding(FMargin( 5.f, 0.f, 2.f, 0.f ))
 				[
-					SNew(SBorder)
-					.BorderImage(this, &FAnimBlueprintPreviewEditorSummoner::GetBorderBrushByMode, EAnimBlueprintEditorMode::PreviewMode)
-					.Padding(0)
+					SNew(SCheckBox)
+					.Style(FEditorStyle::Get(), "RadioButton")
+					.IsChecked(this, &FAnimBlueprintPreviewEditorSummoner::IsChecked, EAnimBlueprintEditorMode::PreviewMode)
+					.OnCheckStateChanged(const_cast<FAnimBlueprintPreviewEditorSummoner*>(this), &FAnimBlueprintPreviewEditorSummoner::OnCheckedChanged, EAnimBlueprintEditorMode::PreviewMode)
+					.ToolTip(IDocumentation::Get()->CreateToolTip(	LOCTEXT("AnimBlueprintPropertyEditorPreviewMode", "Switch to editing the preview instance properties"),
+																	NULL,
+																	TEXT("Shared/Editors/Persona"),
+																	TEXT("AnimBlueprintPropertyEditorPreviewMode")))
 					[
-						SNew(SCheckBox)
-						.Style(FEditorStyle::Get(), "RadioButton")
-						.IsChecked(this, &FAnimBlueprintPreviewEditorSummoner::IsChecked, EAnimBlueprintEditorMode::PreviewMode)
-						.OnCheckStateChanged(const_cast<FAnimBlueprintPreviewEditorSummoner*>(this), &FAnimBlueprintPreviewEditorSummoner::OnCheckedChanged, EAnimBlueprintEditorMode::PreviewMode)
-						.ToolTip(IDocumentation::Get()->CreateToolTip(	LOCTEXT("AnimBlueprintPropertyEditorPreviewMode", "Switch to editing the preview instance properties"),
-																		NULL,
-																		TEXT("Shared/Editors/Persona"),
-																		TEXT("AnimBlueprintPropertyEditorPreviewMode")))
-						[
-							SNew( STextBlock )
-							.Font( FCoreStyle::GetDefaultFontStyle("Bold", 9) )
-							.Text( LOCTEXT("AnimBlueprintDefaultsPreviewMode", "Edit Preview") )
-						]
+						SNew( STextBlock )
+						.Text( LOCTEXT("AnimBlueprintDefaultsPreviewMode", "Edit Preview") )
 					]
 				]
 				+SHorizontalBox::Slot()
+				.AutoWidth()
 				.Padding(FMargin( 2.f, 0.f, 0.f, 0.f ))
 				[
-					SNew(SBorder)
-					.BorderImage(this, &FAnimBlueprintPreviewEditorSummoner::GetBorderBrushByMode, EAnimBlueprintEditorMode::DefaultsMode)
-					.Padding(0)
+					SNew(SCheckBox)
+					.Style(FEditorStyle::Get(), "RadioButton")
+					.IsChecked(this, &FAnimBlueprintPreviewEditorSummoner::IsChecked, EAnimBlueprintEditorMode::DefaultsMode)
+					.OnCheckStateChanged(const_cast<FAnimBlueprintPreviewEditorSummoner*>(this), &FAnimBlueprintPreviewEditorSummoner::OnCheckedChanged, EAnimBlueprintEditorMode::DefaultsMode)
+					.ToolTip(IDocumentation::Get()->CreateToolTip(	LOCTEXT("AnimBlueprintPropertyEditorDefaultMode", "Switch to editing the class defaults"),
+																	NULL,
+																	TEXT("Shared/Editors/Persona"),
+																	TEXT("AnimBlueprintPropertyEditorDefaultMode")))
 					[
-						SNew(SCheckBox)
-						.Style(FEditorStyle::Get(), "RadioButton")
-						.IsChecked(this, &FAnimBlueprintPreviewEditorSummoner::IsChecked, EAnimBlueprintEditorMode::DefaultsMode)
-						.OnCheckStateChanged(const_cast<FAnimBlueprintPreviewEditorSummoner*>(this), &FAnimBlueprintPreviewEditorSummoner::OnCheckedChanged, EAnimBlueprintEditorMode::DefaultsMode)
-						.ToolTip(IDocumentation::Get()->CreateToolTip(	LOCTEXT("AnimBlueprintPropertyEditorDefaultMode", "Switch to editing the class defaults"),
-																		NULL,
-																		TEXT("Shared/Editors/Persona"),
-																		TEXT("AnimBlueprintPropertyEditorDefaultMode")))
-						[
-							SNew( STextBlock )
-							.Font( FCoreStyle::GetDefaultFontStyle("Bold", 9) )
-							.Text( LOCTEXT("AnimBlueprintDefaultsDefaultsMode", "Edit Defaults") )
-						]
+						SNew( STextBlock )
+						.Text( LOCTEXT("AnimBlueprintDefaultsDefaultsMode", "Edit Defaults") )
 					]
 				]
 			]
@@ -550,17 +544,6 @@ ECheckBoxState FAnimBlueprintPreviewEditorSummoner::IsChecked(EAnimBlueprintEdit
 	return CurrentMode == Mode ? ECheckBoxState::Checked: ECheckBoxState::Unchecked;
 }
 
-const FSlateBrush* FAnimBlueprintPreviewEditorSummoner::GetBorderBrushByMode(EAnimBlueprintEditorMode::Type Mode) const
-{
-	if(Mode == CurrentMode)
-	{
-		return FEditorStyle::GetBrush("ModeSelector.ToggleButton.Pressed");
-	}
-	else
-	{
-		return FEditorStyle::GetBrush("ModeSelector.ToggleButton.Normal");
-	}
-}
 
 void FAnimBlueprintPreviewEditorSummoner::OnCheckedChanged(ECheckBoxState NewType, EAnimBlueprintEditorMode::Type Mode)
 {
@@ -590,6 +573,32 @@ TSharedRef<SWidget> FAnimBlueprintParentPlayerEditorSummoner::CreateTabBody(cons
 FText FAnimBlueprintParentPlayerEditorSummoner::GetTabToolTipText(const FWorkflowTabSpawnInfo& Info) const
 {
 	return LOCTEXT("AnimSubClassTabToolTip", "Editor for overriding the animation assets referenced by the parent animation graph.");
+}
+
+//////////////////////////////////////////////////////////////////////////
+// FPoseWatchManagerSummoner
+
+FPoseWatchManagerSummoner::FPoseWatchManagerSummoner(TSharedPtr<class FBlueprintEditor> InBlueprintEditor)
+	: FWorkflowTabFactory(FPersonaTabs::PoseWatchManagerID, InBlueprintEditor)
+	, BlueprintEditor(InBlueprintEditor)
+{
+	TabLabel = LOCTEXT("PoseWatchManager", "Pose Watch Manager");
+	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.PoseAsset");
+	bIsSingleton = true;
+}
+
+TSharedRef<SWidget> FPoseWatchManagerSummoner::CreateTabBody(const FWorkflowTabSpawnInfo& Info) const
+{
+	FPoseWatchManagerInitializationOptions Options;
+	Options.BlueprintEditor = BlueprintEditor;
+
+	return SNew(SPoseWatchManager, Options)
+		.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute());
+}
+
+FText FPoseWatchManagerSummoner::GetTabToolTipText(const FWorkflowTabSpawnInfo& Info) const
+{
+	return LOCTEXT("PoseWatchTabToolTip", "Shows all active pose watches.");
 }
 
 /////////////////////////////////////////////////////

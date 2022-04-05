@@ -10,11 +10,12 @@
 
 namespace Insights { class ITimingViewSession; }
 namespace Insights { enum class ETimeChangedFlags; }
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 class FAnimationSharedData;
 class IInsightsManager;
 class ITableRow;
 class ITimingEvent;
+class SExpandableArea;
 class STableViewBase;
 class STextBlock;
 class SMultiLineEditableTextBox;
@@ -27,6 +28,7 @@ namespace SlateInsights
 class FSlateProvider;
 namespace Private { struct FWidgetUniqueInvalidatedInfo; }
 namespace Private { struct FWidgetUpdateInfo; }
+namespace Private { class SSlateWidgetSearch; }
 
 class SSlateFrameSchematicView : public SCompoundWidget
 {
@@ -37,7 +39,7 @@ public:
 
 	void Construct(const FArguments& InArgs);
 
-	void SetSession(Insights::ITimingViewSession* InTimingViewSession, const Trace::IAnalysisSession* InAnalysisSession);
+	void SetSession(Insights::ITimingViewSession* InTimingViewSession, const TraceServices::IAnalysisSession* InAnalysisSession);
 
 private:
 	TSharedRef<ITableRow> HandleUniqueInvalidatedMakeTreeRowWidget(TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> InInfo, const TSharedRef<STableViewBase>& OwnerTable);
@@ -48,10 +50,18 @@ private:
 	void HandleSelectionEventChanged(const TSharedPtr<const ITimingEvent> InEvent);
 
 	TSharedPtr<SWidget> HandleWidgetInvalidateListContextMenu();
-	bool CanWidgetInvalidateListGotoRootWidget();
+	FString HandleWidgetInvalidateListToStringDebug(TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> Item);
+	bool CanWidgetInvalidateListSearchWidget() const;
+	void HandleWidgetInvalidateListSearchWidget();
+	bool CanWidgetInvalidateListGotoRootWidget() const;
 	void HandleWidgetInvalidateListGotoRootWidget();
-	bool CanWidgetInvalidateListViewScriptAndCallStack();
+	bool CanWidgetInvalidateListViewScriptAndCallStack() const;
 	void HandleWidgetInvalidateListViewScriptAndCallStack();
+	TSharedPtr<SWidget> HandleWidgetUpdateInfoContextMenu();
+	bool CanWidgetUpdateInfoSearchWidget() const;
+	void HandleWidgetUpdateInfoSearchWidget();
+	void HandleWidgetUpdateInfoSort(EColumnSortPriority::Type, const FName& ColumnId, EColumnSortMode::Type SortMode);
+	EColumnSortMode::Type HandleWidgetUpdateGetSortMode(FName ColumnId) const;
 
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override;
 
@@ -59,8 +69,10 @@ private:
 	void RefreshNodes_Invalidation(const FSlateProvider* SlateProvider);
 	void RefreshNodes_Update(const FSlateProvider* SlateProvider);
 
+	void SortWidgetUpdateInfos();
+
 private:
-	const Trace::IAnalysisSession* AnalysisSession;
+	const TraceServices::IAnalysisSession* AnalysisSession;
 	Insights::ITimingViewSession* TimingViewSession;
 
 	TSharedPtr<STreeView<TSharedPtr<Private::FWidgetUniqueInvalidatedInfo>>> WidgetInvalidateInfoListView;
@@ -69,9 +81,14 @@ private:
 	TSharedPtr<SListView<TSharedPtr<Private::FWidgetUpdateInfo>>> WidgetUpdateInfoListView;
 	TArray<TSharedPtr<Private::FWidgetUpdateInfo>> WidgetUpdateInfos;
 
+	TSharedPtr<SExpandableArea> ExpandableSearchBox;
+	TSharedPtr<Private::SSlateWidgetSearch> WidgetSearchBox;
 	TSharedPtr<STextBlock> InvalidationSummary;
 	TSharedPtr<STextBlock> UpdateSummary;
 	TSharedPtr<SMultiLineEditableTextBox> ScriptAndCallStackTextBox;
+
+	FName WidgetUpdateSortColumn;
+	bool bWidgetUpdateSortAscending;
 
 	double StartTime;
 	double EndTime;

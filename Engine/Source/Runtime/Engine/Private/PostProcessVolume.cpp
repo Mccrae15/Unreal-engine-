@@ -50,7 +50,6 @@ void APostProcessVolume::Serialize(FArchive& Ar)
 }
 
 #if WITH_EDITOR
-
 void APostProcessVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -72,6 +71,7 @@ void APostProcessVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 		}
 	}
 
+	bIsSpatiallyLoaded = !bUnbound;
 	
 	if (PropertyChangedEvent.Property)
 	{
@@ -165,7 +165,6 @@ bool APostProcessVolume::CanEditChange(const FProperty* InProperty) const
 
 			// Parameters that are only used for the Sum of Gaussian bloom / not the texture based fft bloom
 			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomThreshold) ||
-				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomIntensity) ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomSizeScale) ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, Bloom1Size) ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, Bloom2Size) ||
@@ -186,6 +185,7 @@ bool APostProcessVolume::CanEditChange(const FProperty* InProperty) const
 			// Parameters that are only of use with the bloom texture based fft
 			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionTexture)      ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionSize)         ||
+				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionScatterDispersion) ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionCenterUV)     ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionPreFilterMin) ||
 				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, BloomConvolutionPreFilterMax) ||
@@ -194,7 +194,25 @@ bool APostProcessVolume::CanEditChange(const FProperty* InProperty) const
 			{
 				return (Settings.BloomMethod == EBloomMethod::BM_FFT);
 			}
+			
+			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, LumenRayLightingMode))
+			{
+				static IConsoleVariable* RayTracingCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing"));
+				if (RayTracingCVar->GetInt() == 0)
+				{
+					return false;
+				}
+			}
 
+			if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, DynamicGlobalIlluminationMethod) ||
+				PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FPostProcessSettings, ReflectionMethod))
+			{
+				static IConsoleVariable* ForwardShadingCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ForwardShading"));
+				if (ForwardShadingCVar->GetInt() != 0)
+				{
+					return false;
+				}
+			}
 		}
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 

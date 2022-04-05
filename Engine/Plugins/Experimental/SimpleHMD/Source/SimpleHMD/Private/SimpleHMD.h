@@ -15,7 +15,7 @@ class UCanvas;
 /**
  * Simple Head Mounted Display
  */
-class FSimpleHMD : public FHeadMountedDisplayBase, public FSceneViewExtensionBase
+class FSimpleHMD : public FHeadMountedDisplayBase, public FHMDSceneViewExtension
 {
 public:
 	/** IXRTrackingSystem interface */
@@ -68,16 +68,16 @@ public:
 	virtual bool GetHMDMonitorInfo(MonitorInfo&) override;
 	virtual void GetFieldOfView(float& OutHFOVInDegrees, float& OutVFOVInDegrees) const override;
 	virtual bool IsChromaAbCorrectionEnabled() const override;
-	virtual void DrawDistortionMesh_RenderThread(struct FRenderingCompositePassContext& Context, const FIntPoint& TextureSize) override;
+	virtual void DrawDistortionMesh_RenderThread(struct FHeadMountedDisplayPassContext& Context, const FIntPoint& TextureSize) override;
 
 	/** IStereoRendering interface */
 	virtual bool IsStereoEnabled() const override;
 	virtual bool EnableStereo(bool stereo = true) override;
-	virtual void AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
-	virtual void CalculateStereoViewOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation,
+	virtual void AdjustViewRect(int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
+	virtual void CalculateStereoViewOffset(const int32 ViewIndex, FRotator& ViewRotation,
 		const float InWorldToMeters, FVector& ViewLocation) override;
-	virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
-	virtual void GetEyeRenderParams_RenderThread(const struct FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
+	virtual FMatrix GetStereoProjectionMatrix(const int32 ViewIndex) const override;
+	virtual void GetEyeRenderParams_RenderThread(const struct FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
 
 	/** ISceneViewExtension interface */
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
@@ -85,7 +85,6 @@ public:
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) {}
 	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
 	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
-	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const;
 
 public:
 	/** Constructor */

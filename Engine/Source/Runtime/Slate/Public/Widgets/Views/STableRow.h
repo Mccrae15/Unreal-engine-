@@ -3,29 +3,30 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
 #include "InputCoreTypes.h"
-#include "Styling/SlateColor.h"
-#include "Layout/Geometry.h"
-#include "Input/Events.h"
-#include "Input/DragAndDrop.h"
-#include "Input/Reply.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Layout/Margin.h"
-#include "Styling/SlateTypes.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Layout/SBorder.h"
+#include "ITableRow.h"
 #include "Framework/Views/ITypedTableView.h"
-#include "Widgets/Views/STableViewBase.h"
+#include "Framework/Views/TableViewTypeTraits.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "Input/Reply.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
 #include "Rendering/DrawElements.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
 #include "Types/SlateStructs.h"
-#include "Widgets/SBoxPanel.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Views/SHeaderRow.h"
-#include "Framework/Views/TableViewTypeTraits.h"
+#include "Widgets/Views/STableViewBase.h"
 #if WITH_ACCESSIBILITY
 #include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
 #include "Widgets/Accessibility/SlateCoreAccessibleWidgets.h"
@@ -34,68 +35,6 @@
 #endif
 
 template <typename ItemType> class SListView;
-
-/**
- * Interface for table views to talk to their rows.
- */
-class SLATE_API ITableRow
-{
-	public:
-
-		/**
-		 * Called when the row has been generated and associated with an item in the owning table.
-		 * Any attempts to access the item associated with the row prior to this (i.e. in Construct()) will fail, as the association is not yet established in the owning table.
-		 */
-		virtual void InitializeRow() = 0;
-
-		/**
-		 * Called when the row has been released from the owning table and is no longer associated with any items therein.
-		 * Only relevant if the row widgets are pooled or otherwise referenced/kept alive outside the owning table. Otherwise, the row is destroyed.
-		 */
-		virtual void ResetRow() = 0;
-
-		/**
-		 * @param InIndexInList  The index of the item for which this widget was generated
-		 */
-		virtual void SetIndexInList( int32 InIndexInList ) = 0;
-
-		/** @return true if the corresponding item is expanded; false otherwise*/
-		virtual bool IsItemExpanded() const = 0;
-
-		/** Toggle the expansion of the item associated with this row */
-		virtual void ToggleExpansion() = 0;
-
-		/** @return True if the corresponding item is selected; false otherwise */
-		virtual bool IsItemSelected() const = 0;
-
-		/** @return how nested the item associated with this row when it is in a TreeView */
-		virtual int32 GetIndentLevel() const = 0;
-
-		/** @return Does this item have children? */
-		virtual int32 DoesItemHaveChildren() const = 0;
-
-		/** @return BitArray where each entry corresponds to whether this item needs a vertical wire draw for that depth. */
-		virtual TBitArray<> GetWiresNeededByDepth() const = 0;
-
-		/** @return true if this item is the last direct descendant of its parent. */
-		virtual bool IsLastChild() const = 0;
-		
-		/** @return this table row as a widget */
-		virtual TSharedRef<SWidget> AsWidget() = 0;
-
-		/** @return the content of this table row */
-		virtual TSharedPtr<SWidget> GetContent() = 0;
-
-		/** Called when the expander arrow for this row is shift+clicked */
-		virtual void Private_OnExpanderArrowShiftClicked() = 0;
-
-		/** @return the size for the specified column name */
-		virtual FVector2D GetRowSizeForColumn(const FName& InColumnName) const = 0;
-
-	protected:
-		/** Called to query the selection mode for the row */
-		virtual ESelectionMode::Type GetSelectionMode() const = 0;
-};
 
 /**
  * When the table row should signal the owner widget that the selection changed.
@@ -154,6 +93,7 @@ public:
 		, _Padding( FMargin(0) )
 		, _ShowSelection( true )
 		, _ShowWires( false )
+		, _bAllowPreselectedItemActivation(false)
 		, _SignalSelectionMode( ETableRowSignalSelectionMode::Deferred )
 		, _Content()
 		{}
@@ -190,6 +130,7 @@ public:
 	
 		SLATE_ARGUMENT( bool, ShowSelection )
 		SLATE_ARGUMENT( bool, ShowWires)
+		SLATE_ARGUMENT( bool, bAllowPreselectedItemActivation)
 
 		/**
 		 * The Signal Selection mode affect when the owner table gets notified that the selection has changed.
@@ -228,18 +169,14 @@ public:
 
 		if ( InOwnerTableMode == ETableViewMode::List || InOwnerTableMode == ETableViewMode::Tile )
 		{
-			// -- Row is in a ListView or the user --
-			FSimpleSlot* InnerContentSlotNativePtr = nullptr;
-
 			// We just need to hold on to this row's content.
 			this->ChildSlot
-			.Expose( InnerContentSlotNativePtr )
 			.Padding( InPadding )
 			[
 				InContent
 			];
 
-			InnerContentSlot = InnerContentSlotNativePtr;
+			InnerContentSlot = &ChildSlot.AsSlot();
 		}
 		else
 		{
@@ -515,7 +452,7 @@ public:
 						}
 					}
 
-					if (!bIsSelected && !bChangedSelectionOnMouseDown)
+					if ((bAllowPreselectedItemActivation || !bIsSelected) && !bChangedSelectionOnMouseDown)
 					{
 						OwnerTable->Private_ClearSelection();
 						OwnerTable->Private_SetItemSelection(MyItem, true, true);
@@ -866,6 +803,11 @@ public:
 		IndexInList = InIndexInList;
 	}
 
+	virtual int32 GetIndexInList() override
+	{
+		return IndexInList;
+	}
+
 	virtual bool IsItemExpanded() const override
 	{
 		TSharedRef< ITypedTableView<ItemType> > OwnerTable = OwnerTablePtr.Pin().ToSharedRef();
@@ -988,6 +930,8 @@ public:
 
 		const bool bIsActive = OwnerTable->AsWidget()->HasKeyboardFocus();
 
+		const bool bItemHasChildren = OwnerTable->Private_DoesItemHaveChildren( IndexInList );
+
 		static FName GenericWhiteBoxBrush("GenericWhiteBox");
 
 		// @todo: Slate Style - make this part of the widget style
@@ -1030,6 +974,12 @@ public:
 						? (bEvenEntryIndex ? &Style->EvenRowBackgroundHoveredBrush : &Style->OddRowBackgroundHoveredBrush)
 						: &Style->InactiveHighlightedBrush;
 				}
+			}
+			else if (bItemHasChildren && Style->bUseParentRowBrush && GetIndentLevel() == 0)
+			{
+				return IsHovered() 
+				? &Style->ParentRowBackgroundHoveredBrush	
+				: &Style->ParentRowBackgroundBrush;	
 			}
 			else
 			{
@@ -1135,9 +1085,9 @@ protected:
 		check(InArgs._ExpanderStyleSet);
 		ExpanderStyleSet = InArgs._ExpanderStyleSet;
 
-		this->BorderImage = FInvalidatableBrushAttribute(TAttribute<const FSlateBrush*>(this, &STableRow::GetBorder));
+		SetBorderImage(TAttribute<const FSlateBrush*>(this, &STableRow::GetBorder));
 
-		this->ForegroundColor = TAttribute<FSlateColor>( this, &STableRow::GetForegroundBasedOnSelection );
+		this->SetForegroundColor(TAttribute<FSlateColor>( this, &STableRow::GetForegroundBasedOnSelection ));
 
 		this->OnCanAcceptDrop = InArgs._OnCanAcceptDrop;
 		this->OnAcceptDrop = InArgs._OnAcceptDrop;
@@ -1154,6 +1104,8 @@ protected:
 		this->SignalSelectionMode = InArgs._SignalSelectionMode;
 
 		this->bShowWires = InArgs._ShowWires;
+
+		this->bAllowPreselectedItemActivation = InArgs._bAllowPreselectedItemActivation;
 	}
 
 	void SetOwnerTableView( TSharedPtr<STableViewBase> OwnerTableView )
@@ -1263,6 +1215,9 @@ protected:
 	/** Did the current a touch interaction start in this item?*/
 	bool bProcessingSelectionTouch;
 
+	/** When activating an item via mouse button, we generally don't allow pre-selected items to be activated */
+	bool bAllowPreselectedItemActivation;
+
 private:
 	bool bShowWires;
 };
@@ -1368,7 +1323,7 @@ protected:
 					TAttribute<float> WidthBinding;
 					WidthBinding.BindRaw(&Column, &SHeaderRow::FColumn::GetWidth);
 
-					SHorizontalBox::FSlot& NewSlot = Box->AddSlot()
+					Box->AddSlot()
 					.HAlign(Column.CellHAlignment)
 					.VAlign(Column.CellVAlignment)
 					.FillWidth(WidthBinding)
@@ -1396,6 +1351,7 @@ protected:
 				break;
 
 				case EColumnSizeMode::Manual:
+				case EColumnSizeMode::FillSized:
 				{
 					auto GetColumnWidthAsOptionalSize = [&Column]() -> FOptionalSize
 					{
@@ -1422,6 +1378,7 @@ protected:
 				break;
 
 				default:
+					ensure(false);
 					break;
 				}
 

@@ -7,7 +7,6 @@
 #include "UObject/Object.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Actor.h"
-#include "UObject/SoftObjectPath.h"
 #include "LevelSequencePlayer.h"
 #include "MovieSceneBindingOwnerInterface.h"
 #include "MovieSceneBindingOverrides.h"
@@ -47,7 +46,7 @@ public:
 	FSoftClassPath BurnInClass;
 
 	UPROPERTY(Instanced, EditAnywhere, BlueprintReadWrite, Category="General", meta=(EditCondition=bUseBurnIn))
-	ULevelSequenceBurnInInitSettings* Settings;
+	TObjectPtr<ULevelSequenceBurnInInitSettings> Settings;
 
 protected:
 
@@ -59,7 +58,7 @@ protected:
 /**
  * Actor responsible for controlling a specific level sequence in the world.
  */
-UCLASS(hideCategories=(Rendering, Physics, LOD, Activation, Input))
+UCLASS(hideCategories=(Rendering, Physics, HLOD, Activation, Input))
 class LEVELSEQUENCE_API ALevelSequenceActor
 	: public AActor
 	, public IMovieSceneSequenceActor
@@ -81,20 +80,25 @@ public:
 	FMovieSceneSequencePlaybackSettings PlaybackSettings;
 
 	UPROPERTY(Instanced, transient, replicated, BlueprintReadOnly, BlueprintGetter=GetSequencePlayer, Category="Playback", meta=(ExposeFunctionCategories="Sequencer|Player"))
-	ULevelSequencePlayer* SequencePlayer;
+	TObjectPtr<ULevelSequencePlayer> SequencePlayer;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="General", meta=(AllowedClasses="LevelSequence"))
-	FSoftObjectPath LevelSequence;
+	TObjectPtr<ULevelSequence> LevelSequenceAsset;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FSoftObjectPath LevelSequence_DEPRECATED;
+#endif
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cameras", meta=(ShowOnlyInnerProperties))
 	FLevelSequenceCameraSettings CameraSettings;
 
 	UPROPERTY(Instanced, BlueprintReadOnly, Category="General")
-	ULevelSequenceBurnInOptions* BurnInOptions;
+	TObjectPtr<ULevelSequenceBurnInOptions> BurnInOptions;
 
 	/** Mapping of actors to override the sequence bindings with */
 	UPROPERTY(Instanced, BlueprintReadOnly, Category="General")
-	UMovieSceneBindingOverrides* BindingOverrides;
+	TObjectPtr<UMovieSceneBindingOverrides> BindingOverrides;
 
 	UPROPERTY()
 	uint8 bAutoPlay_DEPRECATED : 1;
@@ -109,7 +113,7 @@ public:
 
 	/** Instance data that can be used to dynamically control sequence evaluation at runtime */
 	UPROPERTY(Instanced, BlueprintReadWrite, Category="General")
-	UObject* DefaultInstanceData;
+	TObjectPtr<UObject> DefaultInstanceData;
 
 public:
 
@@ -128,8 +132,9 @@ public:
 	 * @return Level sequence, or nullptr if not assigned or if it cannot be loaded.
 	 * @see SetSequence
 	 */
-	UFUNCTION(BlueprintCallable, Category="Sequencer|Player")
-	ULevelSequence* LoadSequence() const;
+	UE_DEPRECATED(5.0, "LoadSequence has been deprecated, please use GetSequence")
+	UFUNCTION(BlueprintCallable, Category="Sequencer|Player", meta=(DeprecatedFunction))
+	ULevelSequence* LoadSequence() const { return GetSequence(); }
 
 	/**
 	 * Set the level sequence being played by this actor.
@@ -170,7 +175,9 @@ public:
 	 *
 	 * @param Binding Binding to modify
 	 * @param Actors Actors to bind
-	 * @param bAllowBindingsFromAsset Allow bindings from the level sequence asset
+	 * @param bAllowBindingsFromAsset If false the new bindings being supplied here will replace the bindings set in the level sequence asset, meaning the original object animated by 
+	 *								  Sequencer will no longer be animated. Bindings set to spawnables will not spawn if false. If true, new bindings will be in addition to ones set
+	 *								  set in Sequencer UI. This function will not modify the original asset.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player|Bindings")
 	void SetBinding(FMovieSceneObjectBindingID Binding, const TArray<AActor*>& Actors, bool bAllowBindingsFromAsset = false);
@@ -180,7 +187,9 @@ public:
 	 *
 	 * @param BindingTag   The unique tag name to lookup bindings with
 	 * @param Actors       The actors to assign to all the tagged bindings
-	 * @param bAllowBindingsFromAsset Whether to continue to allow bindings from the level sequence asset (true) or not (false)
+	 * @param bAllowBindingsFromAsset If false the new bindings being supplied here will replace the bindings set in the level sequence asset, meaning the original object animated by 
+	 *								  Sequencer will no longer be animated. Bindings set to spawnables will not spawn if false. If true, new bindings will be in addition to ones set
+	 *								  set in Sequencer UI. This function will not modify the original asset.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player|Bindings")
 	void SetBindingByTag(FName BindingTag, const TArray<AActor*>& Actors, bool bAllowBindingsFromAsset = false);
@@ -190,7 +199,9 @@ public:
 	 *
 	 * @param Binding Binding to modify
 	 * @param Actor Actor to bind
-	 * @param bAllowBindingsFromAsset Allow bindings from the level sequence asset
+	 * @param bAllowBindingsFromAsset If false the new bindings being supplied here will replace the bindings set in the level sequence asset, meaning the original object animated by 
+	 *								  Sequencer will no longer be animated. Bindings set to spawnables will not spawn if false. If true, new bindings will be in addition to ones set
+	 *								  set in Sequencer UI. This function will not modify the original asset.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player|Bindings")
 	void AddBinding(FMovieSceneObjectBindingID Binding, AActor* Actor, bool bAllowBindingsFromAsset = false);
@@ -200,7 +211,9 @@ public:
 	 *
 	 * @param BindingTag   The unique tag name to lookup bindings with
 	 * @param Actor        The actor to assign to all the tagged bindings
-	 * @param bAllowBindingsFromAsset Whether to continue to allow bindings from the level sequence asset (true) or not (false)
+	 * @param bAllowBindingsFromAsset If false the new bindings being supplied here will replace the bindings set in the level sequence asset, meaning the original object animated by 
+	 *								  Sequencer will no longer be animated. Bindings set to spawnables will not spawn if false. If true, new bindings will be in addition to ones set
+	 *								  set in Sequencer UI. This function will not modify the original asset.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Player|Bindings")
 	void AddBindingByTag(FName BindingTag, AActor* Actor, bool bAllowBindingsFromAsset = false);
@@ -254,6 +267,7 @@ protected:
 	virtual bool RetrieveBindingOverrides(const FGuid& InBindingId, FMovieSceneSequenceID InSequenceID, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
 	virtual UObject* GetInstanceData() const override;
 	virtual TOptional<EAspectRatioAxisConstraint> GetAspectRatioAxisConstraint() const override;
+	virtual bool GetIsReplicatedPlayback() const override;
 	//~ End IMovieScenePlaybackClient interface
 
 	//~ Begin UObject interface
@@ -267,6 +281,9 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void RewindForReplay() override;
+#if WITH_EDITOR
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+#endif
 	//~ End AActor interface
 
 public:
@@ -287,14 +304,14 @@ public:
 	virtual void UpdateObjectFromProxy(FStructOnScope& Proxy, IPropertyHandle& ObjectPropertyHandle) override;
 	virtual UMovieSceneSequence* RetrieveOwnedSequence() const override
 	{
-		return LoadSequence();
+		return GetSequence();
 	}
 #endif
 
 private:
 	/** Burn-in widget */
 	UPROPERTY()
-	ULevelSequenceBurnIn* BurnInInstance;
+	TObjectPtr<ULevelSequenceBurnIn> BurnInInstance;
 
 	UPROPERTY()
 	bool bShowBurnin;
@@ -309,7 +326,7 @@ struct FBoundActorProxy
 
 	/** Specifies the actor to override the binding with */
 	UPROPERTY(EditInstanceOnly, AdvancedDisplay, Category="General")
-	AActor* BoundActor = nullptr;
+	TObjectPtr<AActor> BoundActor = nullptr;
 
 	void Initialize(TSharedPtr<IPropertyHandle> InPropertyHandle);
 

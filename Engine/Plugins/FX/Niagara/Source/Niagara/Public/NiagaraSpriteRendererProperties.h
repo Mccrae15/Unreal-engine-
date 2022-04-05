@@ -38,6 +38,23 @@ enum class ENiagaraSpriteFacingMode : uint8
 	FaceCameraDistanceBlend
 };
 
+UENUM()
+enum class ENiagaraRendererPixelCoverageMode : uint8
+{
+	/** Automatically determine if we want pixel coverage enabled or disabled, based on project setting and the material used on the renderer. */
+	Automatic,
+	/** Disable pixel coverage. */
+	Disabled,
+	/** Enable pixel coverage with no color adjustment based on coverage. */
+	Enabled UMETA(DisplayName = "Enabled (No Color Adjustment)"),
+	/** Enable pixel coverage and adjust the RGBA channels according to coverage. */
+	Enabled_RGBA UMETA(DisplayName = "Enabled (RGBA)"),
+	/** Enable pixel coverage and adjust the RGB channels according to coverage. */
+	Enabled_RGB UMETA(DisplayName = "Enabled (RGB)"),
+	/** Enable pixel coverage and adjust the Alpha channel only according to coverage. */
+	Enabled_A UMETA(DisplayName = "Enabled (A)"),
+};
+
 namespace ENiagaraSpriteVFLayout
 {
 	enum Type
@@ -93,7 +110,7 @@ public:
 	virtual void PostInitProperties() override;
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 #if WITH_EDITORONLY_DATA
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;	
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter) override;
 	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter) override;
 
@@ -103,10 +120,10 @@ public:
 	static void InitCDOPropertiesAfterModuleStartup();
 
 	//UNiagaraRendererProperties interface
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent) override;
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
-	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };	
+	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
 	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)  override;
 #if WITH_EDITOR
 	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
@@ -127,7 +144,7 @@ public:
 
 	/** The material used to render the particle. Note that it must have the Use with Niagara Sprites flag checked.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
-	UMaterialInterface* Material;
+	TObjectPtr<UMaterialInterface> Material;
 
 	/** Whether or not to draw a single element for the Emitter or to draw the particles.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
@@ -136,7 +153,7 @@ public:
 	/** Use the UMaterialInterface bound to this user variable if it is set to a valid value. If this is bound to a valid value and Material is also set, UserParamBinding wins.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
 	FNiagaraUserParameterBinding MaterialUserParamBinding;
-	
+
 	/** Imagine the particle texture having an arrow pointing up, these modes define how the particle aligns that texture to other particle attributes.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
 	ENiagaraSpriteAlignment Alignment;
@@ -152,10 +169,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering", meta = (DisplayName = "Default Pivot in UV Space"))
 	FVector2D PivotInUVSpace;
 
+	/** World space radius that UVs generated with the ParticleMacroUV material node will tile based on. */
+	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
+	float MacroUVRadius = 0.0f;
+
 	/** Determines how we sort the particles prior to rendering.*/
 	UPROPERTY(EditAnywhere, Category = "Sorting")
 	ENiagaraSortMode SortMode;
-	
+
 	/** When using SubImage lookups for particles, this variable contains the number of columns in X and the number of rows in Y.*/
 	UPROPERTY(EditAnywhere, Category = "SubUV")
 	FVector2D SubImageSize;
@@ -179,6 +200,24 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Rendering")
 	uint32 bGpuLowLatencyTranslucency : 1;
+
+	/**
+	This setting controls what happens when a sprite becomes less than a pixel in size.
+	Disabling will apply nothing and can result in flickering issues, especially with Temporal Super Resolution.
+	Automatic will enable the appropriate settings when the material blend mode is some form of translucency, project setting must also be enabled.
+	When coverage is less than a pixel, we also calculate a percentage of coverage, and then darken or reduce opacity
+	to visually compensate.	The different enabled settings allow you to control how the coverage amount is applied to
+	your particle color.  If particle color is not connected to your material the compensation will not be applied.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
+	ENiagaraRendererPixelCoverageMode PixelCoverageMode = ENiagaraRendererPixelCoverageMode::Automatic;
+
+	/**
+	When pixel coverage is enabled this allows you to control the blend of the pixel coverage color adjustment.
+	i.e. 1.0 = full, 0.5 = 50/50 blend, 0.0 = none
+	*/
+	UPROPERTY(EditAnywhere, Category = "Sprite Rendering", meta = (EditCondition = "PixelCoverageMode != ENiagaraRendererPixelCoverageMode::Disabled", UIMin=0.0f, UIMax=1.0f))
+	float PixelCoverageBlend = 1.0f;
 
 	/** When FacingMode is FacingCameraDistanceBlend, the distance at which the sprite is fully facing the camera plane. */
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering", meta = (UIMin = "0"))
@@ -313,8 +352,8 @@ public:
 
 	/** Texture to generate bounding geometry from.	*/
 	UPROPERTY(EditAnywhere, Category="Cutout", meta = (EditCondition = "!bUseMaterialCutoutTexture"))
-	UTexture2D* CutoutTexture;
-	
+	TObjectPtr<UTexture2D> CutoutTexture;
+
 	/**
 	* More bounding vertices results in reduced overdraw, but adds more triangle overhead.
 	* The eight vertex mode is best used when the SubUV texture has a lot of space to cut out that is not captured by the four vertex version,
@@ -325,7 +364,7 @@ public:
 
 	UPROPERTY(EditAnywhere, Category="Cutout")
 	TEnumAsByte<enum EOpacitySourceMode> OpacitySourceMode;
-	
+
 	/**
 	* Alpha channel values larger than the threshold are considered occupied and will be contained in the bounding geometry.
 	* Raising this threshold slightly can reduce overdraw in particles using this animation asset.
@@ -337,12 +376,12 @@ public:
 	void CacheDerivedData();
 #endif
 
-	const TArray<FVector2D>& GetCutoutData() const { return DerivedData.BoundingGeometry; }
+	const TArray<FVector2f>& GetCutoutData() const { return DerivedData.BoundingGeometry; }
 
 	FNiagaraRendererLayout RendererLayoutWithCustomSort;
 	FNiagaraRendererLayout RendererLayoutWithoutCustomSort;
 	uint32 MaterialParamValidMask = 0;
-	
+
 protected:
 	void InitBindings();
 	void SetPreviousBindings(const UNiagaraEmitter* SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode);

@@ -52,8 +52,8 @@ void SetDepthBoundsTest(FRHICommandList& RHICmdList, float WorldSpaceDepthNear, 
 	{
 		FVector4 Near = ProjectionMatrix.TransformFVector4(FVector4(0, 0, WorldSpaceDepthNear));
 		FVector4 Far = ProjectionMatrix.TransformFVector4(FVector4(0, 0, WorldSpaceDepthFar));
-		float DepthNear = Near.Z / Near.W;
-		float DepthFar = Far.Z / Far.W;
+		float DepthNear = float(Near.Z / Near.W);
+		float DepthFar = float(Far.Z / Far.W);
 
 		DepthFar = FMath::Clamp(DepthFar, 0.0f, 1.0f);
 		DepthNear = FMath::Clamp(DepthNear, 0.0f, 1.0f);
@@ -263,7 +263,7 @@ public:
 
 	static void Shutdown()
 	{
-		// PS4 calls shutdown before initialize has been called, so bail out if that happens
+		// Some platforms call shutdown before initialize has been called, so bail out if that happens
 		if (!bInitialized)
 		{
 			return;
@@ -535,23 +535,23 @@ RHI_API ERHIAccess RHIGetDefaultResourceState(ETextureCreateFlags InUsage, bool 
 
 	if (!bInHasInitialData)
 	{
-		if (InUsage & TexCreate_RenderTargetable)
+		if (EnumHasAnyFlags(InUsage, TexCreate_RenderTargetable))
 		{
 			ResourceState = ERHIAccess::RTV;
 		}
-		else if (InUsage & TexCreate_DepthStencilTargetable)
+		else if (EnumHasAnyFlags(InUsage, TexCreate_DepthStencilTargetable))
 		{
 			ResourceState = ERHIAccess::DSVWrite | ERHIAccess::DSVRead;
 		}
-		else if (InUsage & TexCreate_UAV)
+		else if (EnumHasAnyFlags(InUsage, TexCreate_UAV))
 		{
 			ResourceState = ERHIAccess::UAVMask;
 		}
-		else if (InUsage & TexCreate_Presentable)
+		else if (EnumHasAnyFlags(InUsage, TexCreate_Presentable))
 		{
 			ResourceState = ERHIAccess::Present;
 		}
-		else if (InUsage & TexCreate_ShaderResource)
+		else if (EnumHasAnyFlags(InUsage, TexCreate_ShaderResource))
 		{
 			ResourceState = ERHIAccess::SRVMask;
 		}
@@ -564,16 +564,16 @@ RHI_API ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, bool bI
 {
 	// Default reading state is different per buffer type
 	ERHIAccess DefaultReadingState = ERHIAccess::Unknown;
-	if (InUsage & BUF_IndexBuffer)
+	if (EnumHasAnyFlags(InUsage, BUF_IndexBuffer))
 	{
 		DefaultReadingState = ERHIAccess::VertexOrIndexBuffer;
 	}
-	if (InUsage & BUF_VertexBuffer)
+	if (EnumHasAnyFlags(InUsage, BUF_VertexBuffer))
 	{
 		// Could be vertex buffer or normal DataBuffer
 		DefaultReadingState = DefaultReadingState | ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask;
 	}
-	if (InUsage & BUF_StructuredBuffer)
+	if (EnumHasAnyFlags(InUsage, BUF_StructuredBuffer))
 	{
 		DefaultReadingState = DefaultReadingState | ERHIAccess::SRVMask;
 	}
@@ -589,11 +589,11 @@ RHI_API ERHIAccess RHIGetDefaultResourceState(EBufferUsageFlags InUsage, bool bI
 	}
 	else
 	{
-		if (InUsage & BUF_UnorderedAccess)
+		if (EnumHasAnyFlags(InUsage, BUF_UnorderedAccess))
 		{
 			ResourceState = ERHIAccess::UAVMask;
 		}
-		else if (InUsage & BUF_ShaderResource)
+		else if (EnumHasAnyFlags(InUsage, BUF_ShaderResource))
 		{
 			ResourceState = DefaultReadingState | ERHIAccess::SRVMask;
 		}

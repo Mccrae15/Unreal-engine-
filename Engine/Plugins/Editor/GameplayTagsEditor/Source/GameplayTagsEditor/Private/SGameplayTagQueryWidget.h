@@ -10,6 +10,7 @@
 #include "Input/Reply.h"
 #include "Widgets/SCompoundWidget.h"
 #include "GameplayTagContainer.h"
+#include "PropertyHandle.h"
 
 class IDetailsView;
 struct FPropertyChangedEvent;
@@ -27,10 +28,10 @@ public:
 		SLATE_EVENT(FSimpleDelegate, OnSaveAndClose) // Called when "Save and Close" button clicked
 		SLATE_EVENT(FSimpleDelegate, OnCancel) // Called when "Close Without Saving" button clicked
 		SLATE_EVENT(FSimpleDelegate, OnQueryChanged)	// Called when the user has modified the query
-		SLATE_END_ARGS()
+	SLATE_END_ARGS()
 
 		/** Simple struct holding a tag query and its owner for generic re-use of the widget */
-		struct FEditableGameplayTagQueryDatum
+	struct FEditableGameplayTagQueryDatum
 	{
 		/** Constructor */
 		FEditableGameplayTagQueryDatum(class UObject* InOwnerObj, struct FGameplayTagQuery* InTagQuery, FString* InTagExportText=nullptr)
@@ -43,18 +44,20 @@ public:
 		TWeakObjectPtr<class UObject> TagQueryOwner;
 
 		/** Tag query to edit */
-		struct FGameplayTagQuery* TagQuery; 
+		struct FGameplayTagQuery* TagQuery;
 
 		/** The export text for FGameplayTagQuery, useful in some circumstances */
 		FString* TagQueryExportText;
 	};
 
 	/** Construct the actual widget */
-	void Construct(const FArguments& InArgs, const TArray<FEditableGameplayTagQueryDatum>& EditableTagQueries);
+	void Construct(const FArguments& InArgs, const TArray<FEditableGameplayTagQueryDatum>& EditableTagQueries, const TSharedPtr<IPropertyHandle> InTagQueryPropertyHandle);
 
-	~SGameplayTagQueryWidget();
+	virtual ~SGameplayTagQueryWidget() override;
 
 private:
+
+	void OnGetCategoriesMetaFromPropertyHandle(TSharedPtr<IPropertyHandle> PropertyHandle, FString& MetaString);
 
 	/* Flag to set if the list is read only*/
 	uint32 bReadOnly : 1;
@@ -64,6 +67,9 @@ private:
 
 	/** Containers to modify */
 	TArray<FEditableGameplayTagQueryDatum> TagQueries;
+
+	/** Property that holds the tag query */
+	TSharedPtr<IPropertyHandle> TagQueryPropertyHandle;
 
 	/** Called when "Save and Close" is clicked before we save the data. */
 	FSimpleDelegate OnClosePreSave;
@@ -80,14 +86,14 @@ private:
 	/** Properties Tab */
 	TSharedPtr<class IDetailsView> Details;
 
-	class UEditableGameplayTagQuery* CreateEditableQuery(FGameplayTagQuery& Q);
+	static class UEditableGameplayTagQuery* CreateEditableQuery(FGameplayTagQuery& Q);
 	TWeakObjectPtr<class UEditableGameplayTagQuery> EditableQuery;
 
 	/** Called when the user clicks the "Save and Close" button */
 	FReply OnSaveAndCloseClicked();
 
 	/** Called when the user clicks the "Close Without Saving" button */
-	FReply OnCancelClicked();
+	FReply OnCancelClicked() const;
 
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 

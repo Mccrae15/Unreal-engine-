@@ -45,8 +45,8 @@ inline bool operator!=(D3D12_CPU_DESCRIPTOR_HANDLE lhs, D3D12_CPU_DESCRIPTOR_HAN
 
 // Define template functions that are only declared in the header.
 template void FD3D12StateCacheBase::SetShaderResourceView<SF_Vertex>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
-template void FD3D12StateCacheBase::SetShaderResourceView<SF_Hull>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
-template void FD3D12StateCacheBase::SetShaderResourceView<SF_Domain>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
+template void FD3D12StateCacheBase::SetShaderResourceView<SF_Mesh>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
+template void FD3D12StateCacheBase::SetShaderResourceView<SF_Amplification>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
 template void FD3D12StateCacheBase::SetShaderResourceView<SF_Geometry>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
 template void FD3D12StateCacheBase::SetShaderResourceView<SF_Pixel>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
 template void FD3D12StateCacheBase::SetShaderResourceView<SF_Compute>(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
@@ -97,8 +97,10 @@ void FD3D12StateCacheBase::Init(FD3D12Device* InParent, FD3D12CommandContext* In
 	ResourceBindingTier = GetParentDevice()->GetParentAdapter()->GetResourceBindingTier();
 
 	// Init the descriptor heaps
-	const uint32 MaxDescriptorsForTier = (ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_1) ? NUM_VIEW_DESCRIPTORS_TIER_1 :
-		NUM_VIEW_DESCRIPTORS_TIER_2;
+	const uint32 MaxDescriptorsForTier =
+		ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_3 ? INT_MAX :
+		ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_2 ? NUM_VIEW_DESCRIPTORS_TIER_2 :
+		NUM_VIEW_DESCRIPTORS_TIER_1;
 
 	check(GLocalViewHeapSize <= (int32)MaxDescriptorsForTier);
 	check(GGlobalViewHeapSize <= (int32)MaxDescriptorsForTier);
@@ -142,6 +144,8 @@ void FD3D12StateCacheBase::FlushComputeShaderCache(bool bForce)
 	{
 		FD3D12CommandListHandle& CommandList = CmdContext->CommandListHandle;
 		CommandList.AddUAVBarrier();
+
+		INC_DWORD_STAT(STAT_D3D12UAVBarriers);
 	}
 }
 
@@ -349,6 +353,11 @@ void FD3D12StateCacheBase::SetScissorRects(uint32 Count, const D3D12_RECT* const
 	}
 }
 
+inline bool ShouldSkipStage(uint32 Stage)
+{
+	return ((Stage == SF_Mesh || Stage == SF_Amplification) && !GRHISupportsMeshShadersTier0);
+}
+
 template <ED3D12PipelineType PipelineType>
 void FD3D12StateCacheBase::ApplyState()
 {
@@ -516,6 +525,11 @@ void FD3D12StateCacheBase::ApplyState()
 
 		for (uint32 Stage = StartStage; Stage < EndStage; ++Stage)
 		{
+			if (ShouldSkipStage(Stage))
+			{
+				continue;
+			}
+
 			// Note this code assumes the starting register is index 0.
 			const SRVSlotMask CurrentShaderSRVRegisterMask = BitMask<SRVSlotMask>(PipelineState.Common.CurrentShaderSRVCounts[Stage]);
 			CurrentShaderDirtySRVSlots[Stage] = CurrentShaderSRVRegisterMask & PipelineState.Common.SRVCache.DirtySlotMask[Stage];
@@ -596,8 +610,8 @@ void FD3D12StateCacheBase::ApplyState()
 		if (PipelineType == D3D12PT_Graphics)
 		{
 			CONDITIONAL_SET_SRVS(SF_Vertex);
-			CONDITIONAL_SET_SRVS(SF_Hull);
-			CONDITIONAL_SET_SRVS(SF_Domain);
+			CONDITIONAL_SET_SRVS(SF_Mesh);
+			CONDITIONAL_SET_SRVS(SF_Amplification);
 			CONDITIONAL_SET_SRVS(SF_Geometry);
 			CONDITIONAL_SET_SRVS(SF_Pixel);
 		}
@@ -631,8 +645,8 @@ void FD3D12StateCacheBase::ApplyState()
 		if (PipelineType == D3D12PT_Graphics)
 		{
 			CONDITIONAL_SET_CBVS(SF_Vertex);
-			CONDITIONAL_SET_CBVS(SF_Hull);
-			CONDITIONAL_SET_CBVS(SF_Domain);
+			CONDITIONAL_SET_CBVS(SF_Mesh);
+			CONDITIONAL_SET_CBVS(SF_Amplification);
 			CONDITIONAL_SET_CBVS(SF_Geometry);
 			CONDITIONAL_SET_CBVS(SF_Pixel);
 		}
@@ -667,6 +681,11 @@ void FD3D12StateCacheBase::ApplySamplers(const FD3D12RootSignature* const pRootS
 
 		for (uint32 Stage = StartStage; Stage < EndStage; ++Stage)
 		{
+			if (ShouldSkipStage(Stage))
+			{
+				continue;
+			}
+
 			// Note this code assumes the starting register is index 0.
 			const SamplerSlotMask CurrentShaderSamplerRegisterMask = BitMask<SamplerSlotMask>(PipelineState.Common.CurrentShaderSamplerCounts[Stage]);
 			CurrentShaderDirtySamplerSlots[Stage] = CurrentShaderSamplerRegisterMask & Cache.DirtySlotMask[Stage];
@@ -697,6 +716,11 @@ void FD3D12StateCacheBase::ApplySamplers(const FD3D12RootSignature* const pRootS
 
 		for (uint32 Stage = StartStage; Stage < EndStage; Stage++)
 		{
+			if (ShouldSkipStage(Stage))
+			{
+				continue;
+			}
+
 			if ((CurrentShaderDirtySamplerSlots[Stage] && NumSamplers[Stage]))
 			{
 				SamplerSlotMask& CurrentDirtySlotMask = Cache.DirtySlotMask[Stage];
@@ -791,8 +815,8 @@ void FD3D12StateCacheBase::ApplySamplers(const FD3D12RootSignature* const pRootS
 	else
 	{
 		CONDITIONAL_SET_SAMPLERS(SF_Vertex);
-		CONDITIONAL_SET_SAMPLERS(SF_Hull);
-		CONDITIONAL_SET_SAMPLERS(SF_Domain);
+		CONDITIONAL_SET_SAMPLERS(SF_Mesh);
+		CONDITIONAL_SET_SAMPLERS(SF_Amplification);
 		CONDITIONAL_SET_SAMPLERS(SF_Geometry);
 		CONDITIONAL_SET_SAMPLERS(SF_Pixel);
 	}
@@ -833,6 +857,11 @@ bool FD3D12StateCacheBase::AssertResourceStates(ED3D12PipelineType PipelineType)
 	bool bSRVIntersectsWithStencil = false;
 	for (uint32 Stage = StartStage; Stage < EndStage; Stage++)
 	{
+		if (ShouldSkipStage(Stage))
+		{
+			continue;
+		}
+
 		// UAVs
 		{
 			const uint32 numUAVs = PipelineState.Common.CurrentShaderUAVCounts[Stage];
@@ -1043,7 +1072,7 @@ void FD3D12StateCacheBase::SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUA
 				*CounterUploadHeapData = (!UAV->IsCounterResourceInitialized() && UAVInitialCountArray[i] == -1) ? 0 : UAVInitialCountArray[i];
 
 				// Transition to copy dest
-				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_COPY_DEST, 0);
+				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST, 0, FD3D12DynamicRHI::ETransitionMode::Apply);
 
 				Device->GetDefaultCommandContext().numCopies++;
 				CmdContext->CommandListHandle.FlushResourceBarriers();
@@ -1056,7 +1085,7 @@ void FD3D12StateCacheBase::SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUA
 					4);
 
 				// Restore UAV state
-				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
+				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, CounterResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0, FD3D12DynamicRHI::ETransitionMode::Apply);
 
 				CmdContext->CommandListHandle.UpdateResidency(CounterResource);
 
@@ -1121,7 +1150,7 @@ void FD3D12StateCacheBase::InternalSetIndexBuffer(FD3D12Resource* Resource)
 	if (Resource->RequiresResourceStateTracking())
 	{
 		check(Resource->GetSubresourceCount() == 1);
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, Resource, D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, FD3D12DynamicRHI::ETransitionMode::Validate);
 	}
 }
 
@@ -1171,17 +1200,6 @@ void FD3D12StateCacheBase::InternalSetStreamSource(FD3D12ResourceLocation* Verte
 			PipelineState.Graphics.VBCache.MaxBoundVertexBufferIndex = INDEX_NONE;
 		}
 	}
-
-	if (VertexBufferLocation)
-	{
-		FD3D12Resource* const pResource = VertexBufferLocation->GetResource();
-		if (pResource && pResource->RequiresResourceStateTracking())
-		{
-			check(pResource->GetSubresourceCount() == 1);
-			FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, pResource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		}
-	}
-
 }
 
 template <EShaderFrequency ShaderFrequency>

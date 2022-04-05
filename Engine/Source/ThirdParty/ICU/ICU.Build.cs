@@ -22,7 +22,6 @@ public class ICU : ModuleRules
 		{
 			if (Target.Platform == UnrealTargetPlatform.IOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Win32 ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Android) ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
@@ -49,7 +48,7 @@ public class ICU : ModuleRules
 		{
 			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 			{
-				return "Linux";
+				return "Unix";
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 			{
@@ -98,7 +97,7 @@ public class ICU : ModuleRules
 		PublicSystemIncludePaths.Add(Path.Combine(ICUIncRootPath, ICUVersion, "include"));
 
 		// Libs
-		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, VSVersionFolderName, UseDebugLibs ? "Debug" : "Release", "icu.lib"));
@@ -161,9 +160,7 @@ public class ICU : ModuleRules
 			string ICULibFolder = UseDebugLibs ? "Debug" : "Release";
 
 			// filtered out in the toolchain
-			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, "ARMv7", ICULibFolder, ICULibName));
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, "ARM64", ICULibFolder, ICULibName));
-			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, "x86", ICULibFolder, ICULibName));
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, "x64", ICULibFolder, ICULibName));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))

@@ -16,7 +16,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
@@ -171,9 +172,10 @@ namespace AutomationTool
 
 		public override void ExecuteBuild()
 		{
-			string BucketName = ParseRequiredStringParam("Bucket");
-			FileReference CredentialsFile = ParseRequiredFileReferenceParam("CredentialsFile");
-			string CredentialsKey = ParseRequiredStringParam("CredentialsKey");
+			bool bLocal = ParseParam("Local");
+			string BucketName = !bLocal ? ParseRequiredStringParam("Bucket") : "";
+			FileReference CredentialsFile = !bLocal ? ParseRequiredFileReferenceParam("CredentialsFile") : null;
+			string CredentialsKey = !bLocal ? ParseRequiredStringParam("CredentialsKey") : "";
 			DirectoryReference CacheDir = ParseRequiredDirectoryReferenceParam("CacheDir");
 			DirectoryReference FilterDir = ParseRequiredDirectoryReferenceParam("FilterDir");
 			int Days = ParseParamInt("Days", 7);
@@ -182,18 +184,19 @@ namespace AutomationTool
 			string KeyPrefix = ParseParamValue("KeyPrefix", "");
 			bool bReset = ParseParam("Reset");
 
-			// The credentials to upload with
-			AWSCredentials Credentials;
-
 			// Try to get the credentials by the key passed in from the script
-			CredentialProfileStoreChain CredentialsChain = new CredentialProfileStoreChain(CredentialsFile.FullName);
-			if (!CredentialsChain.TryGetAWSCredentials(CredentialsKey, out Credentials))
+			AWSCredentials Credentials = null;
+			if (!bLocal)
 			{
-				throw new AutomationException("Unknown credentials key: {0}", CredentialsKey);
+				CredentialProfileStoreChain CredentialsChain = new CredentialProfileStoreChain(CredentialsFile.FullName);
+				if (!CredentialsChain.TryGetAWSCredentials(CredentialsKey, out Credentials))
+				{
+					throw new AutomationException("Unknown credentials key: {0}", CredentialsKey);
+				}
 			}
 
 			// Create the new client
-			using (AmazonS3Client Client = new AmazonS3Client(Credentials, Region))
+			using (AmazonS3Client Client = !bLocal ? new AmazonS3Client(Credentials, Region) : null)
 			{
 				using (SemaphoreSlim RequestSemaphore = new SemaphoreSlim(4))
 				{
@@ -246,11 +249,11 @@ namespace AutomationTool
 					}
 
 					// Create the working directory
-					DirectoryReference WorkingDir = DirectoryReference.Combine(EngineDirectory, "Saved", "UploadDDC");
+					DirectoryReference WorkingDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Saved", "UploadDDC");
 					DirectoryReference.CreateDirectory(WorkingDir);
 
 					// Get the path to the manifest
-					FileReference RootManifestFile = FileReference.Combine(CommandUtils.RootDirectory, RootManifestPath);
+					FileReference RootManifestFile = FileReference.Combine(Unreal.RootDirectory, RootManifestPath);
 
 					// Read the old root manifest
 					RootManifest OldRootManifest = new RootManifest();
@@ -519,13 +522,23 @@ namespace AutomationTool
 								UploadFile(Client, BucketName, NewBundleManifestFile, 0, Entry.Key, RequestSemaphore, null);
 							}
 
+							string LocalBundleManifestPath = String.Format("file://{0}", NewBundleManifestFile.FullName.Replace('\\', '/'));
+							if (bLocal && NewRootManifest.Entries.LastOrDefault()?.Key != LocalBundleManifestPath)
+							{
+								RootManifest.Entry NewEntry = new RootManifest.Entry();
+								NewEntry.CreateTime = UtcNow;
+								NewEntry.Key = LocalBundleManifestPath;
+								NewRootManifest.Entries.Add(NewEntry);
+							}
+
 							// Overwrite all the existing manifests
-							if (AllowSubmit)
+							int ChangeNumber = 0;
+							if (AllowSubmit || (P4Enabled && bLocal))
 							{
 								List<string> ExistingFiles = P4.Files(CommandUtils.MakePathSafeToUseWithCommandLine(RootManifestFile.FullName));
 
 								// Create a changelist containing the new manifest
-								int ChangeNumber = P4.CreateChange(Description: "Updating DDC bundle manifest");
+								ChangeNumber = P4.CreateChange(Description: "Updating DDC bundle manifest");
 								if (ExistingFiles.Count > 0)
 								{
 									P4.Edit(ChangeNumber, CommandUtils.MakePathSafeToUseWithCommandLine(RootManifestFile.FullName));
@@ -536,7 +549,14 @@ namespace AutomationTool
 									NewRootManifest.Save(RootManifestFile);
 									P4.Add(ChangeNumber, CommandUtils.MakePathSafeToUseWithCommandLine(RootManifestFile.FullName));
 								}
+							}
+							else if (bLocal)
+							{
+								NewRootManifest.Save(RootManifestFile);
+							}
 
+							if (AllowSubmit)
+							{
 								// Submit it
 								int SubmittedChangeNumber;
 								P4.Submit(ChangeNumber, out SubmittedChangeNumber, true);
@@ -596,17 +616,21 @@ namespace AutomationTool
 
 		private bool TryDownloadFile(AmazonS3Client Client, string BucketName, string Key, FileReference OutputFile)
 		{
+			if (Client == null)
+			{
+				return false;
+			}
 			try
 			{
 				GetObjectRequest Request = new GetObjectRequest();
 				Request.BucketName = BucketName;
 				Request.Key = Key;
 
-				using (GetObjectResponse Response = Client.GetObject(Request))
+				using (GetObjectResponse Response = Client.GetObjectAsync(Request).Result)
 				{
 					if ((int)Response.HttpStatusCode >= 200 && (int)Response.HttpStatusCode <= 299)
 					{
-						Response.WriteResponseStreamToFile(OutputFile.FullName);
+						Response.WriteResponseStreamToFileAsync(OutputFile.FullName, false, CancellationToken.None).Wait();
 						return true;
 					}
 				}
@@ -644,7 +668,7 @@ namespace AutomationTool
 				if (Info.Exists)
 				{
 					string Key = new FileReference(Info).MakeRelativeTo(BaseDir).Replace('\\', '/');
-					Files.Add(new DerivedDataFile(Info, Path));
+					Files.Add(new DerivedDataFile(Info, Key));
 				}
 			}
 			catch (Exception Ex)
@@ -701,6 +725,10 @@ namespace AutomationTool
 
 		protected void UploadFile(AmazonS3Client Client, string BucketName, FileReference File, long Length, string Key, SemaphoreSlim Semaphore, UploadState State)
 		{
+			if (Client == null)
+			{
+				return;
+			}
 			try
 			{
 				Retry(() => UploadFileInner(Client, BucketName, File, Length, Key, Semaphore, State), 10);
@@ -724,7 +752,7 @@ namespace AutomationTool
 					Request.Key = Key;
 					Request.FilePath = File.FullName;
 					Request.CannedACL = S3CannedACL.NoACL;
-					Client.PutObject(Request);
+					Client.PutObjectAsync(Request).Wait();
 				}
 
 				if (State != null)
@@ -760,8 +788,7 @@ namespace AutomationTool
 				DeleteObjectRequest Request = new DeleteObjectRequest();
 				Request.BucketName = BucketName;
 				Request.Key = Key;
-				Client.DeleteObject(Request);
-
+				Client.DeleteObjectAsync(Request).Wait();
 				if (State != null)
 				{
 					Interlocked.Increment(ref State.NumFiles);

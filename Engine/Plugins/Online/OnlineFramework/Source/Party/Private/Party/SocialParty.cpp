@@ -159,7 +159,7 @@ bool USocialParty::ApplyCrossplayRestriction(FPartyJoinApproval& JoinApproval, c
 	TArray<FString> MemberPlatforms;
 	for (const UPartyMember* Member : GetPartyMembers())
 	{
-		const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatform();
+		const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatformDataPlatform();
 		if (Platform.IsCrossplayWith(MemberPlatform))
 		{
 			const ECrossplayPreference MemberCrossplayPreference = Member->GetRepData().GetCrossplayPreference();
@@ -263,43 +263,66 @@ bool USocialParty::HasUserBeenInvited(const USocialUser& User) const
 
 bool USocialParty::CanInviteUser(const USocialUser& User) const
 {
-	return CanInviteUserInternal(User);
+	return CanInviteUserInternal(User) == ESocialPartyInviteFailureReason::Success;
 }
 
-bool USocialParty::CanInviteUserInternal(const USocialUser& User) const
+ESocialPartyInviteFailureReason USocialParty::CanInviteUserInternal(const USocialUser& User) const
 {
 	// Only users that are online can be invited
 	if (!User.IsOnline() && !User.CanReceiveOfflineInvite())
 	{
-		return false;
+		return ESocialPartyInviteFailureReason::NotOnline;
 	}
 
 	if (!CurrentConfig.bIsAcceptingMembers && CurrentConfig.NotAcceptingMembersReason != (int32)EPartyJoinDenialReason::PartyPrivate)
 	{
 		// We aren't accepting members for a reason other than party privacy, so a direct invite won't help
-		return false;
+		return ESocialPartyInviteFailureReason::NotAcceptingMembers;
 	}
 
 	//@todo DanH Party: The problem with CanLocalUserInvite is that it the "friend" restriction is applied to mcp friends only, so a console friend doesn't count (but should) #required
 	//		Need to check in with OGS about that...
 	if (!OssParty->CanLocalUserInvite(*OwningLocalUserId))
 	{
-		return false;
+		return ESocialPartyInviteFailureReason::OssValidationFailed;
 	}
 
 	if (GetPartyMember(User.GetUserId(ESocialSubsystem::Primary)))
 	{
 		// Already in the party
-		return false;
+		return ESocialPartyInviteFailureReason::AlreadyInParty;
 	}
 
-	return true;
+	const bool bIsPrimaryRateLimited = IsInviteRateLimited(User, ESocialSubsystem::Primary);
+	const bool bIsPlatformMissingOrRateLimited = !User.GetUserId(ESocialSubsystem::Platform).IsValid() || IsInviteRateLimited(User, ESocialSubsystem::Platform);
+	if (bIsPrimaryRateLimited && bIsPlatformMissingOrRateLimited)
+	{
+			return ESocialPartyInviteFailureReason::InviteRateLimitExceeded;
+	}
+	
+	return ESocialPartyInviteFailureReason::Success;
 }
 
-bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
+bool USocialParty::IsInviteRateLimited(const USocialUser& User, ESocialSubsystem SubsystemType) const
+{
+	const FUniqueNetIdRepl UserId = User.GetUserId(SubsystemType);
+
+	if (UserId.IsValid())
+	{
+		const double* LastInviteTimestamp = LastInviteSentById.Find(UserId);
+		const double UserInviteCooldown = SubsystemType == ESocialSubsystem::Primary ? PrimaryUserInviteCooldown : PlatformUserInviteCooldown;
+
+		return (LastInviteTimestamp != nullptr && FPlatformTime::Seconds() < *LastInviteTimestamp + UserInviteCooldown);
+	}
+
+	return false;
+}
+
+bool USocialParty::TryInviteUser(const USocialUser& UserToInvite, const ESocialPartyInviteMethod InviteMethod)
 {
 	bool bSentInvite = false;
-	if (CanInviteUser(UserToInvite))
+	ESocialPartyInviteFailureReason CanInviteResult = CanInviteUserInternal(UserToInvite);
+	if (CanInviteResult == ESocialPartyInviteFailureReason::Success)
 	{
 		const bool bPreferPlatformInvite = USocialSettings::ShouldPreferPlatformInvites();
 		const bool bMustSendPrimaryInvite = USocialSettings::MustSendPrimaryInvites();
@@ -312,7 +335,9 @@ bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
 			bIsOnlineOnPlatform = PlatformPresenceInfo->bIsOnline;
 		}
 
-		if ((UserPlatformId.IsValid() && bIsOnlineOnPlatform) && (!UserPrimaryId.IsValid() || bPreferPlatformInvite))
+		if ((UserPlatformId.IsValid() && bIsOnlineOnPlatform) && 
+			(!UserPrimaryId.IsValid() || bPreferPlatformInvite) && 
+			!IsInviteRateLimited(UserToInvite, ESocialSubsystem::Platform))
 		{
 			// Platform invites are sent as session invites on platform OSS' - this way we get the OS popups one would expect on XBox, PS4, etc.
 			bool bSentPlatformInvite = false;
@@ -320,7 +345,7 @@ bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
 			const IOnlineSessionPtr PlatformSessionInterface = Online::GetSessionInterface(GetWorld(), SocialOssName);
 			if (PlatformSessionInterface)
 			{
-				FUniqueNetIdRepl LocalUserPlatformId = GetOwningLocalMember().GetRepData().GetPlatformUniqueId();
+				FUniqueNetIdRepl LocalUserPlatformId = GetOwningLocalMember().GetRepData().GetPlatformDataUniqueId();
 
 				//@todo FORT-244991 Temporarily fall back on grabbing the LocalUserPlatformId from the Platform identity interface
 				if (!LocalUserPlatformId.IsValid())
@@ -337,21 +362,23 @@ bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
 					bSentPlatformInvite = PlatformSessionInterface->SendSessionInviteToFriend(*LocalUserPlatformId, NAME_PartySession, *UserPlatformId);
 				}
 			}
-			OnInviteSentInternal(ESocialSubsystem::Platform, UserToInvite, bSentPlatformInvite);
+			ESocialPartyInviteFailureReason FailureReason = bSentPlatformInvite ? ESocialPartyInviteFailureReason::Success : ESocialPartyInviteFailureReason::PlatformInviteFailed;
+			OnInviteSentInternal(ESocialSubsystem::Platform, UserToInvite, bSentPlatformInvite, FailureReason, InviteMethod);
 			bSentInvite |= bSentPlatformInvite;
 		}
-		if ((!bSentInvite || bMustSendPrimaryInvite) && UserPrimaryId.IsValid())
+		if ((!bSentInvite || bMustSendPrimaryInvite) && UserPrimaryId.IsValid() && !IsInviteRateLimited(UserToInvite, ESocialSubsystem::Primary))
 		{
 			// Primary subsystem invites can be sent directly to the user via the party interface
 			const IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 			const bool bSentPrimaryInvite = PartyInterface->SendInvitation(*OwningLocalUserId, GetPartyId(), *UserPrimaryId);
-			OnInviteSentInternal(ESocialSubsystem::Primary, UserToInvite, bSentPrimaryInvite);
+			ESocialPartyInviteFailureReason FailureReason = bSentPrimaryInvite ? ESocialPartyInviteFailureReason::Success : ESocialPartyInviteFailureReason::PartyInviteFailed;
+			OnInviteSentInternal(ESocialSubsystem::Primary, UserToInvite, bSentPrimaryInvite, FailureReason, InviteMethod);
 			bSentInvite |= bSentPrimaryInvite;
 		}
 	}
 	else
 	{
-		OnInviteSentInternal(ESocialSubsystem::MAX, UserToInvite, false);
+		OnInviteSentInternal(ESocialSubsystem::MAX, UserToInvite, false, CanInviteResult, InviteMethod);
 	}
 	return bSentInvite;
 }
@@ -451,7 +478,7 @@ void USocialParty::InitializePartyInternal()
 	PartyInterface->AddOnPartyStateChangedDelegate_Handle(FOnPartyStateChangedDelegate::CreateUObject(this, &USocialParty::HandlePartyStateChanged));
 
 	PartyInterface->AddOnPartyMemberJoinedDelegate_Handle(FOnPartyMemberJoinedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJoined));
-	PartyInterface->AddOnPartyJIPDelegate_Handle(FOnPartyJIPDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJIP));
+	PartyInterface->AddOnPartyJIPResponseDelegate_Handle(FOnPartyJIPResponseDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJIP));
 	PartyInterface->AddOnPartyMemberDataReceivedDelegate_Handle(FOnPartyMemberDataReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberDataReceived));
 	PartyInterface->AddOnPartyMemberPromotedDelegate_Handle(FOnPartyMemberPromotedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberPromoted));
 	PartyInterface->AddOnPartyMemberExitedDelegate_Handle(FOnPartyMemberExitedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberExited));
@@ -591,7 +618,7 @@ void USocialParty::OnLocalPlayerIsLeaderChanged(bool bIsLeader)
 		TArray<FString> SessionsToCreate;
 		for (UPartyMember* Member : GetPartyMembers())
 		{
-			const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatform();
+			const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatformDataPlatform();
 			const FString& MemberSessionType = MemberPlatform.GetPlatformDescription().SessionType;
 			if (!MemberSessionType.IsEmpty())
 			{
@@ -629,9 +656,24 @@ void USocialParty::OnLeftPartyInternal(EMemberExitedReason Reason)
 	OnPartyLeft().Broadcast(Reason);
 }
 
-void USocialParty::OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful)
+void USocialParty::OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful, const ESocialPartyInviteFailureReason FailureReason, const ESocialPartyInviteMethod InviteMethod)
 {
+	// If the invite is successful, save the current timestamp to stop invites to this user 
+	// for a while (defined in PlatformUserInviteCooldown/PrimaryUserInviteCooldown)
+	if (bWasSuccessful)
+	{
+		const FUniqueNetIdRepl UserId = InvitedUser.GetUserId(SubsystemType);
+
+		if (UserId.IsValid())
+		{
+			LastInviteSentById.FindOrAdd(UserId) = FPlatformTime::Seconds();
+		}
+	}
+	
 	OnInviteSent().Broadcast(InvitedUser);
+
+	// Call the deprecated method after the current OnInviteSentInternal
+	OnInviteSentInternal(SubsystemType, InvitedUser, bWasSuccessful);
 }
 
 UPartyMember* USocialParty::GetOrCreatePartyMember(const FUniqueNetId& MemberId)
@@ -778,7 +820,7 @@ void USocialParty::HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId
 		{
 			if (Member->GetPrimaryNetId() == SenderId)
 			{
-				MemberPlatform = Member->GetRepData().GetPlatform();
+				MemberPlatform = Member->GetRepData().GetPlatformDataPlatform();
 				break;
 			}
 		}
@@ -898,12 +940,20 @@ void USocialParty::HandlePartyMemberJoined(const FUniqueNetId& LocalUserId, cons
 	}
 }
 
-void USocialParty::HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success)
+void USocialParty::HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success, int32 DeniedResultCode)
 {
 	if (PartyId == GetPartyId())
 	{
+		FString DeniedResultCodeString = StaticEnum<EPartyJoinDenialReason>()->GetNameStringByValue(DeniedResultCode);
+		if (DeniedResultCodeString.IsEmpty())
+		{
+			UE_LOG(LogParty, Warning, TEXT("Failed to convert JIP result code. Value=%d"), DeniedResultCode);
+			DeniedResultCodeString = TEXT("Invalid");
+		}
+
 		// We are allowed to join the party.. start the JIP flow. 
 		OnPartyJIPApprovedEvent.Broadcast(PartyId, Success);
+		OnPartyJIPResponseEvent.Broadcast(PartyId, Success, DeniedResultCodeString);
 	}
 }
 
@@ -953,10 +1003,10 @@ void USocialParty::HandleMemberInitialized(UPartyMember* Member)
 {
 	if (IsLocalPlayerPartyLeader())
 	{
-		Member->GetRepData().OnPlatformUniqueIdChanged().AddUObject(this, &USocialParty::HandleMemberPlatformUniqueIdChanged, Member);
-		Member->GetRepData().OnPlatformSessionIdChanged().AddUObject(this, &USocialParty::HandleMemberSessionIdChanged, Member);
+		Member->GetRepData().OnPlatformDataUniqueIdChanged().AddUObject(this, &USocialParty::HandleMemberPlatformUniqueIdChanged, Member);
+		Member->GetRepData().OnPlatformDataSessionIdChanged().AddUObject(this, &USocialParty::HandleMemberSessionIdChanged, Member);
 
-		HandleMemberPlatformUniqueIdChanged(Member->GetRepData().GetPlatformUniqueId(), Member);
+		HandleMemberPlatformUniqueIdChanged(Member->GetRepData().GetPlatformDataUniqueId(), Member);
 	}
 }
 
@@ -1020,7 +1070,7 @@ void USocialParty::HandleRemoveLocalPlayerComplete(const FUniqueNetId& LocalUser
 		if (LocalUserId == *PartyMember->GetPrimaryNetId())
 		{
 			PartyMember->NotifyRemovedFromParty(EMemberExitedReason::Unknown);
-			PartyMember->MarkPendingKill();
+			PartyMember->MarkAsGarbage();
 			PartyMembersById.Remove(PartyMember->GetPrimaryNetId());
 			break;
 		}
@@ -1121,7 +1171,7 @@ void USocialParty::HandlePartyMemberExited(const FUniqueNetId& LocalUserId, cons
 					UpdatePlatformSessionLeader(SessionType.GetValue());
 				}
 				LeftMember.NotifyRemovedFromParty(ExitReason);
-				LeftMember.MarkPendingKill();
+				LeftMember.MarkAsGarbage();
 
 				RemovePlayerFromReservationBeacon(LocalUserId, MemberId);
 
@@ -1192,7 +1242,7 @@ bool USocialParty::IsCurrentlyCrossplaying() const
 	TArray<FUserPlatform> AllPlatformsPresent;
 	for (const UPartyMember* Member : GetPartyMembers())
 	{
-		const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatform();
+		const FUserPlatform& MemberPlatform = Member->GetRepData().GetPlatformDataPlatform();
 		if (!AllPlatformsPresent.Contains(MemberPlatform))
 		{
 			for (const FUserPlatform& Platform : AllPlatformsPresent)
@@ -1452,11 +1502,11 @@ void USocialParty::ConnectToReservationBeacon()
 			IOnlineSessionPtr SessionInterface = Online::GetSessionInterface(World);
 			if (SessionInterface.IsValid())
 			{
-				const FName GameSessionName = GetGameSessionName();
-				if (FNamedOnlineSession* Session = SessionInterface->GetNamedSession(GameSessionName))
+				const FName PartyGameSessionName = GetGameSessionName();
+				if (FNamedOnlineSession* Session = SessionInterface->GetNamedSession(PartyGameSessionName))
 				{
 					FString URL;
-					if (ensure(SessionInterface->GetResolvedConnectString(GameSessionName, URL, NAME_BeaconPort)))
+					if (ensure(SessionInterface->GetResolvedConnectString(PartyGameSessionName, URL, NAME_BeaconPort)))
 					{
 						// Reconnect to the reservation beacon to maintain our place in the game (just until actual joined, holds place for all party members)
 						ReservationBeaconClient = World->SpawnActor<APartyBeaconClient>(ReservationBeaconClientClass);
@@ -1753,7 +1803,7 @@ void USocialParty::FinalizePartyLeave(EMemberExitedReason Reason)
 	for (UPartyMember* PartyMember : GetPartyMembers())
 	{
 		PartyMember->NotifyRemovedFromParty(EMemberExitedReason::Unknown);
-		PartyMember->MarkPendingKill();
+		PartyMember->MarkAsGarbage();
 	}
 
 	OnLeftPartyInternal(Reason);
@@ -1770,7 +1820,7 @@ void USocialParty::CreatePlatformSession(const FString& SessionType)
 		FUniqueNetIdRepl OwnerPrimaryId;
 		for (UPartyMember* Member : GetPartyMembers())
 		{
-			if (SessionType == Member->GetRepData().GetPlatform().GetPlatformDescription().SessionType)
+			if (SessionType == Member->GetRepData().GetPlatformDataPlatform().GetPlatformDescription().SessionType)
 			{
 				OwnerPrimaryId = Member->GetPrimaryNetId();
 				if (Member->IsLocalPlayer())
@@ -1834,4 +1884,15 @@ void USocialParty::UpdatePlatformSessionLeader(const FString& SessionType)
 			GetMutableRepData().ClearPlatformSessionInfo(SessionType);
 		}
 	}
+}
+
+bool USocialParty::ShouldAlwaysJoinPlatformSession(const FSessionId& SessionId) const
+{
+	// Don't force a join, let other logic dictate if we should
+	return true;
+}
+
+void USocialParty::JoinSessionCompleteAnalytics(const FSessionId& SessionId, const FString& JoinBootableGroupSessionResult)
+{
+	// Work is to be done in the override
 }

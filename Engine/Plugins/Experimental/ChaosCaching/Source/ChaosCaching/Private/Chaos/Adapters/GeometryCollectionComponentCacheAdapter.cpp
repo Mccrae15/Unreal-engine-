@@ -8,8 +8,12 @@
 #include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "Chaos/ChaosSolverActor.h"
+#include "GeometryCollection/GeometryCollectionAlgo.h"
 
 FName FEnableStateEvent::EventName("GC_Enable");
+FName FBreakingEvent::EventName("GC_Breaking");
+FName FCollisionEvent::EventName("GC_Collision");
+FName FTrailingEvent::EventName("GC_Trailing");
 
 namespace Chaos
 {
@@ -38,19 +42,32 @@ namespace Chaos
 	{
 		return EngineAdapterPriotityBegin;
 	}
-
+	
 	void FGeometryCollectionCacheAdapter::Record_PostSolve(UPrimitiveComponent* InComp, const FTransform& InRootTransform, FPendingFrameWrite& OutFrame, Chaos::FReal InTime) const
 	{
+
+		EnsureIsInPhysicsThreadContext();
+
+
 		using FClusterParticle = Chaos::FPBDRigidClusteredParticleHandle;
 		using FRigidParticle = Chaos::FPBDRigidParticleHandle;
 
 		UGeometryCollectionComponent*    Comp  = CastChecked<UGeometryCollectionComponent>(InComp);
 		FGeometryCollectionPhysicsProxy* Proxy = Comp->GetPhysicsProxy();
-
+		
 		if(!Proxy)
 		{
 			return;
 		}
+
+		if (!CachedData.Contains(Proxy))
+		{
+			return;
+		}
+
+		const FTransform WorldToComponent = Proxy->GetSimParameters().WorldTransform.Inverse();
+
+		const FCachedEventData& ProxyCachedEventData = CachedData[Proxy];
 
 		const Chaos::FPhysicsSolver* Solver         = Proxy->GetSolver<Chaos::FPhysicsSolver>();
 		const FGeometryCollection*   RestCollection = Proxy->GetSimParameters().RestCollection;
@@ -60,10 +77,18 @@ namespace Chaos
 			return;
 		}
 
+		const FPhysScene* Scene = static_cast<FPhysScene*>(Solver->PhysSceneHack);
+		if (!Scene)
+		{
+			return;
+		}
+
 		FGeometryDynamicCollection&            Collection       = Proxy->GetPhysicsCollection();
-		const TManagedArray<int32>&            TransformIndices = RestCollection->TransformIndex;
-		const TManagedArray<FTransform>&       Transforms       = Collection.Transform;
-		const TArray<FBreakingData>& Breaks                     = Solver->GetEvolution()->GetRigidClustering().GetAllClusterBreakings();
+		const TManagedArray<FTransform>&       MassToLocal		= Collection.MassToLocal;
+		const TManagedArray<int32>&            Parents			= RestCollection->Parent;
+		const TManagedArray<TSet<int32>>&	   Children         = RestCollection->Children;
+		const TArray<FBreakingData>&		   Breaks           = Solver->GetEvolution()->GetRigidClustering().GetAllClusterBreakings();
+		const FTransform					   WorldToActor		= InRootTransform.Inverse();
 
 		// A transform index exists for each 'real' (i.e. leaf node in the rest collection)
 		const int32 NumTransforms = Collection.NumElements(FGeometryCollection::TransformGroup);
@@ -71,22 +96,36 @@ namespace Chaos
 		// Pre-alloc once for worst case.
 		OutFrame.PendingParticleData.Reserve(NumTransforms);
 
-		TArray<TGeometryParticleHandle<Chaos::FReal, 3>*> RelatedBreaks;
+		// Record the cluster indices that released this frame. Those particles become
+		// inactive: to make random access reads convenient, we set their transforms to identity.
+		TSet<int32> ReleasedClusters;
+		ReleasedClusters.Reserve(Breaks.Num());
+		
+		TArray<int32> RelatedBreaks;
 		RelatedBreaks.Reserve(Breaks.Num());
+		
 		for(const FBreakingData& Break : Breaks)
 		{
-			// Accessing the GT particle here to pull the proxy - while unsafe we're recording a proxy currently so it should remain valid.
-			// No GT data is being read from the particle
-			Chaos::FGeometryParticle* GTParticleUnsafe = Break.Particle->GTGeometryParticle();
-			IPhysicsProxyBase*        BaseProxy        = GTParticleUnsafe->GetProxy();
-			if(BaseProxy->GetType() == EPhysicsProxyType::GeometryCollectionType)
+			// Is the proxy pending destruction? If they are no longer tracked by the PhysScene, the proxy is deleted or pending deletion.
+			if (Scene->GetOwningComponent<UPrimitiveComponent>(Break.Proxy) == nullptr)
 			{
-				FGeometryCollectionPhysicsProxy* ConcreteProxy = static_cast<FGeometryCollectionPhysicsProxy*>(BaseProxy);
+				continue;
+			}
+			
+			if(Break.Proxy->GetType() == EPhysicsProxyType::GeometryCollectionType)
+			{
+				FGeometryCollectionPhysicsProxy* ConcreteProxy = static_cast<FGeometryCollectionPhysicsProxy*>(Break.Proxy);
 
 				if(ConcreteProxy == Proxy)
 				{
-					// The break particle belongs to our proxy
-					RelatedBreaks.Add(Break.Particle);
+					// Record the cluster it belonged to.
+					ReleasedClusters.Add(Parents[Break.TransformGroupIndex]);
+
+					// Force a break on all children of the cluster
+					for (int32 ChildToBreak : Children[Parents[Break.TransformGroupIndex]])
+					{
+						RelatedBreaks.AddUnique(ChildToBreak);
+					}
 				}
 			}
 		}
@@ -109,38 +148,108 @@ namespace Chaos
 					FPendingParticleWrite& Pending = OutFrame.PendingParticleData.Last();
 
 					Pending.ParticleIndex = TransformIndex;
-					Pending.PendingTransform = FTransform(Handle->R(), Handle->X()).GetRelativeTransform(InRootTransform);
+					
+					// All recorded transforms are in actor space, ie relative to the Cache Manager making the recording.
+					FTransform LocalTransform = MassToLocal[TransformIndex].Inverse() * FTransform(Handle->R(), Handle->X());
+					FTransform ActorSpaceTransform = LocalTransform * WorldToActor;
+					Pending.PendingTransform = ActorSpaceTransform;
 				}
 
-				int32 BreakIndex = RelatedBreaks.Find(Handle);
-				if(BreakIndex != INDEX_NONE)
+				if (RelatedBreaks.Contains(TransformIndex))
 				{
 					OutFrame.PushEvent(FEnableStateEvent::EventName, InTime, FEnableStateEvent(TransformIndex, true));
 				}
 			}
 		}
 
+		// If a cluster particle released, set its transform to identity.
+		for (int32 TransformIndex : ReleasedClusters)
+		{
+			if (TransformIndex > INDEX_NONE)
+			{
+				FClusterParticle* Handle = Proxy->GetParticles()[TransformIndex];
+				if (Handle)
+				{
+					OutFrame.PendingParticleData.AddDefaulted();
+					FPendingParticleWrite& Pending = OutFrame.PendingParticleData.Last();
+					Pending.ParticleIndex = TransformIndex;
+					FTransform LocalTransform = MassToLocal[TransformIndex].Inverse() * FTransform(Handle->R(), Handle->X());
+					FTransform ActorSpaceTransform = LocalTransform * WorldToActor;
+					Pending.PendingTransform = ActorSpaceTransform;
+					Pending.bPendingDeactivate = true;
+				}
+			}
+		}
+
+		if (Proxy->GetSimParameters().bGenerateBreakingData && BreakingDataArray && ProxyCachedEventData.ProxyBreakingDataIndices)
+		{
+			for (int32 Index : *ProxyCachedEventData.ProxyBreakingDataIndices)
+			{
+				if (BreakingDataArray->IsValidIndex(Index))
+				{
+					const FBreakingData& BreakingData = (*BreakingDataArray)[Index];
+					if (BreakingData.TransformGroupIndex > INDEX_NONE)
+					{
+						OutFrame.PushEvent(FBreakingEvent::EventName, InTime, FBreakingEvent(BreakingData.TransformGroupIndex, BreakingData, WorldToComponent));
+					}
+				}
+				
+			}
+		}
+		
+		if (Proxy->GetSimParameters().bGenerateCollisionData && CollisionDataArray && ProxyCachedEventData.ProxyCollisionDataIndices)
+		{
+			for (int32 Index : *ProxyCachedEventData.ProxyCollisionDataIndices)
+			{
+				if (CollisionDataArray->IsValidIndex(Index))
+				{
+					const FCollidingData& CollisionData = (*CollisionDataArray)[Index];
+					OutFrame.PushEvent(FCollisionEvent::EventName, InTime, FCollisionEvent(CollisionData, WorldToComponent));
+				}
+
+			}
+		}
+		
+		if (Proxy->GetSimParameters().bGenerateTrailingData && TrailingDataArray && ProxyCachedEventData.ProxyTrailingDataIndices)
+		{
+			for (int32 Index : *ProxyCachedEventData.ProxyTrailingDataIndices)
+			{
+				if (TrailingDataArray->IsValidIndex(Index))
+				{
+					const FTrailingData& TrailingData = (*TrailingDataArray)[Index];
+					if (TrailingData.TransformGroupIndex > INDEX_NONE)
+					{
+						OutFrame.PushEvent(FTrailingEvent::EventName, InTime, FTrailingEvent(TrailingData.TransformGroupIndex, TrailingData, WorldToComponent));
+					}
+				}
+
+			}
+		}
+
 		// Never going to change again till freed after writing to the cache so free up the extra space we reserved
 		OutFrame.PendingParticleData.Shrink();
 	}
-
-	void FGeometryCollectionCacheAdapter::Playback_PreSolve(UPrimitiveComponent*                               InComponent,
-															UChaosCache*                                       InCache,
+	
+	void FGeometryCollectionCacheAdapter::Playback_PreSolve(UPrimitiveComponent*							   InComponent,
+															UChaosCache*									   InCache,
 															Chaos::FReal                                       InTime,
-															FPlaybackTickRecord&                               TickRecord,
+															FPlaybackTickRecord&							   TickRecord,
 															TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids) const
 	{
+		EnsureIsInPhysicsThreadContext();
+		
 		using FClusterParticle = Chaos::FPBDRigidClusteredParticleHandle;
 		using FRigidParticle = Chaos::FPBDRigidParticleHandle;
 
 		UGeometryCollectionComponent*    Comp  = CastChecked<UGeometryCollectionComponent>(InComponent);
 		FGeometryCollectionPhysicsProxy* Proxy = Comp->GetPhysicsProxy();
-
+		
 		if(!Proxy)
 		{
 			return;
 		}
 
+		const FTransform ComponentToWorld = Proxy->GetSimParameters().WorldTransform;
 		const FGeometryCollection* RestCollection = Proxy->GetSimParameters().RestCollection;
 		Chaos::FPhysicsSolver*     Solver         = Proxy->GetSolver<Chaos::FPhysicsSolver>();
 
@@ -150,8 +259,7 @@ namespace Chaos
 		}
 
 		FGeometryDynamicCollection&      Collection       = Proxy->GetPhysicsCollection();
-		const TManagedArray<int32>&      TransformIndices = RestCollection->TransformIndex;
-		const TManagedArray<FTransform>& Transforms       = Collection.Transform;
+		const TManagedArray<FTransform>& MassToLocal	  = Collection.MassToLocal;
 		TArray<FClusterParticle*>        Particles        = Proxy->GetParticles();
 
 		FCacheEvaluationContext Context(TickRecord);
@@ -163,6 +271,9 @@ namespace Chaos
 
 		const int32                      NumEventTracks = EvaluatedResult.Events.Num();
 		const TArray<FCacheEventHandle>* EnableEvents   = EvaluatedResult.Events.Find(FEnableStateEvent::EventName);
+		const TArray<FCacheEventHandle>* BreakingEvents = EvaluatedResult.Events.Find(FBreakingEvent::EventName);
+		const TArray<FCacheEventHandle>* CollisionEvents = EvaluatedResult.Events.Find(FCollisionEvent::EventName);
+		const TArray<FCacheEventHandle>* TrailingEvents = EvaluatedResult.Events.Find(FTrailingEvent::EventName);
 
 		if(EnableEvents)
 		{
@@ -175,26 +286,28 @@ namespace Chaos
 					{
 						Chaos::FPBDRigidClusteredParticleHandle* ChildParticle = Particles[Event->Index];
 						
-						if(ChildParticle->ObjectState() != EObjectStateType::Kinematic)
+						if (ChildParticle)
 						{
-							// If a field or other external actor set the particle to static or dynamic we no longer apply the cache
-							continue;
-						}
-
-						if(FRigidParticle* ClusterParent = ChildParticle->ClusterIds().Id)
-						{
-							if(FClusterParticle* Parent = ClusterParent->CastToClustered())
+							if (ChildParticle->ObjectState() != EObjectStateType::Kinematic)
 							{
-								TArray<FRigidParticle*>& Cluster = NewClusters.FindOrAdd(Parent);
-								Cluster.Add(ChildParticle);
+								// If a field or other external actor set the particle to static or dynamic we no longer apply the cache
+								continue;
+							}
+
+							if (FRigidParticle* ClusterParent = ChildParticle->ClusterIds().Id)
+							{
+								if (FClusterParticle* Parent = ClusterParent->CastToClustered())
+								{
+									TArray<FRigidParticle*>& Cluster = NewClusters.FindOrAdd(Parent);
+									Cluster.Add(ChildParticle);
+								}
+							}
+							else
+							{
+								// This is a cluster parent
+								ChildParticle->SetDisabled(!Event->bEnable);
 							}
 						}
-						else
-						{
-							// This is a cluster parent
-							ChildParticle->SetDisabled(!Event->bEnable);
-						}
-						
 					}
 				}
 			}
@@ -231,6 +344,145 @@ namespace Chaos
 			}
 		}
 
+		if (Proxy->GetSimParameters().bGenerateBreakingData && BreakingEvents)
+		{
+			const FSolverBreakingEventFilter* SolverBreakingEventFilter = Solver->GetEventFilters()->GetBreakingFilter();
+
+			for (const FCacheEventHandle& Handle : *BreakingEvents)
+			{
+				if (FBreakingEvent* Event = Handle.Get<FBreakingEvent>())
+				{
+					if (Particles.IsValidIndex(Event->Index))
+					{
+						Chaos::FPBDRigidClusteredParticleHandle* Particle = Particles[Event->Index];
+
+						if (Particle)
+						{
+							if (Particle->ObjectState() != EObjectStateType::Kinematic)
+							{
+								// If a field or other external actor set the particle to static or dynamic we no longer apply the cache
+								continue;
+							}
+
+							FBreakingData CachedBreak;
+							CachedBreak.Proxy = Proxy;
+							CachedBreak.Location = ComponentToWorld.TransformPosition(Event->Location);
+							CachedBreak.Velocity = ComponentToWorld.TransformVector(Event->Velocity);
+							CachedBreak.AngularVelocity = Event->AngularVelocity;
+							CachedBreak.Mass = Event->Mass;
+							CachedBreak.BoundingBox = TAABB<FReal, 3>(Event->BoundingBoxMin, Event->BoundingBoxMax);
+							CachedBreak.BoundingBox = CachedBreak.BoundingBox.TransformedAABB(ComponentToWorld);
+
+							if (!SolverBreakingEventFilter->Enabled() || SolverBreakingEventFilter->Pass(CachedBreak))
+							{
+								float TimeStamp = Solver->GetSolverTime();
+								Solver->GetEventManager()->AddEvent<FBreakingEventData>(EEventType::Breaking, [&CachedBreak, TimeStamp](FBreakingEventData& BreakingEventData)
+									{
+										if (BreakingEventData.BreakingData.TimeCreated != TimeStamp)
+										{
+											BreakingEventData.BreakingData.AllBreakingsArray.Reset();
+											BreakingEventData.BreakingData.TimeCreated = TimeStamp;
+										}
+										BreakingEventData.BreakingData.AllBreakingsArray.Add(CachedBreak);
+									});
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (Proxy->GetSimParameters().bGenerateTrailingData && TrailingEvents)
+		{
+			const FSolverTrailingEventFilter* SolverTrailingEventFilter = Solver->GetEventFilters()->GetTrailingFilter();
+
+			for (const FCacheEventHandle& Handle : *TrailingEvents)
+			{
+				if (FTrailingEvent* Event = Handle.Get<FTrailingEvent>())
+				{
+					if (Particles.IsValidIndex(Event->Index))
+					{
+						Chaos::FPBDRigidClusteredParticleHandle* Particle = Particles[Event->Index];
+
+						if (Particle)
+						{
+							if (Particle->ObjectState() != EObjectStateType::Kinematic)
+							{
+								// If a field or other external actor set the particle to static or dynamic we no longer apply the cache
+								continue;
+							}
+
+							FTrailingData CachedTrail;
+							CachedTrail.Proxy = Proxy;
+							CachedTrail.Location = ComponentToWorld.TransformPosition(Event->Location);
+							CachedTrail.Velocity = ComponentToWorld.TransformVector(Event->Velocity);
+							CachedTrail.AngularVelocity = Event->AngularVelocity;
+							CachedTrail.BoundingBox = TAABB<FReal, 3>(Event->BoundingBoxMin, Event->BoundingBoxMax);
+							CachedTrail.BoundingBox = CachedTrail.BoundingBox.TransformedAABB(ComponentToWorld);
+
+							if (!SolverTrailingEventFilter->Enabled() || SolverTrailingEventFilter->Pass(CachedTrail))
+							{
+								float TimeStamp = Solver->GetSolverTime();
+								Solver->GetEventManager()->AddEvent<FTrailingEventData>(EEventType::Trailing, [&CachedTrail , TimeStamp](FTrailingEventData& TrailingEventData)
+									{
+										if (TrailingEventData.TrailingData.TimeCreated != TimeStamp)
+										{
+											TrailingEventData.TrailingData.AllTrailingsArray.Reset();
+											TrailingEventData.TrailingData.TimeCreated = TimeStamp;
+										}
+										TrailingEventData.TrailingData.AllTrailingsArray.Add(CachedTrail);
+									});
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (Proxy->GetSimParameters().bGenerateCollisionData && CollisionEvents)
+		{
+
+			const FSolverCollisionEventFilter* SolverCollisionEventFilter = Solver->GetEventFilters()->GetCollisionFilter();
+			for (const FCacheEventHandle& Handle : *CollisionEvents)
+			{
+				if (FCollisionEvent* Event = Handle.Get<FCollisionEvent>())
+				{
+					
+					FCollidingData CachedCollision;
+					CachedCollision.Location = ComponentToWorld.TransformPosition(Event->Location);
+					CachedCollision.AccumulatedImpulse = ComponentToWorld.TransformVector(Event->AccumulatedImpulse);
+					CachedCollision.Normal = ComponentToWorld.TransformVector(Event->Normal);
+					CachedCollision.Velocity1 = ComponentToWorld.TransformVector(Event->Velocity1);
+					CachedCollision.Velocity2 = ComponentToWorld.TransformVector(Event->Velocity2);
+					CachedCollision.DeltaVelocity1 = ComponentToWorld.TransformVector(Event->DeltaVelocity1);
+					CachedCollision.DeltaVelocity2 = ComponentToWorld.TransformVector(Event->DeltaVelocity2);
+					CachedCollision.AngularVelocity1 = Event->AngularVelocity1;
+					CachedCollision.AngularVelocity2 = Event->AngularVelocity2;
+					CachedCollision.Mass1 = Event->Mass1;
+					CachedCollision.Mass2 = Event->Mass2;
+					CachedCollision.PenetrationDepth = Event->PenetrationDepth;
+					
+					if (!SolverCollisionEventFilter->Enabled() || SolverCollisionEventFilter->Pass(CachedCollision))
+					{
+						float TimeStamp = Solver->GetSolverTime();
+						Solver->GetEventManager()->AddEvent<FCollisionEventData>(EEventType::Collision, [&CachedCollision, TimeStamp, Proxy](FCollisionEventData& CollisionEventData)
+							{
+								if (CollisionEventData.CollisionData.TimeCreated != TimeStamp)
+								{
+									CollisionEventData.CollisionData.AllCollisionsArray.Reset();
+									CollisionEventData.PhysicsProxyToCollisionIndices.Reset();
+									CollisionEventData.CollisionData.TimeCreated = TimeStamp;
+								}
+								int32 NewIdx = CollisionEventData.CollisionData.AllCollisionsArray.Add(CachedCollision);
+								CollisionEventData.PhysicsProxyToCollisionIndices.PhysicsProxyToIndicesMap.FindOrAdd(Proxy).Add(NewIdx);
+							});
+					}
+						
+					
+				}
+			}
+		}
+
 		const int32 NumTransforms = EvaluatedResult.Transform.Num();
 		for(int32 Index = 0; Index < NumTransforms; ++Index)
 		{
@@ -247,11 +499,21 @@ namespace Chaos
 					continue;
 				}
 
-				Handle->SetP(EvaluatedTransform.GetTranslation());
-				Handle->SetQ(EvaluatedTransform.GetRotation());
+				// Evaluated transform is in Cache Manager space with MassToLocal removed. We need it in World space.
+				FTransform WorldTransform = MassToLocal[ParticleIndex] * EvaluatedTransform;
+				
+				Handle->SetP(WorldTransform.GetTranslation());
+				Handle->SetQ(WorldTransform.GetRotation());
 				Handle->SetX(Handle->P());
 				Handle->SetR(Handle->Q());
 				
+				Handle->UpdateWorldSpaceState(WorldTransform, FVec3(0));
+
+				if(!Handle->Disabled())
+				{
+					Solver->GetEvolution()->DirtyParticle(*Handle);
+				}
+
 				if(FRigidParticle* ClusterParent = Handle->ClusterIds().Id)
 				{
 					if(FClusterParticle* Parent = ClusterParent->CastToClustered())
@@ -266,11 +528,18 @@ namespace Chaos
 							// This will result in multiple transform sets happening to the parent but allows us to mostly ignore
 							// that it exists, if it doesn't the child still gets set to the correct position.
 							FTransform ChildTransform = Handle->ChildToParent();
-							FTransform Result = ChildTransform.Inverse() * EvaluatedTransform;
+							FTransform Result = ChildTransform.Inverse() * WorldTransform;
 							Parent->SetP(Result.GetTranslation());
 							Parent->SetX(Result.GetTranslation());
 							Parent->SetQ(Result.GetRotation());
 							Parent->SetR(Result.GetRotation());
+
+							Parent->UpdateWorldSpaceState(Result, FVec3(0));
+
+							if(!Parent->Disabled())
+							{
+								Solver->GetEvolution()->DirtyParticle(*Parent);
+							}
 						}
 					}
 				}
@@ -346,42 +615,283 @@ namespace Chaos
 		return nullptr;
 	}
 
-	bool FGeometryCollectionCacheAdapter::InitializeForRecord(UPrimitiveComponent* InComponent, UChaosCache* InCache) const
+	void FGeometryCollectionCacheAdapter::SetRestState(UPrimitiveComponent* InComponent, UChaosCache* InCache, const FTransform& InRootTransform, Chaos::FReal InTime) const
 	{
+		// Caches recorded previous to Version 1 may not scrub correctly as the MassToLocal transform has been burned in.
+		
+		EnsureIsInGameThreadContext();
+
+		
+		if (!InCache || InCache->GetDuration() == 0.0f)
+		{
+			return;
+		}
+
+		if (UGeometryCollectionComponent* Comp = CastChecked<UGeometryCollectionComponent>(InComponent))
+		{
+			const FTransform ActorToWorld = InRootTransform;
+			const FTransform WorldToComponent = Comp->GetComponentTransform().Inverse();
+			FTransform ActorToComponent = ActorToWorld * WorldToComponent;
+
+			
+			if (const UGeometryCollection* RestCollection = Comp->GetRestCollection())
+			{
+				TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection = RestCollection->GetGeometryCollection();
+				const int32 NumTransforms = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
+
+				FPlaybackTickRecord TickRecord;
+				TickRecord.SetLastTime(InTime);
+				FCacheEvaluationContext Context(TickRecord);
+				Context.bEvaluateTransform = true;
+				Context.bEvaluateCurves = false;
+				Context.bEvaluateEvents = false;
+
+				FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+				const int32 NumCacheTransforms = EvaluatedResult.Transform.Num();
+			
+				// Any bone that is not explicitly set by the cache defaults to it's rest collection position.
+				TArray<FTransform> RestTransforms;
+				RestTransforms.SetNum(NumTransforms);
+				for (int32 Idx = 0; Idx < NumTransforms; ++Idx)
+				{
+					RestTransforms[Idx] = GeometryCollection->Transform[Idx];
+				}
+
+				for (int32 CacheIdx = 0; CacheIdx < NumCacheTransforms; ++CacheIdx)
+				{
+					const int32 TransformIdx = EvaluatedResult.ParticleIndices[CacheIdx];
+					RestTransforms[TransformIdx] = EvaluatedResult.Transform[CacheIdx] * ActorToComponent;
+				}
+
+				// Set any broken clusters to identity so that they no longer influence child transforms.
+				TArray<int32> ReleaseIndices = GatherAllBreaksUpToTime(InCache, InTime);
+				const TManagedArray<int32>& Parent = GeometryCollection->Parent;
+				for (int32 ReleaseIdx : ReleaseIndices)
+				{
+					int32 ClusterIdx = Parent[ReleaseIdx];
+					if (ClusterIdx > INDEX_NONE)
+					{
+						RestTransforms[ClusterIdx] = FTransform::Identity;
+					}
+				}
+
+				Comp->SetRestState(MoveTemp(RestTransforms));
+			}
+		}
+	}
+
+	bool FGeometryCollectionCacheAdapter::InitializeForRecord(UPrimitiveComponent* InComponent, UChaosCache* InCache)
+	{
+		EnsureIsInGameThreadContext();
+		
 		UGeometryCollectionComponent*    Comp     = CastChecked<UGeometryCollectionComponent>(InComponent);
 		FGeometryCollectionPhysicsProxy* Proxy    = Comp->GetPhysicsProxy();
 
-		if(!Proxy)
+		if (!Proxy)
 		{
 			return false;
 		}
+
+		const FSimulationParameters& SimulationParameters = Proxy->GetSimParameters();
 
 		Chaos::FPhysicsSolver* Solver = Proxy->GetSolver<Chaos::FPhysicsSolver>();
 
-		if(!Solver)
+		if (!Solver)
 		{
 			return false;
 		}
 
-		// We need breaking data to record cluster breaking information into the cache
-		Solver->GetEvolution()->GetRigidClustering().SetGenerateClusterBreaking(true);
+		// In case commands have been issued that conflict with our requirement to generate data, flush the queue
+		Solver->AdvanceAndDispatch_External(0);
+		Solver->WaitOnPendingTasks_External();
+
+		// We need secondary event data to record event information into the cache
+		Solver->EnqueueCommandImmediate([Solver]()
+			{
+				Solver->SetGenerateBreakingData(true);
+				Solver->SetGenerateCollisionData(true);
+				Solver->SetGenerateTrailingData(true);
+			});
+
+		
+		// We only need to register event handlers once, the first time we initialize.
+		if (CachedData.Num() == 0)
+		{
+			Chaos::FEventManager* EventManager = Solver->GetEventManager();
+			if (EventManager)
+			{
+				if (SimulationParameters.bGenerateBreakingData)
+				{ 
+					EventManager->RegisterHandler<Chaos::FBreakingEventData>(Chaos::EEventType::Breaking, const_cast<FGeometryCollectionCacheAdapter*>(this), &FGeometryCollectionCacheAdapter::HandleBreakingEvents);
+				}
+
+				if (SimulationParameters.bGenerateCollisionData)
+				{ 
+					EventManager->RegisterHandler<Chaos::FCollisionEventData>(Chaos::EEventType::Collision, const_cast<FGeometryCollectionCacheAdapter*>(this), &FGeometryCollectionCacheAdapter::HandleCollisionEvents);
+				}
+
+				if (SimulationParameters.bGenerateTrailingData)
+				{ 
+					EventManager->RegisterHandler<Chaos::FTrailingEventData>(Chaos::EEventType::Trailing, const_cast<FGeometryCollectionCacheAdapter*>(this), &FGeometryCollectionCacheAdapter::HandleTrailingEvents);
+				}
+			}
+
+			BreakingDataArray = nullptr;
+			CollisionDataArray = nullptr;
+			TrailingDataArray = nullptr;
+		}
+
+		FCachedEventData& CachedEventData = CachedData.FindOrAdd(Proxy);
+		CachedEventData.ProxyBreakingDataIndices = nullptr;
+		CachedEventData.ProxyCollisionDataIndices = nullptr;
+		CachedEventData.ProxyTrailingDataIndices = nullptr;
 
 		return true;
 	}
 
-	bool FGeometryCollectionCacheAdapter::InitializeForPlayback(UPrimitiveComponent* InComponent, UChaosCache* InCache) const
+	bool FGeometryCollectionCacheAdapter::InitializeForPlayback(UPrimitiveComponent* InComponent, UChaosCache* InCache, float InTime)
 	{
-		UGeometryCollectionComponent*    Comp  = CastChecked<UGeometryCollectionComponent>(InComponent);
-		FGeometryCollectionPhysicsProxy* Proxy = Comp->GetPhysicsProxy();
+		EnsureIsInGameThreadContext();
 
-		FGeometryDynamicCollection& Collection = Proxy->GetPhysicsCollection();
-
-		for(int32& State : Collection.DynamicState)
+		if (UGeometryCollectionComponent* Comp = CastChecked<UGeometryCollectionComponent>(InComponent))
 		{
-			State = (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+			if (const UGeometryCollection* RestCollection = Comp->GetRestCollection())
+			{
+				// Set up initial conditions... 
+				
+				TArray<FTransform> InitialTransforms;
+				{
+					FPlaybackTickRecord TickRecord;
+					TickRecord.SetLastTime(InTime);
+					FCacheEvaluationContext Context(TickRecord);
+					Context.bEvaluateTransform = true;
+					Context.bEvaluateCurves = false;
+					Context.bEvaluateEvents = false;
+
+					FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+					const int32 NumCacheTransforms = EvaluatedResult.Transform.Num();
+
+					// Any bone that is not explicitly set by the cache defaults to it's rest collection position.
+					TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection = RestCollection->GetGeometryCollection();
+					const int32 NumTransforms = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
+
+					InitialTransforms.SetNum(NumTransforms);
+					for (int32 Idx = 0; Idx < NumTransforms; ++Idx)
+					{
+						InitialTransforms[Idx] = GeometryCollection->Transform[Idx];
+					}
+
+					for (int32 CacheIdx = 0; CacheIdx < NumCacheTransforms; ++CacheIdx)
+					{
+						const int32 TransformIdx = EvaluatedResult.ParticleIndices[CacheIdx];
+						InitialTransforms[TransformIdx] = EvaluatedResult.Transform[CacheIdx];
+					}
+				}
+				Comp->SetInitialTransforms(InitialTransforms);
+					
+				TArray<int32> ReleaseIndices = GatherAllBreaksUpToTime(InCache, InTime);
+				Comp->SetInitialClusterBreaks(ReleaseIndices);
+
+				Comp->SetDynamicState(Chaos::EObjectStateType::Kinematic);
+		
+				// ...then initialize the proxy and particles.
+				Comp->SetSimulatePhysics(true);
+
+				return true;
+			}
 		}
 
-		return true;
+		return false;
+	}
+
+	TArray<int32> FGeometryCollectionCacheAdapter::GatherAllBreaksUpToTime(UChaosCache* InCache, float InTime) const
+	{
+		// Evaluate all breaking event that have occured from the beginning of the cache up to the specified time.
+		TArray<int32> ReleaseIndices;
+
+		FPlaybackTickRecord TickRecord;
+		TickRecord.SetLastTime(0.0);
+		TickRecord.SetDt(InTime);
+		FCacheEvaluationContext Context(TickRecord);
+		Context.bEvaluateTransform = false;
+		Context.bEvaluateCurves = false;
+		Context.bEvaluateEvents = true;
+
+		FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+		const TArray<FCacheEventHandle>* EnableEvents = EvaluatedResult.Events.Find(FEnableStateEvent::EventName);
+		if (EnableEvents)
+		{
+			ReleaseIndices.Reserve(EnableEvents->Num());
+			for (const FCacheEventHandle& Handle : *EnableEvents)
+			{
+				if (FEnableStateEvent* Event = Handle.Get<FEnableStateEvent>())
+				{
+					if (Event->bEnable)
+					{
+						ReleaseIndices.Add(Event->Index);
+					}
+				}
+			}
+		}
+
+		return ReleaseIndices;
+	}
+
+	void FGeometryCollectionCacheAdapter::HandleBreakingEvents(const Chaos::FBreakingEventData& Event)
+	{
+		EnsureIsInGameThreadContext();
+		
+		BreakingDataArray = &Event.BreakingData.AllBreakingsArray;
+
+		for (TPair<IPhysicsProxyBase*, FCachedEventData>& Data : CachedData)
+		{
+			if (Event.PhysicsProxyToBreakingIndices.PhysicsProxyToIndicesMap.Contains(Data.Key))
+			{
+				Data.Value.ProxyBreakingDataIndices = &Event.PhysicsProxyToBreakingIndices.PhysicsProxyToIndicesMap[Data.Key];
+			}
+			else
+			{
+				Data.Value.ProxyBreakingDataIndices = nullptr;
+			}
+		}
+	}
+
+	void FGeometryCollectionCacheAdapter::HandleCollisionEvents(const Chaos::FCollisionEventData& Event)
+	{
+		EnsureIsInGameThreadContext();
+		
+		CollisionDataArray = &Event.CollisionData.AllCollisionsArray;
+
+		for (TPair<IPhysicsProxyBase*, FCachedEventData>& Data : CachedData)
+		{
+			if (Event.PhysicsProxyToCollisionIndices.PhysicsProxyToIndicesMap.Contains(Data.Key))
+			{
+				Data.Value.ProxyCollisionDataIndices = &Event.PhysicsProxyToCollisionIndices.PhysicsProxyToIndicesMap[Data.Key];
+			}
+			else
+			{
+				Data.Value.ProxyCollisionDataIndices = nullptr;
+			}
+		}
+	}
+
+	void FGeometryCollectionCacheAdapter::HandleTrailingEvents(const Chaos::FTrailingEventData& Event)
+	{
+		EnsureIsInGameThreadContext();
+		
+		TrailingDataArray = &Event.TrailingData.AllTrailingsArray;
+
+		for (TPair<IPhysicsProxyBase*, FCachedEventData>& Data : CachedData)
+		{
+			if (Event.PhysicsProxyToTrailingIndices.PhysicsProxyToIndicesMap.Contains(Data.Key))
+			{
+				Data.Value.ProxyTrailingDataIndices = &Event.PhysicsProxyToTrailingIndices.PhysicsProxyToIndicesMap[Data.Key];
+			}
+			else
+			{
+				Data.Value.ProxyTrailingDataIndices = nullptr;
+			}
+		}
 	}
 
 }    // namespace Chaos

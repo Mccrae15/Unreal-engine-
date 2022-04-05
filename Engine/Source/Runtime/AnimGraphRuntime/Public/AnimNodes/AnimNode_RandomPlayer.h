@@ -37,7 +37,7 @@ struct FRandomPlayerSequenceEntry
 
 	/** Sequence to play when this entry is picked */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
-	UAnimSequence* Sequence;
+	TObjectPtr<UAnimSequence> Sequence;
 
 	/** When not in shuffle mode, this is the chance this entry will play (normalized against all other sample chances) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (UIMin = "0", ClampMin = "0"))
@@ -76,8 +76,8 @@ struct FRandomAnimPlayData
 	// The time at which the animation is currently playing.
 	float CurrentPlayTime = 0.0f;
 
-	// The previous tick's update time.
-	float PreviousPlayTime = 0.0f;
+	// Delta time record for this play through
+	FDeltaTimeRecord DeltaTimeRecord;
 
 	// Calculated play rate
 	float PlayRate = 0.0f;

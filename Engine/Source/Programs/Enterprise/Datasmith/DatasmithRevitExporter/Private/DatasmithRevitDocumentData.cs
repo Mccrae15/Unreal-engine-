@@ -587,7 +587,12 @@ namespace DatasmithRevitExporter
 				string LayerName = Category.GetCategory(CurrentElement.Document, BuiltInCategory.OST_LightingFixtureSource)?.Name ?? "Light Sources";
 				SetActorProperties(LayerName, LightActor);
 
-				FDatasmithFacadeMetaData LightMetaData = GetActorMetaData(LightActor);
+				FDatasmithFacadeMetaData LightMetaData = null;
+
+				if (!DocumentData.bSkipMetadataExport)
+				{
+					LightMetaData = GetActorMetaData(LightActor);
+				}
 
 				// Set the Datasmith light actor layer to its predefined name.
 				string CategoryName = Category.GetCategory(CurrentElement.Document, BuiltInCategory.OST_LightingFixtureSource)?.Name ?? "Light Sources";
@@ -1035,12 +1040,12 @@ namespace DatasmithRevitExporter
 				}
 
 				// Add Revit element metadata to the Datasmith actor.
-				FDocumentData.AddActorMetadata(CurrentElement, "Element*", ElementMetaData);
+				FUtils.AddActorMetadata(CurrentElement, "Element*", ElementMetaData);
 
 				if (BaseElementType != null)
 				{
 					// Add Revit element type metadata to the Datasmith actor.
-					FDocumentData.AddActorMetadata(BaseElementType, "Type*", ElementMetaData);
+					FUtils.AddActorMetadata(BaseElementType, "Type*", ElementMetaData);
 				}
 
 				return ElementMetaData;
@@ -1431,11 +1436,13 @@ namespace DatasmithRevitExporter
 
 			CurrentMaterialName = FMaterialData.GetMaterialName(InMaterialNode, CurrentMaterial);
 
-			if (!MaterialDataMap.ContainsKey(CurrentMaterialName))
+			if (!MaterialDataMap.ContainsKey(CurrentMaterialName) || (CurrentMaterial != null && DirectLink != null && DirectLink.IsMaterialDirty(CurrentMaterial)))
 			{
 				// Keep track of a new Datasmith master material.
 				MaterialDataMap[CurrentMaterialName] = new FMaterialData(InMaterialNode, CurrentMaterial, InExtraTexturePaths);
 				NewMaterialsMap[CurrentMaterialName] = MaterialDataMap[CurrentMaterialName];
+
+				DirectLink?.SetMaterialClean(CurrentMaterial);
 
 				// A new Datasmith master material was created.
 				return true;
@@ -1864,7 +1871,11 @@ namespace DatasmithRevitExporter
 					BasePointMetaData.SetAssociatedElement(BasePointActor);
 
 					BasePointMetaData.AddPropertyVector(MetadataPrefix + "Location", $"{BasePointPosition.X} {BasePointPosition.Y} {BasePointPosition.Z}");
-					FDocumentData.AddActorMetadata(BasePointLocation, MetadataPrefix, BasePointMetaData);
+
+					if (!bSkipMetadataExport)
+					{
+						FUtils.AddActorMetadata(BasePointLocation, MetadataPrefix, BasePointMetaData);
+					}
 
 					if (BasePointElement == null)
 					{
@@ -2193,99 +2204,6 @@ namespace DatasmithRevitExporter
 
 			// Set the world transform of the Datasmith actor.
 			IOActor.SetWorldTransform(worldMatrix);
-		}
-
-		public static ElementType GetElementType(Element InElement)
-		{
-			return InElement.Document.GetElement(InElement.GetTypeId()) as ElementType;
-		}
-
-		public static string GetCategoryName(Element InElement)
-		{
-			ElementType Type = GetElementType(InElement);
-			return Type?.Category?.Name ?? InElement.Category?.Name;
-		}
-
-		public static void AddActorMetadata(
-			Element InElement,
-			FDatasmithFacadeMetaData ActorMetadata
-		)
-		{
-			// Add the Revit element category name metadata to the Datasmith actor.
-			string CategoryName = GetCategoryName(InElement);
-			if (!string.IsNullOrEmpty(CategoryName))
-			{
-				ActorMetadata.AddPropertyString("Element*Category", CategoryName);
-			}
-
-			// Add the Revit element family name metadata to the Datasmith actor.
-			ElementType ElemType = GetElementType(InElement);
-			string FamilyName = ElemType?.FamilyName;
-			if (!string.IsNullOrEmpty(FamilyName))
-			{
-				ActorMetadata.AddPropertyString("Element*Family", FamilyName);
-			}
-
-			// Add the Revit element type name metadata to the Datasmith actor.
-			string TypeName = ElemType?.Name;
-			if (!string.IsNullOrEmpty(TypeName))
-			{
-				ActorMetadata.AddPropertyString("Element*Type", TypeName);
-			}
-
-			// Add Revit element metadata to the Datasmith actor.
-			FDocumentData.AddActorMetadata(InElement, "Element*", ActorMetadata);
-
-			if (ElemType != null)
-			{
-				// Add Revit element type metadata to the Datasmith actor.
-				FDocumentData.AddActorMetadata(ElemType, "Type*", ActorMetadata);
-			}
-		}
-
-		private static void AddActorMetadata(
-			Element InSourceElement,
-			string InMetadataPrefix,
-			FDatasmithFacadeMetaData ElementMetaData
-		)
-		{
-			IList<Parameter> Parameters = InSourceElement.GetOrderedParameters();
-
-			if (Parameters != null)
-			{
-				foreach (Parameter Parameter in Parameters)
-				{
-					if (Parameter.HasValue)
-					{
-						string ParameterValue = Parameter.AsValueString();
-
-						if (string.IsNullOrEmpty(ParameterValue))
-						{
-							switch (Parameter.StorageType)
-							{
-								case StorageType.Integer:
-									ParameterValue = Parameter.AsInteger().ToString();
-									break;
-								case StorageType.Double:
-									ParameterValue = Parameter.AsDouble().ToString();
-									break;
-								case StorageType.String:
-									ParameterValue = Parameter.AsString();
-									break;
-								case StorageType.ElementId:
-									ParameterValue = Parameter.AsElementId().ToString();
-									break;
-							}
-						}
-
-						if (!string.IsNullOrEmpty(ParameterValue))
-						{
-							string MetadataKey = InMetadataPrefix + Parameter.Definition.Name;
-							ElementMetaData.AddPropertyString(MetadataKey, ParameterValue);
-						}
-					}
-				}
-			}
 		}
 	}
 }

@@ -360,7 +360,7 @@ bool SAnimMontagePanel::ClampToEndTime(float NewEndTime)
 	bool bClampingNeeded = (SequenceLength > 0.f && NewEndTime < SequenceLength);
 	if(bClampingNeeded)
 	{
-		float ratio = NewEndTime / Montage->SequenceLength;
+		float ratio = NewEndTime / Montage->GetPlayLength();
 
 		for(int32 i=0; i < Montage->CompositeSections.Num(); i++)
 		{
@@ -581,12 +581,6 @@ void SAnimMontagePanel::PostRedo( bool bSuccess )
 
 void SAnimMontagePanel::PostRedoUndo()
 {
-	// when undo or redo happens, we still have to recalculate length, so we can't rely on sequence length changes or not
-	if (Montage->SequenceLength)
-	{
-		Montage->SequenceLength = 0.f;
-	}
-
 	RebuildMontagePanel(); //Rebuild here, undoing adds can cause slate to crash later on if we don't (using dummy args since they aren't used by the method
 }
 
@@ -651,7 +645,7 @@ void SAnimMontagePanel::Update()
 						.OnAnimReplaceMapping(this, &SAnimMontagePanel::ReplaceAnimationMapping)
 						.OnDiffFromParentAsset(this, &SAnimMontagePanel::IsDiffererentFromParent)
 						.TrackMaxValue(this, &SAnimMontagePanel::GetSequenceLength)
-						.TrackNumDiscreteValues(Montage->GetNumberOfFrames())
+						.TrackNumDiscreteValues(Montage->GetNumberOfSampledKeys())
 					];
 
 				}
@@ -670,7 +664,7 @@ void SAnimMontagePanel::Update()
 						.bChildAnimMontage(bChildAnimMontage)
 						.OnGetNodeColor_Lambda([NodeColor](const FAnimSegment& InSegment){ return NodeColor; })
 						.TrackMaxValue(this, &SAnimMontagePanel::GetSequenceLength)
-						.TrackNumDiscreteValues(Montage->GetNumberOfFrames())
+						.TrackNumDiscreteValues(Montage->GetNumberOfSampledKeys())
 						.OnAnimSegmentNodeClicked(this, &SAnimMontagePanel::ShowSegmentInDetailsView, SlotAnimIdx)
 						.OnPreAnimUpdate(this, &SAnimMontagePanel::PreAnimUpdate)
 						.OnPostAnimUpdate(this, &SAnimMontagePanel::PostAnimUpdate)
@@ -710,8 +704,11 @@ void SAnimMontagePanel::SummonTrackContextMenu( FMenuBuilder& MenuBuilder, float
 	// Slots
 	MenuBuilder.BeginSection("AnimMontageSlots", LOCTEXT("Slots", "Slots") );
 	{
-		UIAction.ExecuteAction.BindRaw(this, &SAnimMontagePanel::OnNewSlotClicked);
-		MenuBuilder.AddMenuEntry(LOCTEXT("NewSlot", "New Slot"), LOCTEXT("NewSlotToolTip", "Adds a new Slot"), FSlateIcon(), UIAction);
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("NewSlot", "New Slot"),
+			LOCTEXT("NewSlotToolTip", "Adds a new Slot"), 
+			FNewMenuDelegate::CreateSP(this, &SAnimMontagePanel::BuildNewSlotMenu)
+		);
 
 		if(AnimSlotIndex != INDEX_NONE)
 		{
@@ -757,9 +754,53 @@ void SAnimMontagePanel::FillSlotSubMenu(FMenuBuilder& Menubuilder)
 }
 
 /** Slots */
-void SAnimMontagePanel::OnNewSlotClicked()
+
+void SAnimMontagePanel::BuildNewSlotMenu(FMenuBuilder& InMenuBuilder)
 {
-	AddNewMontageSlot(FAnimSlotGroup::DefaultSlotName);
+	USkeleton* Skeleton = Montage->GetSkeleton();
+	FName CurrentSlotGroupName = FAnimSlotGroup::DefaultGroupName;
+	if (Montage->SlotAnimTracks.Num() > 0)
+	{
+		FName CurrentSlotName = Montage->SlotAnimTracks[0].SlotName;
+		CurrentSlotGroupName = Skeleton->GetSlotGroupName(CurrentSlotName);
+	}
+		
+	if (FAnimSlotGroup* SlotGroup = Skeleton->FindAnimSlotGroup(CurrentSlotGroupName))
+	{
+		InMenuBuilder.BeginSection("AnimMontageAvailableAddSlots", FText::FromString(SlotGroup->GroupName.ToString()));
+		{
+			for (const FName& SlotName : SlotGroup->SlotNames)
+			{
+				FText SlotItemText = FText::FromString(*SlotName.ToString());
+
+				FText Tooltip = CanCreateNewSlot(SlotName) ? FText::Format(LOCTEXT("SlotTooltipFormat", "Add new Slot '{0}'"), SlotItemText) :
+				                                             FText::Format(LOCTEXT("SlotUnavailableTooltipFormat", "Slot '{0}' already has a track in this Montage"), SlotItemText);
+
+				InMenuBuilder.AddMenuEntry(
+					SlotItemText,
+					Tooltip,
+					FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateSP(this, &SAnimMontagePanel::AddNewMontageSlot, SlotName),
+						FCanExecuteAction::CreateSP(this, &SAnimMontagePanel::CanCreateNewSlot, SlotName)
+					));
+			}
+		}
+		InMenuBuilder.EndSection();
+	}
+}
+
+bool SAnimMontagePanel::CanCreateNewSlot(FName InName) const
+{
+	for (auto &Track : Montage->SlotAnimTracks)
+	{
+		if (Track.SlotName == InName)
+		{
+			return false;
+		}
+	}
+
+	return true;
 }
 
 void SAnimMontagePanel::CreateNewSlot(const FText& NewSlotName, ETextCommit::Type CommitInfo)
@@ -795,7 +836,7 @@ void SAnimMontagePanel::OnNewSectionClicked(float DataPosX)
 bool SAnimMontagePanel::CanAddNewSection()
 {
 	// Can't add sections if there isn't a montage, or that montage is of zero length
-	return Montage && Montage->SequenceLength > 0.0f;
+	return Montage && Montage->GetPlayLength() > 0.0f;
 }
 
 void SAnimMontagePanel::CreateNewSection(const FText& NewSectionName, ETextCommit::Type CommitInfo, float StartTime)
@@ -1076,7 +1117,7 @@ float SAnimMontagePanel::GetSequenceLength() const
 {
 	if(Montage != nullptr)
 	{
-		return Montage->SequenceLength;
+		return Montage->GetPlayLength();
 	}
 	return 0.0f;
 }

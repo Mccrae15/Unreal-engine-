@@ -19,6 +19,11 @@
 
 class IDetailLayoutBuilder;
 
+namespace UE::DatasmithImporter
+{
+	class FExternalSource;
+}
+
 UCLASS(Experimental, HideCategories = (DatasmithProducer_Internal))
 class DATASMITHIMPORTER_API UDatasmithFileProducer : public UDataprepContentProducer
 {
@@ -88,8 +93,8 @@ private:
 
 private:
 	TUniquePtr< FDatasmithImportContext > ImportContextPtr;
-	TUniquePtr< FDatasmithTranslatableSceneSource > TranslatableSourcePtr;
 	TUniquePtr< FDataprepWorkReporter > ProgressTaskPtr;
+	TSharedPtr< UE::DatasmithImporter::FExternalSource > ExternalSourcePtr;
 
 	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> ImportOptionsOverride;
 
@@ -159,7 +164,6 @@ public:
 	// Begin UObject interface
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostLoad() override;
 	// End of UObject interface
 
 	UE_DEPRECATED(4.26, "SetFolderName was renamed to SetFolderPath")

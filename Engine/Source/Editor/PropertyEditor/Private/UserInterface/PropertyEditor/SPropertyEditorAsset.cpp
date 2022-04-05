@@ -29,6 +29,7 @@
 #include "UnrealEdGlobals.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "FileHelpers.h"
 
 #define LOCTEXT_NAMESPACE "PropertyEditor"
 
@@ -84,7 +85,7 @@ bool SPropertyEditorAsset::ShouldDisplayThumbnail(const FArguments& InArgs, cons
 		return false;
 	}
 
-	bool bShowThumbnail = InObjectClass == nullptr || !(InObjectClass->IsChildOf(AActor::StaticClass()) || InObjectClass->IsChildOf(UInterface::StaticClass()));
+	bool bShowThumbnail = InObjectClass == nullptr || !InObjectClass->IsChildOf(AActor::StaticClass());
 
 	// also check metadata for thumbnail & text display
 	const FProperty* PropertyToCheck = nullptr;
@@ -105,6 +106,14 @@ bool SPropertyEditorAsset::ShouldDisplayThumbnail(const FArguments& InArgs, cons
 	}
 
 	return bShowThumbnail;
+}
+
+const FSlateBrush* SPropertyEditorAsset::GetThumbnailBorder() const
+{
+	static const FName HoveredBorderName("PropertyEditor.AssetThumbnailBorderHovered");
+	static const FName RegularBorderName("PropertyEditor.AssetThumbnailBorder");
+
+	return ThumbnailBorder->IsHovered() ? FAppStyle::Get().GetBrush(HoveredBorderName) : FAppStyle::Get().GetBrush(RegularBorderName);
 }
 
 void SPropertyEditorAsset::InitializeClassFilters(const FProperty* Property)
@@ -336,24 +345,28 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		ObjectClass = UClass::FindCommonBase(ConstCastClassArray(AllowedClassFilters));
 	}
 
-	bIsActor = ObjectClass->IsChildOf(AActor::StaticClass()) || ObjectClass->IsChildOf(UInterface::StaticClass());
+	bIsActor = ObjectClass->IsChildOf(AActor::StaticClass());
 
-	if (InArgs._NewAssetFactories.IsSet())
+	const bool bAllowCreation = !Property || !Property->HasMetaData("NoCreate");
+	if (bAllowCreation) 
 	{
-		NewAssetFactories = InArgs._NewAssetFactories.GetValue();
-	}
-	// If there are more allowed classes than just UObject 
-	else if (AllowedClassFilters.Num() > 1 || !AllowedClassFilters.Contains(UObject::StaticClass()))
-	{
-		NewAssetFactories = PropertyCustomizationHelpers::GetNewAssetFactoriesForClasses(AllowedClassFilters, DisallowedClassFilters);
+		if (InArgs._NewAssetFactories.IsSet())
+		{
+			NewAssetFactories = InArgs._NewAssetFactories.GetValue();
+		}
+		// If there are more allowed classes than just UObject 
+		else if (AllowedClassFilters.Num() > 1 || !AllowedClassFilters.Contains(UObject::StaticClass()))
+		{
+			NewAssetFactories = PropertyCustomizationHelpers::GetNewAssetFactoriesForClasses(AllowedClassFilters, DisallowedClassFilters);
+		}
 	}
 	
 	TSharedPtr<SHorizontalBox> ValueContentBox = nullptr;
 	ChildSlot
 	[
 		SNew( SAssetDropTarget )
-		.OnIsAssetAcceptableForDropWithReason( this, &SPropertyEditorAsset::OnAssetDraggedOver )
-		.OnAssetDropped( this, &SPropertyEditorAsset::OnAssetDropped )
+		.OnAreAssetsAcceptableForDropWithReason( this, &SPropertyEditorAsset::OnAssetDraggedOver )
+		.OnAssetsDropped( this, &SPropertyEditorAsset::OnAssetDropped )
 		[
 			SAssignNew( ValueContentBox, SHorizontalBox )	
 		]
@@ -406,12 +419,9 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 
 	AssetComboButton = SNew(SComboButton)
 		.ToolTipText(TooltipAttribute)
-		.ButtonStyle( FEditorStyle::Get(), "PropertyEditor.AssetComboStyle" )
-		.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
 		.OnGetMenuContent( this, &SPropertyEditorAsset::OnGetMenuContent )
 		.OnMenuOpenChanged( this, &SPropertyEditorAsset::OnMenuOpenChanged )
-		.IsEnabled( IsEnabledAttribute )
-		.ContentPadding(2.0f)
+		.IsEnabled(IsEnabledAttribute)
 		.ButtonContent()
 		[
 			SNew(SHorizontalBox)
@@ -430,7 +440,6 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 			[
 				// Show the name of the asset or actor
 				SNew(STextBlock)
-				.TextStyle( FEditorStyle::Get(), "PropertyEditor.AssetClass" )
 				.Font( FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) )
 				.Text(this,&SPropertyEditorAsset::OnGetAssetName)
 			]
@@ -444,9 +453,9 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 	TSharedPtr<SWidget> ButtonBoxWrapper;
 	TSharedRef<SHorizontalBox> ButtonBox = SNew( SHorizontalBox );
 	
-	TSharedPtr<SVerticalBox> CustomContentBox;
+	TSharedPtr<SHorizontalBox> CustomContentBox;
 
-	if(ShouldDisplayThumbnail(InArgs, ObjectClass))
+	if (ShouldDisplayThumbnail(InArgs, ObjectClass))
 	{
 		FObjectOrAssetData Value; 
 		GetValue( Value );
@@ -467,93 +476,76 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		}
 
 		ValueContentBox->AddSlot()
-		.Padding( 0.0f, 0.0f, 2.0f, 0.0f )
+		.Padding(0,3,5,0)
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
+			SNew(SBorder)
+			.Visibility(EVisibility::SelfHitTestInvisible)
+			.Padding(FMargin(0, 0, 4, 4))
+			.BorderImage(FAppStyle::Get().GetBrush("PropertyEditor.AssetTileItem.DropShadow"))
 			[
-				SAssignNew( ThumbnailBorder, SBorder )
-				.Padding( 5.0f )
-				.BorderImage( this, &SPropertyEditorAsset::GetThumbnailBorder )
-				.OnMouseDoubleClick( this, &SPropertyEditorAsset::OnAssetThumbnailDoubleClick )
+				SNew(SOverlay)
+				+SOverlay::Slot()
+				.Padding(1)
 				[
-					SNew( SBox )
-					.ToolTipText(TooltipAttribute)
-					.WidthOverride( InArgs._ThumbnailSize.X ) 
-					.HeightOverride( InArgs._ThumbnailSize.Y )
+					SAssignNew(ThumbnailBorder, SBorder)
+					.Padding(0)
+					.BorderImage(FStyleDefaults::GetNoBrush())
+					.OnMouseDoubleClick(this, &SPropertyEditorAsset::OnAssetThumbnailDoubleClick)
 					[
-						AssetThumbnail->MakeThumbnailWidget(AssetThumbnailConfig)
+						SNew(SBox)
+						.ToolTipText(TooltipAttribute)
+						.WidthOverride(InArgs._ThumbnailSize.X)
+						.HeightOverride(InArgs._ThumbnailSize.Y)
+						[
+							AssetThumbnail->MakeThumbnailWidget(AssetThumbnailConfig)
+						]
 					]
+				]
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(this, &SPropertyEditorAsset::GetThumbnailBorder)
+					.Visibility(EVisibility::SelfHitTestInvisible)
 				]
 			]
 		];
 
-		if(InArgs._DisplayCompactSize)
-		{
-			ValueContentBox->AddSlot()
+	
+		ValueContentBox->AddSlot()
+		.Padding(0)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoHeight()
 			[
-				SNew( SBox )
-				.VAlign( VAlign_Center )
+				AssetComboButton.ToSharedRef()
+			]
+			+ SVerticalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoHeight()
+			[
+				SAssignNew(CustomContentBox, SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
 				[
-					SAssignNew( CustomContentBox, SVerticalBox )
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+					SAssignNew(ButtonBoxWrapper, SBox)
+					.Padding(FMargin(0.0f, 2.0f, 4.0f, 2.0f))
 					[
-						SNew(SHorizontalBox)
-						+SHorizontalBox::Slot()
-						.FillWidth(1.0f)
-						.VAlign(VAlign_Center)
-						[
-							AssetComboButton.ToSharedRef()
-						]
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						[
-							SAssignNew(ButtonBoxWrapper, SBox)
-							.Padding(FMargin(0.0f, 2.0f, 4.0f, 2.0f))
-							[
-								ButtonBox
-							]
-						]
+						ButtonBox
 					]
 				]
-			];
-		}
-		else
-		{
-			ValueContentBox->AddSlot()
-			[
-				SNew( SBox )
-				.VAlign( VAlign_Center )
-				[
-					SAssignNew( CustomContentBox, SVerticalBox )
-					+ SVerticalBox::Slot()
-					.Padding(0.0f, 4.0f, 0.0f, 0.0f)
-					[
-						AssetComboButton.ToSharedRef()
-					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SAssignNew(ButtonBoxWrapper, SBox)
-						.Padding( FMargin( 0.0f, 2.0f, 4.0f, 2.0f ) )
-						[
-							ButtonBox
-						]
-					]
-				]
-			];
-		}
+			]
+		];
 	}
 	else
 	{
 		ValueContentBox->AddSlot()
 		[
-			SAssignNew( CustomContentBox, SVerticalBox )
+			SNew(SVerticalBox)
 			+SVerticalBox::Slot()
 			.VAlign( VAlign_Center )
 			[
@@ -566,11 +558,17 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 				.AutoWidth()
 				[
 					SAssignNew(ButtonBoxWrapper, SBox)
-					.Padding( FMargin( 4.f, 0.f ) )
+					.Padding(FMargin(4.0f,0.0f))
 					[
 						ButtonBox
 					]
 				]
+			]
+			+ SVerticalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoHeight()
+			[
+				SAssignNew(CustomContentBox, SHorizontalBox)
 			]
 		];
 	}
@@ -596,7 +594,31 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		];
 	}
 
-	if( InArgs._DisplayBrowse )
+	bool bDisplayBrowse = InArgs._DisplayBrowse;
+	if (bDisplayBrowse && bIsActor)
+	{
+		FObjectOrAssetData Value;
+		GetValue(Value);
+
+		UWorld* World = Value.Object ? CastChecked<AActor>(Value.Object)->GetWorld() : nullptr;
+
+		if (!World)
+		{			
+			FSoftObjectPath MapObjectPath = FSoftObjectPath(Value.ObjectPath.GetAssetPathName(), FString());
+
+			if (UObject* MapObject = MapObjectPath.ResolveObject())
+			{
+				World = Cast<UWorld>(MapObject);
+			}
+		}
+
+		if (World && World->IsPartitionedWorld())
+		{
+			bDisplayBrowse = false;
+		}
+	}
+
+	if( bDisplayBrowse )
 	{
 		ButtonBox->AddSlot()
 		.Padding( 2.0f, 0.0f )
@@ -605,7 +627,9 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		[
 			PropertyCustomizationHelpers::MakeBrowseButton(
 				FSimpleDelegate::CreateSP( this, &SPropertyEditorAsset::OnBrowse ),
-				TAttribute<FText>( this, &SPropertyEditorAsset::GetOnBrowseToolTip )
+				TAttribute<FText>( this, &SPropertyEditorAsset::GetOnBrowseToolTip ),
+				true,
+				bIsActor
 				)
 		];
 	}
@@ -624,42 +648,26 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		];
 	}
 
-	if(InArgs._ResetToDefaultSlot.Widget != SNullWidget::NullWidget )
-	{
-		TSharedRef<SWidget> ResetToDefaultWidget  = InArgs._ResetToDefaultSlot.Widget;
-		ResetToDefaultWidget->SetEnabled( IsEnabledAttribute );
-
-		ButtonBox->AddSlot()
-		.Padding( 4.0f, 0.0f )
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		[
-			ResetToDefaultWidget
-		];
-	}
-
+	NumButtons = ButtonBox->NumSlots();
+	
 	if (ButtonBoxWrapper.IsValid())
 	{
-		ButtonBoxWrapper->SetVisibility(ButtonBox->NumSlots() > 0 ? EVisibility::Visible : EVisibility::Collapsed);
+		ButtonBoxWrapper->SetVisibility(NumButtons > 0 ? EVisibility::Visible : EVisibility::Collapsed);
 	}
 }
 
 void SPropertyEditorAsset::GetDesiredWidth( float& OutMinDesiredWidth, float &OutMaxDesiredWidth )
 {
 	OutMinDesiredWidth = 250.f;
-	// No max width
 	OutMaxDesiredWidth = 350.f;
-}
 
-const FSlateBrush* SPropertyEditorAsset::GetThumbnailBorder() const
-{
-	if ( ThumbnailBorder->IsHovered() )
+	if (!AssetThumbnail.IsValid())
 	{
-		return FEditorStyle::GetBrush("PropertyEditor.AssetThumbnailLight");
-	}
-	else
-	{
-		return FEditorStyle::GetBrush("PropertyEditor.AssetThumbnailShadow");
+		static const float ButtonWidth = 20.0f /* button width */ + 4.0f /* padding */;
+
+		const float AdditionalButtonSize = NumButtons * ButtonWidth + 8.0f /* button box padding */;
+		OutMinDesiredWidth += AdditionalButtonSize;
+		OutMaxDesiredWidth += AdditionalButtonSize;
 	}
 }
 
@@ -707,9 +715,20 @@ SPropertyEditorAsset::EActorReferenceState SPropertyEditorAsset::GetActorReferen
 			// Get a path pointing to the owning map
 			FSoftObjectPath MapObjectPath = FSoftObjectPath(Value.ObjectPath.GetAssetPathName(), FString());
 
-			if (MapObjectPath.ResolveObject())
+			if (UObject* MapObject = MapObjectPath.ResolveObject())
 			{
-				// If the map is valid but the object is not
+				UWorld* World = Cast<UWorld>(MapObject);
+
+				// In a partitioned world, the world object will exist but the actor itself can be unloaded
+				if (World && World->IsPartitionedWorld())
+				{
+					UObject* Object = nullptr;
+					if (World->ResolveSubobject(*Value.ObjectPath.GetSubPathString(), Object, /*bLoadIfExists*/false))
+					{
+						return EActorReferenceState::Exists;
+					}
+				}
+
 				return EActorReferenceState::Error;
 			}
 
@@ -735,10 +754,10 @@ void SPropertyEditorAsset::Tick( const FGeometry& AllottedGeometry, const double
 	}
 }
 
-bool SPropertyEditorAsset::Supports( const TSharedRef< FPropertyEditor >& InPropertyEditor )
+bool SPropertyEditorAsset::Supports(const TSharedRef<FPropertyEditor >& InPropertyEditor)
 {
-	const TSharedRef< FPropertyNode > PropertyNode = InPropertyEditor->GetPropertyNode();
-	if(	PropertyNode->HasNodeFlags(EPropertyNodeFlags::EditInlineNew) )
+	const TSharedRef<FPropertyNode> PropertyNode = InPropertyEditor->GetPropertyNode();
+	if (PropertyNode->HasNodeFlags(EPropertyNodeFlags::EditInlineNew))
 	{
 		return false;
 	}
@@ -746,14 +765,14 @@ bool SPropertyEditorAsset::Supports( const TSharedRef< FPropertyEditor >& InProp
 	return Supports(PropertyNode->GetProperty());
 }
 
-bool SPropertyEditorAsset::Supports( const FProperty* NodeProperty )
+bool SPropertyEditorAsset::Supports(const FProperty* NodeProperty)
 {
-	const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>( NodeProperty );
-	const FInterfaceProperty* InterfaceProperty = CastField<const FInterfaceProperty>( NodeProperty );
+	const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(NodeProperty);
+	const FInterfaceProperty* InterfaceProperty = CastField<const FInterfaceProperty>(NodeProperty);
 
-	if ( ( ObjectProperty != nullptr || InterfaceProperty != nullptr )
+	if ((ObjectProperty != nullptr || InterfaceProperty != nullptr)
 		 && !NodeProperty->IsA(FClassProperty::StaticClass()) 
-		 && !NodeProperty->IsA(FSoftClassProperty::StaticClass()) )
+		 && !NodeProperty->IsA(FSoftClassProperty::StaticClass()))
 	{
 		return true;
 	}
@@ -766,7 +785,7 @@ TSharedRef<SWidget> SPropertyEditorAsset::OnGetMenuContent()
 	FObjectOrAssetData Value;
 	GetValue(Value);
 
-	if(bIsActor)
+	if (bIsActor)
 	{
 		return PropertyCustomizationHelpers::MakeActorPickerWithMenu(Cast<AActor>(Value.Object),
 																	 bAllowClear,
@@ -792,7 +811,7 @@ TSharedRef<SWidget> SPropertyEditorAsset::OnGetMenuContent()
 
 void SPropertyEditorAsset::OnMenuOpenChanged(bool bOpen)
 {
-	if ( bOpen == false )
+	if (bOpen == false)
 	{
 		AssetComboButton->SetMenuContent(SNullWidget::NullWidget);
 	}
@@ -800,8 +819,7 @@ void SPropertyEditorAsset::OnMenuOpenChanged(bool bOpen)
 
 bool SPropertyEditorAsset::IsFilteredActor( const AActor* const Actor ) const
 {
-	bool bActorTypeValid = ObjectClass->IsChildOf(UInterface::StaticClass()) ? Actor->GetClass()->ImplementsInterface(ObjectClass) : Actor->IsA(ObjectClass);
-	bool IsAllowed = bActorTypeValid && !Actor->IsChildActor() && IsClassAllowed(Actor->GetClass());
+	bool IsAllowed = Actor != nullptr && Actor->IsA(ObjectClass) && !Actor->IsChildActor() && IsClassAllowed(Actor->GetClass());
 	return IsAllowed;
 }
 
@@ -892,6 +910,10 @@ FText SPropertyEditorAsset::OnGetToolTip() const
 			{
 				ToolTipText = FText::Format(LOCTEXT("BrokenActorReference", "Broken reference to Actor ID '{Actor}', it was deleted or renamed"), Args);
 			}
+			else if (State == EActorReferenceState::Exists)
+			{
+				ToolTipText = FText::Format(LOCTEXT("ExistsActorReference", "Unloaded reference to Actor ID '{Actor}', use World Partition editor to load its corresponding cells"), Args);
+			}
 			else if (State == EActorReferenceState::Unknown)
 			{
 				ToolTipText = FText::Format(LOCTEXT("UnknownActorReference", "Unloaded reference to Actor ID '{Actor}', use Browse to load level"), Args);
@@ -928,7 +950,7 @@ void SPropertyEditorAsset::SetValue( const FAssetData& AssetData )
 {
 	AssetComboButton->SetIsOpen(false);
 
-	if(CanSetBasedOnCustomClasses(AssetData))
+	if (CanSetBasedOnCustomClasses(AssetData))
 	{
 		FText AssetReferenceFilterFailureReason;
 		if (CanSetBasedOnAssetReferenceFilter(AssetData, &AssetReferenceFilterFailureReason))
@@ -1137,6 +1159,17 @@ void SPropertyEditorAsset::OnOpenAssetEditor()
 	UObject* ObjectToEdit = Value.AssetData.GetAsset();
 	if( ObjectToEdit )
 	{
+		if (UWorld* World = Cast<UWorld>(ObjectToEdit))
+		{
+			constexpr bool bPromptUserToSave = true;
+			constexpr bool bSaveMapPackages = true;
+			constexpr bool bSaveContentPackages = true;
+			if (!FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages))
+			{
+				return;
+			}
+		}
+
 		GEditor->EditObject( ObjectToEdit );
 	}
 }
@@ -1241,12 +1274,13 @@ FSlateColor SPropertyEditorAsset::GetAssetClassColor()
 	return FSlateColor::UseForeground();
 }
 
-bool SPropertyEditorAsset::OnAssetDraggedOver( const UObject* InObject, FText& OutReason ) const
+bool SPropertyEditorAsset::OnAssetDraggedOver( TArrayView<FAssetData> InAssets, FText& OutReason ) const
 {
-	if (CanEdit() && InObject != nullptr && InObject->IsA(ObjectClass))
+	UObject* AssetObject = InAssets[0].GetAsset();
+	if (CanEdit() && (AssetObject != nullptr) && AssetObject->IsA(ObjectClass))
 	{
+		FAssetData AssetData(InAssets[0]);
 		// Check against custom asset filter
-		FAssetData AssetData(InObject);
 		if (!OnShouldFilterAsset.IsBound()
 			|| !OnShouldFilterAsset.Execute(AssetData))
 		{
@@ -1260,11 +1294,11 @@ bool SPropertyEditorAsset::OnAssetDraggedOver( const UObject* InObject, FText& O
 	return false;
 }
 
-void SPropertyEditorAsset::OnAssetDropped( UObject* InObject )
+void SPropertyEditorAsset::OnAssetDropped( const FDragDropEvent&, TArrayView<FAssetData> InAssets )
 {
 	if( CanEdit() )
 	{
-		SetValue(InObject);
+		SetValue(InAssets[0].GetAsset());
 	}
 }
 

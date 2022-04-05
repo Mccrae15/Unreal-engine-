@@ -7,8 +7,8 @@
 #include "OnlineSubsystemOculusPackage.h"
 #include "OVR_Platform.h"
 
-using FUniqueNetIdOculusPtr = TSharedPtr<const class FUniqueNetIdOculus, UNIQUENETID_ESPMODE>;
-using FUniqueNetIdOculusRef = TSharedRef<const class FUniqueNetIdOculus, UNIQUENETID_ESPMODE>;
+using FUniqueNetIdOculusPtr = TSharedPtr<const class FUniqueNetIdOculus>;
+using FUniqueNetIdOculusRef = TSharedRef<const class FUniqueNetIdOculus>;
 
 class FUniqueNetIdOculus : public FUniqueNetId {
 private:
@@ -34,11 +34,8 @@ public:
 	template<typename... TArgs>
 	static FUniqueNetIdOculusRef Create(TArgs&&... Args)
 	{
-		return MakeShared<FUniqueNetIdOculus, UNIQUENETID_ESPMODE>(Forward<TArgs>(Args)...);
+		return MakeShareable(new FUniqueNetIdOculus(Forward<TArgs>(Args)...));
 	}
-
-	/** Allow MakeShared to see private constructors */
-	friend class SharedPointerInternals::TIntrusiveReferenceController<FUniqueNetIdOculus>;
 
 	static const FUniqueNetIdOculus& Cast(const FUniqueNetId& NetId)
 	{

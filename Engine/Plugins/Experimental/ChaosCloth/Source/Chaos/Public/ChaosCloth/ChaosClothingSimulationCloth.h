@@ -31,32 +31,33 @@ namespace Chaos
 			TArray<FClothingSimulationCollider*>&& InColliders,
 			uint32 InGroupId,
 			EMassMode InMassMode,
-			FReal InMassValue,
-			FReal InMinPerParticleMass,
-			FRealSingle InEdgeStiffness,
-			FRealSingle InBendingStiffness,
+			FRealSingle InMassValue,
+			FRealSingle InMinPerParticleMass,
+			const TVec2<FRealSingle>& InEdgeStiffness,
+			const TVec2<FRealSingle>& InBendingStiffness,
 			bool bInUseBendingElements,
-			FRealSingle InAreaStiffness,
+			const TVec2<FRealSingle>& InAreaStiffness,
 			FRealSingle InVolumeStiffness,
 			bool bInUseThinShellVolumeConstraints,
-			const FVec2& InTetherStiffness,
-			FRealSingle InLimitScale,
+			const TVec2<FRealSingle>& InTetherStiffness,
+			const TVec2<FRealSingle>& InTetherScale,
 			ETetherMode InTetherMode,
 			FRealSingle InMaxDistancesMultiplier,
-			const FVec2& InAnimDriveStiffness,
-			const FVec2& InAnimDriveDamping,
+			const TVec2<FRealSingle>& InAnimDriveStiffness,
+			const TVec2<FRealSingle>& InAnimDriveDamping,
 			FRealSingle InShapeTargetStiffness,
 			bool bInUseXPBDConstraints,
 			FRealSingle InGravityScale,
 			bool bIsGravityOverridden,
-			const FVec3& InGravityOverride,
-			const FVec3& InLinearVelocityScale,
+			const TVec3<FRealSingle>& InGravityOverride,
+			const TVec3<FRealSingle>& InLinearVelocityScale,
 			FRealSingle InAngularVelocityScale,
 			FRealSingle InFictitiousAngularScale,
-			FRealSingle InDragCoefficient,
-			FRealSingle InLiftCoefficient,
+			const TVec2<FRealSingle>& InDrag,
+			const TVec2<FRealSingle>& InLift,
 			bool bInUseLegacyWind,
 			FRealSingle InDampingCoefficient,
+			FRealSingle InLocalDampingCoefficient,
 			FRealSingle InCollisionThickness,
 			FRealSingle InFrictionCoefficient,
 			bool bInUseCCD,
@@ -76,16 +77,16 @@ namespace Chaos
 		// ---- Animatable property setters ----
 		void SetMaxDistancesMultiplier(FRealSingle InMaxDistancesMultiplier) { MaxDistancesMultiplier = InMaxDistancesMultiplier; }
 
-		void SetMaterialProperties(FRealSingle InEdgeStiffness, FRealSingle InBendingStiffness, FRealSingle InAreaStiffness) { EdgeStiffness = InEdgeStiffness; BendingStiffness = InBendingStiffness; AreaStiffness = InAreaStiffness; }
-		void SetLongRangeAttachmentProperties(const FVec2& InTetherStiffness) { TetherStiffness = InTetherStiffness; }
+		void SetMaterialProperties(const TVec2<FRealSingle>& InEdgeStiffness, const TVec2<FRealSingle>& InBendingStiffness, const TVec2<FRealSingle>& InAreaStiffness) { EdgeStiffness = InEdgeStiffness; BendingStiffness = InBendingStiffness; AreaStiffness = InAreaStiffness; }
+		void SetLongRangeAttachmentProperties(const TVec2<FRealSingle>& InTetherStiffness, const TVec2<FRealSingle>& InTetherScale) { TetherStiffness = InTetherStiffness; TetherScale = InTetherScale;  }
 		void SetCollisionProperties(FRealSingle InCollisionThickness, FRealSingle InFrictionCoefficient, bool bInUseCCD, FRealSingle InSelfCollisionThickness) { CollisionThickness = InCollisionThickness; FrictionCoefficient = InFrictionCoefficient; bUseCCD = bInUseCCD; SelfCollisionThickness = InSelfCollisionThickness; }
+		void SetBackstopProperties(bool bInEnableBackstop) { bEnableBackstop = bInEnableBackstop; }
 		void SetDampingProperties(FRealSingle InDampingCoefficient) { DampingCoefficient = InDampingCoefficient; }
-		void SetAerodynamicsProperties(FRealSingle InDragCoefficient, FRealSingle InLiftCoefficient, const FVec3& InWindVelocity) { DragCoefficient = InDragCoefficient; LiftCoefficient = InLiftCoefficient; WindVelocity = InWindVelocity; }
+		void SetAerodynamicsProperties(const TVec2<FRealSingle>& InDrag, const TVec2<FRealSingle>& InLift, FRealSingle InAirDensity, const FVec3& InWindVelocity) { Drag = InDrag; Lift = InLift; InAirDensity = AirDensity; WindVelocity = InWindVelocity; }
 		void SetGravityProperties(FRealSingle InGravityScale, bool bInIsGravityOverridden, const FVec3& InGravityOverride) { GravityScale = InGravityScale; bIsGravityOverridden = bInIsGravityOverridden; GravityOverride = InGravityOverride; }
-		void SetAnimDriveProperties(const FVec2& InAnimDriveStiffness, const FVec2& InAnimDriveDamping) { AnimDriveStiffness = InAnimDriveStiffness; AnimDriveDamping = InAnimDriveDamping; }
+		void SetAnimDriveProperties(const TVec2<FRealSingle>& InAnimDriveStiffness, const TVec2<FRealSingle>& InAnimDriveDamping) { AnimDriveStiffness = InAnimDriveStiffness; AnimDriveDamping = InAnimDriveDamping; }
+		void GetAnimDriveProperties(TVec2<FRealSingle>& OutAnimDriveStiffness, TVec2<FRealSingle>& OutAnimDriveDamping) { OutAnimDriveStiffness = AnimDriveStiffness; OutAnimDriveDamping = AnimDriveDamping; }
 		void SetVelocityScaleProperties(const FVec3& InLinearVelocityScale, FRealSingle InAngularVelocityScale, FRealSingle InFictitiousAngularScale) { LinearVelocityScale = InLinearVelocityScale; AngularVelocityScale = InAngularVelocityScale; FictitiousAngularScale = InFictitiousAngularScale;  }
-
-		void GetAnimDriveProperties(FVec2& OutAnimDriveStiffness, FVec2& OutAnimDriveDamping) { OutAnimDriveStiffness = AnimDriveStiffness; OutAnimDriveDamping = AnimDriveDamping; }
 
 		void Reset() { bNeedsReset = true; }
 		void Teleport() { bNeedsTeleport = true; }
@@ -104,30 +105,30 @@ namespace Chaos
 
 		// ---- Debugging/visualization functions
 		// Return the solver's input positions for this cloth source current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FVec3> GetAnimationPositions(const FClothingSimulationSolver* Solver) const;
+		TConstArrayView<Softs::FSolverVec3> GetAnimationPositions(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's input normals for this cloth source current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FVec3> GetAnimationNormals(const FClothingSimulationSolver* Solver) const;
+		TConstArrayView<Softs::FSolverVec3> GetAnimationNormals(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's positions for this cloth current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FVec3> GetParticlePositions(const FClothingSimulationSolver* Solver) const;
-		// Return the solver's previous frame positions for this cloth current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FVec3> GetParticleOldPositions(const FClothingSimulationSolver* Solver) const;
+		TConstArrayView<Softs::FSolverVec3> GetParticlePositions(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's normals for this cloth current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FVec3> GetParticleNormals(const FClothingSimulationSolver* Solver) const;
+		TConstArrayView<Softs::FSolverVec3> GetParticleNormals(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's normals for this cloth current LOD, not thread safe, call must be done right after the solver update.
-		TConstArrayView<FReal> GetParticleInvMasses(const FClothingSimulationSolver* Solver) const;
+		TConstArrayView<Softs::FSolverReal> GetParticleInvMasses(const FClothingSimulationSolver* Solver) const;
 		// Return the current gravity as applied by the solver using the various overrides, not thread safe, call must be done right after the solver update.
-		FVec3 GetGravity(const FClothingSimulationSolver* Solver) const;
+		TVec3<FRealSingle> GetGravity(const FClothingSimulationSolver* Solver) const;
 		// Return the current bounding box based on a given solver, not thread safe, call must be done right after the solver update.
 		FAABB3 CalculateBoundingBox(const FClothingSimulationSolver* Solver) const;
-		// Return the current LOD Offset in the solver's particle array, or INDEX_NONE if no LOD is currently selected
+		// Return the current LOD offset in the solver's particle array, or INDEX_NONE if no LOD is currently selected.
 		int32 GetOffset(const FClothingSimulationSolver* Solver) const;
-		// Return the current LOD Mesh
+		// Return the current LOD mesh.
 		const FTriangleMesh& GetTriangleMesh(const FClothingSimulationSolver* Solver) const;
-		// Return the current LOD Weightmaps
+		// Return the current LOD weightmaps.
 		const TArray<TConstArrayView<FRealSingle>>& GetWeightMaps(const FClothingSimulationSolver* Solver) const;
-		// Return the reference bone index for this cloth
+		// Return the current LOD tethers.
+		const TArray<TConstArrayView<TTuple<int32, int32, float>>>& GetTethers(const FClothingSimulationSolver* Solver) const;
+		// Return the reference bone index for this cloth.
 		int32 GetReferenceBoneIndex() const;
-		// Return the local reference space transform for this cloth
+		// Return the local reference space transform for this cloth.
 		const FRigidTransform3& GetReferenceSpaceTransform() const { return ReferenceSpaceTransform;  }
 		// ---- End of the debugging/visualization functions
 
@@ -151,6 +152,7 @@ namespace Chaos
 			const int32 NumParticles;
 			const TConstArrayView<uint32> Indices;
 			const TArray<TConstArrayView<FRealSingle>> WeightMaps;
+			const TArray<TConstArrayView<TTuple<int32, int32, FRealSingle>>> Tethers;
 
 			// Per Solver data
 			struct FSolverData
@@ -164,7 +166,11 @@ namespace Chaos
 			int32 NumKinenamicParticles;
 			int32 NumDynammicParticles;
 
-			FLODData(int32 InNumParticles, const TConstArrayView<uint32>& InIndices, const TArray<TConstArrayView<FRealSingle>>& InWeightMaps);
+			FLODData(
+				int32 InNumParticles,
+				const TConstArrayView<uint32>& InIndices,
+				const TArray<TConstArrayView<FRealSingle>>& InWeightMaps,
+				const TArray<TConstArrayView<TTuple<int32, int32, FRealSingle>>>& InTethers);
 
 			void Add(FClothingSimulationSolver* Solver, FClothingSimulationCloth* Cloth, int32 LODIndex);
 			void Remove(FClothingSimulationSolver* Solver);
@@ -183,38 +189,41 @@ namespace Chaos
 		TArray<FClothingSimulationCollider*> Colliders;
 		uint32 GroupId;
 		EMassMode MassMode;
-		FReal MassValue;
-		FReal MinPerParticleMass;
-		FRealSingle EdgeStiffness;
-		FRealSingle BendingStiffness;
+		FRealSingle MassValue;
+		FRealSingle MinPerParticleMass;
+		TVec2<FRealSingle> EdgeStiffness;
+		TVec2<FRealSingle> BendingStiffness;
 		bool bUseBendingElements;
-		FRealSingle AreaStiffness;
+		TVec2<FRealSingle> AreaStiffness;
 		FRealSingle VolumeStiffness;
 		bool bUseThinShellVolumeConstraints;
-		FVec2 TetherStiffness;
-		FRealSingle LimitScale;
+		TVec2<FRealSingle> TetherStiffness;
+		TVec2<FRealSingle> TetherScale;
 		ETetherMode TetherMode;
-		FRealSingle MaxDistancesMultiplier;
-		FVec2 AnimDriveStiffness;
-		FVec2 AnimDriveDamping;
+		FRealSingle MaxDistancesMultiplier;  // Animatable
+		TVec2<FRealSingle> AnimDriveStiffness;  // Animatable
+		TVec2<FRealSingle> AnimDriveDamping;  // Animatable
 		FRealSingle ShapeTargetStiffness;
 		bool bUseXPBDConstraints;
 		FRealSingle GravityScale;
 		bool bIsGravityOverridden;
-		FVec3 GravityOverride;
-		FVec3 LinearVelocityScale;  // Linear ratio applied to the reference bone transforms
+		TVec3<FRealSingle> GravityOverride;
+		TVec3<FRealSingle> LinearVelocityScale;  // Linear ratio applied to the reference bone transforms
 		FRealSingle AngularVelocityScale;  // Angular ratio factor applied to the reference bone transforms
 		FRealSingle FictitiousAngularScale;
-		FRealSingle DragCoefficient;
-		FRealSingle LiftCoefficient;
+		TVec2<FRealSingle> Drag;
+		TVec2<FRealSingle> Lift;
 		FVec3 WindVelocity;
+		FRealSingle AirDensity;
 		bool bUseLegacyWind;
 		FRealSingle DampingCoefficient;
+		FRealSingle LocalDampingCoefficient;
 		FRealSingle CollisionThickness;
 		FRealSingle FrictionCoefficient;
 		bool bUseCCD;
 		bool bUseSelfCollisions;
 		FRealSingle SelfCollisionThickness;
+		bool bEnableBackstop;
 		bool bUseLegacyBackstop;
 		bool bUseLODIndexOverride;
 		int32 LODIndexOverride;

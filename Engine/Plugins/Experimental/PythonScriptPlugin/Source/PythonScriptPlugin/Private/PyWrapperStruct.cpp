@@ -351,16 +351,16 @@ int FPyWrapperStruct::MakeStruct(FPyWrapperStruct* InSelf, PyObject* InArgs, PyO
 		return -1;
 	}
 
+	// If this struct has a custom make function, use that rather than the generic version
+	if (StructMetaData->MakeFunc.Func)
+	{
+		return CallMakeFunction_Impl(InSelf, InArgs, InKwds, StructMetaData->MakeFunc);
+	}
+
 	// We can early out if we have no data to apply
 	if (PyTuple_Size(InArgs) == 0 && (!InKwds || PyDict_Size(InKwds) == 0))
 	{
 		return 0;
-	}
-
-	// If this struct has a custom make function, use that rather than use the generic version
-	if (StructMetaData->MakeFunc.Func)
-	{
-		return CallMakeFunction_Impl(InSelf, InArgs, InKwds, StructMetaData->MakeFunc);
 	}
 
 	// Generic implementation just tries to assign each property
@@ -1218,36 +1218,25 @@ PyTypeObject InitializePyWrapperStructType()
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_richcompare = (richcmpfunc)&FFuncs::RichCmp;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 
 	PyType.tp_methods = PyMethods;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
-#if PY_MAJOR_VERSION < 3
-	PyType.tp_flags |= Py_TPFLAGS_CHECKTYPES;
-#endif	// PY_MAJOR_VERSION < 3
-	PyType.tp_doc = "Type for all UE4 exposed struct instances";
+	PyType.tp_doc = "Type for all Unreal exposed struct instances";
 
 	static PyNumberMethods PyNumber;
-#if PY_MAJOR_VERSION >= 3
 	PyNumber.nb_bool = (inquiry)&FNumberFuncs::Bool;
-#else	// PY_MAJOR_VERSION >= 3
-	PyNumber.nb_nonzero = (inquiry)&FNumberFuncs::Bool;
-#endif	// PY_MAJOR_VERSION >= 3
 	PyNumber.nb_add = (binaryfunc)&FNumberFuncs::Add;
 	PyNumber.nb_inplace_add = (binaryfunc)&FNumberFuncs::InlineAdd;
 	PyNumber.nb_subtract = (binaryfunc)&FNumberFuncs::Subtract;
 	PyNumber.nb_inplace_subtract = (binaryfunc)&FNumberFuncs::InlineSubtract;
 	PyNumber.nb_multiply = (binaryfunc)&FNumberFuncs::Multiply;
 	PyNumber.nb_inplace_multiply = (binaryfunc)&FNumberFuncs::InlineMultiply;
-#if PY_MAJOR_VERSION >= 3
 	PyNumber.nb_true_divide = (binaryfunc)&FNumberFuncs::Divide;
 	PyNumber.nb_inplace_true_divide = (binaryfunc)&FNumberFuncs::InlineDivide;
-#else	// PY_MAJOR_VERSION >= 3
-	PyNumber.nb_divide = (binaryfunc)&FNumberFuncs::Divide;
-	PyNumber.nb_inplace_divide = (binaryfunc)&FNumberFuncs::InlineDivide;
-#endif	// PY_MAJOR_VERSION >= 3
 	PyNumber.nb_remainder = (binaryfunc)&FNumberFuncs::Modulus;
 	PyNumber.nb_inplace_remainder = (binaryfunc)&FNumberFuncs::InlineModulus;
 	PyNumber.nb_and = (binaryfunc)&FNumberFuncs::And;

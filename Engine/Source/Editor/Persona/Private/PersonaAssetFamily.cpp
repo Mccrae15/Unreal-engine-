@@ -6,6 +6,7 @@
 #include "AssetRegistryModule.h"
 #include "Animation/AnimBlueprint.h"
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "AssetToolsModule.h"
 
 #define LOCTEXT_NAMESPACE "PersonaAssetFamily"
 
@@ -55,11 +56,23 @@ void FPersonaAssetFamily::GetAssetTypes(TArray<UClass*>& OutAssetTypes) const
 template<typename AssetType>
 static void FindAssets(const USkeleton* InSkeleton, TArray<FAssetData>& OutAssetData, FName SkeletonTag)
 {
+	if (!InSkeleton)
+	{
+		return;
+	}
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	FARFilter Filter;
 	Filter.bRecursiveClasses = true;
 	Filter.ClassNames.Add(AssetType::StaticClass()->GetFName());
 	Filter.TagsAndValues.Add(SkeletonTag, FAssetData(InSkeleton).GetExportTextName());
+	
+	// Also include all compatible assets.
+	FString CompatibleTagValue;
+	for (const auto& CompatibleSkeleton : InSkeleton->GetCompatibleSkeletons())
+	{
+		CompatibleTagValue = FString::Format(TEXT("{0}'{1}'"), { *USkeleton::StaticClass()->GetName(), *CompatibleSkeleton.ToString() });
+		Filter.TagsAndValues.Add(SkeletonTag, CompatibleTagValue);
+	}
 
 	AssetRegistryModule.Get().GetAssets(Filter, OutAssetData);
 }
@@ -219,6 +232,75 @@ FText FPersonaAssetFamily::GetAssetTypeDisplayName(UClass* InAssetClass) const
 	return FText();
 }
 
+const FSlateBrush* FPersonaAssetFamily::GetAssetTypeDisplayIcon(UClass* InAssetClass) const
+{
+	if (InAssetClass)
+	{
+		if (InAssetClass->IsChildOf<USkeleton>())
+		{
+			return FAppStyle::Get().GetBrush("Persona.AssetClass.Skeleton");
+		}
+		else if (InAssetClass->IsChildOf<UAnimationAsset>())
+		{
+			return FAppStyle::Get().GetBrush("Persona.AssetClass.Animation");
+		}
+		else if (InAssetClass->IsChildOf<USkeletalMesh>())
+		{
+			return FAppStyle::Get().GetBrush("Persona.AssetClass.SkeletalMesh");
+		}
+		else if (InAssetClass->IsChildOf<UAnimBlueprint>())
+		{
+			return FAppStyle::Get().GetBrush("Persona.AssetClass.Blueprint");
+		}
+		else if (InAssetClass->IsChildOf<UPhysicsAsset>())
+		{
+			return FAppStyle::Get().GetBrush("Persona.AssetClass.Physics");
+		}
+	}
+
+	return nullptr;
+}	
+
+FSlateColor FPersonaAssetFamily::GetAssetTypeDisplayTint(UClass* InAssetClass) const
+{
+	static const FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+	UClass* UseAssetClass = nullptr;
+	if (InAssetClass)
+	{
+		if (InAssetClass->IsChildOf<USkeleton>())
+		{
+			UseAssetClass = USkeleton::StaticClass();
+		}
+		else if (InAssetClass->IsChildOf<UAnimationAsset>())
+		{
+			UseAssetClass = UAnimationAsset::StaticClass();
+		}
+		else if (InAssetClass->IsChildOf<USkeletalMesh>())
+		{
+			UseAssetClass = USkeletalMesh::StaticClass();
+		}
+		else if (InAssetClass->IsChildOf<UAnimBlueprint>())
+		{
+			UseAssetClass = UAnimBlueprint::StaticClass();
+		}
+		else if (InAssetClass->IsChildOf<UPhysicsAsset>())
+		{
+			UseAssetClass = UPhysicsAsset::StaticClass();
+		}
+	}
+
+	if (UseAssetClass)
+	{
+		TWeakPtr<IAssetTypeActions> AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(UseAssetClass);
+		if (AssetTypeActions.IsValid())
+		{
+			return AssetTypeActions.Pin()->GetTypeColor();
+		}
+	}
+	return FSlateColor::UseForeground();
+}
+
 bool FPersonaAssetFamily::IsAssetCompatible(const FAssetData& InAssetData) const
 {
 	UClass* Class = InAssetData.GetClass();
@@ -226,7 +308,10 @@ bool FPersonaAssetFamily::IsAssetCompatible(const FAssetData& InAssetData) const
 	{
 		if (Class->IsChildOf<USkeleton>())
 		{
-			return FAssetData(Skeleton.Get()) == InAssetData;
+			if (Skeleton.Get())
+			{
+				return Skeleton.Get()->IsCompatibleSkeletonByAssetData(InAssetData);
+			}
 		}
 		else if (Class->IsChildOf<UAnimationAsset>() || Class->IsChildOf<USkeletalMesh>())
 		{
@@ -234,7 +319,10 @@ bool FPersonaAssetFamily::IsAssetCompatible(const FAssetData& InAssetData) const
 
 			if (Result.IsSet())
 			{
-				return Result.GetValue() == FAssetData(Skeleton.Get()).GetExportTextName();
+				if (Skeleton.Get())
+				{
+					return Skeleton.Get()->IsCompatibleSkeletonByAssetData(InAssetData);
+				}
 			}
 		}
 		else if (Class->IsChildOf<UAnimBlueprint>())
@@ -243,7 +331,10 @@ bool FPersonaAssetFamily::IsAssetCompatible(const FAssetData& InAssetData) const
 
 			if (Result.IsSet())
 			{
-				return Result.GetValue() == FAssetData(Skeleton.Get()).GetExportTextName();
+				if (Skeleton.Get())
+				{
+					return Skeleton.Get()->IsCompatibleSkeletonByAssetString(Result.GetValue());
+				}
 			}
 		}
 		else if (Class->IsChildOf<UPhysicsAsset>())
@@ -365,7 +456,7 @@ void FPersonaAssetFamily::FindCounterpartAssets(const UObject* InAsset, const US
 		const UAnimBlueprint* AnimBlueprint = CastChecked<const UAnimBlueprint>(InAsset);
 		OutSkeleton = AnimBlueprint->TargetSkeleton;
 		OutMesh = AnimBlueprint->GetPreviewMesh();
-		check(AnimBlueprint->BlueprintType == BPTYPE_Interface || AnimBlueprint->TargetSkeleton != nullptr);
+		check(AnimBlueprint->BlueprintType == BPTYPE_Interface || AnimBlueprint->bIsTemplate || AnimBlueprint->TargetSkeleton != nullptr);
 		if(OutMesh == nullptr && AnimBlueprint->TargetSkeleton)
 		{
 			OutMesh = AnimBlueprint->TargetSkeleton->GetPreviewMesh();

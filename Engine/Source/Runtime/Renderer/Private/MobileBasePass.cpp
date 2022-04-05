@@ -12,6 +12,23 @@
 #include "MaterialShaderQualitySettings.h"
 #include "PrimitiveSceneInfo.h"
 #include "MeshPassProcessor.inl"
+#include "Engine/TextureCube.h"
+
+bool MobileUsesNoLightMapPermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
+{
+	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+	const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnAnyThread() != 0);
+	const bool bIsLitMaterial = Parameters.MaterialParameters.ShadingModels.IsLit();
+	const bool bDeferredShading = IsMobileDeferredShadingEnabled(Parameters.Platform);
+
+	if (!bDeferredShading && !bAllowStaticLighting && bIsLitMaterial && !IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode))
+	{
+		// We don't need NoLightMap permutation if CSM shader can handle no-CSM case with a branch inside shader
+		return !MobileUseCSMShaderBranch();
+	}
+		
+	return true;
+}
 
 template <ELightMapPolicyType Policy, int32 NumMovablePointLights>
 bool GetUniformMobileBasePassShaders(
@@ -128,42 +145,6 @@ bool MobileBasePass::GetShaders(
 			VertexShader,
 			PixelShader
 			);
-	case 1:
-		return GetMobileBasePassShaders<1>(
-			LightMapPolicyType, 
-			MaterialResource, 
-			VertexFactoryType, 
-			bEnableSkyLight, 
-			VertexShader,
-			PixelShader
-			);
-	case 2:
-		return GetMobileBasePassShaders<2>(
-			LightMapPolicyType,
-			MaterialResource,
-			VertexFactoryType,
-			bEnableSkyLight,
-			VertexShader,
-			PixelShader
-			);
-	case 3:
-		return GetMobileBasePassShaders<3>(
-			LightMapPolicyType,
-			MaterialResource,
-			VertexFactoryType,
-			bEnableSkyLight,
-			VertexShader,
-			PixelShader
-			);
-	case 4:
-		return GetMobileBasePassShaders<4>(
-			LightMapPolicyType,
-			MaterialResource,
-			VertexFactoryType,
-			bEnableSkyLight,
-			VertexShader,
-			PixelShader
-			);
 	case 0:
 	default:
 		return GetMobileBasePassShaders<0>(
@@ -180,7 +161,6 @@ bool MobileBasePass::GetShaders(
 static bool UseSkyReflectionCapture(const FScene* RenderScene)
 {
 	return RenderScene
-		&& RenderScene->ReflectionSceneData.RegisteredReflectionCapturePositions.Num() == 0
 		&& RenderScene->SkyLight
 		&& RenderScene->SkyLight->ProcessedTexture
 		&& RenderScene->SkyLight->ProcessedTexture->TextureRHI;
@@ -202,7 +182,7 @@ int32 MobileBasePass::CalcNumMovablePointLights(const FMaterial& InMaterial, con
 	const FReadOnlyCVARCache& ReadOnlyCVARCache = FReadOnlyCVARCache::Get();
 	const bool bIsUnlit = InMaterial.GetShadingModels().IsUnlit();
 	int32 OutNumMovablePointLights = (InPrimitiveSceneProxy && !bIsUnlit) ? FMath::Min<int32>(InPrimitiveSceneProxy->GetPrimitiveSceneInfo()->NumMobileMovablePointLights, ReadOnlyCVARCache.NumMobileMovablePointLights) : 0;
-	if (OutNumMovablePointLights > 0 && ReadOnlyCVARCache.bMobileMovablePointLightsUseStaticBranch)
+	if (OutNumMovablePointLights > 0)
 	{
 		OutNumMovablePointLights = INT32_MAX;
 	}
@@ -242,7 +222,7 @@ ELightMapPolicyType MobileBasePass::SelectMeshLightmapPolicy(
 	{
 		const FReadOnlyCVARCache& ReadOnlyCVARCache = FReadOnlyCVARCache::Get();
 
-		if (!ReadOnlyCVARCache.bAllowStaticLighting)
+		if (!ReadOnlyCVARCache.bAllowStaticLighting || (ReadOnlyCVARCache.bMobileEnableNoPrecomputedLightingCSMShader && Scene && Scene->GetForceNoPrecomputedLighting()))
 		{
 			if (!IsTranslucentBlendMode(BlendMode))
 			{
@@ -337,7 +317,7 @@ ELightMapPolicyType MobileBasePass::SelectMeshLightmapPolicy(
 			}
 			else if ((bHasValidVLM || bHasValidILC) && bPrimitiveUsesILC)
 			{
-				if ((bUseStaticAndCSM || bMovableWithCSM) && !bUsesDeferredShading)
+				if ((bUseStaticAndCSM || bMovableWithCSM) && !bUsesDeferredShading && ReadOnlyCVARCache.bMobileEnableStaticAndCSMShadowReceivers)
 				{
 					SelectedLightmapPolicy = LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_SH_INDIRECT;
 				}
@@ -405,7 +385,7 @@ void MobileBasePass::SetTranslucentRenderState(FMeshPassProcessorRenderState& Dr
 	if (Material.GetShadingModels().HasShadingModel(MSM_ThinTranslucent))
 	{
 		// the mobile thin translucent fallback uses a similar mode as BLEND_Translucent, but multiplies color by 1 insead of SrcAlpha.
-		DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
+		DrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
 	}
 	else
 	{
@@ -418,20 +398,20 @@ void MobileBasePass::SetTranslucentRenderState(FMeshPassProcessorRenderState& Dr
 			}
 			else
 			{
-				DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
+				DrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
 			}
 			break;
 		case BLEND_Additive:
 			// Add to the existing scene color
-			DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
+			DrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
 			break;
 		case BLEND_Modulate:
-			// Modulate with the existing scene color
+			// Modulate with the existing scene color, preserve destination alpha.
 			DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_DestColor, BF_Zero>::GetRHI());
 			break;
 		case BLEND_AlphaComposite:
 			// Blend with existing scene color. New color is already pre-multiplied by alpha.
-			DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
+			DrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
 			break;
 		case BLEND_AlphaHoldout:
 			// Blend by holding out the matte shape of the source alpha
@@ -441,20 +421,7 @@ void MobileBasePass::SetTranslucentRenderState(FMeshPassProcessorRenderState& Dr
 			if (Material.GetShadingModels().HasShadingModel(MSM_SingleLayerWater))
 			{
 				// Single layer water is an opaque marerial rendered as translucent on Mobile. We force pre-multiplied alpha to achieve water depth based transmittance.
-				DrawRenderState.SetBlendState(TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
-			}
-			else if (bIsUsingMobilePixelProjectedReflection)
-			{
-				if (GetMobilePixelProjectedReflectionQuality() == EMobilePixelProjectedReflectionQuality::BestPerformance)
-				{
-					// We only render the meshes used for mobile pixel projected reflection once for the BestPerformance quality level, so we have to write the depth to alpha channel in translucent pass.
-					DrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
-				}
-				else
-				{
-					// We render the meshes used for mobile pixel projected reflection twice for the BetterPerformance or greater quality level, so we don't have to write the depth to alpha channel in translucent pass.
-					DrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGB>::GetRHI());
-				}
+				DrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_InverseSourceAlpha>::GetRHI());
 			}
 			else
 			{
@@ -467,20 +434,6 @@ void MobileBasePass::SetTranslucentRenderState(FMeshPassProcessorRenderState& Dr
 	{
 		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
 	}
-	else if (bIsUsingMobilePixelProjectedReflection && !IsTranslucentBlendMode(Material.GetBlendMode()))
-	{
-		if (GetMobilePixelProjectedReflectionQuality() == EMobilePixelProjectedReflectionQuality::BestPerformance)
-		{
-			// We only render the opaque meshes used for mobile pixel projected reflection once for the BestPerformance quality level, so we have to write the depth to depth RT in translucent pass.
-			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
-		}
-	}
-#if PLATFORM_HOLOLENS
-	else if (Material.ShouldWriteDepthToTranslucentMaterial())
-	{
-		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
-	}
-#endif
 }
 
 bool MobileBasePass::StationarySkyLightHasBeenApplied(const FScene* Scene, ELightMapPolicyType LightMapPolicyType)
@@ -534,11 +487,12 @@ void TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>::GetShaderBindings
 			static_assert(MaxNumReflections == 3, "Update reflection array initializations to match MaxCachedReflectionCaptureProxies");
 			// set reflection parameters
 			FTexture* ReflectionCubemapTextures[MaxNumReflections] = { GBlackTextureCube, GBlackTextureCube, GBlackTextureCube };
-			FVector4 CapturePositions[MaxNumReflections] = { FVector4(0, 0, 0, 0), FVector4(0, 0, 0, 0), FVector4(0, 0, 0, 0) };
-			FVector4 ReflectionParams(0.0f, 0.0f, 0.0f, 0.0f);
-			FVector4 ReflectanceMaxValueRGBMParams(0.0f, 0.0f, 0.0f, 0.0f);
-			FMatrix CaptureBoxTransformArray[MaxNumReflections] = { FMatrix(EForceInit::ForceInitToZero), FMatrix(EForceInit::ForceInitToZero), FMatrix(EForceInit::ForceInitToZero) };
-			FVector4 CaptureBoxScalesArray[MaxNumReflections] = { FVector4(EForceInit::ForceInitToZero), FVector4(EForceInit::ForceInitToZero), FVector4(EForceInit::ForceInitToZero) };
+			FVector4f CapturePositions[MaxNumReflections] = { FVector4f(0, 0, 0, 0), FVector4f(0, 0, 0, 0), FVector4f(0, 0, 0, 0) };
+			FVector4f CaptureTilePositions[MaxNumReflections] = { FVector4f(0, 0, 0, 0), FVector4f(0, 0, 0, 0), FVector4f(0, 0, 0, 0) };
+			FVector4f ReflectionParams(0.0f, 0.0f, 0.0f, 0.0f);
+			FVector4f ReflectanceMaxValueRGBMParams(0.0f, 0.0f, 0.0f, 0.0f);
+			FMatrix44f CaptureBoxTransformArray[MaxNumReflections] = { FMatrix44f(EForceInit::ForceInitToZero), FMatrix44f(EForceInit::ForceInitToZero), FMatrix44f(EForceInit::ForceInitToZero) };
+			FVector4f CaptureBoxScalesArray[MaxNumReflections] = { FVector4f(EForceInit::ForceInitToZero), FVector4f(EForceInit::ForceInitToZero), FVector4f(EForceInit::ForceInitToZero) };
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy ? PrimitiveSceneProxy->GetPrimitiveSceneInfo() : nullptr;
 			if (PrimitiveSceneInfo)
 			{
@@ -547,11 +501,12 @@ void TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>::GetShaderBindings
 					const FReflectionCaptureProxy* ReflectionProxy = PrimitiveSceneInfo->CachedReflectionCaptureProxies[i];
 					if (ReflectionProxy)
 					{
-						CapturePositions[i] = ReflectionProxy->Position;
+						CapturePositions[i] = ReflectionProxy->RelativePosition;
 						CapturePositions[i].W = ReflectionProxy->InfluenceRadius;
-						if (ReflectionProxy->EncodedHDRCubemap && ReflectionProxy->EncodedHDRCubemap->IsInitialized())
+						CaptureTilePositions[i] = FVector4f(ReflectionProxy->TilePosition, 0);
+						if (ReflectionProxy->EncodedHDRCubemap)
 						{
-							ReflectionCubemapTextures[i] = PrimitiveSceneInfo->CachedReflectionCaptureProxies[i]->EncodedHDRCubemap;
+							ReflectionCubemapTextures[i] = ReflectionProxy->EncodedHDRCubemap->GetResource();
 						}
 						//To keep ImageBasedReflectionLighting coherence with PC, use AverageBrightness instead of InvAverageBrightness to calculate the IBL contribution
 						ReflectionParams[i] = ReflectionProxy->EncodedHDRAverageBrightness;
@@ -560,7 +515,7 @@ void TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>::GetShaderBindings
 						if (ReflectionProxy->Shape == EReflectionCaptureShape::Box)
 						{
 							CaptureBoxTransformArray[i] = ReflectionProxy->BoxTransform;
-							CaptureBoxScalesArray[i] = FVector4(ReflectionProxy->BoxScales, ReflectionProxy->BoxTransitionDistance);
+							CaptureBoxScalesArray[i] = FVector4f(ReflectionProxy->BoxScales, ReflectionProxy->BoxTransitionDistance);
 						}
 					}
 					else if (Scene->SkyLight != nullptr && Scene->SkyLight->ProcessedTexture != nullptr)
@@ -581,24 +536,22 @@ void TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>::GetShaderBindings
 			ShaderBindings.Add(HQReflectionInvAverageBrigtnessParams, ReflectionParams);
 			ShaderBindings.Add(HQReflectanceMaxValueRGBMParams, ReflectanceMaxValueRGBMParams);
 			ShaderBindings.Add(HQReflectionPositionsAndRadii, CapturePositions);
+			ShaderBindings.Add(HQReflectionTilePositions, CaptureTilePositions);
 			ShaderBindings.Add(HQReflectionCaptureBoxTransformArray, CaptureBoxTransformArray);
 			ShaderBindings.Add(HQReflectionCaptureBoxScalesArray, CaptureBoxScalesArray);
 		}
 		else if (ReflectionParameter.IsBound())
 		{
 			FRHIUniformBuffer* ReflectionUB = GDefaultMobileReflectionCaptureUniformBuffer.GetUniformBufferRHI();
+			FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy ? PrimitiveSceneProxy->GetPrimitiveSceneInfo() : nullptr;
+			if (PrimitiveSceneInfo && PrimitiveSceneInfo->CachedReflectionCaptureProxy)
+			{
+				ReflectionUB = PrimitiveSceneInfo->CachedReflectionCaptureProxy->MobileUniformBuffer;
+			}
 			// If no reflection captures are available then attempt to use sky light's texture.
-			if (UseSkyReflectionCapture(Scene))
+			else if (UseSkyReflectionCapture(Scene))
 			{
 				ReflectionUB = Scene->UniformBuffers.MobileSkyReflectionUniformBuffer;
-			}
-			else
-			{
-				FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy ? PrimitiveSceneProxy->GetPrimitiveSceneInfo() : nullptr;
-				if (PrimitiveSceneInfo && PrimitiveSceneInfo->CachedReflectionCaptureProxy)
-				{
-					ReflectionUB = PrimitiveSceneInfo->CachedReflectionCaptureProxy->MobileUniformBuffer;
-				}
 			}
 			ShaderBindings.Add(ReflectionParameter, ReflectionUB);
 		}
@@ -641,6 +594,11 @@ void TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>::GetShaderBindings
 		float CSMDebugValue = CVarsCSMDebugHint->GetValueOnRenderThread();
 		ShaderBindings.Add(CSMDebugHintParams, CSMDebugValue);
 	}
+
+	if (UseCSMParameter.IsBound())
+	{
+		ShaderBindings.Add(UseCSMParameter, ShaderElementData.bCanReceiveCSM ? 1 : 0);
+	}
 }
 
 FMobileBasePassMeshProcessor::FMobileBasePassMeshProcessor(
@@ -666,15 +624,13 @@ bool FMobileBasePassMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT Me
 	const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
 	const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
 	const bool bUsesWaterMaterial = ShadingModels.HasShadingModel(MSM_SingleLayerWater); // Water goes into the translucent pass
-	const bool bIsUsingMobilePixelProjectedReflection = Material.IsUsingPlanarForwardReflections() 
-														&& IsUsingMobilePixelProjectedReflection(GetFeatureLevelShaderPlatform(Material.GetFeatureLevel()));
 	const bool bCanReceiveCSM = ((Flags & EFlags::CanReceiveCSM) == EFlags::CanReceiveCSM);
 
 	bool bResult = true;
 	if (bTranslucentBasePass)
 	{
 		// Skipping TPT_TranslucencyAfterDOFModulate. That pass is only needed for Dual Blending, which is not supported on Mobile.
-		bool bShouldDraw = (bIsTranslucent || bUsesWaterMaterial || bIsUsingMobilePixelProjectedReflection) &&
+		bool bShouldDraw = (bIsTranslucent || bUsesWaterMaterial) &&
 		(TranslucencyPassType == ETranslucencyPass::TPT_AllTranslucency
 		|| (TranslucencyPassType == ETranslucencyPass::TPT_StandardTranslucency && !Material.IsMobileSeparateTranslucencyEnabled())
 		|| (TranslucencyPassType == ETranslucencyPass::TPT_TranslucencyAfterDOF && Material.IsMobileSeparateTranslucencyEnabled()));
@@ -684,19 +640,18 @@ bool FMobileBasePassMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT Me
 			check(bCanReceiveCSM == false);
 			const FLightSceneInfo* MobileDirectionalLight = MobileBasePass::GetDirectionalLightInfo(Scene, PrimitiveSceneProxy);
 			// Opaque meshes used for mobile pixel projected reflection could receive CSM in translucent pass.
-			ELightMapPolicyType LightmapPolicyType = MobileBasePass::SelectMeshLightmapPolicy(Scene, MeshBatch, PrimitiveSceneProxy, MobileDirectionalLight, ShadingModels, bCanReceiveCSM || (!bIsTranslucent && bIsUsingMobilePixelProjectedReflection), false, FeatureLevel, BlendMode);
-			bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material, BlendMode, ShadingModels, LightmapPolicyType, MeshBatch.LCI);
+			ELightMapPolicyType LightmapPolicyType = MobileBasePass::SelectMeshLightmapPolicy(Scene, MeshBatch, PrimitiveSceneProxy, MobileDirectionalLight, ShadingModels, bCanReceiveCSM, false, FeatureLevel, BlendMode);
+			bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material, BlendMode, ShadingModels, LightmapPolicyType, bCanReceiveCSM, MeshBatch.LCI);
 		}
 	}
 	else
 	{
 		// opaque materials.
-		// We have to render the opaque meshes used for mobile pixel projected reflection both in opaque and translucent pass if the quality level is greater than BestPerformance
-		if (!bIsTranslucent && !bUsesWaterMaterial && (!bIsUsingMobilePixelProjectedReflection || GetMobilePixelProjectedReflectionQuality() > EMobilePixelProjectedReflectionQuality::BestPerformance))
+		if (!bIsTranslucent && !bUsesWaterMaterial)
 		{
 			const FLightSceneInfo* MobileDirectionalLight = MobileBasePass::GetDirectionalLightInfo(Scene, PrimitiveSceneProxy);
 			ELightMapPolicyType LightmapPolicyType = MobileBasePass::SelectMeshLightmapPolicy(Scene, MeshBatch, PrimitiveSceneProxy, MobileDirectionalLight, ShadingModels, bCanReceiveCSM, bUsesDeferredShading, FeatureLevel, BlendMode);
-			bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material, BlendMode, ShadingModels, LightmapPolicyType, MeshBatch.LCI);
+			bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material, BlendMode, ShadingModels, LightmapPolicyType, bCanReceiveCSM, MeshBatch.LCI);
 		}
 	}
 
@@ -736,12 +691,11 @@ bool FMobileBasePassMeshProcessor::Process(
 		EBlendMode BlendMode,
 		FMaterialShadingModelField ShadingModels,
 		const ELightMapPolicyType LightMapPolicyType,
+		const bool bCanReceiveCSM,
 		const FUniformLightMapPolicy::ElementDataType& RESTRICT LightMapElementData)
 {
 	TMeshProcessorShaders<
 		TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>,
-		FBaseHS,
-		FBaseDS,
 		TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> BasePassShaders;
 	
 	bool bEnableSkyLight = false;
@@ -821,7 +775,7 @@ bool FMobileBasePassMeshProcessor::Process(
 	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, MaterialResource, OverrideSettings);
 	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, MaterialResource, OverrideSettings);
 
-	TMobileBasePassShaderElementData<FUniformLightMapPolicy> ShaderElementData(LightMapElementData);
+	TMobileBasePassShaderElementData<FUniformLightMapPolicy> ShaderElementData(LightMapElementData, bCanReceiveCSM);
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
 
 	BuildMeshDrawCommands(
@@ -842,21 +796,20 @@ bool FMobileBasePassMeshProcessor::Process(
 
 FMeshPassProcessor* CreateMobileBasePassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.MobileOpaqueBasePassUniformBuffer);
-	PassDrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
 	PassDrawRenderState.SetDepthStencilAccess(Scene->DefaultBasePassDepthStencilAccess);
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
 
-	const FMobileBasePassMeshProcessor::EFlags Flags = FMobileBasePassMeshProcessor::EFlags::CanUseDepthStencil;
+	const FMobileBasePassMeshProcessor::EFlags Flags = FMobileBasePassMeshProcessor::EFlags::CanUseDepthStencil
+		| (MobileBasePassAlwaysUsesCSM(Scene->GetShaderPlatform()) ? FMobileBasePassMeshProcessor::EFlags::CanReceiveCSM : FMobileBasePassMeshProcessor::EFlags::None);
 
 	return new(FMemStack::Get()) FMobileBasePassMeshProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, PassDrawRenderState, InDrawListContext, Flags);
 }
 
 FMeshPassProcessor* CreateMobileBasePassCSMProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.MobileCSMOpaqueBasePassUniformBuffer);
-	PassDrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
 	PassDrawRenderState.SetDepthStencilAccess(Scene->DefaultBasePassDepthStencilAccess);
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
@@ -868,8 +821,7 @@ FMeshPassProcessor* CreateMobileBasePassCSMProcessor(const FScene* Scene, const 
 
 FMeshPassProcessor* CreateMobileTranslucencyStandardPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.MobileTranslucentBasePassUniformBuffer);
-	PassDrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead);
 	
@@ -881,8 +833,7 @@ FMeshPassProcessor* CreateMobileTranslucencyStandardPassProcessor(const FScene* 
 
 FMeshPassProcessor* CreateMobileTranslucencyAfterDOFProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.MobileTranslucentBasePassUniformBuffer);
-	PassDrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead);
 
@@ -893,8 +844,7 @@ FMeshPassProcessor* CreateMobileTranslucencyAfterDOFProcessor(const FScene* Scen
 
 FMeshPassProcessor* CreateMobileTranslucencyAllPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState PassDrawRenderState(Scene->UniformBuffers.ViewUniformBuffer, Scene->UniformBuffers.MobileTranslucentBasePassUniformBuffer);
-	PassDrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead);
 

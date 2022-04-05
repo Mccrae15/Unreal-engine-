@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -34,7 +34,7 @@ namespace UnrealBuildTool
 				using (StreamReader reader = new StreamReader(ManifestPath))
 				{
 					string CurrentToRootDir = ".." + Path.DirectorySeparatorChar + "..";
-					string LineRead;
+					string? LineRead;
 					while ((LineRead = reader.ReadLine()) != null)
 					{
 						string JunkEntry = LineRead.Trim();
@@ -64,7 +64,7 @@ namespace UnrealBuildTool
 										// if the platform is valid, then we want to keep the files, which means that we don't want to apply the junk line
 										if (UnrealTargetPlatform.TryParse(InnerTokens[1], out ParsedPlatform))
 										{
-											if (UEBuildPlatform.GetBuildPlatform(ParsedPlatform, bInAllowFailure: true) != null)
+											if (UEBuildPlatform.TryGetBuildPlatform(ParsedPlatform, out _))
 											{
 												// this is a good platform, so don't delete any files!
 												bIsValidJunkLine = false;
@@ -74,7 +74,7 @@ namespace UnrealBuildTool
 								}
 							}
 
-							// All paths within the manifest are UE4 root directory relative.
+							// All paths within the manifest are Unreal root directory relative.
 							// UBT's working directory is Engine\Source so add "..\..\" to each of the entires.
 							if (bIsValidJunkLine)
 							{
@@ -104,7 +104,7 @@ namespace UnrealBuildTool
 					if (FileName.Contains('*'))
 					{
 						// Wildcard search and delete
-						string DirectoryToLookIn = Path.GetDirectoryName(Junk);
+						string DirectoryToLookIn = Path.GetDirectoryName(Junk)!;
 						if (Directory.Exists(DirectoryToLookIn))
 						{
 							// Delete all files within the specified folder

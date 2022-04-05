@@ -1,37 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SActorDetails.h"
-#include "Widgets/SBoxPanel.h"
+
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
-#include "GameFramework/Actor.h"
-#include "Engine/Blueprint.h"
+#include "DetailsViewObjectFilter.h"
 #include "Editor.h"
-#include "HAL/FileManager.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/SRichTextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "EditorStyleSet.h"
 #include "Editor/UnrealEdEngine.h"
+#include "EditorStyleSet.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Framework/TypedElementSelectionSet.h"
+#include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
-#include "Kismet2/ComponentEditorUtils.h"
 #include "Engine/Selection.h"
-#include "UnrealEdGlobals.h"
-#include "LevelEditor.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "SSCSEditor.h"
-#include "PropertyEditorModule.h"
+#include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
+#include "IDetailRootObjectCustomization.h"
 #include "IDetailsView.h"
+#include "Kismet2/ComponentEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "LevelEditor.h"
 #include "LevelEditorGenericDetails.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "SSubobjectEditor.h"
+#include "SSubobjectEditorModule.h"
+#include "SSubobjectInstanceEditor.h"
 #include "ScopedTransaction.h"
 #include "SourceCodeNavigation.h"
+#include "SubobjectData.h"
+#include "SubobjectDataSubsystem.h"
+#include "UnrealEdGlobals.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "DetailsViewObjectFilter.h"
-#include "IDetailRootObjectCustomization.h"
-
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/SRichTextBlock.h"
 
 class SActorDetailsUneditableComponentWarning : public SCompoundWidget
 {
@@ -55,7 +62,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::Get().GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
@@ -84,18 +91,21 @@ public:
 	}
 };
 
-void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifier, TSharedPtr<FUICommandList> InCommandList, TSharedPtr<FTabManager> InTabManager)
+void SActorDetails::Construct(const FArguments& InArgs, UTypedElementSelectionSet* InSelectionSet, const FName TabIdentifier, TSharedPtr<FUICommandList> InCommandList, TSharedPtr<FTabManager> InTabManager)
 {
-	USelection::SelectionChangedEvent.AddRaw(this, &SActorDetails::OnEditorSelectionChanged);
-	
+	SelectionSet = InSelectionSet;
+	checkf(SelectionSet, TEXT("SActorDetails must be constructed with a valid selection set!"));
+
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &SActorDetails::OnObjectsReplaced);
+
 	FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 	LevelEditor.OnComponentsEdited().AddRaw(this, &SActorDetails::OnComponentsEditedInWorld);
 
-	FPropertyEditorModule& PropPlugin = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	FDetailsViewArgs DetailsViewArgs;
 	DetailsViewArgs.bUpdatesFromSelection = true;
 	DetailsViewArgs.bLockable = true;
-	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::ComponentsAndActorsUseNameArea;
+	DetailsViewArgs.bAllowFavoriteSystem = true;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::ObjectsUseNameArea | FDetailsViewArgs::ComponentsAndActorsUseNameArea;
 	DetailsViewArgs.NotifyHook = GUnrealEd;
 	DetailsViewArgs.ViewIdentifier = TabIdentifier;
 	DetailsViewArgs.bCustomNameAreaLocation = true;
@@ -103,6 +113,9 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
 	DetailsViewArgs.HostCommandList = InCommandList;
 	DetailsViewArgs.HostTabManager = InTabManager;
+	DetailsViewArgs.bShowSectionSelector = true;
+
+	FPropertyEditorModule& PropPlugin = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	DetailsView = PropPlugin.CreateDetailView(DetailsViewArgs);
 
 	auto IsPropertyVisible = [](const FPropertyAndParent& PropertyAndParent)
@@ -119,8 +132,6 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 	DetailsView->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateLambda(IsPropertyVisible));
 	DetailsView->SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly::CreateSP(this, &SActorDetails::IsPropertyReadOnly));
 	DetailsView->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateSP(this, &SActorDetails::IsPropertyEditingEnabled));
-	DetailsView->SetOnObjectArrayChanged(FOnObjectArrayChanged::CreateSP(this, &SActorDetails::OnDetailsViewObjectArrayChanged));
-
 
 	// Set up a delegate to call to add generic details to the view
 	DetailsView->SetGenericLayoutDetailsDelegate(FOnGetDetailCustomizationInstance::CreateStatic(&FLevelEditorGenericDetails::MakeInstance));
@@ -128,22 +139,28 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 	GEditor->RegisterForUndo(this);
 
 	ComponentsBox = SNew(SBox)
-		.Visibility(this, &SActorDetails::GetComponentsBoxVisibility);
+		.Padding(FMargin(2.0f, 0.0f, 2.0f, 0.0f))
+		.Visibility(this, &SActorDetails::GetComponentEditorVisibility);
 
-	SCSEditor = SNew(SSCSEditor)
-		.EditorMode(EComponentEditorMode::ActorInstance)
+	FModuleManager::LoadModuleChecked<FSubobjectEditorModule>("SubobjectEditor");
+	
+	SubobjectEditor = SNew(SSubobjectInstanceEditor)
+		.ObjectContext(this, &SActorDetails::GetActorContextAsObject)
 		.AllowEditing(this, &SActorDetails::GetAllowComponentTreeEditing)
-		.ActorContext(this, &SActorDetails::GetActorContext)
-		.OnSelectionUpdated(this, &SActorDetails::OnSCSEditorTreeViewSelectionChanged)
-		.OnItemDoubleClicked(this, &SActorDetails::OnSCSEditorTreeViewItemDoubleClicked);
-		
-	ComponentsBox->SetContent(SCSEditor.ToSharedRef());
+		.OnSelectionUpdated(this, &SActorDetails::OnSubobjectEditorTreeViewSelectionChanged)
+		.OnItemDoubleClicked(this, &SActorDetails::OnSubobjectEditorTreeViewItemDoubleClicked);
+
+	ComponentsBox->SetContent(SubobjectEditor.ToSharedRef());
+
+	TSharedRef<SWidget> ButtonBox = SubobjectEditor->GetToolButtonsBox().ToSharedRef();
+	ButtonBox->SetVisibility(MakeAttributeSP(this, &SActorDetails::GetComponentEditorVisibility));
+	DetailsView->SetNameAreaCustomContent( ButtonBox );
 
 	ChildSlot
 	[
 		SNew(SVerticalBox)
 		+SVerticalBox::Slot()
-		.Padding(0.0f, 0.0f, 0.0f, 2.0f)
+		.Padding(10.f, 4.f, 0.f, 0.f)
 		.AutoHeight()
 		[
 			DetailsView->GetNameAreaWidget().ToSharedRef()
@@ -160,7 +177,7 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 				SNew( SVerticalBox )
 				+SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding( FMargin( 0,0,0,1) )
+				.Padding( FMargin(0,0,0,1) )
 				[
 					SNew(SActorDetailsUneditableComponentWarning)
 					.Visibility(this, &SActorDetails::GetUCSComponentWarningVisibility)
@@ -169,7 +186,7 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 				]
 				+SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding( FMargin( 0,0,0,1) )
+				.Padding( FMargin(0,0,0,1) )
 				[
 					SNew(SActorDetailsUneditableComponentWarning)
 					.Visibility(this, &SActorDetails::GetInheritedBlueprintComponentWarningVisibility)
@@ -178,7 +195,7 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 				]
 				+SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding( FMargin( 0,0,0,1) )
+				.Padding( FMargin(0,0,0,1) )
 				[
 					SNew(SActorDetailsUneditableComponentWarning)
 					.Visibility(this, &SActorDetails::GetNativeComponentWarningVisibility)
@@ -203,6 +220,9 @@ void SActorDetails::Construct(const FArguments& InArgs, const FName TabIdentifie
 	[
 		ComponentsBox.ToSharedRef()
 	];
+
+	// Immediately update (otherwise we will appear empty)
+	RefreshSelection(/*bForceRefresh*/true);
 }
 
 SActorDetails::~SActorDetails()
@@ -211,7 +231,9 @@ SActorDetails::~SActorDetails()
 	{
 		GEditor->UnregisterForUndo(this);
 	}
-	USelection::SelectionChangedEvent.RemoveAll(this);
+
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
+
 	RemoveBPComponentCompileEventDelegate();
 
 	FLevelEditorModule* LevelEditor = FModuleManager::GetModulePtr<FLevelEditorModule>("LevelEditor");
@@ -221,85 +243,205 @@ SActorDetails::~SActorDetails()
 	}
 }
 
-void SActorDetails::OnDetailsViewObjectArrayChanged(const FString& InTitle, const TArray<UObject*>& InObjects)
+bool SActorDetails::IsObservingSelectionSet(const UTypedElementSelectionSet* InSelectionSet) const
 {
-	// The DetailsView will already check validity every tick and hide itself when invalid, so this piggy-backs on that code instead of needing a second tick function.
-	if (InObjects.Num() == 0 && !LockedActorSelection.IsValid())
+	return SelectionSet == InSelectionSet;
+}
+
+void SActorDetails::RefreshSelection(const bool bForceRefresh)
+{
+	if (bSelectionGuard)
 	{
-		bHasComponentsToShow = false;
+		return;
+	}
+
+	TArray<TTypedElement<ITypedElementDetailsInterface>> DetailsElements;
+	DetailsElements.Reserve(SelectionSet->GetNumSelectedElements());
+	SelectionSet->ForEachSelectedElement<ITypedElementDetailsInterface>([&DetailsElements](const TTypedElement<ITypedElementDetailsInterface>& InDetailsElement)
+	{
+		DetailsElements.Add(InDetailsElement);
+		return true;
+	});
+
+	bHasSelectionOverride = false;
+	SelectionOverrideActors.Reset();
+
+	RefreshTopLevelElements(DetailsElements, bForceRefresh, /*bOverrideLock*/false);
+}
+
+void SActorDetails::OverrideSelection(const TArray<AActor*>& InActors, const bool bForceRefresh)
+{
+	UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+
+	TArray<TTypedElement<ITypedElementDetailsInterface>> DetailsElements;
+	DetailsElements.Reserve(SelectionSet->GetNumSelectedElements());
+	for (AActor* Actor : InActors)
+	{
+		if (FTypedElementHandle ActorElementHandle = UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor))
+		{
+			if (TTypedElement<ITypedElementDetailsInterface> ActorDetailsHandle = Registry->GetElement<ITypedElementDetailsInterface>(ActorElementHandle))
+			{
+				DetailsElements.Add(MoveTemp(ActorDetailsHandle));
+			}
+		}
+	}
+
+	bHasSelectionOverride = true;
+	SelectionOverrideActors = InActors;
+
+	RefreshTopLevelElements(DetailsElements, bForceRefresh, /*bOverrideLock*/false);
+}
+
+void SActorDetails::RefreshTopLevelElements(TArrayView<const TTypedElement<ITypedElementDetailsInterface>> InDetailsElements, const bool bForceRefresh, const bool bOverrideLock)
+{
+	// Nothing to do if this view is locked!
+	if (DetailsView->IsLocked() && !bOverrideLock)
+	{
+		return;
+	}
+
+	// Build the array of top-level elements to edit
+	TopLevelElements.Reset(InDetailsElements.Num());
+	for (const TTypedElement<ITypedElementDetailsInterface>& DetailsElement : InDetailsElements)
+	{
+		if (DetailsElement.IsTopLevelElement())
+		{
+			if (TUniquePtr<ITypedElementDetailsObject> ElementDetailsObject = DetailsElement.GetDetailsObject())
+			{
+				TopLevelElements.Add(MoveTemp(ElementDetailsObject));
+			}
+		}
+	}
+
+	// Update the underlying details view
+	SetElementDetailsObjects(TopLevelElements, bForceRefresh, bOverrideLock);
+
+	// Update the Subobject tree if we were asked to edit a single actor
+	
+	if (AActor* Actor = GetActorContext())
+	{
+		// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
+		TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
+		SubobjectEditor->UpdateTree();
+		UpdateComponentTreeFromEditorSelection();
+	}
+
+	// Draw attention to this tab if needed
+	if (TSharedPtr<FTabManager> TabManager = DetailsView->GetHostTabManager())
+	{
+		TSharedPtr<SDockTab> Tab = TabManager->FindExistingLiveTab(DetailsView->GetIdentifier());
+		if (Tab.IsValid() && !Tab->IsForeground())
+		{
+			Tab->FlashTab();
+		}
 	}
 }
 
-void SActorDetails::SetObjects(const TArray<UObject*>& InObjects, bool bForceRefresh)
+void SActorDetails::RefreshSubobjectTreeElements(TArrayView<const FSubobjectEditorTreeNodePtrType> InSelectedNodes, const bool bForceRefresh, const bool bOverrideLock)
 {
-	if (!DetailsView->IsLocked())
+	// Nothing to do if this view is locked!
+	if (DetailsView->IsLocked() && !bOverrideLock)
 	{
-		DetailsView->SetObjects(InObjects, bForceRefresh);
+		return;
+	}
 
-		bHasComponentsToShow = false;
-
-		if (InObjects.Num() == 1 && FKismetEditorUtilities::CanCreateBlueprintOfClass(InObjects[0]->GetClass()))
+	// Does the Subobject tree have components selected?
+	TArray<const UActorComponent*> Components;
+	if (const AActor* Actor = GetActorContext())
+	{
+		for (const FSubobjectEditorTreeNodePtrType& SelectedNode : InSelectedNodes)
 		{
-			AActor* Actor = GetSelectedActorInEditor();
-			if (Actor)
+			if (SelectedNode)
 			{
-				LockedActorSelection = Actor;
-				bHasComponentsToShow = true;
-
-				// Update the tree if a new actor is selected
-				if (GEditor->GetSelectedComponentCount() == 0)
+				if(const FSubobjectData* Data = SelectedNode->GetDataSource())
 				{
-					// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
-					TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
-					SCSEditor->UpdateTree();
+					if(Data->IsRootActor())
+					{
+						// If the actor node is selected then we ignore the component selection
+                        Components.Reset();
+                        break;
+					}
+					
+					if (Data->IsComponent())
+					{
+						if (const UActorComponent* Component = Data->FindComponentInstanceInActor(Actor))
+						{
+							Components.Add(Component);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	SubobjectTreeElements.Reset(Components.Num());
+	if (Components.Num() > 0)
+	{
+		UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+		for (const UActorComponent* Component : Components)
+		{
+			if (FTypedElementHandle ComponentElementHandle = UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component))
+			{
+				if (TTypedElement<ITypedElementDetailsInterface> ComponentDetailsHandle = Registry->GetElement<ITypedElementDetailsInterface>(ComponentElementHandle))
+				{
+					if (TUniquePtr<ITypedElementDetailsObject> ElementDetailsObject = ComponentDetailsHandle.GetDetailsObject())
+					{
+						SubobjectTreeElements.Add(MoveTemp(ElementDetailsObject));
+					}
 				}
 			}
 		}
 
-		if (DetailsView->GetHostTabManager().IsValid())
+		// Use the component elements
+		SetElementDetailsObjects(SubobjectTreeElements, bForceRefresh, bOverrideLock);
+	}
+	else
+	{
+		// Use the top-level elements
+		SetElementDetailsObjects(TopLevelElements, bForceRefresh, bOverrideLock);
+	}
+}
+
+void SActorDetails::SetElementDetailsObjects(TArrayView<const TUniquePtr<ITypedElementDetailsObject>> InElementDetailsObjects, const bool bForceRefresh, const bool bOverrideLock)
+{
+	TArray<UObject*> DetailsObjects;
+	DetailsObjects.Reserve(InElementDetailsObjects.Num());
+	for (const TUniquePtr<ITypedElementDetailsObject>& ElementDetailsObject : InElementDetailsObjects)
+	{
+		if (UObject* DetailsObject = ElementDetailsObject->GetObject())
 		{
-			TSharedPtr<SDockTab> Tab = DetailsView->GetHostTabManager()->FindExistingLiveTab(DetailsView->GetIdentifier());
-			if (Tab.IsValid() && !Tab->IsForeground() )
-			{
-				Tab->FlashTab();
-			}
+			DetailsObjects.Add(DetailsObject);
 		}
 	}
+	DetailsView->SetObjects(DetailsObjects, bForceRefresh, bOverrideLock);
 }
 
 void SActorDetails::PostUndo(bool bSuccess)
 {
 	// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
 	TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
-
-	if (!DetailsView->IsLocked())
-	{
-		// Make sure the locked actor selection matches the editor selection
-		AActor* SelectedActor = GetSelectedActorInEditor();
-		if (SelectedActor && SelectedActor != LockedActorSelection.Get())
-		{
-			LockedActorSelection = SelectedActor;
-		}
-	}
 	
-
 	// Refresh the tree and update the selection to match the world
-	SCSEditor->UpdateTree();
+	SubobjectEditor->UpdateTree();
 	UpdateComponentTreeFromEditorSelection();
-
-	AActor* SelectedActor = GetSelectedActorInEditor();
-	if (SelectedActor)
-	{
-		GUnrealEd->SetActorSelectionFlags(SelectedActor);
-
-		// Update the pivot (widget) as the current selection may be a component within the Actor instance
-		GUnrealEd->UpdatePivotLocationForSelection();
-	}
 }
 
 void SActorDetails::PostRedo(bool bSuccess)
 {
 	PostUndo(bSuccess);
+}
+
+void SActorDetails::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	for (const TUniquePtr<ITypedElementDetailsObject>& TopLevelElement : TopLevelElements)
+	{
+		TopLevelElement->AddReferencedObjects(Collector);
+	}
+}
+
+FString SActorDetails::GetReferencerName() const
+{
+	return TEXT("SActorDetails");
 }
 
 void SActorDetails::SetActorDetailsRootCustomization(TSharedPtr<FDetailsViewObjectFilter> ActorDetailsObjectFilter, TSharedPtr<IDetailRootObjectCustomization> ActorDetailsRootCustomization)
@@ -309,56 +451,28 @@ void SActorDetails::SetActorDetailsRootCustomization(TSharedPtr<FDetailsViewObje
 	DetailsView->ForceRefresh();
 }
 
-void SActorDetails::SetSCSEditorUICustomization(TSharedPtr<ISCSEditorUICustomization> ActorDetailsSCSEditorUICustomization)
+void SActorDetails::SetSubobjectEditorUICustomization(TSharedPtr<ISCSEditorUICustomization> ActorDetailsSubobjectEditorUICustomization)
 {
-	if (SCSEditor.IsValid())
+	if(SubobjectEditor.IsValid())
 	{
-		SCSEditor->SetUICustomization(ActorDetailsSCSEditorUICustomization);
+		SubobjectEditor->SetUICustomization(ActorDetailsSubobjectEditorUICustomization);
 	}
 }
 
 void SActorDetails::OnComponentsEditedInWorld()
 {
-	if (GetSelectedActorInEditor() == GetActorContext())
+	if (AActor* Actor = GetActorContext())
 	{
-		// The component composition of the observed actor has changed, so rebuild the node tree
-		TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
-
-
-		// Refresh the tree and update the selection to match the world
-		SCSEditor->UpdateTree();
-
-		DetailsView->ForceRefresh();
-	}
-}
-
-void SActorDetails::OnEditorSelectionChanged(UObject* Object)
-{
-	if(!bSelectionGuard && SCSEditor.IsValid())
-	{
-		// Make sure the selection set that changed is relevant to us
-		USelection* Selection = Cast<USelection>(Object);
-		if(Selection == GEditor->GetSelectedComponents() || Selection == GEditor->GetSelectedActors())
+		if (SelectionSet->IsElementSelected(UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor), FTypedElementIsSelectedOptions()))
 		{
-			UpdateComponentTreeFromEditorSelection();
+			// The component composition of the observed actor has changed, so rebuild the node tree
+			TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
 
-			if(GEditor->GetSelectedComponentCount() == 0) // An actor was selected
-			{
-				// Ensure the selection flags are up to date for the components in the selected actor
-				for(FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
-				{
-					AActor* Actor = CastChecked<AActor>(*It);
-					GUnrealEd->SetActorSelectionFlags(Actor);
-				}
-			}
+			// Refresh the tree and update the selection to match the world
+			SubobjectEditor->UpdateTree();
+			DetailsView->ForceRefresh();
 		}
 	}
-}
-
-AActor* SActorDetails::GetSelectedActorInEditor() const
-{
-	//@todo this doesn't work w/ multi-select
-	return GEditor->GetSelectedActors()->GetTop<AActor>();
 }
 
 bool SActorDetails::GetAllowComponentTreeEditing() const
@@ -368,260 +482,158 @@ bool SActorDetails::GetAllowComponentTreeEditing() const
 
 AActor* SActorDetails::GetActorContext() const
 {
-	AActor* SelectedActorInEditor = GetSelectedActorInEditor();
-	const bool bDetailsLocked = DetailsView->IsLocked();
+	return TopLevelElements.Num() == 1
+		? Cast<AActor>(TopLevelElements[0]->GetObject())
+		: nullptr;
+}
+
+UObject* SActorDetails::GetActorContextAsObject() const
+{
+	return GetActorContext();
+}
+
+void SActorDetails::OnSubobjectEditorTreeViewSelectionChanged(const TArray<FSubobjectEditorTreeNodePtrType>& SelectedNodes)
+{
+	if (bSelectionGuard)
+	{
+		// Preventing selection changes from having an effect...
+		return;
+	}
+
+	if (SelectedNodes.Num() == 0)
+	{
+		// Don't respond to de-selecting everything...
+		return;
+	}
+
+	AActor* ActorContext = GetActorContext();
+	if (!ActorContext)
+	{
+		// The Subobject editor requires an actor context...
+		return;
+	}
+
+	if (SelectedNodes.Num() > 1 && SelectedBPComponentBlueprint.IsValid())
+	{
+		// Remove the compilation delegate if we are no longer displaying the full details for a single blueprint component.
+		RemoveBPComponentCompileEventDelegate();
+	}
+	else if (SelectedNodes.Num() == 1 && SelectedNodes[0]->IsComponentNode())
+	{
+		// Add delegate to monitor blueprint component compilation if we have a full details view ( i.e. single selection )
+		FSubobjectData* SelectedData = SelectedNodes[0]->GetDataSource();
+		if (UActorComponent* Component = const_cast<UActorComponent*>(SelectedData->FindComponentInstanceInActor(ActorContext)))
+		{
+			if (UBlueprintGeneratedClass* ComponentBPGC = Cast<UBlueprintGeneratedClass>(Component->GetClass()))
+			{
+				if (UBlueprint* ComponentBlueprint = Cast<UBlueprint>(ComponentBPGC->ClassGeneratedBy))
+				{
+					AddBPComponentCompileEventDelegate(ComponentBlueprint);
+				}
+			}
+		}
+	}
 	
-	// If the details is locked or we have a valid locked selection that doesn't match the editor's selected actor, use the locked selection
-	if (bDetailsLocked || ( LockedActorSelection.IsValid() && LockedActorSelection.Get() != SelectedActorInEditor ))
+	// We only actually update the editor selection state if we're not locked
+	if (!DetailsView->IsLocked())
 	{
-		return LockedActorSelection.Get();
-	}
-	else
-	{
-		return SelectedActorInEditor;
-	}
-}
+		TArray<FTypedElementHandle> NewEditorSelection;
+		NewEditorSelection.Add(UEngineElementsLibrary::AcquireEditorActorElementHandle(ActorContext));
 
-void SActorDetails::OnSCSEditorTreeViewSelectionChanged(const TArray<FSCSEditorTreeNodePtrType>& SelectedNodes)
-{
-	if (!bSelectionGuard && SelectedNodes.Num() > 0)
-	{
-		if( SelectedNodes.Num() > 1 && SelectedBPComponentBlueprint.IsValid() )
+		for (const FSubobjectEditorTreeNodePtrType& SelectedNode : SelectedNodes)
 		{
-			// Remove the compilation delegate if we are no longer displaying the full details for a single blueprint component.
-			RemoveBPComponentCompileEventDelegate();
-		}
-
-		AActor* Actor = GetActorContext();
-		if (Actor)
-		{
-			TArray<UObject*> DetailsObjects;
-
-			// Determine if the root actor node is among the selected nodes and Count number of components selected
-			bool bActorNodeSelected = false;
-			int NumSelectedComponentNodes = 0;
-			for (const FSCSEditorTreeNodePtrType& SelectedNode : SelectedNodes)
+			if (SelectedNode)
 			{
-				if (SelectedNode.IsValid())
+				if(FSubobjectData* Data = SelectedNode->GetDataSource())
 				{
-					if (SelectedNode->GetNodeType() == FSCSEditorTreeNode::RootActorNode)
+					if(Data->IsRootActor())
 					{
-						bActorNodeSelected = true;
+						// If the actor node is selected then we ignore the component selection
+						NewEditorSelection.Reset();
+						NewEditorSelection.Add(UEngineElementsLibrary::AcquireEditorActorElementHandle(ActorContext));
+						break;
 					}
-					else if (SelectedNode->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
+				
+					if (Data->IsComponent())
 					{
-						++NumSelectedComponentNodes;
-					}
-				}
-			}
-
-			if (DetailsView->IsLocked())
-			{
-				// When the details panel is locked, we don't want to touch the editor's component selection
-				// We do want to force the locked panel to update to match the selected components, though, since they are part of the actor selection we're locked on
-
-				if (bActorNodeSelected)
-				{
-					// If the actor root is selected, then the editor component selection should remain empty and we only show the Actor's details
-					DetailsObjects.Add(Actor);
-				}
-				else
-				{
-					const bool bSingleComponentSelection = SelectedNodes.Num() == 1;
-
-					for (const FSCSEditorTreeNodePtrType& SelectedNode : SelectedNodes)
-					{
-						UActorComponent* ComponentInstance = SelectedNode->FindComponentInstanceInActor(Actor);
-						if (ComponentInstance)
+						if (const UActorComponent* Component = Data->FindComponentInstanceInActor(ActorContext))
 						{
-							DetailsObjects.Add(ComponentInstance);
-
-							if(bSingleComponentSelection)
-							{
-								// Add delegate to monitor blueprint component compilation if we have a full details view ( i.e. single selection )
-								if(UBlueprintGeneratedClass* ComponentBPGC = Cast<UBlueprintGeneratedClass>(ComponentInstance->GetClass()))
-								{
-									if(UBlueprint* ComponentBlueprint = Cast<UBlueprint>(ComponentBPGC->ClassGeneratedBy))
-									{
-										AddBPComponentCompileEventDelegate(ComponentBlueprint);
-									}
-								}
-							}
+							NewEditorSelection.Add(UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component));
 						}
 					}
-				}
-
-				const bool bOverrideDetailsLock = true;
-				DetailsView->SetObjects(DetailsObjects, false, bOverrideDetailsLock);
-			}
-			else
-			{
-				// Enable the selection guard to prevent OnEditorSelectionChanged() from altering the contents of the SCSTreeWidget
-				TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
-
-				// Make sure the actor is selected in the editor (possible if the panel was just unlocked, but still assigned to the locked actor)
-				if (!GEditor->GetSelectedActors()->IsSelected(Actor))
-				{
-					GEditor->SelectNone(false, true, false);
-					GEditor->SelectActor(Actor, true, true, true);
-				}
-
-				USelection* SelectedComponents = GEditor->GetSelectedComponents();
-
-				// Determine if the selected non-root actor nodes differ from the editor component selection
-				bool bComponentSelectionChanged = GEditor->GetSelectedComponentCount() != NumSelectedComponentNodes;
-				if (!bComponentSelectionChanged)
-				{
-					// Check to see if any of the selected nodes aren't already selected in the world
-					for (const FSCSEditorTreeNodePtrType& SelectedNode : SelectedNodes)
-					{
-						if (SelectedNode.IsValid() && SelectedNode->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
-						{
-							UActorComponent* ComponentInstance = SelectedNode->FindComponentInstanceInActor(Actor);
-							if (ComponentInstance && !SelectedComponents->IsSelected(ComponentInstance))
-							{
-								bComponentSelectionChanged = true;
-								break;
-							}
-						}
-					}
-				}
-
-				// Does the actor selection differ from our previous state?
-				const bool bActorSelectionChanged = bShowingRootActorNodeSelected != bActorNodeSelected;
-
-				// If necessary, update the editor component selection
-				if (bActorSelectionChanged || ( bComponentSelectionChanged && !bActorNodeSelected ))
-				{
-					// Store whether we're now showing the actor root as selected
-					bShowingRootActorNodeSelected = bActorNodeSelected;
-
-					// Note: this transaction should not take place if we are in the middle of executing an undo or redo because it would clear the top of the transaction stack.
-					const bool bShouldActuallyTransact = !GIsTransacting;
-					const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "ClickingOnComponentInTree", "Clicking on Component (tree view)"), bShouldActuallyTransact);
-
-					// Dirty the actor selection so it stays in sync with the component selection
-					GEditor->GetSelectedActors()->Modify();
-					// Update the editor's component selection to match the node selection
-					SelectedComponents->Modify();
-					SelectedComponents->BeginBatchSelectOperation();
-					SelectedComponents->DeselectAll();
-
-					if (bShowingRootActorNodeSelected)
-					{
-						// If the actor root is selected, then the editor component selection should remain empty and we only show the Actor's details
-						DetailsObjects.Add(Actor);
-					}
-					else
-					{
-						const bool bSingleComponentSelection = SelectedNodes.Num() == 1;
-
-						for (const FSCSEditorTreeNodePtrType& SelectedNode : SelectedNodes)
-						{
-							if (SelectedNode.IsValid())
-							{
-								UActorComponent* ComponentInstance = SelectedNode->FindComponentInstanceInActor(Actor);
-								if (ComponentInstance)
-								{
-									DetailsObjects.Add(ComponentInstance);
-									SelectedComponents->Select(ComponentInstance);
-
-									if(bSingleComponentSelection)
-									{
-										// Add delegate to monitor blueprint component compilation if we have a full details view ( i.e. single selection )
-										if(UBlueprintGeneratedClass* ComponentBPGC = Cast<UBlueprintGeneratedClass>(ComponentInstance->GetClass()))
-										{
-											if(UBlueprint* ComponentBlueprint = Cast<UBlueprint>(ComponentBPGC->ClassGeneratedBy))
-											{
-												AddBPComponentCompileEventDelegate(ComponentBlueprint);
-											}
-										}
-									}
-									// Ensure the selection override is bound for this component (including any attached editor-only children)
-									USceneComponent* SceneComponent = Cast<USceneComponent>(ComponentInstance);
-									if (SceneComponent)
-									{
-										FComponentEditorUtils::BindComponentSelectionOverride(SceneComponent, true);
-									}
-								}
-							}
-						}
-					}
-
-					SelectedComponents->EndBatchSelectOperation();
-
-					DetailsView->SetObjects(DetailsObjects);
-
-					GUnrealEd->SetActorSelectionFlags(Actor);
-					GUnrealEd->UpdatePivotLocationForSelection(true);
-					GEditor->RedrawLevelEditingViewports();
 				}
 			}
 		}
+
+		// Note: this transaction should not take place if we are in the middle of executing an undo or redo because it would clear the top of the transaction stack.
+		const bool bShouldActuallyTransact = !GIsTransacting;
+		const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "ClickingOnComponentInTree", "Clicking on Component (tree view)"), bShouldActuallyTransact);
+
+		// Enable the selection guard to prevent OnEditorSelectionChanged() from altering the contents of the SubobjectTreeWidget
+		TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
+		SelectionSet->SetSelection(NewEditorSelection, FTypedElementSelectionOptions());
+		SelectionSet->NotifyPendingChanges(); // Fire while still under the selection guard
 	}
+
+	// Update the underlying details view
+	RefreshSubobjectTreeElements(SelectedNodes, /*bForceRefresh*/false, DetailsView->IsLocked());
 }
 
-void SActorDetails::OnSCSEditorTreeViewItemDoubleClicked(const TSharedPtr<class FSCSEditorTreeNode> ClickedNode)
+void SActorDetails::OnSubobjectEditorTreeViewItemDoubleClicked(const FSubobjectEditorTreeNodePtrType ClickedNode)
 {
-	if (ClickedNode.IsValid())
+	if (ClickedNode && ClickedNode->IsComponentNode())
 	{
-		if (ClickedNode->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
+		if (const USceneComponent* SceneComponent = Cast<USceneComponent>(ClickedNode->GetComponentTemplate()))
 		{
-			USceneComponent* SceneComponent = Cast<USceneComponent>(ClickedNode->GetComponentTemplate());
-			if (SceneComponent != nullptr)
-			{
-				const bool bActiveViewportOnly = false;
-				GEditor->MoveViewportCamerasToComponent(SceneComponent, bActiveViewportOnly);
-			}
+			const bool bActiveViewportOnly = false;
+			GEditor->MoveViewportCamerasToComponent(SceneComponent, bActiveViewportOnly);
 		}
 	}
 }
 
 void SActorDetails::UpdateComponentTreeFromEditorSelection()
 {
-	if (!DetailsView->IsLocked())
+	if (DetailsView->IsLocked())
 	{
-		// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
-		TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
-
-		TSharedPtr<SSCSTreeType>& SCSTreeWidget = SCSEditor->SCSTreeWidget;
-		TArray<UObject*> DetailsObjects;
-
-		// Update the tree selection to match the level editor component selection
-		SCSTreeWidget->ClearSelection();
-		for (FSelectionIterator It(GEditor->GetSelectedComponentIterator()); It; ++It)
-		{
-			UActorComponent* Component = CastChecked<UActorComponent>(*It);
-
-			FSCSEditorTreeNodePtrType SCSTreeNode = SCSEditor->GetNodeFromActorComponent(Component, false);
-			if (SCSTreeNode.IsValid() && SCSTreeNode->GetComponentTemplate())
-			{
-				SCSTreeWidget->RequestScrollIntoView(SCSTreeNode);
-				SCSTreeWidget->SetItemSelection(SCSTreeNode, true);
-
-				UActorComponent* ComponentTemplate = SCSTreeNode->GetComponentTemplate();
-				check(Component == ComponentTemplate);
-				DetailsObjects.Add(Component);
-			}
-		}
-
-		if (DetailsObjects.Num() > 0)
-		{
-			DetailsView->SetObjects(DetailsObjects, bSelectedComponentRecompiled);
-		}
-		else
-		{
-			SCSEditor->SelectRoot();
-		}
+		return;
 	}
+
+	// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
+	TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
+
+	TSharedPtr<SSubobjectEditorDragDropTree> TreeWidget = SubobjectEditor->GetDragDropTree();
+
+	// Update the tree selection to match the level editor component selection
+	SubobjectEditor->ClearSelection();
+	SelectionSet->ForEachSelectedObject<UActorComponent>([this, &TreeWidget](UActorComponent* InComponent)
+	{
+		FSubobjectEditorTreeNodePtrType TreeNode = SubobjectEditor->FindSlateNodeForObject(InComponent, false);
+		if (TreeNode && TreeNode->GetComponentTemplate())
+		{
+			TreeWidget->RequestScrollIntoView(TreeNode);
+			TreeWidget->SetItemSelection(TreeNode, true);
+			check(InComponent == TreeNode->GetComponentTemplate() || InComponent->GetArchetype() == TreeNode->GetComponentTemplate());
+		}
+		return true;
+	});
+
+	TArray<FSubobjectEditorTreeNodePtrType> SelectedNodes = SubobjectEditor->GetSelectedNodes();
+	if (SelectedNodes.Num() == 0)
+	{
+		SubobjectEditor->SelectRoot();
+		SelectedNodes = SubobjectEditor->GetSelectedNodes();
+	}
+
+	// Update the underlying details view
+	RefreshSubobjectTreeElements(SelectedNodes, bSelectedComponentRecompiled, /*bOverrideLock*/false);
 }
 
 bool SActorDetails::IsPropertyReadOnly(const FPropertyAndParent& PropertyAndParent) const
 {
 	bool bIsReadOnly = false;
-	for (const FSCSEditorTreeNodePtrType& Node : SCSEditor->GetSelectedNodes())
+	for (const FSubobjectEditorTreeNodePtrType& Node : SubobjectEditor->GetSelectedNodes())
 	{
-		UActorComponent* Component = Node->GetComponentTemplate();
+		const UActorComponent* Component = Node->GetComponentTemplate();
 		if (Component && Component->CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
 		{
 			TSet<const FProperty*> UCSModifiedProperties;
@@ -646,12 +658,15 @@ bool SActorDetails::IsPropertyEditingEnabled() const
 	}
 
 	bool bIsEditable = true;
-	for (const FSCSEditorTreeNodePtrType& Node : SCSEditor->GetSelectedNodes())
+	for (const FSubobjectEditorTreeNodePtrType& Node : SubobjectEditor->GetSelectedNodes())
 	{
-		bIsEditable = Node->CanEdit();
-		if (!bIsEditable)
+		if(const FSubobjectData* Data = Node->GetDataSource())
 		{
-			break;
+			bIsEditable = Data->CanEdit();
+			if (!bIsEditable)
+			{
+				break;
+			}
 		}
 	}
 	return bIsEditable;
@@ -659,7 +674,7 @@ bool SActorDetails::IsPropertyEditingEnabled() const
 
 void SActorDetails::OnBlueprintedComponentWarningHyperlinkClicked(const FSlateHyperlinkRun::FMetadata& Metadata)
 {
-	UBlueprint* Blueprint = SCSEditor->GetBlueprint();
+	UBlueprint* Blueprint = SubobjectEditor->GetBlueprint();
 	if (Blueprint)
 	{
 		// Open the blueprint
@@ -670,7 +685,7 @@ void SActorDetails::OnBlueprintedComponentWarningHyperlinkClicked(const FSlateHy
 void SActorDetails::OnNativeComponentWarningHyperlinkClicked(const FSlateHyperlinkRun::FMetadata& Metadata)
 {
 	// Find the closest native parent
-	UBlueprint* Blueprint = SCSEditor->GetBlueprint();
+	UBlueprint* Blueprint = SubobjectEditor->GetBlueprint();
 	UClass* ParentClass = Blueprint ? *Blueprint->ParentClass : GetActorContext()->GetClass();
 	while (ParentClass && !ParentClass->HasAllClassFlags(CLASS_Native))
 	{
@@ -690,9 +705,9 @@ void SActorDetails::OnNativeComponentWarningHyperlinkClicked(const FSlateHyperli
 	}
 }
 
-EVisibility SActorDetails::GetComponentsBoxVisibility() const
+EVisibility SActorDetails::GetComponentEditorVisibility() const
 {
-	return bHasComponentsToShow ? EVisibility::Visible : EVisibility::Collapsed;
+	return GetActorContext() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility SActorDetails::GetUCSComponentWarningVisibility() const
@@ -700,23 +715,27 @@ EVisibility SActorDetails::GetUCSComponentWarningVisibility() const
 	bool bIsUneditableBlueprintComponent = false;
 
 	// Check to see if any selected components are inherited from blueprint
-	for (const FSCSEditorTreeNodePtrType& Node : SCSEditor->GetSelectedNodes())
+	for (const FSubobjectEditorTreeNodePtrType& Node : SubobjectEditor->GetSelectedNodes())
 	{
-		if (!Node->IsNativeComponent())
+		if(const FSubobjectData* Data = Node->GetDataSource())
 		{
-			UActorComponent* Component = Node->GetComponentTemplate();
-			bIsUneditableBlueprintComponent = Component ? Component->CreationMethod == EComponentCreationMethod::UserConstructionScript : false;
-			if (bIsUneditableBlueprintComponent)
+			if (!Data->IsNativeComponent())
 			{
-				break;
+				const UActorComponent* Component = Data->GetComponentTemplate();
+				bIsUneditableBlueprintComponent = Component ? Component->CreationMethod == EComponentCreationMethod::UserConstructionScript : false;
+				if (bIsUneditableBlueprintComponent)
+				{
+					break;
+				}
 			}
 		}
+		
 	}
 
 	return bIsUneditableBlueprintComponent ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
-bool NotEditableSetByBlueprint(UActorComponent* Component)
+bool NotEditableSetByBlueprint(const UActorComponent* Component)
 {
 	// Determine if it is locked out from a blueprint or from the native
 	UActorComponent* Archetype = CastChecked<UActorComponent>(Component->GetArchetype());
@@ -745,24 +764,27 @@ EVisibility SActorDetails::GetInheritedBlueprintComponentWarningVisibility() con
 	bool bIsUneditableBlueprintComponent = false;
 
 	// Check to see if any selected components are inherited from blueprint
-	for (const FSCSEditorTreeNodePtrType& Node : SCSEditor->GetSelectedNodes())
+	for (const FSubobjectEditorTreeNodePtrType& Node : SubobjectEditor->GetSelectedNodes())
 	{
-		if (!Node->IsNativeComponent())
+		if(const FSubobjectData* Data = Node->GetDataSource())
 		{
-			if (UActorComponent* Component = Node->GetComponentTemplate())
+			if (!Data->IsNativeComponent())
 			{
-				if (!Component->IsEditableWhenInherited() && Component->CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
+				if (const UActorComponent* Component = Data->GetComponentTemplate())
 				{
-					bIsUneditableBlueprintComponent = true;
-					break;
+					if (!Component->IsEditableWhenInherited() && Component->CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
+					{
+						bIsUneditableBlueprintComponent = true;
+						break;
+					}
 				}
 			}
-		}
-		else if (!Node->CanEdit() && NotEditableSetByBlueprint(Node->GetComponentTemplate()))
-		{
-			bIsUneditableBlueprintComponent = true;
-			break;
-		}
+			else if (!Data->CanEdit() && NotEditableSetByBlueprint(Data->GetComponentTemplate()))
+			{
+				bIsUneditableBlueprintComponent = true;
+				break;
+			}
+		}	
 	}
 
 	return bIsUneditableBlueprintComponent ? EVisibility::Visible : EVisibility::Collapsed;
@@ -771,14 +793,18 @@ EVisibility SActorDetails::GetInheritedBlueprintComponentWarningVisibility() con
 EVisibility SActorDetails::GetNativeComponentWarningVisibility() const
 {
 	bool bIsUneditableNative = false;
-	for (const FSCSEditorTreeNodePtrType& Node : SCSEditor->GetSelectedNodes())
+	for (const FSubobjectEditorTreeNodePtrType& Node : SubobjectEditor->GetSelectedNodes())
 	{
-		// Check to see if the component is native and not editable
-		if (Node->IsNativeComponent() && !Node->CanEdit() && !NotEditableSetByBlueprint(Node->GetComponentTemplate()))
+		if(const FSubobjectData* Data = Node->GetDataSource())
 		{
-			bIsUneditableNative = true;
-			break;
+			// Check to see if the component is native and not editable
+			if (Data->IsNativeComponent() && !Data->CanEdit() && !NotEditableSetByBlueprint(Data->GetComponentTemplate()))
+			{
+				bIsUneditableNative = true;
+				break;
+			}
 		}
+
 	}
 	
 	return bIsUneditableNative ? EVisibility::Visible : EVisibility::Collapsed;
@@ -811,7 +837,46 @@ void SActorDetails::RemoveBPComponentCompileEventDelegate()
 
 void SActorDetails::OnBlueprintComponentCompiled(UBlueprint* ComponentBlueprint)
 {
-	bSelectedComponentRecompiled = true;
+	TGuardValue<bool> SelectedComponentRecompiledGuard(bSelectedComponentRecompiled, true);
 	UpdateComponentTreeFromEditorSelection();
-	bSelectedComponentRecompiled = false;
+}
+
+void SActorDetails::OnObjectsReplaced(const TMap<UObject*, UObject*>& InReplacementObjects)
+{
+	if (bHasSelectionOverride && SelectionOverrideActors.Num() > 0)
+	{
+		bool bHasChanges = false;
+
+		for (auto It = SelectionOverrideActors.CreateIterator(); It; ++It)
+		{
+			AActor*& Actor = *It;
+
+			if (UObject* const* ReplacementObjectPtr = InReplacementObjects.Find(Actor))
+			{
+				bHasChanges = true;
+
+				AActor* ReplacementActor = Cast<AActor>(*ReplacementObjectPtr);
+				if (ReplacementActor)
+				{
+					Actor = ReplacementActor;
+				}
+				else
+				{
+					It.RemoveCurrent();
+				}
+			}
+		}
+
+		if (bHasChanges)
+		{
+			TArray<AActor*> NewSelection = SelectionOverrideActors;
+			OverrideSelection(NewSelection);
+		}
+	}
+	else
+	{
+		// Enable the selection guard to prevent OnTreeSelectionChanged() from altering the editor's component selection
+		TGuardValue<bool> SelectionGuard(bSelectionGuard, true);
+		SubobjectEditor->UpdateTree();
+	}
 }

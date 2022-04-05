@@ -6,7 +6,7 @@
 #include "AI/NavigationSystemBase.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/Texture2D.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EditorModeManager.h"
 #include "UnrealEdGlobals.h"
 #include "EditorViewportClient.h"
@@ -57,7 +57,7 @@ protected:
 		const float CosInterpX = (Interpolant.X >= 1 ? 1 : 0.5f - 0.5f * FMath::Cos(Interpolant.X * PI));
 		const float Alpha = CosInterpX;
 		uint16& Dest = Data[(Y - MinY)*(1 + MaxX - MinX) + X - MinX];
-		float Value = FMath::Lerp((float)Dest, Interpolant.Y, Alpha);
+		float Value = FMath::Lerp((float)Dest, (float)Interpolant.Y, Alpha);
 		uint16 DValue = (uint32)FMath::Clamp<float>(Value, 0, LandscapeDataAccess::MaxValue);
 		if ((bRaiseTerrain && DValue > Dest) ||
 			(bLowerTerrain && DValue < Dest))
@@ -134,7 +134,7 @@ public:
 	{
 		NumPoints = 0;
 		SelectedPoint = INDEX_NONE;
-		GLevelEditorModeTools().SetWidgetMode(FWidget::WM_Translate);
+		GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_Translate);
 	}
 
 	virtual bool BeginTool(FEditorViewportClient* ViewportClient, const FLandscapeToolTarget& Target, const FVector& InHitLocation) override
@@ -145,7 +145,7 @@ public:
 			SelectedPoint = NumPoints;
 			NumPoints++;
 			bMovingPoint = true;
-			GLevelEditorModeTools().SetWidgetMode(FWidget::WM_Translate);
+			GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_Translate);
 		}
 		else
 		{
@@ -153,7 +153,7 @@ public:
 			{
 				Points[SelectedPoint] = InHitLocation;
 				bMovingPoint = true;
-				GLevelEditorModeTools().SetWidgetMode(FWidget::WM_Translate);
+				GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_Translate);
 			}
 		}
 
@@ -224,7 +224,7 @@ public:
 					{
 						HLandscapeRampToolPointHitProxy* PointHitProxy = (HLandscapeRampToolPointHitProxy*)HitProxy;
 						SelectedPoint = PointHitProxy->Point;
-						GLevelEditorModeTools().SetWidgetMode(FWidget::WM_Translate);
+						GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_Translate);
 						GUnrealEd->RedrawLevelEditingViewports();
 
 						bMovingPoint = true;
@@ -353,11 +353,11 @@ public:
 				PDI->DrawSprite(WorldPoints[i],
 					SpriteScale,
 					SpriteScale,
-					SpriteTexture->Resource,
+					SpriteTexture->GetResource(),
 					SpriteColor,
 					SDPG_Foreground,
-					0, SpriteTexture->Resource->GetSizeX(),
-					0, SpriteTexture->Resource->GetSizeY(),
+					0, SpriteTexture->GetResource()->GetSizeX(),
+					0, SpriteTexture->GetResource()->GetSizeY(),
 					SE_BLEND_Masked);
 			}
 			PDI->SetHitProxy(NULL);
@@ -432,11 +432,11 @@ public:
 		return false;
 	}
 
-	virtual EAxisList::Type GetWidgetAxisToDraw(FWidget::EWidgetMode CheckMode) const override
+	virtual EAxisList::Type GetWidgetAxisToDraw(UE::Widget::EWidgetMode CheckMode) const override
 	{
 		if (SelectedPoint != INDEX_NONE)
 		{
-			if (CheckMode == FWidget::WM_Translate)
+			if (CheckMode == UE::Widget::WM_Translate)
 			{
 				return EAxisList::XYZ;
 			}

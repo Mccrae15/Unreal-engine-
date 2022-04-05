@@ -43,6 +43,13 @@ public:
 			.Padding(1.0f),
 			OwnerTableView
 		);
+
+		if (!PollResultPtr->bIsValidProvider)
+		{
+			SetEnabled(false);
+			SetToolTipText(LOCTEXT("InvalidProvider", 
+				"This provider is invalid because it was built with an older version of Unreal Engine. You must upgrade your provider to UE5 to continue using it."));
+		}
 	}
 
 	/** Overridden from SMultiColumnTableRow.  Generates a widget for this column of the list view. */
@@ -51,7 +58,7 @@ public:
 		if (ColumnName == ProviderPollUI::TypeColumnName)
 		{
 			return	SNew(STextBlock)
-					.Text(FText::FromString(PollResultPtr->Name));
+				.Text(FText::FromString(PollResultPtr->Name));
 		}
 		else if (ColumnName == ProviderPollUI::MachineColumnName)
 		{
@@ -140,7 +147,16 @@ void SLiveLinkMessageBusSourceFactory::Tick(const FGeometry& AllottedGeometry, c
 		{
 			if (LHS.IsValid() && RHS.IsValid() && LHS->PollResult.IsValid() && RHS->PollResult.IsValid())
 			{
-				return LHS->PollResult->Name.Compare(RHS->PollResult->Name) <= 0;
+				//List by SourceName first and then by machine name
+				const int32 Result = LHS->PollResult->Name.Compare(RHS->PollResult->Name);
+				if (Result == 0)
+				{
+					return LHS->PollResult->MachineName.Compare(RHS->PollResult->MachineName) <= 0;
+				}
+				else
+				{
+					return Result <= 0;
+				}
 			}
 			return true;
 		});

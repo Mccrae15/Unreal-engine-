@@ -5,11 +5,25 @@
 #include "GammaCorrectionCommon.ush"
 #include "SlateShaderCommon.ush"
 
+#ifndef SAMPLE_VIRTUAL_TEXTURE
+#define SAMPLE_VIRTUAL_TEXTURE 0
+#endif
+
+#if SAMPLE_VIRTUAL_TEXTURE
+	#define NUM_VIRTUALTEXTURE_SAMPLES 1
+	// Workaround for unbound View uniform buffer
+	#define VT_DISABLE_VIEW_UNIFORM_BUFFER 1
+	#include "VirtualTextureCommon.ush"
+#endif
+
 /** Display gamma x:gamma curve adjustment, y:inverse gamma (1/GEngine->DisplayGamma), z:InvertAlpha, w:Contrast */
 half4 GammaAndAlphaValues;
 /** x:DrawDisabledEffect */
 /** Per element params */
 float4 ShaderParams;
+float4 ShaderParams2;
+
+#define USE_LEGACY_DISABLED_EFFECT 0
 
 #if USE_MATERIALS
 half4 DrawFlags;
@@ -18,6 +32,13 @@ half4 DrawFlags;
 /** Texture for the element */
 Texture2D ElementTexture;
 SamplerState ElementTextureSampler;
+
+#if SAMPLE_VIRTUAL_TEXTURE
+Texture2D<uint4> InPageTableTexture;
+uint4 VTPackedPageTableUniform[2];
+uint4 VTPackedUniform;
+float4 VTShaderParams;
+#endif // SAMPLE_VIRTUAL_TEXTURE
 
 /**
  * Applys a contrast about a midpoint squeezing the colors towards dark or light depending on
@@ -127,7 +148,15 @@ half4 GetMaterialColor( VertexToPixelInterpolants InVertex, float2 MeshUV )
 #if !USE_MATERIALS
 half4 GetTextureColor( VertexToPixelInterpolants InVertex, float2 UV )
 {
-	half4 BaseColor = Texture2DSample(ElementTexture, ElementTextureSampler, UV );
+	half4 BaseColor;
+
+#if SAMPLE_VIRTUAL_TEXTURE
+		VTPageTableResult PageTableResult = TextureLoadVirtualPageTableLevel(InPageTableTexture, VTPageTableUniform_Unpack(VTPackedPageTableUniform[0], VTPackedPageTableUniform[1]), UV, VTADDRESSMODE_WRAP, VTADDRESSMODE_WRAP, VTShaderParams.x); 
+		BaseColor = TextureVirtualSampleLevel(ElementTexture, ElementTextureSampler, PageTableResult, (uint)VTShaderParams.y, VTUniform_Unpack(VTPackedUniform));
+#else
+	BaseColor = Texture2DSample(ElementTexture, ElementTextureSampler, UV );
+#endif
+
 #if !USE_TEXTURE_ALPHA
 	BaseColor.a = 1.0f;
 #endif
@@ -228,6 +257,14 @@ half4 GetBorderElementColor( VertexToPixelInterpolants InVertex )
 }
 #endif
 
+
+#if SHADER_TYPE == ST_RoundedBox
+half4 GetRoundedBoxElementColor( VertexToPixelInterpolants InVertex )
+{
+	return GetRoundedBoxElementColorInternal(ShaderParams.zw, InVertex.MaterialTexCoords.xy, ShaderParams.y, ShaderParams2, GetColor(InVertex, GetUV(InVertex, 0) * GetUV(InVertex, 1)),  InVertex.SecondaryColor);
+}
+#endif
+
 #if SHADER_TYPE == ST_LineSegment 
 /** 
  * Generates an anti-aliased line segment pixel
@@ -256,11 +293,13 @@ half4 GetLineSegmentElementColor( VertexToPixelInterpolants InVertex )
 } 
 #endif
 
-half4 Main( VertexToPixelInterpolants VIn ) : SV_Target0
+HALF4_TYPE Main( VertexToPixelInterpolants VIn ) : SV_Target0
 {
 	half4 OutColor;
 #if SHADER_TYPE == ST_Default || SHADER_TYPE == ST_Custom
 	OutColor = GetDefaultElementColor( VIn );
+#elif SHADER_TYPE == ST_RoundedBox
+	OutColor = GetRoundedBoxElementColor( VIn );
 #elif SHADER_TYPE == ST_Border
 	OutColor = GetBorderElementColor( VIn );
 #elif SHADER_TYPE == ST_GrayscaleFont || SHADER_TYPE == ST_ColorFont
@@ -284,6 +323,7 @@ half4 Main( VertexToPixelInterpolants VIn ) : SV_Target0
 
 	if (DrawDisabledEffect != 0)
 	{
+#if USE_LEGACY_DISABLED_EFFECT
 		#if SOURCE_IN_LINEAR_SPACE
 			half3 LumCoeffs = half3( 0.3, 0.59, .11 );
 			half3 Grayish = half3(.1, .1, .1);
@@ -297,10 +337,16 @@ half4 Main( VertexToPixelInterpolants VIn ) : SV_Target0
 		half Lum = dot( LumCoeffs, OutColor.rgb );
 		OutColor.rgb = lerp( OutColor.rgb, float3(Lum,Lum,Lum), .8 );
 		OutColor.rgb = lerp( OutColor.rgb, Grayish, clamp( distance( OutColor.rgb, Grayish ), 0, .8)  );
+#else
+		//float bw = (min(OutColor.r, min(OutColor.g, OutColor.b)) + max(OutColor.r, max(OutColor.g, OutColor.b))) * 0.5f;
+		//OutColor.rgb = lerp(OutColor.rgb, float3(bw, bw, bw), .5);
+
+		OutColor.a *= .45f;
+#endif
 	}
 
-    // Contrast
-    OutColor = ApplyContrast(OutColor);
+	// Contrast
+	OutColor = ApplyContrast(OutColor);
 
 	// Gamma Correct
 	OutColor.rgb = GammaCorrect(OutColor.rgb);
@@ -326,3 +372,4 @@ float4 DebugBatchingMain(VertexToPixelInterpolants VIn) : SV_Target0
 {
     return BatchColor;
 }
+

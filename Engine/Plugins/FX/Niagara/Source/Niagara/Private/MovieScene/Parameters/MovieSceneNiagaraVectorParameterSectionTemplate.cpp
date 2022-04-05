@@ -23,38 +23,38 @@ void FMovieSceneNiagaraVectorParameterSectionTemplate::GetParameterValue(FFrameT
 {
 	if (ChannelsUsed == 2)
 	{
-		FVector2D const* CurrentValue = (FVector2D const*)InCurrentValueData.GetData();
-		FVector2D AnimatedValue = *CurrentValue;
+		FVector2f const* CurrentValue = (FVector2f const*)InCurrentValueData.GetData();
+		FVector2f AnimatedValue = *CurrentValue;
 
 		VectorChannels[0].Evaluate(InTime, AnimatedValue.X);
 		VectorChannels[1].Evaluate(InTime, AnimatedValue.Y);
 
-		OutAnimatedValueData.AddUninitialized(sizeof(FVector2D));
-		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector2D));
+		OutAnimatedValueData.AddUninitialized(sizeof(FVector2f));
+		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector2f));
 	}
 	else if (ChannelsUsed == 3)
 	{
-		FVector const* CurrentValue = (FVector const*)InCurrentValueData.GetData();
-		FVector AnimatedValue = *CurrentValue;
+		FVector3f const* CurrentValue = (FVector3f const*)InCurrentValueData.GetData();
+		FVector3f AnimatedValue = *CurrentValue;
 
 		VectorChannels[0].Evaluate(InTime, AnimatedValue.X);
 		VectorChannels[1].Evaluate(InTime, AnimatedValue.Y);
 		VectorChannels[2].Evaluate(InTime, AnimatedValue.Z);
 
-		OutAnimatedValueData.AddUninitialized(sizeof(FVector));
-		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector));
+		OutAnimatedValueData.AddUninitialized(sizeof(FVector3f));
+		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector3f));
 	}
 	else if (ChannelsUsed == 4)
 	{
-		FVector4 const* CurrentValue = (FVector4 const*)InCurrentValueData.GetData();
-		FVector4 AnimatedValue = *CurrentValue;
+		FVector4f const* CurrentValue = (FVector4f const*)InCurrentValueData.GetData();
+		FVector4f AnimatedValue = *CurrentValue;
 
 		VectorChannels[0].Evaluate(InTime, AnimatedValue.X);
 		VectorChannels[1].Evaluate(InTime, AnimatedValue.Y);
 		VectorChannels[2].Evaluate(InTime, AnimatedValue.Z);
 		VectorChannels[3].Evaluate(InTime, AnimatedValue.W);
 
-		OutAnimatedValueData.AddUninitialized(sizeof(FVector4));
-		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector4));
+		OutAnimatedValueData.AddUninitialized(sizeof(FVector4f));
+		FMemory::Memcpy(OutAnimatedValueData.GetData(), (uint8*)&AnimatedValue, sizeof(FVector4f));
 	}
 }

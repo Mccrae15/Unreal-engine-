@@ -23,16 +23,16 @@ public:
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Color)
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Depth)
-		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportTransform, ColorToDepth)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ColorTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DepthTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, DepthSampler)
-		SHADER_PARAMETER_RDG_TEXTURE(, EditorPrimitivesDepth)
-		SHADER_PARAMETER_RDG_TEXTURE_SRV(, EditorPrimitivesStencil)
-		SHADER_PARAMETER(FVector, OutlineColor)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EditorPrimitivesDepth)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, EditorPrimitivesStencil)
+		SHADER_PARAMETER(FScreenTransform, ColorToDepth)
+		SHADER_PARAMETER(FVector3f, OutlineColor)
 		SHADER_PARAMETER(float, SelectionHighlightIntensity)
-		SHADER_PARAMETER(FVector, SubduedOutlineColor)
+		SHADER_PARAMETER(FVector3f, SubduedOutlineColor)
 		SHADER_PARAMETER(float, BSPSelectionIntensity)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -42,23 +42,26 @@ IMPLEMENT_GLOBAL_SHADER(FSelectionOutlinePS, "/Engine/Private/PostProcessSelecti
 } //! namespace
 
 BEGIN_SHADER_PARAMETER_STRUCT(FSelectionOutlinePassParameters, )
+	//SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters, SceneTextures)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FNaniteSelectionOutlineParameters, NaniteSelectionOutlineParameters)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
-FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSelectionOutlineInputs& Inputs)
+FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSelectionOutlineInputs& Inputs, const Nanite::FRasterResults* NaniteRasterResults)
 {
 	check(Inputs.SceneColor.IsValid());
 	check(Inputs.SceneDepth.IsValid());
 
+	const bool bNaniteEnabled = NaniteRasterResults != nullptr;
+
 	RDG_EVENT_SCOPE(GraphBuilder, "EditorSelectionOutlines");
 
-	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(GraphBuilder.RHICmdList);
-	FPersistentUniformBuffers& SceneUniformBuffers = View.Family->Scene->GetRenderScene()->UniformBuffers;
-	const uint32 MsaaSampleCount = SceneContext.GetEditorMSAACompositingSampleCount();
+	const uint32 NumSamples = GetEditorPrimitiveNumSamples();
 
 	// Patch uniform buffers with updated state for rendering the outline mesh draw commands.
-	const FViewInfo* EditorView = UpdateEditorPrimitiveView(SceneUniformBuffers, SceneContext, View, Inputs.SceneColor.ViewRect);
+	const FViewInfo* EditorView = CreateEditorPrimitiveView(View, Inputs.SceneColor.ViewRect, NumSamples);
 
 	FRDGTextureRef DepthStencilTexture = nullptr;
 
@@ -71,12 +74,23 @@ FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FVie
 			// This is a reversed Z depth surface, so 0.0f is the far plane.
 			DepthStencilDesc.ClearValue = FClearValueBinding((float)ERHIZBuffer::FarPlane, 0);
 			DepthStencilDesc.Flags = TexCreate_DepthStencilTargetable | TexCreate_ShaderResource;
-			DepthStencilDesc.NumSamples = MsaaSampleCount;
+			DepthStencilDesc.NumSamples = NumSamples;
 
-			DepthStencilTexture = GraphBuilder.CreateTexture(DepthStencilDesc, TEXT("SelectionOutline"));
+			DepthStencilTexture = GraphBuilder.CreateTexture(DepthStencilDesc, TEXT("Editor.SelectionOutline"));
 		}
 
-		FSelectionOutlinePassParameters* PassParameters = GraphBuilder.AllocParameters<FSelectionOutlinePassParameters>();
+		auto* PassParameters = GraphBuilder.AllocParameters<FSelectionOutlinePassParameters>();
+
+		FScene* Scene = View.Family->Scene->GetRenderScene();
+
+		const FScreenPassTextureViewport SceneColorViewport(Inputs.SceneColor);
+
+		if (bNaniteEnabled)
+		{
+			Nanite::GetEditorSelectionPassParameters(GraphBuilder, *Scene, View, SceneColorViewport.Rect, NaniteRasterResults, &PassParameters->NaniteSelectionOutlineParameters);
+		}
+
+		PassParameters->NaniteSelectionOutlineParameters.View = EditorView->ViewUniformBuffer;
 		PassParameters->SceneTextures = Inputs.SceneTextures;
 		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(
 			DepthStencilTexture,
@@ -84,23 +98,33 @@ FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FVie
 			ERenderTargetLoadAction::EClear,
 			FExclusiveDepthStencil::DepthWrite_StencilWrite);
 
-		const FScreenPassTextureViewport SceneColorViewport(Inputs.SceneColor);
+		const_cast<FViewInfo&>(View).ParallelMeshDrawCommandPasses[EMeshPass::EditorSelection].BuildRenderingCommands(GraphBuilder, Scene->GPUScene, PassParameters->InstanceCullingDrawParams);
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("OutlineDepth %dx%d", SceneColorViewport.Rect.Width(), SceneColorViewport.Rect.Height()),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[&SceneUniformBuffers, EditorView, &View, SceneColorViewport](FRHICommandList& RHICmdList)
+			[&View, SceneColorViewport, DepthStencilTexture, NaniteRasterResults, PassParameters, bNaniteEnabled](FRHICommandListImmediate& RHICmdList)
 		{
 			RHICmdList.SetViewport(SceneColorViewport.Rect.Min.X, SceneColorViewport.Rect.Min.Y, 0.0f, SceneColorViewport.Rect.Max.X, SceneColorViewport.Rect.Max.Y, 1.0f);
 
-			SceneUniformBuffers.UpdateViewUniformBufferImmediate(*EditorView->CachedViewUniformShaderParameters);
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, EditorSelection);
 
-			// Run selection pass on static elements
-			View.ParallelMeshDrawCommandPasses[EMeshPass::EditorSelection].DispatchDraw(nullptr, RHICmdList);
+				// Run selection pass on static elements
+				View.ParallelMeshDrawCommandPasses[EMeshPass::EditorSelection].DispatchDraw(nullptr, RHICmdList, &PassParameters->InstanceCullingDrawParams);
+			}
+
+			// Render Nanite mesh outlines after regular mesh outline, but before borders
+			if (bNaniteEnabled)
+			{
+				Nanite::DrawEditorSelection(RHICmdList, View, SceneColorViewport.Rect, PassParameters->NaniteSelectionOutlineParameters);
+			}
 
 			// to get an outline around the objects if it's partly outside of the screen
 			{
+				SCOPED_DRAW_EVENT(RHICmdList, DrawOutlineBorder);
+
 				FIntRect InnerRect = SceneColorViewport.Rect;
 
 				// 1 as we have an outline that is that thick
@@ -122,6 +146,12 @@ FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FVie
 				RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 			}
 		});
+
+		// Render HairStrands outlines
+		if (HairStrands::HasViewHairStrandsData(View))
+		{
+			HairStrands::DrawEditorSelection(GraphBuilder, View, SceneColorViewport.Rect, DepthStencilTexture);
+		}
 	}
 
 	FScreenPassRenderTarget Output = Inputs.OverrideOutput;
@@ -144,20 +174,20 @@ FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FVie
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->Color = GetScreenPassTextureViewportParameters(ColorViewport);
 		PassParameters->Depth = GetScreenPassTextureViewportParameters(DepthViewport);
-		PassParameters->ColorToDepth = GetScreenPassTextureViewportTransform(PassParameters->Color, PassParameters->Depth);
+		PassParameters->ColorToDepth = FScreenTransform::ChangeTextureUVCoordinateFromTo(ColorViewport, DepthViewport);
 		PassParameters->ColorTexture = Inputs.SceneColor.Texture;
 		PassParameters->ColorSampler = PointClampSampler;
 		PassParameters->DepthTexture = Inputs.SceneDepth.Texture;
 		PassParameters->DepthSampler = PointClampSampler;
 		PassParameters->EditorPrimitivesDepth = DepthStencilTexture;
 		PassParameters->EditorPrimitivesStencil = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateWithPixelFormat(DepthStencilTexture, PF_X24_G8));
-		PassParameters->OutlineColor = FVector(View.SelectionOutlineColor);
+		PassParameters->OutlineColor = FVector3f(View.SelectionOutlineColor);
 		PassParameters->SelectionHighlightIntensity = GEngine->SelectionHighlightIntensity;
-		PassParameters->SubduedOutlineColor = FVector(View.SubduedSelectionOutlineColor);
+		PassParameters->SubduedOutlineColor = FVector3f(View.SubduedSelectionOutlineColor);
 		PassParameters->BSPSelectionIntensity = GEngine->BSPSelectionHighlightIntensity;
 
 		FSelectionOutlinePS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FSelectionOutlinePS::FSampleCountDimension>(MsaaSampleCount);
+		PermutationVector.Set<FSelectionOutlinePS::FSampleCountDimension>(NumSamples);
 
 		TShaderMapRef<FSelectionOutlinePS> PixelShader(View.ShaderMap, PermutationVector);
 

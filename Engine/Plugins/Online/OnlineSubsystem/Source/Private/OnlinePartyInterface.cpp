@@ -140,6 +140,15 @@ FString FPartyInvitationRecipient::ToDebugString() const
 	return FString::Printf(TEXT("Id=[%s], PlatformData=[%s]"), *Id->ToDebugString(), *PlatformData);
 }
 
+FDelegateHandle IOnlinePartySystem::AddOnPartyJIPDelegate_Handle(const FOnPartyJIPDelegate& Delegate)
+{
+	auto DeprecationHelperLambda = [Delegate](const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success, int32 /*DeniedResultCode*/)
+	{
+		Delegate.ExecuteIfBound(LocalUserId, PartyId, Success);
+	};
+	return OnPartyJIPResponseDelegates.Add(FOnPartyJIPResponseDelegate::CreateLambda(DeprecationHelperLambda));
+}
+
 FDelegateHandle IOnlinePartySystem::AddOnPartyDataReceivedDelegate_Handle(const FOnPartyDataReceivedConstDelegate& Delegate)
 {
 	auto DeprecationHelperLambda = [Delegate](const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FName& Namespace, const FOnlinePartyData& PartyData)
@@ -318,6 +327,34 @@ const TCHAR* ToString(const EPartyInvitationRemovedReason Value)
 	}
 	}
 	return TEXT("Unknown"); // Same as EMemberExitedReason::Unknown, which is ok because it is only used when we do not have enough information
+}
+
+const TCHAR* ToString(const EPartyRequestToJoinRemovedReason Value)
+{
+	switch (Value)
+	{
+	case EPartyRequestToJoinRemovedReason::Unknown:
+	{
+		return TEXT("Unknown");
+	}
+	case EPartyRequestToJoinRemovedReason::Cancelled:
+	{
+		return TEXT("Cancelled");
+	}
+	case EPartyRequestToJoinRemovedReason::Expired:
+	{
+		return TEXT("Expired");
+	}
+	case EPartyRequestToJoinRemovedReason::Dismissed:
+	{
+		return TEXT("Dismissed");
+	}
+	case EPartyRequestToJoinRemovedReason::Accepted:
+	{
+		return TEXT("Accepted");
+	}
+	}
+	return TEXT("Unknown");
 }
 
 const TCHAR* ToString(const ECreatePartyCompletionResult Value)
@@ -776,6 +813,46 @@ const TCHAR* ToString(const EJoinRequestAction Value)
 	case EJoinRequestAction::AutoReject:
 	{
 		return TEXT("AutoReject");
+	}
+	}
+	return TEXT("Unknown");
+}
+
+const TCHAR* ToString(const ERequestToJoinPartyCompletionResult Value)
+{
+	switch (Value)
+	{
+	case ERequestToJoinPartyCompletionResult::ValidationFailure:
+	{
+		return TEXT("ValidationFailure");
+	}
+	case ERequestToJoinPartyCompletionResult::NotAuthorized:
+	{
+		return TEXT("NotAuthorized");
+	}
+	case ERequestToJoinPartyCompletionResult::Forbidden:
+	{
+		return TEXT("Forbidden");
+	}
+	case ERequestToJoinPartyCompletionResult::UserNotFound:
+	{
+		return TEXT("UserNotFound");
+	}
+	case ERequestToJoinPartyCompletionResult::AlreadyExists:
+	{
+		return TEXT("AlreadyExists");
+	}
+	case ERequestToJoinPartyCompletionResult::RateLimited:
+	{
+		return TEXT("RateLimited");
+	}
+	case ERequestToJoinPartyCompletionResult::UnknownInternalFailure:
+	{
+		return TEXT("UnknownInternalFailure");
+	}
+	case ERequestToJoinPartyCompletionResult::Succeeded:
+	{
+		return TEXT("Succeeded");
 	}
 	}
 	return TEXT("Unknown");

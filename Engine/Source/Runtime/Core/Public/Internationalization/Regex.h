@@ -8,6 +8,13 @@
 class FRegexPatternImplementation;
 class FRegexMatcherImplementation;
 
+enum class ERegexPatternFlags
+{
+	None = 0,
+	CaseInsensitive = (1 << 0),
+};
+ENUM_CLASS_FLAGS(ERegexPatternFlags);
+
 /**
  * Implements a regular expression pattern.
  * @note DO NOT use this class as a file-level variable as its construction relies on the internationalization system being initialized!
@@ -17,7 +24,13 @@ class CORE_API FRegexPattern
 	friend class FRegexMatcher;
 
 public:
-	FRegexPattern(const FString& SourceString);
+	explicit FRegexPattern(const FString& SourceString, ERegexPatternFlags Flags = ERegexPatternFlags::None);
+
+	FRegexPattern(const FRegexPattern&) = default;
+	FRegexPattern& operator=(const FRegexPattern&) = default;
+
+	FRegexPattern(FRegexPattern&&) = default;
+	FRegexPattern& operator=(FRegexPattern&&) = default;
 
 private:
 	TSharedRef<FRegexPatternImplementation> Implementation;
@@ -30,7 +43,14 @@ private:
 class CORE_API FRegexMatcher
 {
 public:
-	FRegexMatcher(const FRegexPattern& Pattern, const FString& Input);
+	FRegexMatcher(const FRegexPattern& SourcePattern, const FString& Input);
+	FRegexMatcher(FRegexPattern&& SourcePattern, const FString& Input);
+
+	FRegexMatcher(const FRegexMatcher&) = delete;
+	FRegexMatcher& operator=(const FRegexMatcher&) = delete;
+
+	FRegexMatcher(FRegexMatcher&&) = default;
+	FRegexMatcher& operator=(FRegexMatcher&&) = default;
 
 	bool FindNext();
 
@@ -46,5 +66,6 @@ public:
 	void SetLimits(const int32 BeginIndex, const int32 EndIndex);
 
 private:
+	FRegexPattern Pattern;
 	TSharedRef<FRegexMatcherImplementation> Implementation;
 };

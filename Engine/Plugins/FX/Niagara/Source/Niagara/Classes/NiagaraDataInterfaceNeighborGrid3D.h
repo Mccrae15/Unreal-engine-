@@ -5,7 +5,7 @@
 #include "NiagaraCommon.h"
 #include "NiagaraDataInterfaceRW.h"
 #include "ClearQuad.h"
-#include "NiagaraStats.h"
+#include "Niagara/Private/NiagaraStats.h"
 
 #include "NiagaraDataInterfaceNeighborGrid3D.generated.h"
 
@@ -26,20 +26,7 @@ public:
 #endif
 	}
 
-	void ResizeBuffers()
-	{
-		const int32 NumTotalCells = NumCells.X * NumCells.Y * NumCells.Z;
-		const int32 NumIntsInGridBuffer = NumTotalCells * MaxNeighborsPerCell;
-
-		NeighborhoodCountBuffer.Initialize(sizeof(int32), NumTotalCells, EPixelFormat::PF_R32_SINT, BUF_Static, TEXT("NiagaraNeighborGrid3D::NeighborCount"));
-		NeighborhoodBuffer.Initialize(sizeof(int32), NumIntsInGridBuffer, EPixelFormat::PF_R32_SINT, BUF_Static, TEXT("NiagaraNeighborGrid3D::NeighborsGrid"));
-
-#if STATS
-		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GPUMemory);
-		GPUMemory = NumTotalCells * sizeof(int32) + NumIntsInGridBuffer * sizeof(int32);
-		INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GPUMemory);
-#endif
-	}
+	void ResizeBuffers();
 
 	FIntVector NumCells;
 	float CellSize;
@@ -108,6 +95,9 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+#if WITH_EDITOR
+	virtual bool ShouldCompile(EShaderPlatform ShaderPlatform) const override;
+#endif
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override {}
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -119,10 +109,10 @@ public:
 	virtual bool HasPreSimulateTick() const override { return true; }
 	//~ UNiagaraDataInterface interface END
 
-	void GetWorldBBoxSize(FVectorVMContext& Context);
-	void GetNumCells(FVectorVMContext& Context);
-	void GetMaxNeighborsPerCell(FVectorVMContext& Context);
-	void SetNumCells(FVectorVMContext& Context);
+	void GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
+	void GetNumCells(FVectorVMExternalFunctionContext& Context);
+	void GetMaxNeighborsPerCell(FVectorVMExternalFunctionContext& Context);
+	void SetNumCells(FVectorVMExternalFunctionContext& Context);
 
 	static const FName SetNumCellsFunctionName;
 

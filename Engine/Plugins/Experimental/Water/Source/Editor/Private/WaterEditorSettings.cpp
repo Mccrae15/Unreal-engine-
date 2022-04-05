@@ -20,6 +20,15 @@ FWaterBrushActorDefaults::FWaterBrushActorDefaults()
 	CurveSettings.CurveRampWidth = 1024.0f;
 }
 
+FWaterZoneActorDefaults::FWaterZoneActorDefaults()
+	: FarDistanceMaterial(FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_FarMesh.Water_FarMesh")))
+{}
+
+UMaterialInterface* FWaterZoneActorDefaults::GetFarDistanceMaterial() const
+{
+	return FarDistanceMaterial.LoadSynchronous();
+}
+
 FWaterBodyDefaults::FWaterBodyDefaults()
 	: WaterMaterial(FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_Material.Water_Material")))
 	, UnderwaterPostProcessMaterial(FSoftObjectPath(TEXT("/Water/Materials/PostProcessing/M_UnderWater_PostProcess_Volume.M_UnderWater_PostProcess_Volume")))
@@ -112,7 +121,6 @@ FWaterBodyIslandDefaults::FWaterBodyIslandDefaults()
 	BrushDefaults.HeightmapSettings.FalloffSettings.FalloffWidth = 1024.0f;
 	BrushDefaults.HeightmapSettings.FalloffSettings.EdgeOffset = 0;
 	BrushDefaults.HeightmapSettings.FalloffSettings.ZOffset = 0;
-	BrushDefaults.HeightmapSettings.Priority = 0;
 }
 
 UWaterEditorSettings::UWaterEditorSettings()
@@ -131,7 +139,7 @@ UWaterEditorSettings::UWaterEditorSettings()
 	, DefaultBlurEdgesMaterial(FSoftObjectPath(TEXT("/Landmass/DistanceFields/Materials/BlurEdges.BlurEdges")))
 	, DefaultFindEdgesMaterial(FSoftObjectPath(TEXT("/Landmass/DistanceFields/Materials/DetectEdges.DetectEdges")))
 	, DefaultDrawCanvasMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/CanvasDrawing.CanvasDrawing")))
-	, DefaultRenderRiverSplineDepthsMaterial(FSoftObjectPath(TEXT("/Landmass/Landscape/BlueprintBrushes/Materials/RenderSplineDepths.RenderSplineDepths"))) 
+	, DefaultRenderRiverSplineDepthsMaterial(FSoftObjectPath(TEXT("/Landmass/Landscape/BlueprintBrushes/Materials/RenderSplineDepths.RenderSplineDepths")))
 {
 
 	// Ideally, this should be done in FWaterBodyLakeDefaults but we need CreateEditorOnlyDefaultSubobject, which is only available in a UObject : 

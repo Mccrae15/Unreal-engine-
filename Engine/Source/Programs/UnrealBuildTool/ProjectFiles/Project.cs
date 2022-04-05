@@ -8,39 +8,24 @@ using System.Xml.XPath;
 using System.Xml.Linq;
 using System.Linq;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
 	/// <summary>
-	/// A single target within a project.  A project may have any number of targets within it, which are basically compilable projects
-	/// in themselves that the project wraps up.
+	/// Data common to all generated Project entries
 	/// </summary>
-	class ProjectTarget
+	class Project
 	{
-		/// The target rules file path on disk, if we have one
-		public FileReference TargetFilePath;
-
-		/// The project file path on disk
-		public FileReference ProjectFilePath;
-
-		/// <summary>
-		/// Path to the .uproject file on disk
-		/// </summary>
-		public FileReference UnrealProjectFilePath;
-
-		/// Optional target rules for this target.  If the target came from a *.Target.cs file on disk, then it will have one of these.
-		/// For targets that are synthetic (like UnrealBuildTool or other manually added project files) we won't have a rules object for those.
-		public TargetRules TargetRules;
-
 		/// Platforms supported by the target
 		public UnrealTargetPlatform[] SupportedPlatforms;
 
-		/// Extra supported build platforms.  Normally the target rules determines these, but for synthetic targets we'll add them here.
-		public List<UnrealTargetPlatform> ExtraSupportedPlatforms = new List<UnrealTargetPlatform>();
-
 		/// Extra supported build configurations.  Normally the target rules determines these, but for synthetic targets we'll add them here.
 		public List<UnrealTargetConfiguration> ExtraSupportedConfigurations = new List<UnrealTargetConfiguration>();
+
+		/// Extra supported build platforms.  Normally the target rules determines these, but for synthetic targets we'll add them here.
+		public List<UnrealTargetPlatform> ExtraSupportedPlatforms = new List<UnrealTargetPlatform>();
 
 		/// If true, forces Development configuration regardless of which configuration is set as the Solution Configuration
 		public bool ForceDevelopmentConfiguration = false;
@@ -48,8 +33,45 @@ namespace UnrealBuildTool
 		/// Whether the project requires 'Deploy' option set (VC projects)
 		public bool ProjectDeploys = false;
 
+		public Project(UnrealTargetPlatform[] SupportedPlatforms)
+		{
+			this.SupportedPlatforms = SupportedPlatforms;
+		}
+
+		/// Optional target rules for this target.  If the target came from a *.Target.cs file on disk, then it will have one of these.
+		/// For targets that are synthetic (like UnrealBuildTool or other manually added project files) we won't have a rules object for those.
+		/// Never set for an untargeted project
+		public TargetRules? TargetRules
+		{
+			get;
+			protected set;
+		} = null;
+
+		/// <summary>
+		/// Path to the .uproject file on disk
+		/// Never set for an untargeted project.
+		/// </summary>
+		public FileReference? UnrealProjectFilePath
+		{
+			get;
+			protected set;
+		} = null;
+	}
+
+	/// <summary>
+	/// A single targeted (with a TargetFilePath) project within a project.  A project may have any number of targets within it.
+	/// in themselves that the project wraps up.
+	/// </summary>
+	class ProjectTarget : Project
+	{
+		/// The target rules file path on disk, if we have one
+		public FileReference TargetFilePath;
+
+		/// The project file path on disk
+		public FileReference ProjectFilePath;
+
 		/// Delegate for creating a rules instance for a given platform/configuration
-		public Func<UnrealTargetPlatform, UnrealTargetConfiguration, TargetRules> CreateRulesDelegate = null;
+		public Func<UnrealTargetPlatform, UnrealTargetConfiguration, TargetRules> CreateRulesDelegate;
 
 		public string Name
 		{
@@ -59,6 +81,23 @@ namespace UnrealBuildTool
 		public override string ToString()
 		{
 			return TargetFilePath.GetFileNameWithoutExtension();
+		}
+
+		public ProjectTarget(
+			FileReference TargetFilePath,
+			FileReference ProjectFilePath,
+			FileReference? UnrealProjectFilePath,
+			TargetRules? TargetRules,
+			UnrealTargetPlatform[] SupportedPlatforms,
+			Func<UnrealTargetPlatform, UnrealTargetConfiguration, TargetRules> CreateRulesDelegate
+			)
+			:base (SupportedPlatforms)
+		{
+			this.TargetFilePath = TargetFilePath;
+			this.ProjectFilePath = ProjectFilePath;
+			this.UnrealProjectFilePath = UnrealProjectFilePath;
+			this.TargetRules = TargetRules;
+			this.CreateRulesDelegate = CreateRulesDelegate;
 		}
 	}
 
@@ -96,14 +135,10 @@ namespace UnrealBuildTool
 			/// </summary>
 			/// <param name="InReference">Path to the source file on disk</param>
 			/// <param name="InBaseFolder">The directory on this the path within the project will be relative to</param>
-			public SourceFile(FileReference InReference, DirectoryReference InBaseFolder)
+			public SourceFile(FileReference InReference, DirectoryReference? InBaseFolder)
 			{
 				Reference = InReference;
 				BaseFolder = InBaseFolder;
-			}
-
-			public SourceFile()
-			{
 			}
 
 			/// <summary>
@@ -118,7 +153,7 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Optional directory that overrides where files in this project are relative to when displayed in the IDE.  If null, will default to the project's BaseFolder.
 			/// </summary>
-			public DirectoryReference BaseFolder
+			public DirectoryReference? BaseFolder
 			{
 				get;
 				private set;
@@ -137,10 +172,13 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Constructs a new project file object
 		/// </summary>
-		/// <param name="InProjectFilePath">The path to the project file, relative to the master project file</param>
-		protected ProjectFile(FileReference InProjectFilePath)
+		/// <param name="ProjectFilePath">The path to the project file, relative to the primary project file</param>
+		/// <param name="BaseDir">The base directory for files within this project</param>
+		protected ProjectFile(FileReference ProjectFilePath, DirectoryReference BaseDir)
 		{
-			ProjectFilePath = InProjectFilePath;
+			this.ProjectFilePath = ProjectFilePath;
+			this.BaseDir = BaseDir;
+
 			ShouldBuildByDefaultForSolutionTargets = true;
 			IntelliSenseCppVersion = CppStandardVersion.Default;
 		}
@@ -170,8 +208,8 @@ namespace UnrealBuildTool
 		}
 
 
-		/// Returns true if this is a "stub" project.  Stub projects function as dumb containers for source files
-		/// and are never actually "built" by the master project.  Stub projects are always "generated" projects.
+		/// Returns true if this is a "stub" project.  Stub projects function as simple containers for source files
+		/// and are never actually "built" by the primary project.  Stub projects are always "generated" projects.
 		public bool IsStubProject
 		{
 			get;
@@ -181,15 +219,6 @@ namespace UnrealBuildTool
 		/// Returns true if this is a foreign project, and requires UBT to be passed the path to the .uproject file 
 		/// on the command line.
 		public bool IsForeignProject
-		{
-			get;
-			set;
-		}
-
-		/// <summary>
-		/// For mod projects, contains the path to the plugin file
-		/// </summary>
-		public FileReference PluginFilePath
 		{
 			get;
 			set;
@@ -219,8 +248,7 @@ namespace UnrealBuildTool
 		}
 
 		/// All of the targets in this project.  All non-stub projects must have at least one target.
-		public readonly List<ProjectTarget> ProjectTargets = new List<ProjectTarget>();
-
+		public readonly List<Project> ProjectTargets = new List<Project>();
 
 
 		/// <summary>
@@ -270,7 +298,7 @@ namespace UnrealBuildTool
 			}
 
 			// Don't add duplicates
-			SourceFile ExistingFile = null;
+			SourceFile? ExistingFile = null;
 			if (SourceFileMap.TryGetValue(FilePath, out ExistingFile))
 			{
 				if (ExistingFile.BaseFolder != BaseFolder)
@@ -280,7 +308,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				SourceFile File = AllocSourceFile(FilePath, BaseFolder);
+				SourceFile? File = AllocSourceFile(FilePath, BaseFolder);
 				if (File != null)
 				{
 					SourceFileMap[FilePath] = File;
@@ -324,8 +352,15 @@ namespace UnrealBuildTool
 
 			foreach (DirectoryReference BaseDir in Module.ModuleDirectories)
 			{
-				AddIntelliSenseIncludePaths(BaseDir, BaseDirToSystemIncludePaths, CompileEnvironment.SystemIncludePaths);
-				AddIntelliSenseIncludePaths(BaseDir, BaseDirToUserIncludePaths, CompileEnvironment.UserIncludePaths);
+				BuildEnvironment? BuildEnvironment;
+				if (!BaseDirToBuildEnvironment.TryGetValue(BaseDir, out BuildEnvironment))
+				{
+					BuildEnvironment = new BuildEnvironment();
+					BaseDirToBuildEnvironment.Add(BaseDir, BuildEnvironment);
+				}
+
+				AddIntelliSenseIncludePaths(BuildEnvironment.SystemIncludePaths, CompileEnvironment.SystemIncludePaths);
+				AddIntelliSenseIncludePaths(BuildEnvironment.UserIncludePaths, CompileEnvironment.UserIncludePaths);
 			}
 
 			SetIntelliSenseCppVersion(Module.Rules.CppStandard);
@@ -374,23 +409,6 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-		}
-
-		/// <summary>
-		/// Adds all of the specified include paths to this VCProject's list of include paths for all modules in the project
-		/// </summary>
-		/// <param name="BaseDir">The base directory to which the include paths apply</param>
-		/// <param name="BaseDirToCollection">Map of base directory to include paths</param>
-		/// <param name="NewIncludePaths">List of include paths to add</param>
-		public void AddIntelliSenseIncludePaths(DirectoryReference BaseDir, Dictionary<DirectoryReference, IncludePathsCollection> BaseDirToCollection, IEnumerable<DirectoryReference> NewIncludePaths)
-		{
-			IncludePathsCollection ModuleUserPaths;
-			if (!BaseDirToCollection.TryGetValue(BaseDir, out ModuleUserPaths))
-			{
-				ModuleUserPaths = new IncludePathsCollection();
-				BaseDirToCollection.Add(BaseDir, ModuleUserPaths);
-			}
-			AddIntelliSenseIncludePaths(ModuleUserPaths, NewIncludePaths);
 		}
 
 		/// <summary>
@@ -469,7 +487,7 @@ namespace UnrealBuildTool
 		/// <param name="InConfigurations">The configurations to add to the project files</param>
 		/// <param name="PlatformProjectGenerators">The registered platform project generators</param>
 		/// <returns>List of project files written</returns>
-		public virtual List<Tuple<ProjectFile, string>> WriteDebugProjectFiles(List<UnrealTargetPlatform> InPlatforms, List<UnrealTargetConfiguration> InConfigurations, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		public virtual List<Tuple<ProjectFile, string>>? WriteDebugProjectFiles(List<UnrealTargetPlatform> InPlatforms, List<UnrealTargetConfiguration> InConfigurations, PlatformProjectGeneratorCollection PlatformProjectGenerators)
 		{
 			return null;
 		}
@@ -485,7 +503,7 @@ namespace UnrealBuildTool
 		/// <param name="InitFilePath">Path to the source file on disk</param>
 		/// <param name="InitProjectSubFolder">Optional sub-folder to put the file in.  If empty, this will be determined automatically from the file's path relative to the project file</param>
 		/// <returns>The newly allocated source file object</returns>
-		public virtual SourceFile AllocSourceFile(FileReference InitFilePath, DirectoryReference InitProjectSubFolder = null)
+		public virtual SourceFile? AllocSourceFile(FileReference InitFilePath, DirectoryReference? InitProjectSubFolder = null)
 		{
 			return new SourceFile(InitFilePath, InitProjectSubFolder);
 		}
@@ -516,7 +534,7 @@ namespace UnrealBuildTool
 		public static string NormalizeProjectPath(FileSystemReference InputPath)
 		{
 			// Try to make it relative to the solution directory.
-			if (InputPath.IsUnderDirectory(ProjectFileGenerator.MasterProjectPath))
+			if (InputPath.IsUnderDirectory(ProjectFileGenerator.PrimaryProjectPath))
 			{
 				return InputPath.MakeRelativeTo(ProjectFileGenerator.IntermediateProjectFilesPath);
 			}
@@ -567,6 +585,15 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Build environment for a particular module
+		/// </summary>
+		public class BuildEnvironment
+		{
+			public IncludePathsCollection UserIncludePaths = new IncludePathsCollection();
+			public IncludePathsCollection SystemIncludePaths = new IncludePathsCollection();
+		}
+
+		/// <summary>
 		/// Merged list of include paths for the project
 		/// </summary>
 		IncludePathsCollection UserIncludePaths = new IncludePathsCollection();
@@ -579,12 +606,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Map of base directory to user include paths
 		/// </summary>
-		protected Dictionary<DirectoryReference, IncludePathsCollection> BaseDirToUserIncludePaths = new Dictionary<DirectoryReference, IncludePathsCollection>();
-
-		/// <summary>
-		/// Map of base directory to system include paths
-		/// </summary>
-		protected Dictionary<DirectoryReference, IncludePathsCollection> BaseDirToSystemIncludePaths = new Dictionary<DirectoryReference, IncludePathsCollection>();
+		protected Dictionary<DirectoryReference, BuildEnvironment> BaseDirToBuildEnvironment = new Dictionary<DirectoryReference, BuildEnvironment>();
 
 		/// <summary>
 		/// Legacy accessor for user search paths

@@ -6,9 +6,9 @@ using System.Text;
 using System.Reflection;
 using Microsoft.Win32;
 using System.Diagnostics;
-using Tools.DotNETCommon;
-using UnrealBuildTool;
+using EpicGames.Core;
 using System.Text.RegularExpressions;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
@@ -46,7 +46,7 @@ namespace AutomationTool
 	public class CommandEnvironment
 	{
 		/// <summary>
-		/// Path to a file we know to always exist under the UE4 root directory.
+		/// Path to a file we know to always exist under the Unreal root directory.
 		/// </summary>
 		public static readonly string KnownFileRelativeToRoot = @"Engine/Config/BaseEngine.ini";
 
@@ -54,14 +54,15 @@ namespace AutomationTool
 		public string EngineSavedFolder { get; protected set; }
 		public string LogFolder { get; protected set; }
 		public string FinalLogFolder { get; protected set; }
-        public string CSVFile { get; protected set; }
+		public string CSVFile { get; protected set; }
 		public string RobocopyExe { get; protected set; }
 		public string MountExe { get; protected set; }
 		public string CmdExe { get; protected set; }
-		public string UATExe { get; protected set; }		
+		public string UATExe { get; protected set; }
 		public string TimestampAsString { get; protected set; }
 		public bool HasCapabilityToCompile { get; protected set; }
-		public string MsBuildExe { get; protected set; }
+		public string FrameworkMsbuildPath { get; protected set; }
+		public string DotnetMsbuildPath { get; protected set; }
 		public string MallocNanoZone { get; protected set; }
 		public bool IsChildInstance { get; protected set; }
 
@@ -71,7 +72,15 @@ namespace AutomationTool
 		internal CommandEnvironment()
 		{
 			// Get the path to the UAT executable
-			UATExe = Assembly.GetEntryAssembly().GetOriginalLocation();
+			// the entry assembly is the .dll but it is easier to use apphost so change extension to the executable
+			UATExe = Path.ChangeExtension(Assembly.GetEntryAssembly().GetOriginalLocation(), RuntimePlatform.IsWindows ? "exe" : null);
+
+			if (!CommandUtils.FileExists(UATExe))
+			{
+				// use the dll as a fallback if the exe doesn't exist
+				UATExe = Assembly.GetEntryAssembly().GetOriginalLocation();
+			}
+
 			if (!CommandUtils.FileExists(UATExe))
 			{
 				throw new AutomationException("Could not find AutomationTool.exe. Reflection indicated it was here: {0}", UATExe);
@@ -81,7 +90,7 @@ namespace AutomationTool
 			LocalRoot = CommandUtils.GetEnvVar(EnvVarNames.LocalRoot);
 			if(String.IsNullOrEmpty(LocalRoot))
 			{
-				LocalRoot = CommandUtils.ConvertSeparators(PathSeparator.Slash, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(UATExe), "..", "..", "..")));
+				LocalRoot = CommandUtils.ConvertSeparators(PathSeparator.Slash, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(UATExe), "..", "..", "..", "..")));
 				CommandUtils.ConditionallySetEnvVar(EnvVarNames.LocalRoot, LocalRoot);
 			}
 
@@ -98,7 +107,7 @@ namespace AutomationTool
 			LogFolder = CommandUtils.GetEnvVar(EnvVarNames.LogFolder);
 			if (String.IsNullOrEmpty(LogFolder))
 			{
-				if (CommandUtils.IsEngineInstalled())
+				if (Unreal.IsEngineInstalled())
 				{
 					LogFolder = GetInstalledLogFolder();
 				}
@@ -110,7 +119,7 @@ namespace AutomationTool
 			}
 
 			// clear the logfolder if we're the only running instance
-			if (InternalUtils.IsSoleInstance)
+			if (ProcessSingleton.IsSoleInstance)
 			{
 				ClearLogFolder(LogFolder);
 			}
@@ -124,13 +133,18 @@ namespace AutomationTool
 
 			RobocopyExe = GetSystemExePath("robocopy.exe");
 			MountExe = GetSystemExePath("mount.exe");
-			CmdExe = Utils.IsRunningOnMono ? "/bin/sh" : GetSystemExePath("cmd.exe");
+			CmdExe = RuntimePlatform.IsWindows ? GetSystemExePath("cmd.exe") : "/bin/sh";
 			MallocNanoZone = "0";
 			CommandUtils.SetEnvVar(EnvVarNames.MacMallocNanoZone, MallocNanoZone);
 
 			int IsChildInstanceInt;
-			int.TryParse(CommandUtils.GetEnvVar("uebp_UATChildInstance", "0"), out IsChildInstanceInt);
+			int.TryParse(CommandUtils.GetEnvVar(EnvVarNames.IsChildInstance, "0"), out IsChildInstanceInt);
 			IsChildInstance = (IsChildInstanceInt != 0);
+
+			if (IsChildInstance)
+			{
+				Log.TraceInformation($"AutomationTool is running as a child instance ({EnvVarNames.IsChildInstance}={IsChildInstanceInt.ToString()})");
+			}
 
 			// Setup the timestamp string
 			DateTime LocalTime = DateTime.Now;
@@ -181,7 +195,8 @@ namespace AutomationTool
 			Log.TraceVerbose("LocalRoot={0}", LocalRoot);
 			Log.TraceVerbose("LogFolder={0}", LogFolder);
 			Log.TraceVerbose("MountExe={0}", MountExe);
-			Log.TraceVerbose("MsBuildExe={0}", MsBuildExe);
+			Log.TraceVerbose("FrameworkMsbuildExe={0}", FrameworkMsbuildPath);
+			Log.TraceVerbose("DotnetMsbuildExe={0}", DotnetMsbuildPath);
 			Log.TraceVerbose("RobocopyExe={0}", RobocopyExe);
 			Log.TraceVerbose("TimestampAsString={0}", TimestampAsString);
 			Log.TraceVerbose("UATExe={0}", UATExe);			
@@ -195,23 +210,31 @@ namespace AutomationTool
 			// Assume we have the capability co compile.
 			HasCapabilityToCompile = true;
 
-			if (HasCapabilityToCompile)
+			try
 			{
-				try
-				{
-					MsBuildExe = HostPlatform.Current.GetMsBuildExe();
-				}
-				catch (Exception Ex)
-				{
-					Log.WriteLine(LogEventType.Warning, Ex.Message);
-					Log.WriteLine(LogEventType.Warning, "Assuming no compilation capability.");
-					HasCapabilityToCompile = false;
-					MsBuildExe = "";
-				}
+				FrameworkMsbuildPath = HostPlatform.Current.GetFrameworkMsbuildExe();
 			}
-
+			catch (Exception Ex)
+			{
+				Log.WriteLine(LogEventType.Warning, Ex.Message);
+				Log.WriteLine(LogEventType.Warning, "Assuming no compilation capability for NET Framework projects.");
+				HasCapabilityToCompile = false;
+				FrameworkMsbuildPath = "";
+			}
 			Log.TraceVerbose("CompilationEvironment.HasCapabilityToCompile={0}", HasCapabilityToCompile);
-			Log.TraceVerbose("CompilationEvironment.MsBuildExe={0}", MsBuildExe);
+			Log.TraceVerbose("CompilationEvironment.FrameworkMsbuildExe={0}", FrameworkMsbuildPath);
+
+			try
+			{
+				DotnetMsbuildPath = HostPlatform.Current.GetDotnetMsbuildExe();
+			}
+			catch (Exception Ex)
+			{
+				Log.WriteLine(LogEventType.Warning, Ex.Message);
+				Log.WriteLine(LogEventType.Warning, "Assuming no compilation capability for NET Core projects.");
+				FrameworkMsbuildPath = "";
+			}
+			Log.TraceVerbose("CompilationEvironment.DotnetMsbuildExe={0}", DotnetMsbuildPath);
 		}
 
 		/// <summary>

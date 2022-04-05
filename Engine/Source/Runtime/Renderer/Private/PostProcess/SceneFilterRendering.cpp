@@ -45,7 +45,7 @@ void FTesselatedScreenRectangleIndexBuffer::InitRHI()
 	}
 
 	// Create index buffer. Fill buffer with initial data upon creation
-	FRHIResourceCreateInfo CreateInfo(&IndexBuffer);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FTesselatedScreenRectangleIndexBuffer"), &IndexBuffer);
 	IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
 }
 
@@ -126,10 +126,10 @@ static inline void InternalDrawRectangle(
 	// Note: Use DrawRectangle in the vertex shader to calculate the correct vertex position and uv.
 
 	FDrawRectangleParameters Parameters;
-	Parameters.PosScaleBias = FVector4(SizeX, SizeY, X, Y);
-	Parameters.UVScaleBias = FVector4(SizeU, SizeV, U, V);
+	Parameters.PosScaleBias = FVector4f(SizeX, SizeY, X, Y);
+	Parameters.UVScaleBias = FVector4f(SizeU, SizeV, U, V);
 
-	Parameters.InvTargetSizeAndTextureSize = FVector4(
+	Parameters.InvTargetSizeAndTextureSize = FVector4f(
 		1.0f / TargetSize.X, 1.0f / TargetSize.Y,
 		1.0f / TextureSize.X, 1.0f / TextureSize.Y);
 
@@ -203,21 +203,22 @@ void DrawTransformedRectangle(
 
 	// we don't do the triangle optimization as this case is rare for the DrawTransformedRectangle case
 
-	FRHIResourceCreateInfo CreateInfo;
-	FVertexBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FFilterVertex) * 4, BUF_Volatile, CreateInfo);
-	void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * 4, RLM_WriteOnly);
+	FRHIResourceCreateInfo CreateInfo(TEXT("DrawTransformedRectangle"));
+	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FFilterVertex) * 4, BUF_Volatile, CreateInfo);
+	void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * 4, RLM_WriteOnly);
 
 	FFilterVertex* Vertices = reinterpret_cast<FFilterVertex*>(VoidPtr);
 
-	Vertices[0].Position = PosTransform.TransformFVector4(FVector4(X,			Y,			ClipSpaceQuadZ,	1));
-	Vertices[1].Position = PosTransform.TransformFVector4(FVector4(X + SizeX,	Y,			ClipSpaceQuadZ,	1));
-	Vertices[2].Position = PosTransform.TransformFVector4(FVector4(X,			Y + SizeY,	ClipSpaceQuadZ,	1));
-	Vertices[3].Position = PosTransform.TransformFVector4(FVector4(X + SizeX,	Y + SizeY,	ClipSpaceQuadZ,	1));
+	// LWC_TODO: precision loss
+	Vertices[0].Position = (FVector4f)PosTransform.TransformFVector4(FVector4(X,			Y,			ClipSpaceQuadZ,	1));
+	Vertices[1].Position = (FVector4f)PosTransform.TransformFVector4(FVector4(X + SizeX,	Y,			ClipSpaceQuadZ,	1));
+	Vertices[2].Position = (FVector4f)PosTransform.TransformFVector4(FVector4(X,			Y + SizeY,	ClipSpaceQuadZ,	1));
+	Vertices[3].Position = (FVector4f)PosTransform.TransformFVector4(FVector4(X + SizeX,	Y + SizeY,	ClipSpaceQuadZ,	1));
 
-	Vertices[0].UV = FVector2D(TexTransform.TransformFVector4(FVector(U,			V,         0)));
-	Vertices[1].UV = FVector2D(TexTransform.TransformFVector4(FVector(U + SizeU,	V,         0)));
-	Vertices[2].UV = FVector2D(TexTransform.TransformFVector4(FVector(U,			V + SizeV, 0)));
-	Vertices[3].UV = FVector2D(TexTransform.TransformFVector4(FVector(U + SizeU,	V + SizeV, 0)));
+	Vertices[0].UV = (FVector2f)FVector2D(TexTransform.TransformFVector4(FVector(U,			V,         0)));	// LWC_TODO: Precision loss
+	Vertices[1].UV = (FVector2f)FVector2D(TexTransform.TransformFVector4(FVector(U + SizeU,	V,         0)));	// LWC_TODO: Precision loss
+	Vertices[2].UV = (FVector2f)FVector2D(TexTransform.TransformFVector4(FVector(U,			V + SizeV, 0)));	// LWC_TODO: Precision loss
+	Vertices[3].UV = (FVector2f)FVector2D(TexTransform.TransformFVector4(FVector(U + SizeU,	V + SizeV, 0)));	// LWC_TODO: Precision loss
 
 	for (int32 VertexIndex = 0; VertexIndex < 4; VertexIndex++)
 	{
@@ -228,7 +229,7 @@ void DrawTransformedRectangle(
 		Vertices[VertexIndex].UV.Y = Vertices[VertexIndex].UV.Y / (float)TextureSize.Y;
 	}
 
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	RHIUnlockBuffer(VertexBufferRHI);
 	RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 	RHICmdList.DrawIndexedPrimitive(GTwoTrianglesIndexBuffer.IndexBufferRHI, 0, 0, 4, 0, 2, 1);
 	VertexBufferRHI.SafeRelease();
@@ -246,15 +247,15 @@ void DrawHmdMesh(
 	float SizeV,
 	FIntPoint TargetSize,
 	FIntPoint TextureSize,
-	EStereoscopicPass StereoView,
+	int32 StereoView,
 	const TShaderRef<FShader>& VertexShader
 	)
 {
 	FDrawRectangleParameters Parameters;
-	Parameters.PosScaleBias = FVector4(SizeX, SizeY, X, Y);
-	Parameters.UVScaleBias = FVector4(SizeU, SizeV, U, V);
+	Parameters.PosScaleBias = FVector4f(SizeX, SizeY, X, Y);
+	Parameters.UVScaleBias = FVector4f(SizeU, SizeV, U, V);
 
-	Parameters.InvTargetSizeAndTextureSize = FVector4(
+	Parameters.InvTargetSizeAndTextureSize = FVector4f(
 		1.0f / TargetSize.X, 1.0f / TargetSize.Y,
 		1.0f / TextureSize.X, 1.0f / TextureSize.Y);
 
@@ -262,7 +263,7 @@ void DrawHmdMesh(
 
 	if (GEngine->XRSystem->GetHMDDevice())
 	{
-		GEngine->XRSystem->GetHMDDevice()->DrawVisibleAreaMesh_RenderThread(RHICmdList, StereoView);
+		GEngine->XRSystem->GetHMDDevice()->DrawVisibleAreaMesh(RHICmdList, StereoView);
 	}
 }
 
@@ -279,13 +280,13 @@ void DrawPostProcessPass(
 	FIntPoint TargetSize,
 	FIntPoint TextureSize,
 	const TShaderRef<FShader>& VertexShader,
-	EStereoscopicPass StereoView,
+	int32 StereoViewIndex,
 	bool bHasCustomMesh,
 	EDrawRectangleFlags Flags)
 {
-	if (bHasCustomMesh && IStereoRendering::IsStereoEyePass(StereoView))
+	if (bHasCustomMesh && StereoViewIndex != INDEX_NONE)
 	{
-		DrawHmdMesh(RHICmdList, X, Y, SizeX, SizeY, U, V, SizeU, SizeV, TargetSize, TextureSize, StereoView, VertexShader);
+		DrawHmdMesh(RHICmdList, X, Y, SizeX, SizeY, U, V, SizeU, SizeV, TargetSize, TextureSize, StereoViewIndex, VertexShader);
 	}
 	else
 	{

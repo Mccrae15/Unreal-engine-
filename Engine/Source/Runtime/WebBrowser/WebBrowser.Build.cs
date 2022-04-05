@@ -50,8 +50,19 @@ public class WebBrowser : ModuleRules
 			CircularlyReferencedDependentModules.Add("WebBrowserTexture");
 		}
 
+		if ( Target.Type != TargetType.Program && Target.Platform == UnrealTargetPlatform.Win64)
+        {
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"Engine",
+					"RenderCore"
+				}
+			);
+
+		}
+
 		if (Target.Platform == UnrealTargetPlatform.Win64
-		||  Target.Platform == UnrealTargetPlatform.Win32
 		||  Target.Platform == UnrealTargetPlatform.Mac
 		||  Target.Platform == UnrealTargetPlatform.Linux)
 		{
@@ -64,32 +75,21 @@ public class WebBrowser : ModuleRules
 			{
 				if (Target.Platform == UnrealTargetPlatform.Mac)
 				{
-					// Add contents of UnrealCefSubProcess.app directory as runtime dependencies
-					foreach (string FilePath in Directory.EnumerateFiles(Target.RelativeEnginePath + "/Binaries/Mac/UnrealCEFSubProcess.app", "*", SearchOption.AllDirectories))
+					// Add contents of EpicWebHelper.app directory as runtime dependencies
+					foreach (string FilePath in Directory.EnumerateFiles(Target.RelativeEnginePath + "/Binaries/Mac/EpicWebHelper.app", "*", SearchOption.AllDirectories))
 					{
 						RuntimeDependencies.Add(FilePath);
 					}
 				}
 				else if (Target.Platform == UnrealTargetPlatform.Linux)
 				{
-					RuntimeDependencies.Add("$(EngineDir)/Binaries/" + Target.Platform.ToString() + "/UnrealCEFSubProcess");
+					RuntimeDependencies.Add("$(EngineDir)/Binaries/" + Target.Platform.ToString() + "/EpicWebHelper");
 				}
 				else
 				{
-					RuntimeDependencies.Add("$(EngineDir)/Binaries/" + Target.Platform.ToString() + "/UnrealCEFSubProcess.exe");
+					RuntimeDependencies.Add("$(EngineDir)/Binaries/" + Target.Platform.ToString() + "/EpicWebHelper.exe");
 				}
 			}
-		}
-
-		if (Target.Platform == UnrealTargetPlatform.PS4 &&
-			Target.bCompileAgainstEngine)
-		{
-			PrivateDependencyModuleNames.Add("Engine");
-		}
-
-		if(Target.Platform == UnrealTargetPlatform.Lumin)
-		{
-			PrecompileForTargets = ModuleRules.PrecompileTargetsType.None;
 		}
 	}
 }

@@ -4,7 +4,10 @@
 #include "Common/Utils.h"
 #include "Model/ThreadsPrivate.h"
 
-FCpuProfilerAnalyzer::FCpuProfilerAnalyzer(Trace::IAnalysisSession& InSession, Trace::FTimingProfilerProvider& InTimingProfilerProvider, Trace::FThreadProvider& InThreadProvider)
+namespace TraceServices
+{
+
+FCpuProfilerAnalyzer::FCpuProfilerAnalyzer(IAnalysisSession& InSession, FTimingProfilerProvider& InTimingProfilerProvider, FThreadProvider& InThreadProvider)
 	: Session(InSession)
 	, TimingProfilerProvider(InTimingProfilerProvider)
 	, ThreadProvider(InThreadProvider)
@@ -34,7 +37,7 @@ void FCpuProfilerAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 
 bool FCpuProfilerAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
-	Trace::FAnalysisSessionEditScope _(Session);
+	FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
 	switch (RouteId)
@@ -42,17 +45,53 @@ bool FCpuProfilerAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 	case RouteId_EventSpec:
 	{
 		uint32 SpecId = EventData.GetValue<uint32>("Id");
-		uint8 CharSize = EventData.GetValue<uint8>("CharSize");
-		if (CharSize == sizeof(ANSICHAR))
+
+		const TCHAR* TimerName = nullptr;
+		FString Name;
+		if (EventData.GetString("Name", Name))
 		{
-			DefineScope(SpecId, Session.StoreString(StringCast<TCHAR>(reinterpret_cast<const ANSICHAR*>(EventData.GetAttachment())).Get()));
+			TimerName = *Name;
 		}
-		else if (CharSize == 0 || CharSize == sizeof(TCHAR)) // 0 for backwards compatibility
+		else
 		{
-			DefineScope(SpecId, Session.StoreString(reinterpret_cast<const TCHAR*>(EventData.GetAttachment())));
+			uint8 CharSize = EventData.GetValue<uint8>("CharSize");
+			if (CharSize == sizeof(ANSICHAR))
+			{
+				const ANSICHAR* AnsiName = reinterpret_cast<const ANSICHAR*>(EventData.GetAttachment());
+				Name = StringCast<TCHAR>(AnsiName).Get();
+				TimerName = *Name;
+			}
+			else if (CharSize == 0 || CharSize == sizeof(TCHAR)) // 0 for backwards compatibility
+			{
+				TimerName = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
+			}
+			else
+			{
+				Name = FString::Printf(TEXT("<invalid %u>"), SpecId);
+				TimerName = *Name;
+			}
 		}
+
+		if (TimerName[0] == 0)
+		{
+			Name = FString::Printf(TEXT("<noname %u>"), SpecId);
+			TimerName = *Name;
+		}
+
+		const TCHAR* FileName = nullptr;
+		FString File;
+		uint32 Line = 0;
+		if (EventData.GetString("File", File) && !File.IsEmpty())
+		{
+			FileName = *File;
+			Line = EventData.GetValue<uint32>("Line");
+		}
+
+		constexpr bool bMergeByName = true;
+		DefineTimer(SpecId, Session.StoreString(TimerName), FileName, Line, bMergeByName);
 		break;
 	}
+
 	case RouteId_EndThread:
 	{
 		uint32 ThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context);
@@ -68,22 +107,34 @@ bool FCpuProfilerAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 				ThreadState.Timeline->AppendEndEvent(Timestamp);
 			}
 		}
-		ThreadStatesMap.Remove(ThreadId);
+		ThreadState.LastCycle = ~0ull;
+		break;
 	}
+
 	case RouteId_EventBatch:
 	case RouteId_EndCapture:
 	{
-		TotalEventSize += EventData.GetAttachmentSize();
-		uint32 BufferSize = EventData.GetAttachmentSize();
-		const uint8* BufferPtr = EventData.GetAttachment();
-		uint32 ThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context);
-		if (uint64 LastCycle = ProcessBuffer(Context.EventTime, ThreadId, BufferPtr, BufferSize))
+		const uint32 ThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context);
+		FThreadState& ThreadState = GetThreadState(ThreadId);
+
+		if (ThreadState.LastCycle == ~0ull)
+		{
+			// Ignore timing events received after EndThread.
+			break;
+		}
+
+		TArrayView<const uint8> DataView = FTraceAnalyzerUtils::LegacyAttachmentArray("Data", Context);
+		TotalEventSize += DataView.Num();
+		const uint32 BufferSize = DataView.Num();
+		const uint8* BufferPtr = DataView.GetData();
+
+		uint64 LastCycle = ProcessBuffer(Context.EventTime, ThreadState, BufferPtr, BufferSize);
+		if (LastCycle != 0)
 		{
 			double LastTimestamp = Context.EventTime.AsSeconds(LastCycle);
 			Session.UpdateDurationSeconds(LastTimestamp);
 			if (RouteId == RouteId_EndCapture)
 			{
-				FThreadState& ThreadState = GetThreadState(ThreadId);
 				for (int32 i = ThreadState.ScopeStack.Num(); i--;)
 				{
 					ThreadState.ScopeStack.Pop();
@@ -94,17 +145,24 @@ bool FCpuProfilerAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 		BytesPerScope = double(TotalEventSize) / double(TotalScopeCount);
 		break;
 	}
+
 	case RouteId_CpuScope:
-		(Style == EStyle::EnterScope) ? OnCpuScopeEnter(Context) : OnCpuScopeLeave(Context);
+		if (Style == EStyle::EnterScope)
+		{
+			OnCpuScopeEnter(Context);
+		}
+		else
+		{
+			OnCpuScopeLeave(Context);
+		}
 		break;
 	}
 
 	return true;
 }
 
-uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, uint32 ThreadId, const uint8* BufferPtr, uint32 BufferSize)
+uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, FThreadState& ThreadState, const uint8* BufferPtr, uint32 BufferSize)
 {
-	FThreadState& ThreadState = GetThreadState(ThreadId);
 	uint64 LastCycle = ThreadState.LastCycle;
 
 	int32 RemainingPending = ThreadState.PendingEvents.Num();
@@ -153,16 +211,16 @@ uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, uint32 T
 				PendingCycle = LastCycle;
 			}
 
-			double Time = EventTime.AsSeconds(PendingCycle);
+			double PendingTime = EventTime.AsSeconds(PendingCycle);
 			if (bEnter)
 			{
-				Trace::FTimingProfilerEvent Event;
+				FTimingProfilerEvent Event;
 				Event.TimerIndex = PendingCursor->TimerId;
-				ThreadState.Timeline->AppendBeginEvent(Time, Event);
+				ThreadState.Timeline->AppendBeginEvent(PendingTime, Event);
 			}
 			else
 			{
-				ThreadState.Timeline->AppendEndEvent(Time);
+				ThreadState.Timeline->AppendEndEvent(PendingTime);
 			}
 		}
 
@@ -173,7 +231,12 @@ uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, uint32 T
 			uint32 TimerId;
 			if (!FindIt)
 			{
-				TimerId = SpecIdToTimerIdMap.Add(SpecId, TimingProfilerProvider.AddCpuTimer(TEXT("<unknown>")));
+				// Adds a timer with an "unknown" name.
+				const TCHAR* TimerName = Session.StoreString(*FString::Printf(TEXT("<unknown %u>"), SpecId));
+				// The name might be updated when an EventSpec event is received (for this SpecId),
+				// so we do not want to merge by name all the unknown timers.
+				constexpr bool bMergeByName = false;
+				TimerId = DefineTimer(SpecId, TimerName, nullptr, 0, bMergeByName);
 			}
 			else
 			{
@@ -184,7 +247,7 @@ uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, uint32 T
 			ScopeState.StartCycle = ActualCycle;
 			ScopeState.EventTypeId = TimerId;
 
-			Trace::FTimingProfilerEvent Event;
+			FTimingProfilerEvent Event;
 			Event.TimerIndex = TimerId;
 			double ActualTime = EventTime.AsSeconds(ActualCycle);
 			ThreadState.Timeline->AppendBeginEvent(ActualTime, Event);
@@ -213,15 +276,15 @@ uint64 FCpuProfilerAnalyzer::ProcessBuffer(const FEventTime& EventTime, uint32 T
 		if (int64(PendingCycle) < 0)
 		{
 			PendingCycle = ~PendingCycle;
-			double Time = EventTime.AsSeconds(PendingCycle);
-			ThreadState.Timeline->AppendEndEvent(Time);
+			double PendingTime = EventTime.AsSeconds(PendingCycle);
+			ThreadState.Timeline->AppendEndEvent(PendingTime);
 		}
 		else
 		{
-			Trace::FTimingProfilerEvent Event;
+			FTimingProfilerEvent Event;
 			Event.TimerIndex = PendingCursor->TimerId;
-			double Time = EventTime.AsSeconds(PendingCycle);
-			ThreadState.Timeline->AppendBeginEvent(Time, Event);
+			double PendingTime = EventTime.AsSeconds(PendingCycle);
+			ThreadState.Timeline->AppendBeginEvent(PendingTime, Event);
 		}
 	}
 
@@ -242,18 +305,24 @@ void FCpuProfilerAnalyzer::OnCpuScopeEnter(const FOnEventContext& Context)
 
 	uint32 SpecId = Context.EventData.GetTypeInfo().GetId();
 	SpecId = ~SpecId; // to keep out of the way of normal spec IDs.
+
+	uint32 TimerId;
 	uint32* TimerIdIter = SpecIdToTimerIdMap.Find(SpecId);
-	if (TimerIdIter == nullptr)
+	if (TimerIdIter)
+	{
+		TimerId = *TimerIdIter;
+	}
+	else
 	{
 		FString ScopeName;
 		ScopeName += Context.EventData.GetTypeInfo().GetName();
-		DefineScope(SpecId, Session.StoreString(*ScopeName));
-		TimerIdIter = SpecIdToTimerIdMap.Find(SpecId);
+		constexpr bool bMergeByName = true;
+		TimerId = DefineTimer(SpecId, Session.StoreString(*ScopeName), nullptr, 0, bMergeByName);
 	}
 
 	TArray<uint8> CborData;
 	Context.EventData.SerializeToCbor(CborData);
-	uint32 TimerId = TimingProfilerProvider.AddMetadata(*TimerIdIter, MoveTemp(CborData));
+	TimerId = TimingProfilerProvider.AddMetadata(TimerId, MoveTemp(CborData));
 
 	uint64 Cycle = Context.EventTime.AsCycle64();
 	ThreadState.PendingEvents.Add({Cycle, TimerId});
@@ -273,26 +342,65 @@ void FCpuProfilerAnalyzer::OnCpuScopeLeave(const FOnEventContext& Context)
 	ThreadState.PendingEvents.Add({~Cycle});
 }
 
-void FCpuProfilerAnalyzer::DefineScope(uint32 SpecId, const TCHAR* Name)
+uint32 FCpuProfilerAnalyzer::DefineTimer(uint32 SpecId, const TCHAR* Name, const TCHAR* File, uint32 Line, bool bMergeByName)
 {
-	uint32* FindTimerIdByName = ScopeNameToTimerIdMap.Find(Name);
+	// The cpu scoped events (timers) will be merged by name.
+	// Ex.: If there are multiple timers defined in code with same name,
+	//      those will appear in Insights as a single timer.
+
+	// Check if a timer with same name was already defined.
+	uint32* FindTimerIdByName = bMergeByName ? ScopeNameToTimerIdMap.Find(Name) : nullptr;
 	if (FindTimerIdByName)
 	{
-		SpecIdToTimerIdMap.Add(SpecId, *FindTimerIdByName);
-	}
-	else
-	{
+		// Yes, a timer with same name was already defined.
+		// Check if SpecId is already mapped to timer.
 		uint32* FindTimerId = SpecIdToTimerIdMap.Find(SpecId);
 		if (FindTimerId)
 		{
-			TimingProfilerProvider.SetTimerName(*FindTimerId, Name);
-			ScopeNameToTimerIdMap.Add(Name, *FindTimerId);
+			// Yes, SpecId was already mapped to a timer (ex. as an <unknown> timer).
+			// Update name for mapped timer.
+			TimingProfilerProvider.SetTimerNameAndLocation(*FindTimerId, Name, File, Line);
+			// In this case, we do not remap the SpecId to the previously defined timer with same name.
+			// This is becasue the two timers are already used in timelines.
+			// So we will continue to use separate timers, even if those have same name.
+			return *FindTimerId;
 		}
 		else
 		{
-			uint32 NewTimerId = TimingProfilerProvider.AddCpuTimer(Name);
+			// Map this SpecId to the previously defined timer with same name.
+			SpecIdToTimerIdMap.Add(SpecId, *FindTimerIdByName);
+			return *FindTimerIdByName;
+		}
+	}
+	else
+	{
+		// No, a timer with same name was not defined (or we do not want to merge by name).
+		// Check if SpecId is already mapped to timer.
+		uint32* FindTimerId = SpecIdToTimerIdMap.Find(SpecId);
+		if (FindTimerId)
+		{
+			// Yes, SpecId was already mapped to a timer (ex. as an <unknown> timer).
+			// Update name for mapped timer.
+			TimingProfilerProvider.SetTimerNameAndLocation(*FindTimerId, Name, File, Line);
+			if (bMergeByName)
+			{
+				// Map the name to the timer.
+				ScopeNameToTimerIdMap.Add(Name, *FindTimerId);
+			}
+			return *FindTimerId;
+		}
+		else
+		{
+			// Define a new Cpu timer.
+			uint32 NewTimerId = TimingProfilerProvider.AddCpuTimer(Name, File, Line);
+			// Map the SpecId to the timer.
 			SpecIdToTimerIdMap.Add(SpecId, NewTimerId);
-			ScopeNameToTimerIdMap.Add(Name, NewTimerId);
+			if (bMergeByName)
+			{
+				// Map the name to the timer.
+				ScopeNameToTimerIdMap.Add(Name, NewTimerId);
+			}
+			return NewTimerId;
 		}
 	}
 }
@@ -312,3 +420,5 @@ FCpuProfilerAnalyzer::FThreadState& FCpuProfilerAnalyzer::GetThreadState(uint32 
 	}
 	return *ThreadState;
 }
+
+} // namespace TraceServices

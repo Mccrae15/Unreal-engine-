@@ -7,6 +7,8 @@
 #include "Containers/ArrayView.h"
 #include "Containers/Queue.h"
 #include "Field/FieldSystemTypes.h"
+#include "Field/FieldArrayView.h"
+#include "Chaos/ParticleHandle.h"
 #include "Math/Vector.h"
 
 /**
@@ -43,6 +45,104 @@ struct CHAOS_API FFieldContextIndex
 	int32 Result;
 };
 
+/** Enum to specify on which array the final field output will be stored for future use in rban/cloth*/
+enum class EFieldCommandOutputType : uint8
+{
+	LinearForce = 0,
+	LinearVelocity = 1,
+	AngularTorque = 2,
+	AngularVelocity = 3,
+	NumOutputs = 4
+};
+
+/** Enum to specify on which array the intermediate fields results are going to be stored */
+enum class EFieldCommandResultType : uint8
+{
+	FinalResult = 0,
+	TransientResult = 1,
+	NumResults = 2
+};
+
+/** Enum to specify on whjich array the particle handles are going to be stored */
+enum class EFieldCommandHandlesType : uint8
+{
+	FilteredHandles = 0,
+	InsideHandles = 1,
+	NumHandles = 2
+};
+
+/** List of datas that will be stored during field evaluation to avoid reallocation */
+struct CHAOS_API FFieldExecutionDatas
+{
+	/** Sample positions to be used to build the context */
+	TArray<FVector> SamplePositions;
+
+	/** Sample indices to be used to build the context  */
+	TArray<FFieldContextIndex> SampleIndices;
+
+	/** List of particles handles used during evaluation  */
+	TArray<Chaos::FGeometryParticleHandle*> ParticleHandles[(uint8)EFieldCommandHandlesType::NumHandles];
+
+	/** Results for the target results */
+	TArray<FVector> FieldOutputs[(uint8)EFieldCommandOutputType::NumOutputs];
+
+	/** Field vector targets results */
+	TArray<FVector> VectorResults[(uint8)EFieldCommandResultType::NumResults];
+
+	/** Field scalar targets results */
+	TArray<float> ScalarResults[(uint8)EFieldCommandResultType::NumResults];
+
+	/** Field integer targets results */
+	TArray<int32> IntegerResults[(uint8)EFieldCommandResultType::NumResults];
+
+	/** Field index results */
+	TArray<FFieldContextIndex> IndexResults[(uint8)EFieldCommandResultType::NumResults];
+};
+
+/** Reset the results array with a given size and a default value */
+template<typename FieldType>
+FORCEINLINE void ResetResultsArray(const int32 FieldSize, TArray<FieldType>& FieldArray, const FieldType DefaultValue)
+{
+	FieldArray.SetNum(FieldSize, false);
+	for (int32 i = 0; i < FieldSize; ++i)
+	{
+		FieldArray[i] = DefaultValue;
+	}
+}
+
+/** Reset the results arrays given a list of targets */
+template<typename FieldType>
+FORCEINLINE void ResetResultsArrays(const int32 FieldSize, const TArray<EFieldCommandOutputType>& FieldTargets, TArray<FieldType> FieldArray[(uint8)EFieldCommandOutputType::NumOutputs], const FieldType DefaultValue)
+{
+	for (const EFieldCommandOutputType& FieldTarget : FieldTargets)
+	{
+		if (FieldTarget < EFieldCommandOutputType::NumOutputs)
+		{
+			ResetResultsArray(FieldSize, FieldArray[FieldTarget], DefaultValue);
+		}
+	}
+}
+
+/** Empty the results array without deallocating when shrinking*/
+template<typename FieldType>
+FORCEINLINE void EmptyResultsArray(TArray<FieldType>& FieldArray)
+{
+	FieldArray.SetNum(0, false);
+}
+
+/** Empty the results arrays given a list of targets */
+template<typename FieldType>
+FORCEINLINE void EmptyResultsArrays(const TArray<EFieldCommandOutputType>& FieldTargets, TArray<FieldType> FieldArray[(uint8)EFieldCommandOutputType::NumOutputs])
+{
+	for (const EFieldCommandOutputType& FieldTarget : FieldTargets)
+	{
+		if (FieldTarget < EFieldCommandOutputType::NumOutputs)
+		{
+			EmptyResultsArray(FieldArray[(uint8)FieldTarget]);
+		}
+	}
+}
+
 /**
 * MetaData
 *
@@ -55,7 +155,7 @@ struct CHAOS_API FFieldContextIndex
 class CHAOS_API FFieldSystemMetaData {
 public:
 
-	enum CHAOS_API EMetaType
+	enum EMetaType
 	{
 		ECommandData_None = 0,
 		ECommandData_ProcessingResolution,
@@ -84,23 +184,25 @@ public:
 
 class CHAOS_API FFieldSystemMetaDataFilter : public FFieldSystemMetaData {
 public:
-	FFieldSystemMetaDataFilter(EFieldFilterType FilterTypeIn) : FilterType(FilterTypeIn) {};
+	FFieldSystemMetaDataFilter(EFieldFilterType FilterTypeIn, EFieldObjectType ObjectTypeIn, EFieldPositionType PositionTypeIn) : FilterType(FilterTypeIn), ObjectType(ObjectTypeIn), PositionType(PositionTypeIn)  {};
 	virtual ~FFieldSystemMetaDataFilter() {};
 	virtual EMetaType Type() const { return EMetaType::ECommandData_Filter; }
-	virtual FFieldSystemMetaData* NewCopy() const { return new FFieldSystemMetaDataFilter(FilterType); }
+	virtual FFieldSystemMetaData* NewCopy() const { return new FFieldSystemMetaDataFilter(FilterType, ObjectType, PositionType); }
 
 	EFieldFilterType FilterType;
+	EFieldObjectType ObjectType;
+	EFieldPositionType PositionType;
 };
 
 template<class T>
 class CHAOS_API FFieldSystemMetaDataResults : public FFieldSystemMetaData {
 public:
-	FFieldSystemMetaDataResults(const TArrayView<T>& ResultsIn) : Results(ResultsIn) {};
+	FFieldSystemMetaDataResults(const TFieldArrayView<T>& ResultsIn) : Results(ResultsIn) {};
 	virtual ~FFieldSystemMetaDataResults() {};
 	virtual EMetaType Type() const { return EMetaType::ECommandData_Results; }
 	virtual FFieldSystemMetaData* NewCopy() const { return new FFieldSystemMetaDataResults(Results); }
 
-	const TArrayView<T>& Results;
+	const TFieldArrayView<T>& Results;
 };
 
 class CHAOS_API FFieldSystemMetaDataIteration : public FFieldSystemMetaData {
@@ -116,12 +218,10 @@ public:
 class CHAOS_API FFieldSystemMetaDataCulling : public FFieldSystemMetaData
 {
 public:
-	explicit FFieldSystemMetaDataCulling(const int32 PotentialSize)
+	explicit FFieldSystemMetaDataCulling(TArray<FFieldContextIndex>& CullingIndicesIn)
 		: bCullingActive(false)
-		, MaxSize(PotentialSize)
-	{
-		EvaluatedIndexBuffer.Reserve(MaxSize);
-	};
+		, CullingIndices(CullingIndicesIn)
+	{};
 
 	virtual ~FFieldSystemMetaDataCulling() = default;
 
@@ -131,12 +231,11 @@ public:
 	}
 	virtual FFieldSystemMetaData* NewCopy() const
 	{
-		return new FFieldSystemMetaDataCulling(MaxSize);
+		return new FFieldSystemMetaDataCulling(CullingIndices);
 	}
 
 	bool bCullingActive;
-	int32 MaxSize;
-	TArray<FFieldContextIndex> EvaluatedIndexBuffer;
+	TArray<FFieldContextIndex>& CullingIndices;
 };
 
 struct CHAOS_API FFieldContext
@@ -151,11 +250,16 @@ struct CHAOS_API FFieldContext
 	FFieldContext& operator =(const FFieldContext&) = delete;
 	FFieldContext & operator =(FFieldContext&&) = delete;
 
-	FFieldContext(const TArrayView< FFieldContextIndex >& SampleIndicesIn, const TArrayView<FVector>& SamplesIn,
-		const UniquePointerMap & MetaDataIn, const float TimeSecondsIn)
+	FFieldContext(const TFieldArrayView< FFieldContextIndex >& SampleIndicesIn, const TFieldArrayView<FVector>& SamplePositionsIn,
+		const UniquePointerMap & MetaDataIn, const Chaos::FReal TimeSecondsIn, TArray<FVector>& VectorResultsIn, TArray<float>& ScalarResultsIn,
+		TArray<int32>& IntegerResultsIn, TArray<FFieldContextIndex>& IndexResultsIn, TArray<FFieldContextIndex>& CullingResultsIn)
 		: SampleIndices(SampleIndicesIn)
-		, Samples(SamplesIn)
+		, SamplePositions(SamplePositionsIn)
 		, TimeSeconds(TimeSecondsIn)
+		, VectorResults(VectorResultsIn)
+		, ScalarResults(ScalarResultsIn)
+		, IntegerResults(IntegerResultsIn)
+		, IndexResults(IndexResultsIn)
 
 	{
 		for (const TPair<FFieldSystemMetaData::EMetaType, TUniquePtr<FFieldSystemMetaData>>& Meta : MetaDataIn)
@@ -163,21 +267,45 @@ struct CHAOS_API FFieldContext
 			MetaData.Add(Meta.Key) = Meta.Value.Get();
 		}
 
-		CullingData = MakeUnique<FFieldSystemMetaDataCulling>(SampleIndices.Num());
+		CullingData = MakeUnique<FFieldSystemMetaDataCulling>(CullingResultsIn);
 		MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Culling, CullingData.Get());
 	}
-	FFieldContext(const TArrayView< FFieldContextIndex >& SampleIndicesIn, const TArrayView<FVector>& SamplesIn,
-		const PointerMap & MetaDataIn, const float TimeSecondsIn)
+	FFieldContext(const TFieldArrayView< FFieldContextIndex >& SampleIndicesIn, const TFieldArrayView<FVector>& SamplePositionsIn,
+		const PointerMap & MetaDataIn, const Chaos::FReal TimeSecondsIn, TArray<FVector>& VectorResultsIn, TArray<float>& ScalarResultsIn,
+				TArray<int32>& IntegerResultsIn, TArray<FFieldContextIndex>& IndexResultsIn, TArray<FFieldContextIndex>& CullingResultsIn)
 		: SampleIndices(SampleIndicesIn)
-		, Samples(SamplesIn)
+		, SamplePositions(SamplePositionsIn)
 		, MetaData(MetaDataIn)
 		, TimeSeconds(TimeSecondsIn)
+		, VectorResults(VectorResultsIn)
+		, ScalarResults(ScalarResultsIn)
+		, IntegerResults(IntegerResultsIn)
+		, IndexResults(IndexResultsIn)
 	{
-		CullingData = MakeUnique<FFieldSystemMetaDataCulling>(SampleIndices.Num());
+		CullingData = MakeUnique<FFieldSystemMetaDataCulling>(CullingResultsIn);
 		MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Culling, CullingData.Get());
 	}
 
-	TArrayView<FFieldContextIndex> GetEvaluatedSamples()
+	FFieldContext(FFieldExecutionDatas& ExecutionDatas,
+		const UniquePointerMap& MetaDataIn, const Chaos::FReal TimeSecondsIn)
+		: SampleIndices(ExecutionDatas.SampleIndices, 0, ExecutionDatas.SampleIndices.Num())
+		, SamplePositions(ExecutionDatas.SamplePositions, 0, ExecutionDatas.SamplePositions.Num())
+		, TimeSeconds(TimeSecondsIn)
+		, VectorResults(ExecutionDatas.VectorResults[(uint8)EFieldCommandResultType::TransientResult])
+		, ScalarResults(ExecutionDatas.ScalarResults[(uint8)EFieldCommandResultType::TransientResult])
+		, IntegerResults(ExecutionDatas.IntegerResults[(uint8)EFieldCommandResultType::TransientResult])
+		, IndexResults(ExecutionDatas.IndexResults[(uint8)EFieldCommandResultType::TransientResult])
+	{
+		for (const TPair<FFieldSystemMetaData::EMetaType, TUniquePtr<FFieldSystemMetaData>>& Meta : MetaDataIn)
+		{
+			MetaData.Add(Meta.Key) = Meta.Value.Get();
+		}
+
+		CullingData = MakeUnique<FFieldSystemMetaDataCulling>(ExecutionDatas.IndexResults[(uint8)EFieldCommandResultType::FinalResult]);
+		MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Culling, CullingData.Get());
+	}
+
+	TFieldArrayView<FFieldContextIndex> GetEvaluatedSamples()
 	{
 		if(!CullingData->bCullingActive)
 		{
@@ -186,7 +314,7 @@ struct CHAOS_API FFieldContext
 		}
 
 		// Culling fields created an evaluation set
-		return MakeArrayView(CullingData->EvaluatedIndexBuffer);
+		return TFieldArrayView<FFieldContextIndex>(CullingData->CullingIndices, 0, CullingData->CullingIndices.Num());
 	}
 
 	//
@@ -196,12 +324,42 @@ struct CHAOS_API FFieldContext
 	// traversed also needs to change; possibly to some load balanced threaded iterator 
 	// or task based paradigm.
 
-	const TArrayView<FFieldContextIndex>& SampleIndices;
-	const TArrayView<FVector>& Samples;
+	TFieldArrayView<FFieldContextIndex> SampleIndices;
+	TFieldArrayView<FVector> SamplePositions;
+
 	PointerMap MetaData;
 	TUniquePtr<FFieldSystemMetaDataCulling> CullingData;
-	float TimeSeconds;
+	Chaos::FReal TimeSeconds;
+
+	TArray<FVector>& VectorResults;
+	TArray<float>& ScalarResults;
+	TArray<int32>& IntegerResults;
+	TArray<FFieldContextIndex>& IndexResults;
 };
+/** Get the vector execution array given a result type */
+template<typename ResultType>
+FORCEINLINE TArray<ResultType>& GetResultArray(FFieldContext& FieldContext);
+
+/** Get the vector execution array given a result type */
+template<>
+FORCEINLINE TArray<FVector>& GetResultArray<FVector>(FFieldContext& FieldContext)
+{
+	return FieldContext.VectorResults;
+}
+
+/** Get the scalar execution array given a result type */
+template<>
+FORCEINLINE TArray<float>& GetResultArray<float>(FFieldContext& FieldContext)
+{
+	return FieldContext.ScalarResults;
+}
+
+/** Get the integer execution array given a result type */
+template<>
+FORCEINLINE TArray<int32>& GetResultArray<int32>(FFieldContext& FieldContext)
+{
+	return FieldContext.IntegerResults;
+}
 
 /** 
  * Limits the application of a meta data object to a single scope.
@@ -298,7 +456,7 @@ private:
 *
 *  Typed field nodes are used for the evaluation of specific types of data arrays.
 *  For exampe, The FFieldNode<FVector>::Evaluate(...) will expect resutls 
-*  of type TArrayView<FVector>, and an example implementation is the UniformVectorField.
+*  of type TFieldArrayView<FVector>, and an example implementation is the UniformVectorField.
 *
 */
 template<class T>
@@ -308,7 +466,7 @@ public:
 	
 	virtual ~FFieldNode() {}
 
-	virtual void Evaluate(FFieldContext&, TArrayView<T>& Results) const = 0;
+	virtual void Evaluate(FFieldContext&, TFieldArrayView<T>& Results) const = 0;
 
 	static EFieldType StaticType();
 	virtual EFieldType Type() const { return StaticType(); }
@@ -337,13 +495,26 @@ public:
 		, CommandName("")
 		, TimeCreation(0.0)
 		, BoundingBox(FVector(-FLT_MAX), FVector(FLT_MAX))
+		, PhysicsType(EFieldPhysicsType::Field_None)
+		, MaxMagnitude(1.0)
 	{}
-	FFieldSystemCommand(FName TargetAttributeIn, FFieldNodeBase * RootNodeIn)
+	FFieldSystemCommand(const FName& TargetAttributeIn, FFieldNodeBase * RootNodeIn)
 		: TargetAttribute(TargetAttributeIn)
 		, RootNode(RootNodeIn)
 		, CommandName("")
 		, TimeCreation(0.0)
 		, BoundingBox(FVector(-FLT_MAX), FVector(FLT_MAX))
+		, PhysicsType(GetFieldPhysicsType(TargetAttributeIn))
+		, MaxMagnitude(1.0)
+	{}
+	FFieldSystemCommand(const EFieldPhysicsType PhsyicsTypeIn, FFieldNodeBase* RootNodeIn)
+		: TargetAttribute(GetFieldPhysicsName(PhsyicsTypeIn))
+		, RootNode(RootNodeIn)
+		, CommandName("")
+		, TimeCreation(0.0)
+		, BoundingBox(FVector(-FLT_MAX), FVector(FLT_MAX))
+		, PhysicsType(PhsyicsTypeIn)
+		, MaxMagnitude(1.0)
 	{}
 
 	// Commands are copied when moved from the one thread to 
@@ -354,6 +525,8 @@ public:
 		, CommandName(Other.CommandName)
 		, TimeCreation(Other.TimeCreation)
 		, BoundingBox(Other.BoundingBox)
+		, PhysicsType(Other.RootNode ? Other.PhysicsType : EFieldPhysicsType::Field_None)
+		, MaxMagnitude(Other.MaxMagnitude)
 	{
 		for (const TPair<FFieldSystemMetaData::EMetaType, TUniquePtr<FFieldSystemMetaData>>& Meta : Other.MetaData)
 		{
@@ -405,6 +578,8 @@ public:
 	float TimeCreation;
 
 	FBox BoundingBox;
+	EFieldPhysicsType PhysicsType;
+	float MaxMagnitude;
 
 	TMap<FFieldSystemMetaData::EMetaType, TUniquePtr<FFieldSystemMetaData> > MetaData;
 };
@@ -433,4 +608,6 @@ bool FieldsEqual(const TUniquePtr<T>& NodeA, const TUniquePtr<T>& NodeB)
 	}
 	return false;
 }
+
+
 

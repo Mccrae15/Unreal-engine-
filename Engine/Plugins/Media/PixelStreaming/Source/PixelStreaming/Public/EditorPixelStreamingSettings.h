@@ -20,9 +20,9 @@ public:
 	 * click and interact with UI elements.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = PixelStreaming)
-	FSoftClassPath PixelStreamerDefaultCursorClassName;
+	FSoftClassPath DefaultCursorClassName;
 	UPROPERTY(config, EditAnywhere, Category = PixelStreaming)
-	FSoftClassPath PixelStreamerTextEditBeamCursorClassName;
+	FSoftClassPath TextEditBeamCursorClassName;
 
 	/**
 	 * Pixel Streaming can have a server-side cursor (where the cursor itself
@@ -31,15 +31,15 @@ public:
 	 * cursor invisible.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = PixelStreaming)
-	FSoftClassPath PixelStreamerHiddenCursorClassName;
-	
+	FSoftClassPath HiddenCursorClassName;
+
 	/**
 	 * Pixel Streaming may be running on a machine which has no physical mouse
 	 * attached, and yet the browser is sending mouse positions. As such, we
 	 * fake the presence of a mouse.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = PixelStreaming)
-	bool bPixelStreamerMouseAlwaysAttached = true;
+	bool bMouseAlwaysAttached = true;
 
 	// Begin UDeveloperSettings Interface
 	virtual FName GetCategoryName() const override;

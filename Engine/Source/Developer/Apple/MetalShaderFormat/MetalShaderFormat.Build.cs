@@ -7,13 +7,7 @@ public class MetalShaderFormat : ModuleRules
 	public MetalShaderFormat(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PrivateIncludePathModuleNames.Add("TargetPlatform");
-		PublicIncludePaths.Add("Runtime/Apple/MetalRHI/Public");
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Developer/DerivedDataCache/Public",
-			}
-		);
+		PublicIncludePaths.Add("Runtime/Apple/Common/Public");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -29,12 +23,5 @@ public class MetalShaderFormat : ModuleRules
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SPIRVReflect");
 		}
-
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{ 
-				"DerivedDataCache",
-			}
-			);
 	}
 }

@@ -42,10 +42,7 @@ SClothPaintTab::~SClothPaintTab()
 {
 	if(ISkeletalMeshEditor* SkeletalMeshEditor = static_cast<ISkeletalMeshEditor*>(HostingApp.Pin().Get()))
 	{
-		if(FAssetEditorModeManager* ModeManager = SkeletalMeshEditor->GetAssetEditorModeManager())
-		{
-			ModeManager->ActivateDefaultMode();
-		}
+		SkeletalMeshEditor->GetEditorModeManager().ActivateDefaultMode();
 	}
 }
 
@@ -54,15 +51,10 @@ void SClothPaintTab::Construct(const FArguments& InArgs)
 	// Detail view for UClothingAssetCommon
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FDetailsViewArgs DetailsViewArgs(
-		/*bUpdateFromSelection=*/ false,
-		/*bLockable=*/ false,
-		/*bAllowSearch=*/ false,
-		FDetailsViewArgs::HideNameArea,
-		/*bHideSelectionTip=*/ true,
-		/*InNotifyHook=*/ nullptr,
-		/*InSearchInitialKeyFocus=*/ false,
-		/*InViewIdentifier=*/ NAME_None);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bAllowSearch = false;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
 	DetailsViewArgs.bShowOptions = false;
 	DetailsViewArgs.bAllowMultipleTopLevelObjects = true;
@@ -85,15 +77,9 @@ void SClothPaintTab::Construct(const FArguments& InArgs)
 	FSlateIcon TexturePaintIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.MeshPaintMode.TexturePaint");
 
 	this->ChildSlot
+	.Padding(4.f)
 	[
-		SNew(SScrollBox)
-		+ SScrollBox::Slot()
-		[
-			SAssignNew(ContentBox, SVerticalBox)
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.VAlign(VAlign_Center)
-		]
+		SAssignNew(ContentBox, SScrollBox)
 	];
 
 	ISkeletalMeshEditor* SkeletalMeshEditor = static_cast<ISkeletalMeshEditor*>(HostingApp.Pin().Get());
@@ -103,14 +89,12 @@ void SClothPaintTab::Construct(const FArguments& InArgs)
 		IPersonaToolkit& Persona = SkeletalMeshEditor->GetPersonaToolkit().Get();
 
 		ContentBox->AddSlot()
-		.AutoHeight()
 		[
 			SAssignNew(SelectorWidget, SClothAssetSelector, Persona.GetMesh())
 				.OnSelectionChanged(this, &SClothPaintTab::OnAssetSelectionChanged)
 		];
 
 		ContentBox->AddSlot()
-		.AutoHeight()
 		[
 			DetailsView->AsShared()
 		];
@@ -145,9 +129,9 @@ void SClothPaintTab::UpdatePaintTools()
 	if (bPaintModeEnabled)
 	{
 		ISkeletalMeshEditor* SkeletalMeshEditor = static_cast<ISkeletalMeshEditor*>(HostingApp.Pin().Get());
-		SkeletalMeshEditor->GetAssetEditorModeManager()->ActivateMode(PaintModeID, true);
+		SkeletalMeshEditor->GetEditorModeManager().ActivateMode(PaintModeID, true);
 
-		FClothingPaintEditMode* PaintMode = (FClothingPaintEditMode*)SkeletalMeshEditor->GetAssetEditorModeManager()->GetActiveMode(PaintModeID);
+		FClothingPaintEditMode* PaintMode = (FClothingPaintEditMode*)SkeletalMeshEditor->GetEditorModeManager().GetActiveMode(PaintModeID);
 		if (PaintMode)
 		{
 			FClothPainter* ClothPainter = static_cast<FClothPainter*>(PaintMode->GetMeshPainter());
@@ -158,7 +142,6 @@ void SClothPaintTab::UpdatePaintTools()
 			PaintMode->SetPersonaToolKit(SkeletalMeshEditor->GetPersonaToolkit());
 
 			ContentBox->AddSlot()
-			.AutoHeight()
 			[
 				ModeWidget->AsShared()
 			];
@@ -178,7 +161,7 @@ void SClothPaintTab::UpdatePaintTools()
 	{
 		ContentBox->RemoveSlot(ModeWidget->AsShared());
 		ISkeletalMeshEditor* SkeletalMeshEditor = static_cast<ISkeletalMeshEditor*>(HostingApp.Pin().Get());
-		SkeletalMeshEditor->GetAssetEditorModeManager()->ActivateDefaultMode();
+		SkeletalMeshEditor->GetEditorModeManager().ActivateDefaultMode();
 		ModeWidget = nullptr;
 	}
 }
@@ -189,7 +172,7 @@ void SClothPaintTab::OnAssetSelectionChanged(TWeakObjectPtr<UClothingAssetCommon
 	{
 		ISkeletalMeshEditor* SkeletalMeshEditor = static_cast<ISkeletalMeshEditor*>(HostingApp.Pin().Get());
 
-		FClothingPaintEditMode* PaintMode = (FClothingPaintEditMode*)SkeletalMeshEditor->GetAssetEditorModeManager()->GetActiveMode(PaintModeID);
+		FClothingPaintEditMode* PaintMode = (FClothingPaintEditMode*)SkeletalMeshEditor->GetEditorModeManager().GetActiveMode(PaintModeID);
 		if(PaintMode)
 		{
 			FClothPainter* ClothPainter = static_cast<FClothPainter*>(PaintMode->GetMeshPainter());

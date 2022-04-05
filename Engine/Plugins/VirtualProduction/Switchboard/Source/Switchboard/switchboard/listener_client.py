@@ -31,6 +31,13 @@ class ListenerClient(object):
     The other, legacy (VCS/file) delegates are each passed different (or no)
     arguments; for details, see `route_message()`.
     '''
+
+    KEEPALIVE_INTERVAL_SEC = 1.0
+    SELECT_TIMEOUT_SEC = 0.1
+    EXTRA_HITCH_TOLERANCE_SEC = 0.4
+    HITCH_THRESHOLD_SEC = (KEEPALIVE_INTERVAL_SEC + SELECT_TIMEOUT_SEC
+                           + EXTRA_HITCH_TOLERANCE_SEC)
+
     def __init__(self, ip_address, port, buffer_size=1024):
         self.ip_address = ip_address
         self.port = port
@@ -143,32 +150,40 @@ class ListenerClient(object):
             self.close_socket = True
             self.handle_connection_thread.join()
 
+    def update_last_activity(self):
+        now = datetime.datetime.now()
+        delta_sec = (now - self.last_activity).total_seconds()
+        self.last_activity = now
+        if delta_sec > self.HITCH_THRESHOLD_SEC:
+            LOGGER.warning(
+                f'Hitch detected; {delta_sec:.1f} seconds since last keepalive'
+                f' to {self.ip_address}')
+
     def handle_connection(self):
         buffer = []
-        keepalive_timeout = 1.0
 
         while self.is_connected:
             try:
                 rlist = [self.socket]
                 wlist = []
                 xlist = []
-                read_timeout = 0.1
 
-                read_sockets, _, _ = select.select(rlist, wlist, xlist, read_timeout)
+                read_sockets, _, _ = select.select(rlist, wlist, xlist,
+                                                   self.SELECT_TIMEOUT_SEC)
 
                 while len(self.message_queue):
                     message_bytes = self.message_queue.pop()
+                    self.update_last_activity()
                     self.socket.sendall(message_bytes)
-                    self.last_activity = datetime.datetime.now()
                 
                 for rs in read_sockets:
                     received_data = rs.recv(self.buffer_size).decode()
                     self.process_received_data(buffer, received_data)
 
                 delta = datetime.datetime.now() - self.last_activity
-
-                if delta.total_seconds() > keepalive_timeout:
+                if delta.total_seconds() > self.KEEPALIVE_INTERVAL_SEC:
                     _, msg = message_protocol.create_keep_alive_message()
+                    self.update_last_activity()
                     self.socket.sendall(msg)
 
                 if self.close_socket and len(self.message_queue) == 0:

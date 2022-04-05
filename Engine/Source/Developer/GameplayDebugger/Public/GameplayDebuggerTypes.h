@@ -9,6 +9,8 @@ class FCanvasItem;
 class UCanvas;
 class UFont;
 struct FCanvasIcon;
+class APlayerController;
+class UWorld;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogGameplayDebug, Log, All);
 
@@ -29,6 +31,12 @@ public:
 	/** current text font */
 	TWeakObjectPtr<UFont> Font;
 
+	/** the player controller associated with this debugger context  */
+	TWeakObjectPtr<APlayerController> PlayerController;
+
+	/** the world associated with this debugger context  */
+	TWeakObjectPtr<UWorld> World;
+
 	/** font render data */
 	FFontRenderInfo FontRenderInfo;
 
@@ -44,8 +52,10 @@ public:
 	// print string on canvas
 	void Print(const FString& String);
 	void Print(const FColor& Color, const FString& String);
-	void PrintAt(float PosX, float PosY, const FColor& Color, const FString& String);
+	void Print(const FColor& Color, const float Alpha, const FString& String);
 	void PrintAt(float PosX, float PosY, const FString& String);
+	void PrintAt(float PosX, float PosY, const FColor& Color, const FString& String);
+	void PrintAt(float PosX, float PosY, const FColor& Color, const float Alpha, const FString& String);
 
 	// print formatted string on canvas
 	template <typename FmtType, typename... Types>
@@ -54,38 +64,57 @@ public:
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::Printf");
 
-		PrintfImpl(Fmt, Args...);
+		PrintfImpl(FColor::White, 1.0f, Fmt, Args...);
 	}
+	
 	template <typename FmtType, typename... Types>
 	void Printf(const FColor& Color, const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::Printf");
 
-		PrintfImpl(Color, Fmt, Args...);
+		PrintfImpl(Color, 1.0f, Fmt, Args...);
 	}
+	
+	template <typename FmtType, typename... Types>
+	void Printf(const FColor& Color, const float Alpha, const FmtType& Fmt, Types... Args)
+	{
+		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::Printf");
+
+		PrintfImpl(Color, Alpha, Fmt, Args...);
+	}
+	
 	template <typename FmtType, typename... Types>
 	void PrintfAt(float PosX, float PosY, const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::PrintfAt");
 
-		PrintfAtImpl(PosX, PosY, Fmt, Args...);
+		PrintfAtImpl(PosX, PosY, FColor::White, 1.0f, Fmt, Args...);
 	}
+	
 	template <typename FmtType, typename... Types>
 	void PrintfAt(float PosX, float PosY, const FColor& Color, const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::PrintfAt");
 
-		PrintfAtImpl(PosX, PosY, Color, Fmt, Args...);
+		PrintfAtImpl(PosX, PosY, Color, 1.0f, Fmt, Args...);
+	}
+	
+	template <typename FmtType, typename... Types>
+	void PrintfAt(float PosX, float PosY, const FColor& Color, const float Alpha, const FmtType& Fmt, Types... Args)
+	{
+		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FGameplayDebuggerCanvasContext::PrintfAt");
+
+		PrintfAtImpl(PosX, PosY, Color, Alpha, Fmt, Args...);
 	}
 
 private:
-	void VARARGS PrintfImpl(const TCHAR* Args, ...);
-	void VARARGS PrintfImpl(const FColor& Color, const TCHAR* Args, ...);
-	void VARARGS PrintfAtImpl(float PosX, float PosY, const TCHAR* Args, ...);
-	void VARARGS PrintfAtImpl(float PosX, float PosY, const FColor& Color, const TCHAR* Args, ...);
+	void VARARGS PrintfImpl(const FColor& Color, const float Alpha, const TCHAR* Args, ...);
+	void VARARGS PrintfAtImpl(float PosX, float PosY, const FColor& Color, const float Alpha, const TCHAR* Args, ...);
 
 public:
 	// moves cursor to new line
@@ -108,6 +137,10 @@ public:
 
 	// draw icon on canvas
 	void DrawIcon(const FColor& Color, const FCanvasIcon& Icon, float PosX, float PosY, float Scale = 1.f);
+
+	// fetches the World associated with this context. Will use the World member variable, if set, and 
+	// PlayerController's world otherwise. Note that it can still be null and needs to be tested.
+	UWorld* GetWorld() const;
 };
 
 namespace FGameplayDebuggerCanvasStrings
@@ -130,8 +163,10 @@ enum class EGameplayDebuggerShape : uint8
 	Box,
 	Cone,
 	Cylinder,
+	Circle,
 	Capsule,
 	Polygon,
+	Arrow,
 };
 
 struct GAMEPLAYDEBUGGER_API FGameplayDebuggerShape
@@ -158,9 +193,12 @@ struct GAMEPLAYDEBUGGER_API FGameplayDebuggerShape
 	static FGameplayDebuggerShape MakePoint(const FVector& Location, const float Radius, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeSegment(const FVector& StartLocation, const FVector& EndLocation, const float Thickness, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeSegment(const FVector& StartLocation, const FVector& EndLocation, const FColor& Color, const FString& Description = FString());
+	static FGameplayDebuggerShape MakeArrow(const FVector& StartLocation, const FVector& EndLocation, const float HeadSize, const float Thickness, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeBox(const FVector& Center, const FVector& Extent, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeCone(const FVector& Location, const FVector& Direction, const float Length, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeCylinder(const FVector& Center, const float Radius, const float HalfHeight, const FColor& Color, const FString& Description = FString());
+	static FGameplayDebuggerShape MakeCircle(const FVector& Center, const FVector& Up, const float Radius, const FColor& Color, const FString& Description = FString());
+	static FGameplayDebuggerShape MakeCircle(const FVector& Center, const FVector& Up, const float Radius, const float Thickness, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakeCapsule(const FVector& Center, const float Radius, const float HalfHeight, const FColor& Color, const FString& Description = FString());
 	static FGameplayDebuggerShape MakePolygon(const TArray<FVector>& Verts, const FColor& Color, const FString& Description = FString());
 

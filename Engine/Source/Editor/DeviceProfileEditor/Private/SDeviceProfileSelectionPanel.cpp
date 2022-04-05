@@ -245,7 +245,6 @@ void SDeviceProfileSelectionPanel::Construct( const FArguments& InArgs, TWeakObj
 			.HAlign(HAlign_Left)
 			[
 				SNew(STextBlock)
-				.TextStyle( FEditorStyle::Get(), "Docking.TabFont" )
 				.Text( LOCTEXT("ExistingProfilesLabel", "Existing Device Profiles...") )
 			]
 		]
@@ -256,7 +255,7 @@ void SDeviceProfileSelectionPanel::Construct( const FArguments& InArgs, TWeakObj
 			+ SScrollBox::Slot()
 			[
 				SNew( SBorder )
-				.BorderImage( FEditorStyle::GetBrush( "ToolBar.Background" ) )
+				.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 				[
 					SAssignNew( ListWidget, SVerticalBox )
 				]
@@ -292,9 +291,9 @@ TSharedRef< ITableRow > SDeviceProfileSelectionPanel::OnGenerateWidgetForDeviceP
 void SDeviceProfileSelectionPanel::RegenerateProfileList()
 {
 	DeviceProfiles.Empty();
-	for( TArray<UObject*>::TIterator It(DeviceProfileManager->Profiles); It; It++  )
+	for( TArray<UDeviceProfile*>::TIterator It(DeviceProfileManager->Profiles); It; It++  )
 	{
-		DeviceProfiles.Add( CastChecked<UDeviceProfile>( *It ) );
+		DeviceProfiles.Add(*It);
 	}
 
 	if( DeviceProfileManager.IsValid() )

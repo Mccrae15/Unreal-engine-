@@ -12,7 +12,7 @@
 #include "Animation/AnimationAsset.h"
 
 #include "Async/MappedFileHandle.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/Paths.h"
 #include "Serialization/BulkData.h"
@@ -44,8 +44,6 @@ class UAnimCurveCompressionSettings;
 class UAnimBoneCompressionSettings;
 class UAnimBoneCompressionCodec;
 class USkeleton;
-
-extern FGuid GenerateGuidFromRawAnimData(const TArray<FRawAnimSequenceTrack>& RawAnimationData, const FRawCurveTracks& RawCurveData);
 
 template<typename ArrayClass>
 struct ENGINE_API FCompressedOffsetDataBase
@@ -193,9 +191,12 @@ struct ENGINE_API FCompressibleAnimData
 public:
 	FCompressibleAnimData();
 
-	FCompressibleAnimData(UAnimBoneCompressionSettings* InBoneCompressionSettings, UAnimCurveCompressionSettings* InCurveCompressionSettings, USkeleton* InSkeleton, EAnimInterpolationType InInterpolation, float InSequenceLength, int32 InNumFrames);
+	FCompressibleAnimData(UAnimBoneCompressionSettings* InBoneCompressionSettings, UAnimCurveCompressionSettings* InCurveCompressionSettings, USkeleton* InSkeleton, EAnimInterpolationType InInterpolation, float InSequenceLength, int32 InNumberOfKeys);
 
 	FCompressibleAnimData(class UAnimSequence* InSeq, const bool bPerformStripping);
+
+	FCompressibleAnimData(const FCompressibleAnimData&);
+	FCompressibleAnimData& operator=(const FCompressibleAnimData&);
 
 	UAnimCurveCompressionSettings* CurveCompressionSettings;
 
@@ -215,11 +216,15 @@ public:
 
 	TArray<FBoneData> BoneData;
 
-	FRawCurveTracks RawCurveData;
+	TArray<FFloatCurve> RawFloatCurves;
 
 	float SequenceLength;
 
-	int32 NumFrames;
+	/** Number of keys within the (non-uniform) RawAnimationData tracks */
+	
+	UE_DEPRECATED(5.0, "NumberOfFrames has been replaced with NumberOfKeys")
+	int32 NumberOfFrames;
+	int32 NumberOfKeys;
 
 	bool bIsValidAdditive;
 
@@ -255,7 +260,7 @@ public:
 	int32 GetApproxRawCurveSize() const
 	{
 		int32 Total = 0;
-		for (const FFloatCurve& Curve : RawCurveData.FloatCurves)
+		for (const FFloatCurve& Curve : RawFloatCurves)
 		{
 			Total += sizeof(FFloatCurve);
 			Total += sizeof(FRichCurveKey) * Curve.FloatCurve.Keys.Num();
@@ -394,13 +399,20 @@ struct FCompressedAnimDataBase
 struct ENGINE_API ICompressedAnimData
 {
 	/* Common data */
-	int32 CompressedNumberOfFrames;
+	int32 CompressedNumberOfKeys;
 
 #if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.0, "CompressedNumberOfFrames has been replaced with CompressedNumberOfKeys")
+    int32 CompressedNumberOfFrames;
+	
 	/** The error stats from the current bone compression codec. */
 	FAnimationErrorStats BoneCompressionErrorStats;
 #endif
 
+	ICompressedAnimData() = default;
+	ICompressedAnimData(const ICompressedAnimData&);
+	ICompressedAnimData& operator=(const ICompressedAnimData&);
+	
 	/* Virtual interface codecs must implement */
 	virtual ~ICompressedAnimData() {}
 
@@ -728,6 +740,12 @@ public:
 	// The size of the raw data used to create the compressed data
 	int32 CompressedRawDataSize;
 
+	//Temp debug DDC issues
+#if WITH_EDITOR
+	TArray<FRawAnimSequenceTrack> CompressedRawData; //Temp debug DDC issues
+	FName OwnerName;
+#endif
+
 	FCompressedAnimSequence()
 		: BoneCompressionCodec(nullptr)
 		, CurveCompressionCodec(nullptr)
@@ -802,7 +820,7 @@ extern void DecompressPose(FCompactPose& OutPose,
 extern void DecompressPose(	FCompactPose& OutPose,
 							const FCompressedAnimSequence& CompressedData,
 							const FAnimExtractContext& ExtractionContext,
-							USkeleton* Skeleton,
+							USkeleton* SourceSkeleton,
 							float SequenceLength,
 							EAnimInterpolationType Interpolation,
 							bool bIsBakedAdditive,

@@ -4,7 +4,7 @@
 
 #include "DataprepOperationsLibraryUtil.h"
 #include "DataprepAssetUserData.h"
-#include "DynamicMeshAABBTree3.h"
+#include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "DynamicMeshToMeshDescription.h"
 #include "DynamicMeshEditor.h"
 #include "Components/StaticMeshComponent.h"
@@ -18,7 +18,7 @@
 #include "MeshAdapterTransforms.h"
 #include "MeshDescriptionAdapter.h"
 #include "MeshDescriptionToDynamicMesh.h"
-#include "Operations/MergeCoincidentMeshEdges.h"
+#include "DynamicMesh/Operations/MergeCoincidentMeshEdges.h"
 #include "PhysicsEngine/BodySetup.h"
 
 DEFINE_LOG_CATEGORY(LogDataprepGeometryOperations);
@@ -82,11 +82,11 @@ void UDataprepRemeshOperation::OnExecution_Implementation(const FDataprepContext
 		
 		FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription(0);
 
-		TSharedPtr<FDynamicMesh3> OriginalMesh = MakeShared<FDynamicMesh3>();
+		TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> OriginalMesh = MakeShared<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe>();
 		FMeshDescriptionToDynamicMesh MeshDescriptionToDynamicMesh;
 		MeshDescriptionToDynamicMesh.Convert(MeshDescription, *OriginalMesh);
 
-		FRemeshMeshOp Op;
+		UE::Geometry::FRemeshMeshOp Op;
 
 		Op.RemeshType = RemeshType;
 		Op.bCollapses = true;
@@ -103,7 +103,7 @@ void UDataprepRemeshOperation::OnExecution_Implementation(const FDataprepContext
 		Op.SmoothingStrength = SmoothingStrength;
 		Op.SmoothingType = ERemeshSmoothingType::MeanValue;
 
-		TSharedPtr<FDynamicMeshAABBTree3> OriginalMeshSpatial = MakeShared<FDynamicMeshAABBTree3>(OriginalMesh.Get(), true);
+		TSharedPtr<UE::Geometry::FDynamicMeshAABBTree3, ESPMode::ThreadSafe> OriginalMeshSpatial = MakeShared<UE::Geometry::FDynamicMeshAABBTree3, ESPMode::ThreadSafe>(OriginalMesh.Get(), true);
 
 		double InitialMeshArea = 0;
 		for (int tid : OriginalMesh->TriangleIndicesItr())
@@ -112,7 +112,7 @@ void UDataprepRemeshOperation::OnExecution_Implementation(const FDataprepContext
 		}
 
 		double TargetTriArea = InitialMeshArea / (double)TargetTriangleCount;
-		double EdgeLen = TriangleUtil::EquilateralEdgeLengthForArea(TargetTriArea);
+		double EdgeLen = UE::Geometry::TriangleUtil::EquilateralEdgeLengthForArea(TargetTriArea);
 		Op.TargetEdgeLength = (double)FMath::RoundToInt(EdgeLen*100.0) / 100.0;
 
 		Op.OriginalMesh = OriginalMesh;
@@ -126,7 +126,7 @@ void UDataprepRemeshOperation::OnExecution_Implementation(const FDataprepContext
 		FDynamicMeshToMeshDescription DynamicMeshToMeshDescription;
 
 		// full conversion if normal topology changed or faces were inverted
-		TUniquePtr<FDynamicMesh3> ResultMesh = Op.ExtractResult();
+		TUniquePtr<UE::Geometry::FDynamicMesh3> ResultMesh = Op.ExtractResult();
 		DynamicMeshToMeshDescription.Convert(ResultMesh.Get(), *MeshDescription);
 
 		UStaticMesh::FCommitMeshDescriptionParams Params;
@@ -165,21 +165,21 @@ void UDataprepSimplifyMeshOperation::OnExecution_Implementation(const FDataprepC
 		
 		FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription(0);
 
-		TSharedPtr<FDynamicMesh3> OriginalMesh = MakeShared<FDynamicMesh3>();
+		TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe> OriginalMesh = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>();
 		FMeshDescriptionToDynamicMesh MeshDescriptionToDynamicMesh;
 		MeshDescriptionToDynamicMesh.Convert(MeshDescription, *OriginalMesh);
 
-		TSharedPtr<FDynamicMeshAABBTree3> OriginalMeshSpatial = MakeShared<FDynamicMeshAABBTree3>(OriginalMesh.Get(), true);
+		TSharedPtr<UE::Geometry::FDynamicMeshAABBTree3, ESPMode::ThreadSafe> OriginalMeshSpatial = MakeShared<UE::Geometry::FDynamicMeshAABBTree3, ESPMode::ThreadSafe>(OriginalMesh.Get(), true);
 
-		TSharedPtr<FMeshDescription> OriginalMeshDescription = MakeShared<FMeshDescription>(*StaticMesh->GetMeshDescription(0));
+		TSharedPtr<FMeshDescription, ESPMode::ThreadSafe> OriginalMeshDescription = MakeShared<FMeshDescription, ESPMode::ThreadSafe>(*StaticMesh->GetMeshDescription(0));
 
-		FSimplifyMeshOp Op;
+		UE::Geometry::FSimplifyMeshOp Op;
 
 		Op.bDiscardAttributes = bDiscardAttributes;
 		Op.bPreventNormalFlips = true;
 		Op.bPreserveSharpEdges = true;
 		Op.bReproject = false;
-		Op.SimplifierType = ESimplifyType::UE4Standard;
+		Op.SimplifierType = ESimplifyType::UEStandard;
 //		Op.TargetCount = TargetCount;
 //		Op.TargetEdgeLength = TargetEdgeLength;
 		Op.TargetMode = ESimplifyTargetType::Percentage;
@@ -201,7 +201,7 @@ void UDataprepSimplifyMeshOperation::OnExecution_Implementation(const FDataprepC
 		FDynamicMeshToMeshDescription DynamicMeshToMeshDescription;
 
 		// Convert back to mesh description
-		TUniquePtr<FDynamicMesh3> ResultMesh = Op.ExtractResult();
+		TUniquePtr<UE::Geometry::FDynamicMesh3> ResultMesh = Op.ExtractResult();
 		DynamicMeshToMeshDescription.Convert(ResultMesh.Get(), *MeshDescription);
 
 		UStaticMesh::FCommitMeshDescriptionParams Params;
@@ -273,22 +273,22 @@ void UDataprepBakeTransformOperation::OnExecution_Implementation(const FDataprep
 		}
 	}
 
-	TArray<FTransform3d> BakedTransforms;
+	TArray<UE::Geometry::FTransformSRT3d> BakedTransforms;
 	for (int32 ComponentIdx = 0; ComponentIdx < StaticMeshComponents.Num(); ComponentIdx++)
 	{
-		FTransform3d ComponentToWorld(StaticMeshComponents[ComponentIdx]->GetComponentTransform());
-		FTransform3d ToBakePart = FTransform3d::Identity();
-		FTransform3d NewWorldPart = ComponentToWorld;
+		UE::Geometry::FTransformSRT3d ComponentToWorld(StaticMeshComponents[ComponentIdx]->GetComponentTransform());
+		UE::Geometry::FTransformSRT3d ToBakePart = UE::Geometry::FTransformSRT3d::Identity();
+		UE::Geometry::FTransformSRT3d NewWorldPart = ComponentToWorld;
 
 		if (MapToFirstOccurrences[ComponentIdx] < ComponentIdx)
 		{
 			ToBakePart = BakedTransforms[MapToFirstOccurrences[ComponentIdx]];
 			BakedTransforms.Add(ToBakePart);
 			// Try to invert baked transform
-			NewWorldPart = FTransform3d(
+			NewWorldPart = UE::Geometry::FTransformSRT3d(
 				NewWorldPart.GetRotation() * ToBakePart.GetRotation().Inverse(),
 				NewWorldPart.GetTranslation(),
-				NewWorldPart.GetScale() * FTransform3d::GetSafeScaleReciprocal(ToBakePart.GetScale())
+				NewWorldPart.GetScale() * UE::Geometry::FTransformSRT3d::GetSafeScaleReciprocal(ToBakePart.GetScale())
 			);
 			NewWorldPart.SetTranslation(NewWorldPart.GetTranslation() - NewWorldPart.TransformVector(ToBakePart.GetTranslation()));
 		}
@@ -297,7 +297,7 @@ void UDataprepBakeTransformOperation::OnExecution_Implementation(const FDataprep
 			if (bBakeRotation)
 			{
 				ToBakePart.SetRotation(ComponentToWorld.GetRotation());
-				NewWorldPart.SetRotation(FQuaterniond::Identity());
+				NewWorldPart.SetRotation(UE::Geometry::FQuaterniond::Identity());
 			}
 			FVector3d ScaleVec = ComponentToWorld.GetScale();
 
@@ -322,7 +322,7 @@ void UDataprepBakeTransformOperation::OnExecution_Implementation(const FDataprep
 				RemainingUniformScale = AbsScales[BestSubIdx];
 				if (RemainingUniformScale <= FLT_MIN)
 				{
-					RemainingUniformScale = AbsScales.MaxAbsElement();
+					RemainingUniformScale = UE::Geometry::MaxAbsElement(AbsScales);
 				}
 			}
 			switch (BakeScale)
@@ -355,7 +355,7 @@ void UDataprepBakeTransformOperation::OnExecution_Implementation(const FDataprep
 			{
 				FBox BBox = MeshDescription->ComputeBoundingBox();
 				FVector3d Center(BBox.GetCenter());
-				FFrame3d LocalFrame(Center);
+				UE::Geometry::FFrame3d LocalFrame(Center);
 				ToBakePart.SetTranslation(ToBakePart.GetTranslation() - Center);
 				NewWorldPart.SetTranslation(NewWorldPart.GetTranslation() + NewWorldPart.TransformVector(Center));
 			}
@@ -403,11 +403,11 @@ void UDataprepWeldEdgesOperation::OnExecution_Implementation(const FDataprepCont
 		
 		FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription(0);
 
-		TSharedPtr<FDynamicMesh3> TargetMesh = MakeShared<FDynamicMesh3>();
+		TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe> TargetMesh = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>();
 		FMeshDescriptionToDynamicMesh MeshDescriptionToDynamicMesh;
 		MeshDescriptionToDynamicMesh.Convert(MeshDescription, *TargetMesh);
 
-		FMergeCoincidentMeshEdges Merger(TargetMesh.Get());
+		UE::Geometry::FMergeCoincidentMeshEdges Merger(TargetMesh.Get());
 		Merger.MergeSearchTolerance = Tolerance;
 		Merger.OnlyUniquePairs = bOnlyUnique;
 		
@@ -416,7 +416,7 @@ void UDataprepWeldEdgesOperation::OnExecution_Implementation(const FDataprepCont
 			continue;
 		}
 
-		if (TargetMesh->CheckValidity(true, EValidityCheckFailMode::ReturnOnly) == false)
+		if (TargetMesh->CheckValidity(true, UE::Geometry::EValidityCheckFailMode::ReturnOnly) == false)
 		{
 			continue; // Target mesh is invalid
 		}
@@ -594,19 +594,19 @@ TUniquePtr<FDynamicMesh3> UDataprepPlaneCutOperation::CutStaticMesh(const FTrans
 {
 	const FMeshDescription* MeshDescription = InStaticMesh->GetMeshDescription(0);
 
-	TSharedPtr<FDynamicMesh3> OriginalMesh = MakeShared<FDynamicMesh3>();
+	TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe> OriginalMesh = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>();
 	FMeshDescriptionToDynamicMesh MeshDescriptionToDynamicMesh;
 	MeshDescriptionToDynamicMesh.Convert(MeshDescription, *OriginalMesh);
 
 	OriginalMesh->EnableAttributes();
-	TDynamicMeshScalarTriangleAttribute<int>* SubObjectIDs = new TDynamicMeshScalarTriangleAttribute<int>(OriginalMesh.Get());
+	UE::Geometry::TDynamicMeshScalarTriangleAttribute<int>* SubObjectIDs = new UE::Geometry::TDynamicMeshScalarTriangleAttribute<int>(OriginalMesh.Get());
 	SubObjectIDs->Initialize(0);
-	OriginalMesh->Attributes()->AttachAttribute(FPlaneCutOp::ObjectIndexAttribute, SubObjectIDs);
+	OriginalMesh->Attributes()->AttachAttribute(UE::Geometry::FPlaneCutOp::ObjectIndexAttribute, SubObjectIDs);
 
 	// Store a UV scale based on the original mesh bounds (we don't want to recompute this between cuts b/c we want consistent UV scale)
 	const float MeshUVScaleFactor = 1.0 / OriginalMesh->GetBounds().MaxDim();
 
-	TUniquePtr<FDynamicMeshOperator> CutOp = MakeNewOperator(InTransform, OriginalMesh, MeshUVScaleFactor);
+	TUniquePtr<UE::Geometry::FDynamicMeshOperator> CutOp = MakeNewOperator(InTransform, OriginalMesh, MeshUVScaleFactor);
 
 	FProgressCancel Progress;
 	CutOp->CalculateResult(&Progress);
@@ -658,11 +658,11 @@ void UDataprepPlaneCutOperation::PerformCutting(
 		{
 			// Export separated pieces as new mesh assets
 
-			TDynamicMeshScalarTriangleAttribute<int>* SubMeshIDs =
-				static_cast<TDynamicMeshScalarTriangleAttribute<int>*>(UseMesh->Attributes()->GetAttachedAttribute(
-					FPlaneCutOp::ObjectIndexAttribute));
-			TArray<FDynamicMesh3>& SplitMeshes = AllSplitMeshes[OrigMeshIdx];
-			bool bWasSplit = FDynamicMeshEditor::SplitMesh(UseMesh, SplitMeshes, [SubMeshIDs](int TID)
+			UE::Geometry::TDynamicMeshScalarTriangleAttribute<int>* SubMeshIDs =
+				static_cast<UE::Geometry::TDynamicMeshScalarTriangleAttribute<int>*>(UseMesh->Attributes()->GetAttachedAttribute(
+					UE::Geometry::FPlaneCutOp::ObjectIndexAttribute));
+			TArray<UE::Geometry::FDynamicMesh3>& SplitMeshes = AllSplitMeshes[OrigMeshIdx];
+			bool bWasSplit = UE::Geometry::FDynamicMeshEditor::SplitMesh(UseMesh, SplitMeshes, [SubMeshIDs](int TID)
 			{
 				return SubMeshIDs->GetValue(TID);
 			});
@@ -829,12 +829,12 @@ void UDataprepPlaneCutOperation::PerformCutting(
 	}
 }
 
-TUniquePtr<FDynamicMeshOperator> UDataprepPlaneCutOperation::MakeNewOperator(
+TUniquePtr<UE::Geometry::FDynamicMeshOperator> UDataprepPlaneCutOperation::MakeNewOperator(
 	const FTransform& InMeshLocalToWorld, 
-	TSharedPtr<FDynamicMesh3> InOriginalMesh, 
+	TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> InOriginalMesh,
 	float InMeshUVScaleFactor)
 {
-	TUniquePtr<FPlaneCutOp> CutOp = MakeUnique<FPlaneCutOp>();
+	TUniquePtr<UE::Geometry::FPlaneCutOp> CutOp = MakeUnique<UE::Geometry::FPlaneCutOp>();
 	CutOp->bFillCutHole = bFillCutHole;
 	CutOp->bFillSpans = false;
 
@@ -864,16 +864,16 @@ TUniquePtr<FDynamicMeshOperator> UDataprepPlaneCutOperation::MakeNewOperator(
 	LocalToWorld.SetScale3D(LocalToWorldScale);
 	FTransform WorldToLocal = LocalToWorld.Inverse();
 	FVector LocalOrigin = WorldToLocal.TransformPosition(CutPlaneOrigin);
-	FTransform3d W2LForNormal(WorldToLocal);
-	FVector LocalNormal = (FVector)W2LForNormal.TransformNormal(WorldNormal);
+	UE::Geometry::FTransformSRT3d W2LForNormal(WorldToLocal);
+	FVector LocalNormal = (FVector)W2LForNormal.TransformNormal((FVector3d)WorldNormal);
 	FVector BackTransformed = LocalToWorld.TransformVector(LocalNormal);
 	float NormalScaleFactor = FVector::DotProduct(BackTransformed, WorldNormal);
 	if (NormalScaleFactor >= FLT_MIN)
 	{
 		NormalScaleFactor = 1.0 / NormalScaleFactor;
 	}
-	CutOp->LocalPlaneOrigin = LocalOrigin;
-	CutOp->LocalPlaneNormal = LocalNormal;
+	CutOp->LocalPlaneOrigin = (FVector3d)LocalOrigin;
+	CutOp->LocalPlaneNormal = (FVector3d)LocalNormal;
 	CutOp->OriginalMesh = InOriginalMesh;
 	CutOp->bKeepBothHalves = (CutPlaneKeepSide == EPlaneCutKeepSide::Both);
 	CutOp->CutPlaneLocalThickness = SpacingBetweenHalves * NormalScaleFactor;

@@ -76,7 +76,7 @@ int32 FData::AddVertices(const int32 Count)
 	{
 		const FVertexID Vertex = MeshDescription.CreateVertex();
 		const FVertexInstanceID VertexInstance = MeshDescription.CreateVertexInstance(Vertex);
-		MeshAttributes.GetVertexInstanceColors()[VertexInstance] = FVector4(1.f, 1.f, 1.f, 1.f);
+		MeshAttributes.GetVertexInstanceColors()[VertexInstance] = FVector4f(1.f, 1.f, 1.f, 1.f);
 	}
 
 	AddVertexIndex = 0;
@@ -98,12 +98,12 @@ int32 FData::AddVertex(const FVector& Position, const FVector& TangentX, const F
 	check(Glyph.Get());
 	FStaticMeshAttributes& StaticMeshAttributes = Glyph->GetStaticMeshAttributes();
 	const int32 VertexIndex = VertexCountBeforeAdd + AddVertexIndex++;
-	StaticMeshAttributes.GetVertexPositions()[FVertexID(VertexIndex)] = Position;
+	StaticMeshAttributes.GetVertexPositions()[FVertexID(VertexIndex)] = (FVector3f)Position;
 	const FVertexInstanceID Instance(static_cast<uint32>(VertexIndex));
 
-	StaticMeshAttributes.GetVertexInstanceUVs()[Instance] = TextureCoordinates;
-	StaticMeshAttributes.GetVertexInstanceNormals()[Instance] = TangentZ;
-	StaticMeshAttributes.GetVertexInstanceTangents()[Instance] = TangentX;
+	StaticMeshAttributes.GetVertexInstanceUVs()[Instance] = FVector2f(TextureCoordinates);
+	StaticMeshAttributes.GetVertexInstanceNormals()[Instance] = (FVector3f)TangentZ;
+	StaticMeshAttributes.GetVertexInstanceTangents()[Instance] = (FVector3f)TangentX;
 
 	return VertexIndex;
 }
@@ -166,17 +166,17 @@ FVector2D FData::Expanded(const FPartConstPtr& Point) const
 	return Point->Expanded(ExpandTarget - Point->DoneExpand);
 }
 
-void FData::FillEdge(const FPartPtr& Edge, const bool bSkipLastTriangle)
+void FData::FillEdge(const FPartPtr& Edge, const bool bSkipLastTriangle, bool bFlipNormals)
 {
 	const FPartPtr EdgeA = Edge;
 	const FPartPtr EdgeB = Edge->Next;
 
-	MakeTriangleFanAlongNormal(EdgeB, EdgeA, false, true);
-	MakeTriangleFanAlongNormal(EdgeA, EdgeB, true, false);
+	MakeTriangleFanAlongNormal(EdgeB, EdgeA, bFlipNormals, true);
+	MakeTriangleFanAlongNormal(EdgeA, EdgeB, !bFlipNormals, false);
 
 	if (!bSkipLastTriangle)
 	{
-		MakeTriangleFanAlongNormal(EdgeB, EdgeA, false, false);
+		MakeTriangleFanAlongNormal(EdgeB, EdgeA, bFlipNormals, false);
 	}
 	else
 	{
@@ -208,9 +208,8 @@ void FData::MakeTriangleFanAlongNormal(const FPartConstPtr& Cap, const FPartPtr&
 	for (int32 Index = 0; Index < Count; Index++)
 	{
 		AddTriangle((bNormalIsCapNext ? Cap->PathNext : Cap->PathPrev)[0],
-				Path[bNormalIsCapNext ? Index + 1 : Index],
-				Path[bNormalIsCapNext ? Index : Index + 1]
-			);
+						Path[bNormalIsCapNext ? Index + 1 : Index],
+						Path[bNormalIsCapNext ? Index : Index + 1]);
 	}
 
 	// Remove covered vertices from path

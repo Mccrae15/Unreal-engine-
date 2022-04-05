@@ -82,6 +82,7 @@ namespace Audio
 		FCriticalSection MutationLock;
 	};
 
+
 	class AUDIOMIXER_API FMixerDevice :	public FAudioDevice,
 										public IAudioMixer,
 										public FGCObject
@@ -103,11 +104,12 @@ namespace Audio
 		virtual double GetAudioTime() const override;
 		virtual FAudioEffectsManager* CreateEffectsManager() override;
 		virtual FSoundSource* CreateSoundSource() override;
-		virtual FName GetRuntimeFormat(USoundWave* SoundWave) override;
+		virtual FName GetRuntimeFormat(const USoundWave* SoundWave) const override;
 		virtual bool HasCompressedAudioInfoClass(USoundWave* SoundWave) override;
 		virtual bool SupportsRealtimeDecompression() const override;
 		virtual bool DisablePCMAudioCaching() const override;
-		virtual class ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* SoundWave) override;
+		virtual class ICompressedAudioInfo* CreateCompressedAudioInfo(const USoundWave* SoundWave) const override;
+		virtual class ICompressedAudioInfo* CreateCompressedAudioInfo(const FSoundWaveProxyPtr& SoundWave) const override;
 		virtual bool ValidateAPICall(const TCHAR* Function, uint32 ErrorCode) override;
 		virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 		virtual void CountBytes(class FArchive& Ar) override;
@@ -135,6 +137,10 @@ namespace Audio
 		virtual void SetSubmixWetLevel(USoundSubmix* InSoundSubmix, float InWetLevel) override;
 		virtual void SetSubmixDryLevel(USoundSubmix* InSoundSubmix, float InDryLevel) override;
 
+		// Submix auto-disable setteings
+		virtual void SetSubmixAutoDisable(USoundSubmix* InSoundSubmix, bool bInAutoDisable) override;
+		virtual void SetSubmixAutoDisableTime(USoundSubmix* InSoundSubmix, float InDisableTime) override;
+
 		// Submix Modulation Settings
 		virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation) override;
 		virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase) override;
@@ -145,7 +151,7 @@ namespace Audio
 
 		// Submix recording callbacks:
 		virtual void StartRecording(USoundSubmix* InSubmix, float ExpectedRecordingDuration) override;
-		virtual Audio::AlignedFloatBuffer& StopRecording(USoundSubmix* InSubmix, float& OutNumChannels, float& OutSampleRate) override;
+		virtual Audio::FAlignedFloatBuffer& StopRecording(USoundSubmix* InSubmix, float& OutNumChannels, float& OutSampleRate) override;
 
 		virtual void PauseRecording(USoundSubmix* InSubmix);
 		virtual void ResumeRecording(USoundSubmix* InSubmix);
@@ -178,12 +184,16 @@ namespace Audio
 		//~ End FAudioDevice
 
 		//~ Begin IAudioMixer
-		virtual bool OnProcessAudioStream(AlignedFloatBuffer& OutputBuffer) override;
+		virtual bool OnProcessAudioStream(FAlignedFloatBuffer& OutputBuffer) override;
 		virtual void OnAudioStreamShutdown() override;
 		//~ End IAudioMixer
 
 		//~ Begin FGCObject
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("Audio::FMixerDevice");
+		}
 		//~End FGCObject
 
 		FMixerSubmixPtr FindSubmixInstanceByObjectId(uint32 InObjectId);
@@ -216,11 +226,11 @@ namespace Audio
 		IAudioMixerPlatformInterface* GetAudioMixerPlatform() const { return AudioMixerPlatform; }
 
 		// Builds a 3D channel map for a spatialized source.
-		void Get3DChannelMap(const int32 InSubmixNumChannels, const FWaveInstance* InWaveInstance, const float EmitterAzimuth, const float NormalizedOmniRadius, Audio::AlignedFloatBuffer& OutChannelMap);
+		void Get3DChannelMap(const int32 InSubmixNumChannels, const FWaveInstance* InWaveInstance, const float EmitterAzimuth, const float NormalizedOmniRadius, Audio::FAlignedFloatBuffer& OutChannelMap);
 
 		// Builds a channel gain matrix for a non-spatialized source. The non-static variation of this function queries AudioMixerDevice->NumOutputChannels directly which may not be thread safe.
-		void Get2DChannelMap(bool bIsVorbis, const int32 NumSourceChannels, const bool bIsCenterChannelOnly, Audio::AlignedFloatBuffer& OutChannelMap) const;
-		static void Get2DChannelMap(bool bIsVorbis, const int32 NumSourceChannels, const int32 NumOutputChannels, const bool bIsCenterChannelOnly, Audio::AlignedFloatBuffer& OutChannelMap);
+		void Get2DChannelMap(bool bIsVorbis, const int32 NumSourceChannels, const bool bIsCenterChannelOnly, Audio::FAlignedFloatBuffer& OutChannelMap) const;
+		static void Get2DChannelMap(bool bIsVorbis, const int32 NumSourceChannels, const int32 NumOutputChannels, const bool bIsCenterChannelOnly, Audio::FAlignedFloatBuffer& OutChannelMap);
 
 		int32 GetDeviceSampleRate() const;
 		int32 GetDeviceOutputChannels() const;
@@ -279,8 +289,10 @@ namespace Audio
 		// Audio bus API
 		void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic);
 		void StopAudioBus(uint32 InAudioBusId);
-		bool IsAudioBusActive(uint32 InAudioBusId);
-		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain);
+		bool IsAudioBusActive(uint32 InAudioBusId) const;
+
+		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f);
+		FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f);
 
 		// Clock Manager for quantized event handling on Audio Render Thread
 		FQuartzClockManager QuantizedEventClockManager;
@@ -303,14 +315,13 @@ namespace Audio
 
 		void RebuildSubmixLinks(const USoundSubmixBase& SoundSubmix, FMixerSubmixPtr& SubmixInstance);
 
-		void Get2DChannelMapInternal(const int32 NumSourceChannels, const int32 NumOutputChannels, const bool bIsCenterChannelOnly, TArray<float>& OutChannelMap) const;
 		void InitializeChannelMaps();
 		static int32 GetChannelMapCacheId(const int32 NumSourceChannels, const int32 NumOutputChannels, const bool bIsCenterChannelOnly);
 		void CacheChannelMap(const int32 NumSourceChannels, const int32 NumOutputChannels, const bool bIsCenterChannelOnly);
 		void InitializeChannelAzimuthMap(const int32 NumChannels);
 
-		void WhiteNoiseTest(AlignedFloatBuffer& Output);
-		void SineOscTest(AlignedFloatBuffer& Output);
+		void WhiteNoiseTest(FAlignedFloatBuffer& Output);
+		void SineOscTest(FAlignedFloatBuffer& Output);
 
 		bool IsMainAudioDevice() const;
 
@@ -336,8 +347,15 @@ namespace Audio
 
 		TArray<TStrongObjectPtr<UAudioBus>> DefaultAudioBuses;
 
+		struct FActiveBusData
+		{
+			int32 BusId = 0;
+			int32 NumChannels = 0;
+			bool bIsAutomatic = false;
+		};
+
 		// The active audio bus list accessible on the game thread
-		TArray<int32> ActiveAudioBuses_GameThread;
+		TMap<int32, FActiveBusData> ActiveAudioBuses_GameThread;
 
 		/** Ptr to the platform interface, which handles streaming audio to the hardware device. */
 		IAudioMixerPlatformInterface* AudioMixerPlatform;

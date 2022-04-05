@@ -12,6 +12,7 @@
 
 struct FSmartName;
 
+
 /** Curve Meta Data for each name
  * Unfortunately this should be linked to FName, but no GUID because we don't have GUID in run-time
  * We only add this if anything changed, by default, it is attribute curve
@@ -58,10 +59,12 @@ struct FCurveMetaData
 USTRUCT()
 struct ENGINE_API FSmartNameMapping
 {
+	friend struct FSmartNameMappingIterator;
+	
 	GENERATED_USTRUCT_BODY();
 
 	FSmartNameMapping();
-
+	
 	// Add a name to the mapping, fails if it already exists
 	// @param InName - The name to add
 	// @return FSmartName - populated smart name
@@ -130,23 +133,11 @@ struct ENGINE_API FSmartNameMapping
 	bool FindSmartNameByUID(SmartName::UID_Type UID, FSmartName& OutName) const;
 
 	// Curve Meta Data Accessors
-	FCurveMetaData* GetCurveMetaData(FName CurveName)
-	{
-		checkSlow(Exists(CurveName));
-		return &CurveMetaDataMap.FindOrAdd(CurveName);
-	}
-
-	const FCurveMetaData* GetCurveMetaData(FName CurveName) const
-	{
-		checkSlow(Exists(CurveName));
-		return CurveMetaDataMap.Find(CurveName);
-	}
-
+	FCurveMetaData* GetCurveMetaData(FName CurveName);
+	const FCurveMetaData* GetCurveMetaData(FName CurveName) const;
+	
 #if !WITH_EDITOR
-	const FCurveMetaData& GetCurveMetaData(SmartName::UID_Type CurveUID) const
-	{
-		return CurveMetaDataList[CurveUID];
-	}
+	const FCurveMetaData& GetCurveMetaData(SmartName::UID_Type CurveUID) const;
 #endif
 
 	// Serialize this to the provided archive; required for TMap serialization
@@ -158,9 +149,27 @@ struct ENGINE_API FSmartNameMapping
 	void InitializeCurveMetaData(class USkeleton* Skeleton);
 
 	/** Get the maximum in use UID */
-	SmartName::UID_Type GetMaxUID() const { return CurveNameList.Num() - 1; }
+	SmartName::UID_Type GetMaxUID() const { return (SmartName::UID_Type)(CurveNameList.Num() - 1); }
+
+	/** Iterate over all Names in this Mapping */
+	void Iterate(TFunction<void(const struct FSmartNameMappingIterator& Iterator)> Callback) const;
 
 private:
+	/*Internal no lock function to prevent re-entrant locking, see API function GetName for documentation.*/
+	bool GetName_NoLock(const SmartName::UID_Type& Uid, FName& OutName) const;
+
+	/*Internal no lock function to prevent re-entrant locking, see API function Exists for documentation.*/
+	bool Exists_NoLock(const SmartName::UID_Type& Uid) const;
+	
+	/*Internal no lock function to prevent re-entrant locking, see API function Exists for documentation.*/
+	bool Exists_NoLock(const FName& Name) const;
+
+	/*Internal no lock function to prevent re-entrant locking, see API function FindUID for documentation.*/
+	SmartName::UID_Type FindUID_NoLock(const FName& Name) const;
+	
+	/*Internal no lock function to prevent re-entrant locking, see API function GetCurveMetaData for documentation.*/
+	const FCurveMetaData* GetCurveMetaData_NoLock(FName CurveName) const;
+
 	// List of curve names, indexed by UID
 	TArray<FName> CurveNameList;
 
@@ -170,6 +179,42 @@ private:
 #endif
 
 	TMap<FName, FCurveMetaData> CurveMetaDataMap;
+};
+
+// Struct for providing access to SmartNameMapping data within FSmartNameMapping::Iterate callback functions
+struct ENGINE_API FSmartNameMappingIterator
+{
+	public:
+		friend struct FSmartNameMapping;
+	
+		bool GetName(FName& OutCurveName) const
+		{
+			return Mapping->GetName_NoLock(Index, OutCurveName);
+		}
+	
+		const FCurveMetaData* GetCurveMetaData() const
+		{
+			FName Name;
+			if (Mapping->GetName_NoLock(Index, Name))
+			{
+				return Mapping->GetCurveMetaData_NoLock(Name);
+			}
+			else
+			{
+				return nullptr;
+			}
+		}
+	
+		SmartName::UID_Type GetIndex() const { return Index; }
+	
+	private:
+		// This class struct should only be crated by FSmartNameMapping::Iterate
+		FSmartNameMappingIterator(const FSmartNameMapping* InMapping, SmartName::UID_Type InIndex):
+			Mapping(InMapping), Index(InIndex)
+		{}
+	
+		const FSmartNameMapping* Mapping;
+		SmartName::UID_Type Index;
 };
 
 USTRUCT()
@@ -204,6 +249,15 @@ private:
 	// Editor copy of the data we loaded, used to preserve determinism during cooking
 	TMap<FName, FSmartNameMapping> LoadedNameMappings;
 #endif
+};
+
+template<>
+struct TStructOpsTypeTraits<FSmartNameContainer> : public TStructOpsTypeTraitsBase2<FSmartNameContainer>
+{
+	enum
+	{
+		WithCopy = false,
+	};
 };
 
 USTRUCT()

@@ -102,8 +102,9 @@ struct CORE_API FReleaseObjectVersion
 		// FFieldPath will serialize the owner struct reference and only a short path to its property
 		FFieldPathOwnerSerialization,
 
-		// Dummy version to allow us to fix up the fact that ReleaseObjectVersion was changed elsewhere
-		ReleaseObjectVersionFixup,
+		// New MeshDescription format
+		// This was inadvertently added in UE5. The proper version for it is in in UE5MainStreamObjectVersion
+		MeshDescriptionNewFormat,
 
 		// Pin types include a flag that propagates the 'CPF_UObjectWrapper' flag to generated properties
 		PinTypeIncludesUObjectWrapperFlag,
@@ -141,6 +142,9 @@ struct CORE_API FReleaseObjectVersion
 		// Remove default resolution limit of 512 pixels for cubemaps generated from long-lat sources
 		LonglatTextureCubeDefaultMaxResolution,
 
+		// bake center of mass into chaos cache
+		GeometryCollectionCacheRemovesMassToLocal,
+			
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

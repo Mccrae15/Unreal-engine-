@@ -46,14 +46,14 @@ FVector2D SCurveEditorViewContainer::ComputeDesiredSize(float) const
 		{
 			const FVector2D& ChildDesiredSize = Child.GetWidget()->GetDesiredSize();
 
-			FMargin SlotPadding = Child.SlotPadding.Get();
+			FMargin SlotPadding = Child.GetPadding();
 			MyDesiredSize.Y += SlotPadding.GetTotalSpaceAlong<Orient_Vertical>();
 
 			// For a vertical panel, we want to find the maximum desired width (including margin).
 			// That will be the desired width of the whole panel.
 			MyDesiredSize.X = FMath::Max(MyDesiredSize.X, ChildDesiredSize.X + SlotPadding.GetTotalSpaceAlong<Orient_Horizontal>());
 
-			if (Child.SizeParam.SizeRule == FSizeParam::SizeRule_Stretch)
+			if (Child.GetSizeRule() == FSizeParam::SizeRule_Stretch)
 			{
 				++NumStretchPanels;
 			}
@@ -85,8 +85,9 @@ int32 SCurveEditorViewContainer::OnPaint(const FPaintArgs& Args, const FGeometry
 {
 	const ESlateDrawEffect DrawEffects = ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 	
-	FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
-		FEditorStyle::GetBrush("ToolPanel.GroupBorder"), DrawEffects);
+	static const FName BackgroundBrushName("Brushes.Panel");
+	const FSlateBrush* Background = FEditorStyle::GetBrush(BackgroundBrushName);
+	FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Background, DrawEffects, Background->GetTint(InWidgetStyle));
 
 	SVerticalBox::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
 
@@ -326,7 +327,9 @@ void SCurveEditorViewContainer::AddView(TSharedRef<SCurveEditorView> ViewToAdd)
 	ViewToAdd->RelativeOrder = Views.Num();
 
 	Views.Add(ViewToAdd);
-	SVerticalBox::FSlot& Slot = AddSlot()
+	SVerticalBox::FSlot* SlotPointer = nullptr;
+	AddSlot()
+	.Expose(SlotPointer)
 	[
 		SNew(SBox)
 		.Padding(MakeAttributeSP(this, &SCurveEditorViewContainer::GetSlotPadding, InsertIndex))
@@ -338,7 +341,7 @@ void SCurveEditorViewContainer::AddView(TSharedRef<SCurveEditorView> ViewToAdd)
 
 	if (ViewToAdd->ShouldAutoSize())
 	{
-		Slot.AutoHeight();
+		SlotPointer->SetAutoHeight();
 	}
 }
 

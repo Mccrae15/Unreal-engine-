@@ -10,6 +10,7 @@ namespace UnrealBuildTool.Rules
                 new string[] {
                     "Core",
                     "CoreUObject",
+					"EditorFramework",
                     "Engine",
                     "InputCore",
                     "Slate",
@@ -20,6 +21,8 @@ namespace UnrealBuildTool.Rules
 					"SlateCore",
 					"MeshDescription",
 					"StaticMeshDescription",
+					"TypedElementFramework",
+					"TypedElementRuntime",
 					"UnrealEd"
                 }
                 );
@@ -28,7 +31,7 @@ namespace UnrealBuildTool.Rules
                 new string[] {
 					"InteractiveToolsFramework",
 					"EditorInteractiveToolsFramework",
-                    "GeometricObjects"
+					"GeometryCore",
                 }
             );
         }

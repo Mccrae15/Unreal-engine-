@@ -2,13 +2,8 @@
 
 #pragma once
 
-namespace Electra {
-
-	// Define the H.264 class GUID ourselves. Using the CLSID_CMSH264DecoderMFT from wmcodecdsp.h requires linking with some lib again...
-	static const GUID MFTmsH264Decoder = { 0x62CE7E72, 0x4C71, 0x4D20, { 0xB1, 0x5D, 0x45, 0x28, 0x31, 0xA8, 0x7D, 0x9D } };
-
-	static const GUID CODECAPI_AVLowLatencyMode = { 0x9c27891a, 0xed7a, 0x40e1, { 0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee } };
-
+namespace Electra
+{
 	/**
 	 * H264 video decoder class implementation.
 	**/
@@ -29,6 +24,7 @@ namespace Electra {
 
 		virtual void Open(const FInstanceConfiguration& InConfig) override;
 		virtual void Close() override;
+		virtual void DrainForCodecChange() override;
 
 		virtual void SetMaximumDecodeCapability(int32 MaxWidth, int32 MaxHeight, int32 MaxProfile, int32 MaxProfileLevel, const FParamDict& AdditionalOptions) override;
 
@@ -40,8 +36,9 @@ namespace Electra {
 
 		virtual void SetResourceDelegate(const TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>& ResourceDelegate) override;
 
-		virtual IAccessUnitBufferInterface::EAUpushResult AUdataPushAU(FAccessUnit* InAccessUnit) override;
+		virtual void AUdataPushAU(FAccessUnit* InAccessUnit) override;
 		virtual void AUdataPushEOD() override;
+		virtual void AUdataClearEOD() override;
 		virtual void AUdataFlushEverything() override;
 
 	protected:
@@ -89,6 +86,28 @@ namespace Electra {
 			MFT_OUTPUT_DATA_BUFFER	mOutputBuffer;
 		};
 
+		struct FDecoderInput
+		{
+			~FDecoderInput()
+			{
+				ReleasePayload();
+			}
+			void ReleasePayload()
+			{
+				FAccessUnit::Release(AccessUnit);
+				AccessUnit = nullptr;
+			}
+
+			FAccessUnit*	AccessUnit = nullptr;
+			bool			bHasBeenPrepared = false;
+			bool			bIsIDR = false;
+			bool			bIsDiscardable = false;
+			int64			PTS = 0;
+			int64			EndPTS = 0;
+			FTimeValue		AdjustedPTS;
+			FTimeValue		AdjustedDuration;
+		};
+
 		void InternalDecoderDestroy();
 		void DecoderCreate();
 		bool DecoderSetInputType();
@@ -105,14 +124,15 @@ namespace Electra {
 
 		void SetupBufferAcquisitionProperties();
 
-		bool AcquireOutputBuffer();
+		bool AcquireOutputBuffer(bool bForNonDisplay);
 		bool ConvertDecodedImage(const TRefCountPtr<IMFSample>& DecodedSample);
+		bool FindAndUpdateDecoderInput(TSharedPtrTS<FDecoderInput>& OutMatchingInput, int64 InPTSFromDecoder);
 
-		void PrepareAU(FAccessUnit* InAccessUnit);
+		void PrepareAU(TSharedPtrTS<FDecoderInput> InAccessUnit);
 
-		bool Decode(FAccessUnit* InAccessUnit, bool bResolutionChanged);
+		bool Decode(TSharedPtrTS<FDecoderInput> InAccessUnit, bool bResolutionChanged);
 		bool PerformFlush();
-		bool DecodeDummy(FAccessUnit* InAccessUnit);
+		bool DecodeDummy(TSharedPtrTS<FDecoderInput> InAccessUnit);
 
 		void ReturnUnusedFrame();
 
@@ -123,6 +143,9 @@ namespace Electra {
 		bool Configure();
 		bool StartStreaming();
 
+		void HandleApplicationHasEnteredForeground();
+		void HandleApplicationWillEnterBackground();
+
 		// Per platform specialization
 		virtual bool InternalDecoderCreate() = 0;
 		virtual bool CreateDecoderOutputBuffer() = 0;
@@ -132,10 +155,14 @@ namespace Electra {
 
 		FInstanceConfiguration								Config;
 
+		FMediaEvent											ApplicationRunningSignal;
+		FMediaEvent											ApplicationSuspendConfirmedSignal;
+
 		FMediaEvent											TerminateThreadSignal;
 		FMediaEvent											FlushDecoderSignal;
 		FMediaEvent											DecoderFlushedSignal;
 		bool												bThreadStarted;
+		bool												bDrainForCodecChange;
 
 		IPlayerSessionServices*								PlayerSessionServices;
 
@@ -143,10 +170,10 @@ namespace Electra {
 
 		TWeakPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe> ResourceDelegate;
 
-		FAccessUnitBuffer									AccessUnits;
+		TAccessUnitQueue<TSharedPtrTS<FDecoderInput>>		NextAccessUnits;
 		FStreamCodecInformation								NewSampleInfo;
 		FStreamCodecInformation								CurrentSampleInfo;
-		FAccessUnit*										CurrentAccessUnit;
+		TSharedPtrTS<FDecoderInput>							CurrentAccessUnit;
 
 		FMediaCriticalSection								ListenerMutex;
 		IAccessUnitBufferListener*							InputBufferListener;
@@ -160,6 +187,7 @@ namespace Electra {
 		int32												NumFramesInDecoder;
 		bool												bDecoderFlushPending;
 		bool												bError;
+		TArray<TSharedPtrTS<FDecoderInput>>					InDecoderInput;
 
 		TUniquePtr<FDecoderOutputBuffer>					CurrentDecoderOutputBuffer;
 		IMediaRenderer::IBuffer*							CurrentRenderOutputBuffer;
@@ -178,4 +206,4 @@ namespace Electra {
 #endif
 	};
 
-} // namespace
+}

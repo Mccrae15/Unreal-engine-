@@ -31,9 +31,7 @@ public class SequencerScriptingEditor : ModuleRules
 				"MovieSceneTools",
                 "MovieSceneTracks",
 				"CinematicCamera",
-				"SequencerScripting",
-				"TemplateSequence",
-				"TemplateSequenceEditor",
+				"SequencerScripting"
 			}
 		);
 
@@ -48,6 +46,7 @@ public class SequencerScriptingEditor : ModuleRules
 				"SlateCore",
                 "MovieSceneCapture",
                 "LevelSequence",
+				"EditorFramework",
                 "UnrealEd",
                 "Sequencer",
                 "BlueprintGraph"

@@ -95,7 +95,7 @@ void FPositionVertexBuffer::Init(const FPositionVertexBuffer& InVertexBuffer, bo
 	}
 }
 
-void FPositionVertexBuffer::Init(const TArray<FVector>& InPositions, bool bInNeedsCPUAccess)
+void FPositionVertexBuffer::Init(const TArray<FVector3f>& InPositions, bool bInNeedsCPUAccess)
 {
 	NumVertices = InPositions.Num();
 	bNeedsCPUAccess = bInNeedsCPUAccess;
@@ -179,6 +179,11 @@ void FPositionVertexBuffer::ClearMetaData()
 	Stride = NumVertices = 0;
 }
 
+bool FPositionVertexBuffer::GetAllowCPUAccess() const
+{
+	return VertexData ? VertexData->GetAllowCPUAccess() : false;
+}
+
 /**
 * Specialized assignment operator, only used when importing LOD's.  
 */
@@ -189,13 +194,13 @@ void FPositionVertexBuffer::operator=(const FPositionVertexBuffer &Other)
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Internal()
 {
 	if (NumVertices)
 	{
 		FResourceArrayInterface* RESTRICT ResourceArray = VertexData ? VertexData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FPositionVertexBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !VertexData;
 		if (bRenderThread)
 		{
@@ -209,12 +214,12 @@ FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Internal()
 	return nullptr;
 }
 
-FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -244,6 +249,8 @@ void FPositionVertexBuffer::CopyRHIForStreaming(const FPositionVertexBuffer& Oth
 
 void FPositionVertexBuffer::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FPositionVertexBuffer::InitRHI);
+
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();
 	// we have decide to create the SRV based on GMaxRHIShaderPlatform because this is created once and shared between feature levels for editor preview.
 	// Also check to see whether cpu access has been activated on the vertex data

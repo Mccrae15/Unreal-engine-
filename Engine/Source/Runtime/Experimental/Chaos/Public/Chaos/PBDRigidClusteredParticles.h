@@ -30,32 +30,6 @@ struct ClusterId
 	int32 NumChildren;
 };
 
-/** 
- * When multiple children are active and can share one collision proxy. Only 
- * valid if all original children are still in the cluster.
- */
-template <typename T, int d>
-struct CHAOS_API TMultiChildProxyData
-{
-	TMultiChildProxyData()
-		: KeyChild(nullptr)
-	{}
-	TRigidTransform<T, d> RelativeToKeyChild;	//Use one child's transform to determine where to place the geometry. Needed for partial fracture where all children are still present and can therefore use proxy
-	TPBDRigidParticleHandle<T, d>* KeyChild;
-};
-
-/** 
- * Used with \c TMultiChildProxyData. \c nullptr indicates no proxy data available.
- *
- * TODO: Chaos - Add dimension template param?  Add floating point param?
- */
-struct FMultiChildProxyId
-{
-	FMultiChildProxyId()
-		: Id(nullptr) 
-	{}
-	FPBDRigidParticleHandle* Id;
-};
 
 /**
  * An entry in a clustered particle's \c ConnectivityEdges array, indicating a
@@ -89,6 +63,8 @@ struct TConnectivityEdge
 	TPBDRigidParticleHandle<T, 3>* Sibling;
 	T Strain;
 };
+typedef TConnectivityEdge<FReal> FConnectivityEdge;
+typedef TArray<FConnectivityEdge> FConnectivityEdgeArray;
 
 template<class T, int d>
 class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
@@ -106,8 +82,7 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	, MChildToParent(MoveTemp(Other.MChildToParent))
 	, MClusterGroupIndex(MoveTemp(Other.MClusterGroupIndex))
 	, MInternalCluster(MoveTemp(Other.MInternalCluster))
-	, MMultiChildProxyId(MoveTemp(Other.MMultiChildProxyId))
-	, MMultiChildProxyData(MoveTemp(Other.MMultiChildProxyData))
+	, MPhysicsProxies(MoveTemp(Other.MPhysicsProxies))
 	, MCollisionImpulses(MoveTemp(Other.MCollisionImpulses))
 	, MStrains(MoveTemp(Other.MStrains))
 	, MConnectivityEdges(MoveTemp(Other.MConnectivityEdges))
@@ -132,11 +107,8 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	const auto& ChildrenSpatial(int32 Idx) const { return MChildrenSpatial[Idx]; }
 	auto& ChildrenSpatial(int32 Idx) { return MChildrenSpatial[Idx]; }
 
-	const auto& MultiChildProxyId(int32 Idx) const { return MMultiChildProxyId[Idx]; }
-	auto& MultiChildProxyId(int32 Idx) { return MMultiChildProxyId[Idx]; }
-
-	const auto& MultiChildProxyData(int32 Idx) const { return MMultiChildProxyData[Idx]; }
-	auto& MultiChildProxyData(int32 Idx) { return MMultiChildProxyData[Idx]; }
+	const auto& PhysicsProxies(int32 Idx) const { return MPhysicsProxies[Idx]; }
+	auto& PhysicsProxies(int32 Idx) { return MPhysicsProxies[Idx]; }
 
 	const auto& CollisionImpulses(int32 Idx) const { return MCollisionImpulses[Idx]; }
 	auto& CollisionImpulses(int32 Idx) { return MCollisionImpulses[Idx]; }
@@ -148,10 +120,7 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	const auto& ConnectivityEdges(int32 Idx) const { return MConnectivityEdges[Idx]; }
 	auto& ConnectivityEdges(int32 Idx) { return MConnectivityEdges[Idx]; }
 
-	//TODO_CHAOSPARTICLE_HANDLE: is this really needed?
 	const auto& ConnectivityEdgesArray() const { return MConnectivityEdges; }
-	const auto& MultiChildProxyDataArray() const { return MMultiChildProxyData; }
-	const auto& MultiChildProxyIdArray() const { return MMultiChildProxyId; }
 
 	const auto& ClusterIdsArray() const { return MClusterIds; }
 	auto& ClusterIdsArray() { return MClusterIds; }
@@ -185,8 +154,7 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 		  TArrayCollection::AddArray(&MClusterGroupIndex);
 		  TArrayCollection::AddArray(&MInternalCluster);
 		  TArrayCollection::AddArray(&MChildrenSpatial);
-		  TArrayCollection::AddArray(&MMultiChildProxyId);
-		  TArrayCollection::AddArray(&MMultiChildProxyData);
+		  TArrayCollection::AddArray(&MPhysicsProxies);
 		  TArrayCollection::AddArray(&MCollisionImpulses);
 		  TArrayCollection::AddArray(&MStrains);
 		  TArrayCollection::AddArray(&MConnectivityEdges);
@@ -197,8 +165,9 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	  TArrayCollectionArray<int32> MClusterGroupIndex;
 	  TArrayCollectionArray<bool> MInternalCluster;
 	  TArrayCollectionArray<TUniquePtr<FImplicitObjectUnionClustered>> MChildrenSpatial;
-	  TArrayCollectionArray<FMultiChildProxyId> MMultiChildProxyId;
-	  TArrayCollectionArray<TUniquePtr<TMultiChildProxyData<T, d>>> MMultiChildProxyData;
+
+	  // Multiple proxy pointers required for internal clusters
+	  TArrayCollectionArray<TSet<IPhysicsProxyBase*>> MPhysicsProxies;
 
 	  // Collision Impulses
 	  TArrayCollectionArray<T> MCollisionImpulses;

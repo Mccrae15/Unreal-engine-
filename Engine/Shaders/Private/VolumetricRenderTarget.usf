@@ -208,8 +208,8 @@ void ReconstructVolumetricRenderTargetPS(
 
 
 				const float ReconstructDepthZ = HalfResDepthTexture.Load(int3(SVPos.xy + ViewViewRectMin, 0)).r;
-				const float3 WorldPosition = SvPositionToWorld(float4(CenterSample, ReconstructDepthZ, 1.0));
-				const float PixelDistanceFromViewKm = length(WorldPosition - View.WorldCameraOrigin) * (1.0f / 100000.0f); // centimeter to kilometer
+				const float3 WorldPosition = LWCHackToFloat(SvPositionToWorld(float4(CenterSample, ReconstructDepthZ, 1.0)));
+				const float PixelDistanceFromViewKm = length(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) * (1.0f / 100000.0f); // centimeter to kilometer
 
 				RGBA = HistoryRGBA;
 				Depths = HistoryDepths;
@@ -236,12 +236,12 @@ void ReconstructVolumetricRenderTargetPS(
 					//	RGBA = NewRGBA;
 					//	Depths = NewDepths;
 					//}
-					//RGBA += float4(0, 0.1 0, 0);
+					//RGBA += float4(0, 0.5, 0, 0);
 				}
-				else //if(ReconstructDepthZ < 0.000001f)
+				else // Because of the test on bUseNewSample above, we know here that we are only dealing with reprojected data  //if(ReconstructDepthZ < 0.000001f)
 				{
 					// TODO: To use this, we need to make sure we prioritise pixe lwith under represented depth.
-#if 0
+#if PERMUTATION_REPROJECTION_BOX_CONSTRAINT
 					// Make sure that history stay in the neightborhood color/transmittance/depth box after reprojection
 					float4 ColorAABBMin = 999999999.0f;
 					float4 ColorAABBMax = 0.0f;
@@ -268,6 +268,7 @@ void ReconstructVolumetricRenderTargetPS(
 						RGBA = clamp(RGBA, ColorAABBMin, ColorAABBMax);
 						Depths = clamp(Depths, DepthsAABBMin, DepthsAABBMax);
 					}
+					//RGBA += float4(0, 0.8, 0.8, 0);
 #endif
 				}
 
@@ -319,6 +320,10 @@ float4 SceneWithoutSingleLayerWaterViewRect;
 float2 FullResolutionToWaterBufferScale;
 #endif
 
+#if MSAA_SAMPLE_COUNT > 1
+Texture2DMS<float, MSAA_SAMPLE_COUNT> MSAADepthTexture;
+#endif
+
 float4 SafeLoadVolumetricTexture(uint2 Coord)
 {
 	return VolumetricTexture.Load(uint3(clamp(Coord, VolumetricTextureValidCoordRect.xy, VolumetricTextureValidCoordRect.zw), 0));
@@ -338,11 +343,16 @@ float2 SafeSampleVolumetricDepthTexture(float2 UV)
 
 float4 VolumetricTextureSizeAndInvSize;
 float UvOffsetScale;
+float UvOffsetSampleAcceptanceWeight;
 float2 FullResolutionToVolumetricBufferResolutionScale;
 
 void ComposeVolumetricRTOverScenePS(
 	in float4 SVPos : SV_POSITION,
-	out float4 OutputRt0 : SV_Target0)
+	out float4 OutputRt0 : SV_Target0
+#if MSAA_SAMPLE_COUNT > 1
+	, in uint SampleIndex : SV_SampleIndex
+#endif
+)
 {
 	float2 CurResPixelCoord = SVPos.xy;
 	float2 ScreenUV = CurResPixelCoord * View.BufferSizeAndInvSize.zw;
@@ -402,20 +412,26 @@ void ComposeVolumetricRTOverScenePS(
 
 	float PixelLinearDepth = WaterLinearDepthTexture.SampleLevel(LinearTextureSampler, WaterDepthScreenUV, 0).r * UseWaterLinearDepthTexture;
 
-	float3 WorldPosition = float4(SvPositionToWorld(float4(SVPos.xy, 0.5, 1.0)), 1.0).xyz;
-	WorldPosition = normalize(WorldPosition - View.WorldCameraOrigin) * PixelLinearDepth + View.WorldCameraOrigin;
+	float3 WorldPosition = LWCHackToFloat(SvPositionToWorld(float4(SVPos.xy, 0.5, 1.0)));
+	WorldPosition = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) * PixelLinearDepth + LWCHackToFloat(PrimaryView.WorldCameraOrigin);
 
-	float4 ClipPosition = mul(float4(WorldPosition,1.0), View.WorldToClip);
+	float4 ClipPosition = mul(float4(WorldPosition,1.0), LWCHackToFloat(PrimaryView.WorldToClip));
 	ClipPosition /= ClipPosition.w;
 	float PixelDeviceZ = ClipPosition.z;
 
-	float3 ScreenWorldPosition = float4(SvPositionToWorld(float4(SVPos.xy, ClipPosition.z, 1.0)), 1.0).xyz;
+	float3 ScreenTranslatedWorldPosition = SvPositionToTranslatedWorld(float4(SVPos.xy, ClipPosition.z, 1.0));
+
+#else
+
+#if  MSAA_SAMPLE_COUNT > 1
+	float PixelDeviceZ = MSAADepthTexture.Load(int2(SVPos.xy), SampleIndex).x;
 #else
 	float PixelDeviceZ = SceneTexturesStruct.SceneDepthTexture.Load(uint3(SVPos.xy, 0)).r;
-	float3 ScreenWorldPosition = float4(SvPositionToWorld(float4(SVPos.xy, PixelDeviceZ, 1.0)), 1.0).xyz;
+#endif
+	float3 ScreenTranslatedWorldPosition = SvPositionToTranslatedWorld(float4(SVPos.xy, PixelDeviceZ, 1.0));
 #endif 
 
-	float PixelDistanceFromView   = length(View.WorldCameraOrigin - ScreenWorldPosition);
+	float PixelDistanceFromView   = length(PrimaryView.TranslatedWorldCameraOrigin - ScreenTranslatedWorldPosition);
 	float PixelDistanceFromViewKm = PixelDistanceFromView * (1.0f / 100000.0f); // centimeter to kilometer
 
 
@@ -621,7 +637,7 @@ void ComposeVolumetricRTOverScenePS(
 		float4 VolumeRGBT2 = SafeLoadVolumetricTexture(VolumeCoord2);
 		float4 VolumeRGBT3 = SafeLoadVolumetricTexture(VolumeCoord3);
 
-		if (bIsWaterPixel)
+		if (bIsWaterPixel) 
 		{
 			// Only do the following is the pixel is water
 			const float ConsideredFarWaterDistanceKm = 1.0f;				// We only apply the fix for pixel that are further than 1km
@@ -660,7 +676,7 @@ void ComposeVolumetricRTOverScenePS(
 			}
 		}
 
-		if(!bIsWaterPixel || bIsWaterPixel && ValidSampleCount == 0 && bAnyCloudSamplesInFrontOfWater)
+		if(!bIsWaterPixel || (bIsWaterPixel && ValidSampleCount == 0 && bAnyCloudSamplesInFrontOfWater))
 		{
 			// Depth discontinuities edges
 			float4 weights = 1.0f / (depth4Diff * weightMultiplier + 1.0f);
@@ -700,24 +716,24 @@ void ComposeVolumetricRTOverScenePS(
 		}
 
 		// Now continue to accumulate in DataAcc
-		const float Extinction = 5.0;
+		const float Extinction = UvOffsetSampleAcceptanceWeight;
 		{
-			const float weight = exp(-Extinction * abs(VolumeRGBT0.a - OutputRt0.a));
+			const float weight = exp2(-Extinction * abs(VolumeRGBT0.a - OutputRt0.a));
 			ValidSampleCount += weight;
 			DataAcc += VolumeRGBT0 * weight;
 		}
 		{
-			const float weight = exp(-Extinction * abs(VolumeRGBT1.a - OutputRt0.a));
+			const float weight = exp2(-Extinction * abs(VolumeRGBT1.a - OutputRt0.a));
 			ValidSampleCount += weight;
 			DataAcc += VolumeRGBT1 * weight;
 		}
 		{
-			const float weight = exp(-Extinction * abs(VolumeRGBT2.a - OutputRt0.a));
+			const float weight = exp2(-Extinction * abs(VolumeRGBT2.a - OutputRt0.a));
 			ValidSampleCount += weight;
 			DataAcc += VolumeRGBT2 * weight;
 		}
 		{
-			const float weight = exp(-Extinction * abs(VolumeRGBT3.a - OutputRt0.a));
+			const float weight = exp2(-Extinction * abs(VolumeRGBT3.a - OutputRt0.a));
 			ValidSampleCount += weight;
 			DataAcc += VolumeRGBT3 * weight;
 		}

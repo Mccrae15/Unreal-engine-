@@ -18,10 +18,12 @@
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Logging/TokenizedMessage.h"
 #include "Animation/AnimTrace.h"
-
+#include "Animation/AnimSync.h"
+#include "Animation/AnimSyncScope.h"
+#include "Animation/ActiveStateMachineScope.h"
 #include "AnimInstanceProxy.generated.h"
 
-class UBlendSpaceBase;
+class UBlendSpace;
 struct FAnimNode_AssetPlayerBase;
 struct FAnimNode_Base;
 struct FAnimNode_SaveCachedPose;
@@ -51,6 +53,7 @@ namespace EDrawDebugItemType
 		Line,
 		OnScreenMessage,
 		CoordinateSystem,
+		Point,
 	};
 }
 
@@ -100,6 +103,9 @@ struct FQueuedDrawDebugItem
 
 	UPROPERTY(Transient)
 	FVector2D TextScale = FVector2D(0.f);
+
+	UPROPERTY(Transient)
+	TEnumAsByte<ESceneDepthPriorityGroup> DepthPriority = SDPG_World;
 };
 
 /** Proxy object passed around during animation tree update in lieu of a UAnimInstance */
@@ -121,11 +127,12 @@ public:
 		, CurrentTimeDilation(1.0f)
 		, RootNode(nullptr)
 		, DefaultLinkedInstanceInputNode(nullptr)
-		, SyncGroupWriteIndex(0)
+		, BufferWriteIndex(0)
 		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
 		, FrameCounterForUpdate(0)
 		, FrameCounterForNodeUpdate(0)
 		, CacheBonesRecursionCounter(0)
+		, MainMontageEvaluationData(&MontageEvaluationData)
 		, bUpdatingRoot(false)
 		, bBoneCachesInvalidated(false)
 		, bShouldExtractRootMotion(false)
@@ -133,6 +140,7 @@ public:
 #if WITH_EDITORONLY_DATA
 		, bIsBeingDebugged(false)
 #endif
+		, bInitializeSubsystems(false)
 	{
 	}
 
@@ -146,11 +154,12 @@ public:
 		, CurrentTimeDilation(1.0f)
 		, RootNode(nullptr)
 		, DefaultLinkedInstanceInputNode(nullptr)
-		, SyncGroupWriteIndex(0)
+		, BufferWriteIndex(0)
 		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
 		, FrameCounterForUpdate(0)
 		, FrameCounterForNodeUpdate(0)
 		, CacheBonesRecursionCounter(0)
+		, MainMontageEvaluationData(&MontageEvaluationData)
 		, bUpdatingRoot(false)
 		, bBoneCachesInvalidated(false)
 		, bShouldExtractRootMotion(false)
@@ -158,6 +167,7 @@ public:
 #if WITH_EDITORONLY_DATA
 		, bIsBeingDebugged(false)
 #endif
+		, bInitializeSubsystems(false)
 	{
 	}
 
@@ -168,14 +178,6 @@ public:
 	IAnimClassInterface* GetAnimClassInterface() const
 	{
 		return AnimClassInterface;
-	}
-
-	// Get the Blueprint Generated Class associated with this context, if there is one.
-	// Note: This can return NULL, so check the result.
-	UE_DEPRECATED(4.11, "GetAnimBlueprintClass() is deprecated, UAnimBlueprintGeneratedClass should not be directly used at runtime. Please use GetAnimClassInterface() instead.")
-	UAnimBlueprintGeneratedClass* GetAnimBlueprintClass() const
-	{
-		return Cast<UAnimBlueprintGeneratedClass>(IAnimClassInterface::GetActualAnimClass(AnimClassInterface));
 	}
 
 	/** Get the last DeltaSeconds passed into PreUpdate() */
@@ -200,7 +202,16 @@ public:
 	/** Record a visited node in the debugger */
 	void RecordNodeVisit(int32 TargetNodeIndex, int32 SourceNodeIndex, float BlendWeight)
 	{
-		new (UpdatedNodesThisFrame) FAnimBlueprintDebugData::FNodeVisit(SourceNodeIndex, TargetNodeIndex, BlendWeight);
+		UpdatedNodesThisFrame.Emplace(SourceNodeIndex, TargetNodeIndex, BlendWeight);
+	}
+
+	/** Record a node attribute in the debugger */
+	void RecordNodeAttribute(const FAnimInstanceProxy& InSourceProxy, int32 InTargetNodeIndex, int32 InSourceNodeIndex, FName InAttribute);
+
+	/** Record a node sync in the debugger */
+	void RecordNodeSync(int32 InSourceNodeIndex, FName InSyncGroup)
+	{
+		NodeSyncsThisFrame.FindOrAdd(InSourceNodeIndex, InSyncGroup);
 	}
 
 	UAnimBlueprint* GetAnimBlueprint() const
@@ -214,13 +225,19 @@ public:
 	void RegisterWatchedPose(const FCSPose<FCompactPose>& Pose, int32 LinkID);
 #endif
 
-	// flip sync group read/write indices
+	UE_DEPRECATED(5.0, "Function renamed to FlipBufferWriteIndex as this no longer deals with sync groups.")
 	void TickSyncGroupWriteIndex()
 	{ 
-		SyncGroupWriteIndex = GetSyncGroupReadIndex();
+		FlipBufferWriteIndex();
 	}
 
-	UE_DEPRECATED(5.0, "Sync groups are no longer stored in arrays, please use GetSyncGroupMapRead")
+	// flip buffer read/write indices
+	void FlipBufferWriteIndex()
+	{ 
+		BufferWriteIndex = GetBufferReadIndex();
+	}
+
+	UE_DEPRECATED(5.0, "Sync groups are no longer stored in arrays, please use GetSyncGroupMapRead.")
 	const TArray<FAnimGroupInstance>& GetSyncGroupRead() const
 	{
 		static const TArray<FAnimGroupInstance> Dummy;
@@ -230,19 +247,19 @@ public:
 	/** Get the sync group we are currently reading from */
 	const FSyncGroupMap& GetSyncGroupMapRead() const
 	{ 
-		return SyncGroupMaps[GetSyncGroupReadIndex()]; 
+		return Sync.GetSyncGroupMapRead(); 
 	}
 
 	/** Get the ungrouped active player we are currently reading from */
 	const TArray<FAnimTickRecord>& GetUngroupedActivePlayersRead() 
 	{ 
-		return UngroupedActivePlayerArrays[GetSyncGroupReadIndex()]; 
+		return Sync.GetUngroupedActivePlayersRead(); 
 	}
 
-	/** Tick active asset players. */
+	UE_DEPRECATED(5.0, "Do not call directly. Instead sync and asset player ticking is controlled via UE::Anim::FSync and UE::Anim::FSyncScope.")
 	void TickAssetPlayerInstances(float DeltaSeconds);
 
-	/** Tick active asset players. This overload with no parameters uses CurrentDeltaSeconds */
+	UE_DEPRECATED(5.0, "Do not call directly. Instead sync and asset player ticking is controlled via UE::Anim::FSync and UE::Anim::FSyncScope.")
 	void TickAssetPlayerInstances();
 
 	/** Queues an Anim Notify from the shared list on our generated class */
@@ -251,10 +268,10 @@ public:
 	/** Trigger any anim notifies */
 	void TriggerAnimNotifies(USkeletalMeshComponent* SkelMeshComp, float DeltaSeconds);
 
-	/** Check whether the supplied skeleton is compatible with this instance's skeleton */
-	bool IsSkeletonCompatible(USkeleton const* InSkeleton) const 
-	{ 
-		return InSkeleton->IsCompatible(Skeleton); 
+	/** Check whether animation content authored on the supplied skeleton may be played on this instance's skeleton */
+	bool IsSkeletonCompatible(USkeleton const* InSkeleton) const
+	{
+		return Skeleton && Skeleton->IsCompatible(InSkeleton);
 	}
 
 	/** Check whether we should extract root motion */
@@ -265,6 +282,12 @@ public:
 	
 	/** Save a pose snapshot to the internal snapshot cache */
 	void SavePoseSnapshot(USkeletalMeshComponent* InSkeletalMeshComponent, FName SnapshotName);
+
+	/** Add an empty pose snapshot to the internal snapshot cache (or recycle an existing pose snapshot if the name is already in use) */
+	FPoseSnapshot& AddPoseSnapshot(FName SnapshotName);
+
+	/** Remove a previously saved pose snapshot from the internal snapshot cache */
+	void RemovePoseSnapshot(FName SnapshotName);
 
 	/** Get a cached pose snapshot by name */
 	const FPoseSnapshot* GetPoseSnapshot(FName SnapshotName) const;
@@ -286,21 +309,41 @@ public:
 	const UObject* GetAnimInstanceObject() const { return AnimInstanceObject; }
 
 	/** Gets an unchecked (can return nullptr) node given an index into the node property array */
-	FAnimNode_Base* GetNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType);
+	FAnimNode_Base* GetMutableNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType);
+
+	/** Gets an unchecked (can return nullptr) node given an index into the node property array */
+	const FAnimNode_Base* GetNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType) const;
 
 	/** Gets a checked node given an index into the node property array */
-	FAnimNode_Base* GetCheckedNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType);
+	FAnimNode_Base* GetCheckedMutableNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType);
+
+	/** Gets a checked node given an index into the node property array */
+	const FAnimNode_Base* GetCheckedNodeFromIndexUntyped(int32 NodeIdx, UScriptStruct* RequiredStructType) const;
 
 	/** Gets a checked node given an index into the node property array */
 	template<class NodeType>
-	NodeType* GetCheckedNodeFromIndex(int32 NodeIdx)
+	const NodeType* GetCheckedNodeFromIndex(int32 NodeIdx) const
 	{
 		return (NodeType*)GetCheckedNodeFromIndexUntyped(NodeIdx, NodeType::StaticStruct());
 	}
 
+	/** Gets a checked node given an index into the node property array */
+	template<class NodeType>
+	NodeType* GetCheckedMutableNodeFromIndex(int32 NodeIdx) const
+	{
+		return (NodeType*)GetCheckedMutableNodeFromIndexUntyped(NodeIdx, NodeType::StaticStruct());
+	}
+
 	/** Gets an unchecked (can return nullptr) node given an index into the node property array */
 	template<class NodeType>
-	NodeType* GetNodeFromIndex(int32 NodeIdx)
+	const NodeType* GetNodeFromIndex(int32 NodeIdx) const
+	{
+		return (NodeType*)GetNodeFromIndexUntyped(NodeIdx, NodeType::StaticStruct());
+	}
+
+	/** Gets an unchecked (can return nullptr) node given an index into the node property array */
+	template<class NodeType>
+	NodeType* GetMutableNodeFromIndex(int32 NodeIdx) const
 	{
 		return (NodeType*)GetNodeFromIndexUntyped(NodeIdx, NodeType::StaticStruct());
 	}
@@ -323,16 +366,16 @@ public:
 		return LODLevel;
 	}
 
-	// Cached SkeletalMeshComponent LocalToWorld Transform.
+	UE_DEPRECATED(5.0, "Please use GetComponentTransform")
 	const FTransform& GetSkelMeshCompLocalToWorld() const
 	{
-		return SkelMeshCompLocalToWorld;
+		return ComponentTransform;
 	}
 
-	// Cached SkeletalMeshComponent Owner Transform.
+	UE_DEPRECATED(5.0, "Please use GetActorTransform")
 	const FTransform& GetSkelMeshCompOwnerTransform() const
 	{
-		return SkelMeshCompOwnerTransform;
+		return ActorTransform;
 	}
 
 	/** Get the current skeleton we are using. Note that this will return nullptr outside of pre/post update */
@@ -347,10 +390,17 @@ public:
 	/** Get the current skeletal mesh component we are running on. Note that this will return nullptr outside of pre/post update */
 	USkeletalMeshComponent* GetSkelMeshComponent() const
 	{ 
-		// Skeleton is only available during update/eval. If you're calling this function outside of it, it will return null. 
+		// Skeletal mesh component is only available during update/eval. If you're calling this function outside of it, it will return null. 
 		// adding ensure here so that we can catch them earlier
 		ensureAlways(SkeletalMeshComponent);
 		return SkeletalMeshComponent; 
+	}
+
+	/** Get the current main instance proxy. Note that this will return nullptr outside of pre/post update, and may return nullptr anyway if we dont have a main instance */
+	FAnimInstanceProxy* GetMainInstanceProxy() const
+	{ 
+		// Main instance proxy is only available during update/eval. If you're calling this function outside of it, it will return null. 
+		return MainInstanceProxy;
 	}
 
 	UE_DEPRECATED(4.26, "Please use the overload that takes a group FName")
@@ -359,22 +409,27 @@ public:
 	UE_DEPRECATED(4.26, "Please use the overload that takes a group FName")
 	FAnimTickRecord& CreateUninitializedTickRecordInScope(int32 GroupIndex, EAnimSyncGroupScope Scope, FAnimGroupInstance*& OutSyncGroupPtr);
 
-	// Creates an uninitialized tick record in the list for the correct group or the ungrouped array.  If the group is valid, OutSyncGroupPtr will point to the group.
+	UE_DEPRECATED(5.0, "Please use FAnimSyncGroupScope")
 	FAnimTickRecord& CreateUninitializedTickRecord(FAnimGroupInstance*& OutSyncGroupPtr, FName GroupName);
 
-	// Creates an uninitialized tick record in the list for the correct group or the ungrouped array.  
-	// If the group is valid, OutSyncGroupPtr will point to the group.
-	// Supply the scope to sync with tick records outside this instance
+	UE_DEPRECATED(5.0, "Please use FAnimSyncGroupScope")
 	FAnimTickRecord& CreateUninitializedTickRecordInScope(FAnimGroupInstance*& OutSyncGroupPtr, FName GroupName, EAnimSyncGroupScope Scope);
 
-	/** Helper function: make a tick record for a sequence */
+	UE_DEPRECATED(5.0, "Please use the FAnimTickRecord constructor that takes a UAnimSequenceBase")
 	void MakeSequenceTickRecord(FAnimTickRecord& TickRecord, UAnimSequenceBase* Sequence, bool bLooping, float PlayRate, float FinalBlendWeight, float& CurrentTime, FMarkerTickRecord& MarkerTickRecord) const;
 
-	/** Helper function: make a tick record for a blend space */
-	void MakeBlendSpaceTickRecord(FAnimTickRecord& TickRecord, UBlendSpaceBase* BlendSpace, const FVector& BlendInput, TArray<FBlendSampleData>& BlendSampleDataCache, FBlendFilter& BlendFilter, bool bLooping, float PlayRate, float FinalBlendWeight, float& CurrentTime, FMarkerTickRecord& MarkerTickRecord) const;
+	UE_DEPRECATED(5.0, "Please use the FAnimTickRecord constructor that takes a UBlendSpace")
+	void MakeBlendSpaceTickRecord(FAnimTickRecord& TickRecord, UBlendSpace* BlendSpace, const FVector& BlendInput, TArray<FBlendSampleData>& BlendSampleDataCache, FBlendFilter& BlendFilter, bool bLooping, float PlayRate, float FinalBlendWeight, float& CurrentTime, FMarkerTickRecord& MarkerTickRecord) const;
 
-	/** Helper function: make a tick record for a pose asset*/
+	UE_DEPRECATED(5.0, "Please use the FAnimTickRecord constructor that takes a UPoseAsset")
 	void MakePoseAssetTickRecord(FAnimTickRecord& TickRecord, class UPoseAsset* PoseAsset, float FinalBlendWeight) const;
+
+	// Adds a tick record in the list for the correct group or the ungrouped array.
+	void AddTickRecord(const FAnimTickRecord& InTickRecord, const UE::Anim::FAnimSyncParams& InSyncParams = UE::Anim::FAnimSyncParams())
+	{
+		Sync.AddTickRecord(InTickRecord, InSyncParams);
+	}
+
 	/**
 	 * Get Slot Node Weight : this returns new Slot Node Weight, Source Weight, Original TotalNodeWeight
 	 *							this 3 values can't be derived from each other
@@ -394,6 +449,8 @@ public:
 	
 	// Allow slot nodes to store off their weight during ticking
 	void UpdateSlotNodeWeight(const FName& SlotNodeName, float InLocalMontageWeight, float InNodeGlobalWeight);
+
+	bool GetSlotInertializationRequest(const FName& SlotName, float& OutDuration);
 
 	/** Register a named slot */
 	void RegisterSlotNodeWithAnimInstance(const FName& SlotNodeName);
@@ -419,19 +476,21 @@ public:
 #if ENABLE_ANIM_DRAW_DEBUG
 	TArray<FQueuedDrawDebugItem> QueuedDrawDebugItems;
 
-	void AnimDrawDebugOnScreenMessage(const FString& DebugMessage, const FColor& Color, const FVector2D& TextScale = FVector2D::UnitVector);
-	void AnimDrawDebugLine(const FVector& StartLoc, const FVector& EndLoc, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f);
-	void AnimDrawDebugDirectionalArrow(const FVector& LineStart, const FVector& LineEnd, float ArrowSize, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f);
-	void AnimDrawDebugSphere(const FVector& Center, float Radius, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f);
-	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f);
-	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f);
+	void AnimDrawDebugOnScreenMessage(const FString& DebugMessage, const FColor& Color, const FVector2D& TextScale = FVector2D::UnitVector, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugLine(const FVector& StartLoc, const FVector& EndLoc, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugDirectionalArrow(const FVector& LineStart, const FVector& LineEnd, float ArrowSize, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugSphere(const FVector& Center, float Radius, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugPoint(const FVector& Loc, float Size, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
 #else
-	void AnimDrawDebugOnScreenMessage(const FString& DebugMessage, const FColor& Color, const FVector2D& TextScale = FVector2D::UnitVector) {}
-	void AnimDrawDebugLine(const FVector& StartLoc, const FVector& EndLoc, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f) {}
-	void AnimDrawDebugDirectionalArrow(const FVector& LineStart, const FVector& LineEnd, float ArrowSize, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f) {}
-	void AnimDrawDebugSphere(const FVector& Center, float Radius, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f) {}
-	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f) {}
-	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f) {}
+	void AnimDrawDebugOnScreenMessage(const FString& DebugMessage, const FColor& Color, const FVector2D& TextScale = FVector2D::UnitVector, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugLine(const FVector& StartLoc, const FVector& EndLoc, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugDirectionalArrow(const FVector& LineStart, const FVector& LineEnd, float ArrowSize, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugSphere(const FVector& Center, float Radius, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugPoint(const FVector& Loc, float Size, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
 #endif // ENABLE_ANIM_DRAW_DEBUG
 
 #if ENABLE_ANIM_LOGGING
@@ -446,17 +505,26 @@ public:
 		return AnimInstanceName;
 	}
 
+	// Get the root motion mode assigned to this anim instance proxy
+	ERootMotionMode::Type GetRootMotionMode() const
+	{
+		return RootMotionMode;
+	}
+
 	/** Gets the runtime instance of the specified state machine by Name */
-	FAnimNode_StateMachine* GetStateMachineInstanceFromName(FName MachineName);
+	const FAnimNode_StateMachine* GetStateMachineInstanceFromName(FName MachineName) const;
+
+	/** Gets the runtime instance of the specified state machine */
+	const FAnimNode_StateMachine* GetStateMachineInstance(int32 MachineIndex) const;
 
 	/** Get the machine description for the specified instance. Does not rely on PRIVATE_MachineDescription being initialized */
-	static const FBakedAnimationStateMachine* GetMachineDescription(IAnimClassInterface* AnimBlueprintClass, FAnimNode_StateMachine* MachineInstance);
+	static const FBakedAnimationStateMachine* GetMachineDescription(IAnimClassInterface* AnimBlueprintClass, const FAnimNode_StateMachine* MachineInstance);
 
 	/** 
 	 * Get the index of the specified instance asset player. Useful to pass to GetInstanceAssetPlayerLength (etc.).
 	 * Passing NAME_None to InstanceName will return the first (assumed only) player instance index found.
 	 */
-	int32 GetInstanceAssetPlayerIndex(FName MachineName, FName StateName, FName InstanceName = NAME_None);
+	int32 GetInstanceAssetPlayerIndex(FName MachineName, FName StateName, FName InstanceName = NAME_None) const;
 
 	float GetRecordedMachineWeight(const int32 InMachineClassIndex) const;
 	void RecordMachineWeight(const int32 InMachineClassIndex, const float InMachineWeight);
@@ -469,7 +537,13 @@ public:
 	void ResetDynamics(ETeleportType InTeleportType);
 
 	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
-	TArray<FAnimNode_AssetPlayerBase*> GetInstanceAssetPlayers(const FName& GraphName);
+	TArray<const FAnimNode_AssetPlayerBase*> GetInstanceAssetPlayers(const FName& GraphName) const;
+
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
+	TArray<FAnimNode_AssetPlayerBase*> GetMutableInstanceAssetPlayers(const FName& GraphName);
+
+	/** Returns true if SyncGroupName is valid (exists, and if is based on markers, has valid markers) */
+	bool IsSyncGroupValid(FName InSyncGroupName) const;
 
 	UE_DEPRECATED(4.20, "Please use ResetDynamics with a ETeleportType argument")
 	void ResetDynamics();
@@ -498,7 +572,10 @@ public:
 	friend struct FAnimNode_LinkedAnimGraph;
 	friend struct FAnimationBaseContext;
 	friend struct FAnimTrace;
-
+	friend struct UE::Anim::FAnimSync;
+	friend class UE::Anim::FAnimSyncGroupScope;
+	friend class UE::Anim::FActiveStateMachineScope;
+	
 protected:
 	/** Called when our anim instance is being initialized */
 	virtual void Initialize(UAnimInstance* InAnimInstance);
@@ -506,6 +583,9 @@ protected:
 	/** Called when our anim instance is being uninitialized */
 	virtual void Uninitialize(UAnimInstance* InAnimInstance);
 
+	/** Let us copy the full notify queue from the last frame */
+	void UpdateActiveAnimNotifiesSinceLastTick(const FAnimNotifyQueue& AnimInstanceQueue);
+	
 	/** Called before update so we can copy any data we need */
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds);
 
@@ -622,18 +702,30 @@ protected:
 	void SequenceAdvanceImmediate(UAnimSequenceBase* Sequence, bool bLooping, float PlayRate, float DeltaSeconds, /*inout*/ float& CurrentTime, FMarkerTickRecord& MarkerTickRecord);
 
 	// @todo document
-	void BlendSpaceAdvanceImmediate(UBlendSpaceBase* BlendSpace, const FVector& BlendInput, TArray<FBlendSampleData> & BlendSampleDataCache, FBlendFilter & BlendFilter, bool bLooping, float PlayRate, float DeltaSeconds, /*inout*/ float& CurrentTime, FMarkerTickRecord& MarkerTickRecord);
+	void BlendSpaceAdvanceImmediate(UBlendSpace* BlendSpace, const FVector& BlendInput, TArray<FBlendSampleData> & BlendSampleDataCache, FBlendFilter & BlendFilter, bool bLooping, float PlayRate, float DeltaSeconds, /*inout*/ float& CurrentTime, FMarkerTickRecord& MarkerTickRecord);
 
-	// Gets the sync group we should be reading from
+	UE_DEPRECATED(5.0, "Function renamed to GetBufferReadIndex as this no longer deals with sync groups.")
 	int32 GetSyncGroupReadIndex() const 
 	{ 
-		return 1 - SyncGroupWriteIndex; 
+		return GetBufferReadIndex(); 
+	}
+
+	UE_DEPRECATED(5.0, "Function renamed to GetBufferWriteIndex as this no longer deals with sync groups.")
+	int32 GetSyncGroupWriteIndex() const 
+	{ 
+		return GetBufferWriteIndex(); 
+	}
+
+	// Gets the buffer we should be reading from
+	int32 GetBufferReadIndex() const 
+	{ 
+		return 1 - BufferWriteIndex; 
 	}
 
 	// Gets the sync group we should be writing to
-	int32 GetSyncGroupWriteIndex() const 
+	int32 GetBufferWriteIndex() const 
 	{ 
-		return SyncGroupWriteIndex; 
+		return BufferWriteIndex; 
 	}
 
 	/** Add anim notifier **/
@@ -650,6 +742,12 @@ protected:
 
 	FMarkerSyncAnimPosition GetSyncGroupPosition(FName InSyncGroupName) const;
 
+	// Set the mirror data table to sync animations
+	void SetSyncMirror(const UMirrorDataTable* MirrorDataTable)
+	{
+		Sync.SetMirror(MirrorDataTable);
+	}
+	
 	// slot node run-time functions
 	void ReinitializeSlotNodes();
 
@@ -692,18 +790,17 @@ protected:
 		Note that there might be multiple Active at the same time. This will only return the first active one it finds. **/
 	const FMontageEvaluationState* GetActiveMontageEvaluationState() const;
 
-	/** Access montage array data */
-	TArray<FMontageEvaluationState>& GetMontageEvaluationData() { return MontageEvaluationData; }
+	TMap<FName, float>& GetSlotGroupInertializationRequestMap() { return SlotGroupInertializationRequestMap; }
 
 	/** Access montage array data */
-	const TArray<FMontageEvaluationState>& GetMontageEvaluationData() const { return MontageEvaluationData; }
+	TArray<FMontageEvaluationState>& GetMontageEvaluationData();
+
+	/** Access montage array data */
+	const TArray<FMontageEvaluationState>& GetMontageEvaluationData() const;
 
 	/** Check whether we have active morph target curves */
 	/** Gets the most relevant asset player in a specified state */
-	FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex);
-
-	/** Gets the runtime instance of the specified state machine */
-	FAnimNode_StateMachine* GetStateMachineInstance(int32 MachineIndex);
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Gets an unchecked (can return nullptr) node given a property of the anim instance */
 	template<class NodeType>
@@ -713,53 +810,80 @@ protected:
 	}
 
 	/** Gets the length in seconds of the asset referenced in an asset player node */
-	float GetInstanceAssetPlayerLength(int32 AssetPlayerIndex);
+	float GetInstanceAssetPlayerLength(int32 AssetPlayerIndex) const;
 
 	/** Get the current accumulated time in seconds for an asset player node */
-	float GetInstanceAssetPlayerTime(int32 AssetPlayerIndex);
+	float GetInstanceAssetPlayerTime(int32 AssetPlayerIndex) const;
 
 	/** Get the current accumulated time as a fraction for an asset player node */
-	float GetInstanceAssetPlayerTimeFraction(int32 AssetPlayerIndex);
+	float GetInstanceAssetPlayerTimeFraction(int32 AssetPlayerIndex) const;
 
 	/** Get the time in seconds from the end of an animation in an asset player node */
-	float GetInstanceAssetPlayerTimeFromEnd(int32 AssetPlayerIndex);
+	float GetInstanceAssetPlayerTimeFromEnd(int32 AssetPlayerIndex) const;
 
 	/** Get the time as a fraction of the asset length of an animation in an asset player node */
-	float GetInstanceAssetPlayerTimeFromEndFraction(int32 AssetPlayerIndex);
+	float GetInstanceAssetPlayerTimeFromEndFraction(int32 AssetPlayerIndex) const;
 
 	/** Get the blend weight of a specified state */
-	float GetInstanceMachineWeight(int32 MachineIndex);
+	float GetInstanceMachineWeight(int32 MachineIndex) const;
 
 	/** Get the blend weight of a specified state */
-	float GetInstanceStateWeight(int32 MachineIndex, int32 StateIndex);
+	float GetInstanceStateWeight(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Get the current elapsed time of a state within the specified state machine */
-	float GetInstanceCurrentStateElapsedTime(int32 MachineIndex);
+	float GetInstanceCurrentStateElapsedTime(int32 MachineIndex) const;
 
 	/** Get the crossfade duration of a specified transition */
-	float GetInstanceTransitionCrossfadeDuration(int32 MachineIndex, int32 TransitionIndex);
+	float GetInstanceTransitionCrossfadeDuration(int32 MachineIndex, int32 TransitionIndex) const;
 
 	/** Get the elapsed time in seconds of a specified transition */
-	float GetInstanceTransitionTimeElapsed(int32 MachineIndex, int32 TransitionIndex);
+	float GetInstanceTransitionTimeElapsed(int32 MachineIndex, int32 TransitionIndex) const;
 
 	/** Get the elapsed time as a fraction of the crossfade duration of a specified transition */
-	float GetInstanceTransitionTimeElapsedFraction(int32 MachineIndex, int32 TransitionIndex);
+	float GetInstanceTransitionTimeElapsedFraction(int32 MachineIndex, int32 TransitionIndex) const;
 
 	/** Get the time remaining in seconds for the most relevant animation in the source state */
-	float GetRelevantAnimTimeRemaining(int32 MachineIndex, int32 StateIndex);
+	float GetRelevantAnimTimeRemaining(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Get the time remaining as a fraction of the duration for the most relevant animation in the source state */
-	float GetRelevantAnimTimeRemainingFraction(int32 MachineIndex, int32 StateIndex);
+	float GetRelevantAnimTimeRemainingFraction(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Get the length in seconds of the most relevant animation in the source state */
-	float GetRelevantAnimLength(int32 MachineIndex, int32 StateIndex);
+	float GetRelevantAnimLength(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Get the current accumulated time in seconds for the most relevant animation in the source state */
-	float GetRelevantAnimTime(int32 MachineIndex, int32 StateIndex);
+	float GetRelevantAnimTime(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Get the current accumulated time as a fraction of the length of the most relevant animation in the source state */
-	float GetRelevantAnimTimeFraction(int32 MachineIndex, int32 StateIndex);
+	float GetRelevantAnimTimeFraction(int32 MachineIndex, int32 StateIndex) const;
 
+	/** Get whether a particular notify state was active in any state machine last tick. */
+	bool WasAnimNotifyStateActiveInAnyState(TSubclassOf<UAnimNotifyState> AnimNotifyStateType) const;
+
+	/** Get whether a particular notify state is active in a specific state machine last tick. */
+	bool WasAnimNotifyStateActiveInStateMachine(int32 MachineIndex, TSubclassOf<UAnimNotifyState> AnimNotifyStateType) const;
+
+	/** Get whether the most relevant animation was in a particular notify state last tick. */
+	bool WasAnimNotifyStateActiveInSourceState(int32 MachineIndex, int32 StateIndex, TSubclassOf<UAnimNotifyState> AnimNotifyStateType) const;
+	
+	/** Get whether the most relevant animation triggered the given notify last tick. */
+	bool WasAnimNotifyTriggeredInSourceState(int32 MachineIndex, int32 StateIndex, TSubclassOf<UAnimNotify> AnimNotifyType) const;
+
+	/** Get whether the most relevant animation triggered the given notify last tick. */
+	bool WasAnimNotifyNameTriggeredInSourceState(int32 MachineIndex, int32 StateIndex, FName NotifyName) const;
+
+	/** Get whether a particular notify type was active in a specific state machine last tick.  */
+	bool WasAnimNotifyTriggeredInStateMachine(int32 MachineIndex, TSubclassOf<UAnimNotify> AnimNotifyType) const;
+
+	/**  Get whether an animation notify of a given type was triggered last tick. */
+    bool WasAnimNotifyTriggeredInAnyState(TSubclassOf<UAnimNotify> AnimNotifyType) const;
+
+	/** Get whether the animation notify with the specified name triggered last tick. */
+    bool WasAnimNotifyNameTriggeredInAnyState(FName NotifyName) const;
+	
+	/** Get whether the given state machine triggered the animation notify with the specified name last tick. */
+    bool WasAnimNotifyNameTriggeredInStateMachine(int32 MachineIndex, FName NotifyName);
+	
 	// Sets up a native transition delegate between states with PrevStateName and NextStateName, in the state machine with name MachineName.
 	// Note that a transition already has to exist for this to succeed
 	void AddNativeTransitionBinding(const FName& MachineName, const FName& PrevStateName, const FName& NextStateName, const FCanTakeTransition& NativeTransitionDelegate, const FName& TransitionName = NAME_None);
@@ -783,12 +907,15 @@ protected:
 	void BindNativeDelegates();
 
 	/** Gets the runtime instance desc of the state machine specified by name */
-	const FBakedAnimationStateMachine* GetStateMachineInstanceDesc(FName MachineName);
+	const FBakedAnimationStateMachine* GetStateMachineInstanceDesc(FName MachineName) const;
 
 	/** Gets the index of the state machine matching MachineName */
-	int32 GetStateMachineIndex(FName MachineName);
+	int32 GetStateMachineIndex(FName MachineName) const;
 
-	void GetStateMachineIndexAndDescription(FName InMachineName, int32& OutMachineIndex, const FBakedAnimationStateMachine** OutMachineDescription);
+	/** Gets the index of the state machine */
+	int32 GetStateMachineIndex(FAnimNode_StateMachine* StateMachine) const;
+
+	void GetStateMachineIndexAndDescription(FName InMachineName, int32& OutMachineIndex, const FBakedAnimationStateMachine** OutMachineDescription) const;
 
 	/** Initialize the root node - split into a separate function for backwards compatibility (initialization order) reasons */
 	void InitializeRootNode(bool bInDeferRootNodeInitialization = false);
@@ -830,6 +957,9 @@ protected:
 	static void ResetCounterInputProxy(FAnimInstanceProxy* InputProxy);
 
 private:
+	/** Evaluate the slot when there are blend spaces involved in any of the active anim montages. */
+	void SlotEvaluatePoseWithBlendProfiles(const FName& SlotNodeName, const FAnimationPoseData& SourceAnimationPoseData, float InSourceWeight, FAnimationPoseData& OutBlendedAnimationPoseData, float InBlendWeight);
+
 	/** The component to world transform of the component we are running on */
 	FTransform ComponentTransform;
 
@@ -864,6 +994,13 @@ private:
 	/** Array of visited nodes this frame */
 	TArray<FAnimBlueprintDebugData::FNodeVisit> UpdatedNodesThisFrame;
 
+	/** Map of node attributes this frame */
+	TMap<int32, TArray<FAnimBlueprintDebugData::FAttributeRecord>> NodeInputAttributesThisFrame;
+	TMap<int32, TArray<FAnimBlueprintDebugData::FAttributeRecord>> NodeOutputAttributesThisFrame;
+
+	/** Map of node syncs this frame - maps from player node index to graph-determined group name */
+	TMap<int32, FName> NodeSyncsThisFrame;
+
 	/** Array of nodes to watch this frame */
 	TArray<FAnimNodePoseWatch> PoseWatchEntriesForThisFrame;
 #endif
@@ -885,11 +1022,8 @@ private:
 	/** Map of layer name to saved pose nodes to process after the graph has been updated */
 	TMap<FName, TArray<FAnimNode_SaveCachedPose*>> SavedPoseQueueMap;
 
-	/** The list of animation assets which are going to be evaluated this frame and need to be ticked (ungrouped) */
-	TArray<FAnimTickRecord> UngroupedActivePlayerArrays[2];
-
-	/** The set of tick groups for this anim instance */
-	FSyncGroupMap SyncGroupMaps[2];
+	/** Synchronizes animations according to sync groups/markers */
+	UE::Anim::FAnimSync Sync;
 
 	/** Buffers containing read/write buffers for all current machine weights */
 	TArray<float> MachineWeightArrays[2];
@@ -900,8 +1034,8 @@ private:
 	/** Map that transforms state class indices to base offsets into the weight array */
 	TMap<int32, int32> StateMachineClassIndexToWeightOffset;
 
-	// Current sync group buffer index
-	int32 SyncGroupWriteIndex;
+	// Current buffer index
+	int32 BufferWriteIndex;
 
 	/** Animation Notifies that has been triggered in the latest tick **/
 	FAnimNotifyQueue NotifyQueue;
@@ -920,6 +1054,9 @@ private:
 	TArray<FName> MaterialParametersToClear;
 
 protected:
+	// Animation Notifies that has been triggered since the last tick. These can be safely consumed at any point.
+	TArray<FAnimNotifyEventReference> ActiveAnimNotifiesSinceLastTick;
+	
 	// Counters for synchronization
 	FGraphTraversalCounter InitializationCounter;
 	FGraphTraversalCounter CachedBonesCounter;
@@ -944,12 +1081,6 @@ private:
 	/** Counter used to control CacheBones recursion behavior - makes sure we cache bones correctly when recursing into different subgraphs */
 	int32 CacheBonesRecursionCounter;
 
-	/** Cached SkeletalMeshComponent LocalToWorld transform. */
-	FTransform SkelMeshCompLocalToWorld;
-
-	/** Cached SkeletalMeshComponent Owner Transform */
-	FTransform SkelMeshCompOwnerTransform;
-
 	/** During animation update and eval, records the number of frames we will skip due to URO */
 	int16 NumUroSkippedFrames_Update;
 	int16 NumUroSkippedFrames_Eval;
@@ -957,6 +1088,10 @@ private:
 private:
 	/** Copy of UAnimInstance::MontageInstances data used for update & evaluation */
 	TArray<FMontageEvaluationState> MontageEvaluationData;
+	TArray<FMontageEvaluationState>* MainMontageEvaluationData;
+
+	// Inertialization request for each slot. Mapped with SlotNameToTrackerIndex. Initialized to a value of 1.0f, which indicates no request for this slot.
+	TMap<FName, float> SlotGroupInertializationRequestMap;
 
 	/** Delegate fired on the game thread before update occurs */
 	TArray<FAnimNode_Base*> GameThreadPreUpdateNodes;
@@ -1010,4 +1145,7 @@ private:
 	/** Whether this UAnimInstance is currently being debugged in the editor */
 	uint8 bIsBeingDebugged : 1;
 #endif
+
+	// Whether subsystems should be initialized
+	uint8 bInitializeSubsystems : 1;
 };

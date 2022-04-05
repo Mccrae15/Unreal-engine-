@@ -6,6 +6,7 @@
 #include "Chaos/Transform.h"
 #include "ChaosArchive.h"
 #include "Templates/EnableIf.h"
+#include "AABB.h"
 
 namespace Chaos
 {
@@ -83,12 +84,35 @@ public:
 		this->bIsConvex = Other.MObject->IsConvex();
 		this->bDoCollide = Other.MObject->GetDoCollide();
 	}
+
+	virtual FImplicitObject* Duplicate() const override
+	{
+		if(MObjectOwner)
+		{
+			check(bSerializable);
+			TUniquePtr<FImplicitObject> DupObj(MObjectOwner->Duplicate());
+			return new TImplicitObjectTransformed<T,d,true>(MoveTemp(DupObj), MTransform);
+		}
+		else
+		{
+			check(false);	//duplicate only supported for owned geometry
+			return nullptr;
+		}
+	}
+
 	~TImplicitObjectTransformed() {}
 
 	static constexpr EImplicitObjectType StaticType()
 	{
 		return ImplicitObjectType::Transformed;
 	}
+
+	virtual TUniquePtr<FImplicitObject> Copy() const
+	{
+		TUniquePtr<FImplicitObject> ImplicitCopy = MObject->Copy();
+		return TUniquePtr<FImplicitObject>(new TImplicitObjectTransformed<T, d>(MoveTemp(ImplicitCopy), MTransform));
+	}
+
 
 	const FImplicitObject* GetTransformedObject() const
 	{
@@ -173,7 +197,7 @@ public:
 		return ClosestIntersection;
 	}
 
-	virtual int32 FindClosestFaceAndVertices(const FVec3& Position, TArray<FVec3>& FaceVertices, FReal SearchDist = 0.01) const override
+	virtual int32 FindClosestFaceAndVertices(const FVec3& Position, TArray<FVec3>& FaceVertices, FReal SearchDist = 0.01f) const override
 	{
 		const FVec3 LocalPoint = MTransform.InverseTransformPosition(Position);
 		int32 FaceIndex = MObject->FindClosestFaceAndVertices(LocalPoint, FaceVertices, SearchDist);
@@ -190,24 +214,24 @@ public:
 	const TRigidTransform<T, d>& GetTransform() const { return MTransform; }
 	void SetTransform(const TRigidTransform<T, d>& InTransform)
 	{
-		MLocalBoundingBox = MObject->BoundingBox().TransformedBox(InTransform);
+		MLocalBoundingBox = MObject->BoundingBox().TransformedAABB(InTransform);
 		MTransform = InTransform;
 	}
 
-	virtual void AccumulateAllImplicitObjects(TArray<Pair<const FImplicitObject*, TRigidTransform<T, d>>>& Out, const TRigidTransform<T, d>& ParentTM) const
+	virtual void AccumulateAllImplicitObjects(TArray<Pair<const FImplicitObject*, TRigidTransform<T, d>>>& Out, const TRigidTransform<T, d>& ParentTM) const override
 	{
 		const TRigidTransform<T, d> NewTM = MTransform * ParentTM;
 		MObject->AccumulateAllImplicitObjects(Out, NewTM);
 	}
 
-	virtual void AccumulateAllSerializableImplicitObjects(TArray<Pair<TSerializablePtr<FImplicitObject>, TRigidTransform<T, d>>>& Out, const TRigidTransform<T, d>& ParentTM, TSerializablePtr<FImplicitObject> This) const
+	virtual void AccumulateAllSerializableImplicitObjects(TArray<Pair<TSerializablePtr<FImplicitObject>, TRigidTransform<T, d>>>& Out, const TRigidTransform<T, d>& ParentTM, TSerializablePtr<FImplicitObject> This) const override
 	{
 		check(bSerializable);
 		const TRigidTransform<T, d> NewTM = MTransform * ParentTM;
 		TImplicitObjectTransformAccumulateSerializableHelper(Out, MObject, NewTM);
 	}
 
-	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, TRigidTransform<T, d>>>& Out, const TAABB<T, d>& LocalBounds) const
+	virtual void FindAllIntersectingObjects(TArray < Pair<const FImplicitObject*, TRigidTransform<T, d>>>& Out, const TAABB<T, d>& LocalBounds) const override
 	{
 		const TAABB<T, d> SubobjectBounds = LocalBounds.TransformedAABB(MTransform.Inverse());
 		int32 NumOut = Out.Num();
@@ -219,6 +243,12 @@ public:
 	}
 
 	virtual const TAABB<T, d> BoundingBox() const override { return MLocalBoundingBox; }
+
+	// Calculate the tight-fitting world-space bounding box
+	virtual FAABB3 CalculateTransformedBounds(const FRigidTransform3& InTransform) const
+	{
+		return MObject->CalculateTransformedBounds(FRigidTransform3::MultiplyNoScale(MTransform ,InTransform));
+	}
 
 	const FReal GetVolume() const
 	{
@@ -273,6 +303,33 @@ private:
 
 	friend FImplicitObject;	//needed for serialization
 };
+
+namespace Utilities
+{
+	inline TUniquePtr<FImplicitObject> DuplicateImplicitWithTransform(const FImplicitObject* const InObject, FTransform NewTransform)
+	{
+		if(!InObject)
+		{
+			return nullptr;
+		}
+
+		const EImplicitObjectType OuterType = InObject->GetType();
+
+		if(GetInnerType(OuterType) == ImplicitObjectType::Transformed)
+		{
+			TUniquePtr<FImplicitObject> NewTransformed = InObject->Copy();
+			TImplicitObjectTransformed<FReal, 3>* InnerTransformed = static_cast<TImplicitObjectTransformed<FReal, 3>*>(NewTransformed.Get());
+			InnerTransformed->SetTransform(NewTransform);
+
+			return MoveTemp(NewTransformed);
+		}
+		else
+		{
+			TUniquePtr<FImplicitObject> NewInnerObject = InObject->Copy();
+			return MakeUnique<TImplicitObjectTransformed<FReal, 3>>(MoveTemp(NewInnerObject), NewTransform);
+		}
+	}
+}
 
 template <typename T, int d>
 using TImplicitObjectTransformedNonSerializable = TImplicitObjectTransformed<T, d, false>;

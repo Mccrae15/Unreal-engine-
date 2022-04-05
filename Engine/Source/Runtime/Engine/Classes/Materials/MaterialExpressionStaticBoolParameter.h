@@ -23,15 +23,36 @@ public:
 	virtual int32 CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual uint32 GetOutputType(int32 OutputIndex) override {return MCT_StaticBool;}
-	virtual void SetValueToMatchingExpression(UMaterialExpression* OtherExpression) override;
+	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
+	{
+		OutMeta.Value = (bool)DefaultValue;
+		return Super::GetParameterValue(OutMeta);
+	}
+	virtual bool SetParameterValue(const FName& Name, const FMaterialParameterMetadata& Meta, EMaterialExpressionSetParameterValueFlags Flags) override
+	{
+		if (Meta.Value.Type == EMaterialParameterType::StaticSwitch)
+		{
+			if (SetParameterValue(Name, Meta.Value.AsStaticSwitch(), Meta.ExpressionGuid, Flags))
+			{
+				if (EnumHasAnyFlags(Flags, EMaterialExpressionSetParameterValueFlags::AssignGroupAndSortPriority))
+				{
+					Group = Meta.Group;
+					SortPriority = Meta.SortPriority;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
 #endif
 	//~ End UMaterialExpression Interface
 
-	/** Return whether this is the named parameter, and fill in its value */
+	UE_DEPRECATED(5.0, "Use GetParameterValue and/or GetParameterName")
 	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid) const;
 
 #if WITH_EDITOR
-	bool SetParameterValue(FName InParameterName, bool OutValue, FGuid InExpressionGuid);
+	bool SetParameterValue(FName InParameterName, bool OutValue, FGuid InExpressionGuid, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None);
 #endif
 };
 

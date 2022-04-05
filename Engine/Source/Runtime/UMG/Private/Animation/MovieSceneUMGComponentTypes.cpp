@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/MovieSceneUMGComponentTypes.h"
-#include "EntitySystem/MovieSceneComponentRegistry.h"
-#include "EntitySystem/MovieScenePropertyComponentHandler.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
-#include "MovieSceneTracksComponentTypes.h"
+#include "EntitySystem/MovieSceneComponentRegistry.h"
 #include "EntitySystem/MovieSceneEntityFactoryTemplates.h"
+#include "EntitySystem/MovieScenePropertyComponentHandler.h"
+#include "MovieSceneTracksComponentTypes.h"
+#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
 
 #include "Components/Widget.h"
 
@@ -39,13 +40,15 @@ void ConvertOperationalProperty(const FWidgetTransform& In, FIntermediateWidgetT
 	Out.ShearY = In.Shear.Y;
 }
 
-static float GetRenderOpacity(const UObject* Object)
+static float GetRenderOpacity(const UObject* Object, bool bIsDouble)
 {
+	check(!bIsDouble);
 	return CastChecked<const UWidget>(Object)->GetRenderOpacity();
 }
 
-static void SetRenderOpacity(UObject* Object, float InRenderOpacity)
+static void SetRenderOpacity(UObject* Object, bool bIsDouble, float InRenderOpacity)
 {
+	check(!bIsDouble);
 	CastChecked<UWidget>(Object)->SetRenderOpacity(InRenderOpacity);
 }
 
@@ -85,6 +88,7 @@ FMovieSceneUMGComponentTypes::FMovieSceneUMGComponentTypes()
 	.AddComposite(BuiltInComponents->FloatResult[1], &FMargin::Top)
 	.AddComposite(BuiltInComponents->FloatResult[2], &FMargin::Right)
 	.AddComposite(BuiltInComponents->FloatResult[3], &FMargin::Bottom)
+	.SetBlenderSystem<UMovieScenePiecewiseFloatBlenderSystem>()
 	.Commit();
 
 	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(WidgetTransform)
@@ -95,6 +99,7 @@ FMovieSceneUMGComponentTypes::FMovieSceneUMGComponentTypes()
 	.AddComposite(BuiltInComponents->FloatResult[4], &FIntermediateWidgetTransform::ScaleY)
 	.AddComposite(BuiltInComponents->FloatResult[5], &FIntermediateWidgetTransform::ShearX)
 	.AddComposite(BuiltInComponents->FloatResult[6], &FIntermediateWidgetTransform::ShearY)
+	.SetBlenderSystem<UMovieScenePiecewiseFloatBlenderSystem>()
 	.SetCustomAccessors(&CustomWidgetTransformAccessors)
 	.Commit();
 }

@@ -11,7 +11,7 @@ FReply SCommonButton::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	return IsInteractable() ? SButton::OnMouseButtonDown(MyGeometry, MouseEvent) : FReply::Handled();
 }
 
-FReply SCommonButton::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent)
+FReply SCommonButton::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InPointerEvent)
 {
 	if (!IsInteractable())
 	{
@@ -27,10 +27,22 @@ FReply SCommonButton::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, co
 		}
 	}
 
-	return SButton::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
+	// The default button behavior 'ignores' double click, which means you get,
+	// down -> up, double-click -> up
+	// which can make the input feel like it's being lost when players are clicking
+	// a button over and over.  So if your button does not handle the double click
+	// specifically, we'll treat the double click as a mouse up, and do whatever
+	// we would normally do based on button configuration.
+	FReply Reply = OnMouseButtonDown(InMyGeometry, InPointerEvent);
+	if (Reply.IsEventHandled())
+	{
+		return Reply;
+	}
+
+	return SButton::OnMouseButtonDoubleClick(InMyGeometry, InPointerEvent);
 }
 
-FReply SCommonButton::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+FReply SCommonButton::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& InPointerEvent)
 {
 	FReply Reply = FReply::Handled();
 	if (!IsInteractable())
@@ -45,23 +57,33 @@ FReply SCommonButton::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 	}
 	else
 	{
-		Reply = SButton::OnMouseButtonUp(MyGeometry, MouseEvent);
+		Reply = SButton::OnMouseButtonUp(MyGeometry, InPointerEvent);
 	}
 
 	return Reply;
 }
 
-void SCommonButton::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+void SCommonButton::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& InPointerEvent)
 {
-	if (!MouseEvent.IsTouchEvent())
+	if (!InPointerEvent.IsTouchEvent())
 	{
-		SButton::OnMouseEnter(MyGeometry, MouseEvent);
+		const bool bWasHovered = IsHovered();
+
+		bHovered = true;
+		SetHover(bHovered && bIsInteractionEnabled);
+		SButton::OnMouseEnter(MyGeometry, InPointerEvent);
+
+		// SButton won't be able to correctly detect hover changes since we manually set hover, do our own detection
+		if (!bWasHovered && IsHovered())
+		{
+			ExecuteHoverStateChanged(true);
+		}
 	}
 }
 
-void SCommonButton::OnMouseLeave(const FPointerEvent& MouseEvent)
+void SCommonButton::OnMouseLeave(const FPointerEvent& InPointerEvent)
 {
-	if (MouseEvent.IsTouchEvent())
+	if (InPointerEvent.IsTouchEvent())
 	{
 		if (HasMouseCapture())
 		{
@@ -70,7 +92,17 @@ void SCommonButton::OnMouseLeave(const FPointerEvent& MouseEvent)
 	}
 	else
 	{
-		SButton::OnMouseLeave(MouseEvent);
+		const bool bWasHovered = IsHovered();
+
+		bHovered = false;
+		SetHover(false);
+		SButton::OnMouseLeave(InPointerEvent);
+
+		// SButton won't be able to correctly detect hover changes since we manually set hover, do our own detection
+		if (bWasHovered && !IsHovered())
+		{
+			ExecuteHoverStateChanged(true);
+		}
 	}
 }
 
@@ -112,14 +144,12 @@ FReply SCommonButton::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKe
 	return SButton::OnKeyUp(MyGeometry, InKeyEvent);
 }
 
-bool SCommonButton::IsHovered() const
+void SCommonButton::Press()
 {
-	return bIsInteractionEnabled ? SButton::IsHovered() : false;
-}
-
-bool SCommonButton::IsPressed() const
-{
-	return IsInteractable() ? SButton::IsPressed() : false;
+	if (IsInteractable())
+	{
+		SButton::Press();
+	}
 }
 
 void SCommonButton::SetIsButtonEnabled(bool bInIsButtonEnabled)
@@ -129,7 +159,7 @@ void SCommonButton::SetIsButtonEnabled(bool bInIsButtonEnabled)
 
 void SCommonButton::SetIsButtonFocusable(bool bInIsButtonFocusable)
 {
-	bIsFocusable = bInIsButtonFocusable;
+	SetIsFocusable(bInIsButtonFocusable);
 }
 
 void SCommonButton::SetIsInteractionEnabled(bool bInIsInteractionEnabled)
@@ -143,18 +173,12 @@ void SCommonButton::SetIsInteractionEnabled(bool bInIsInteractionEnabled)
 
 	bIsInteractionEnabled = bInIsInteractionEnabled;
 
-	// If the hover state changed due to an interactability change, trigger external logic accordingly.
-	const bool bIsHoveredNow = IsHovered();
+	// If the hover state changed due to an intractability change, trigger external logic accordingly.
+	const bool bIsHoveredNow = bHovered && bInIsInteractionEnabled;
 	if (bWasHovered != bIsHoveredNow)
 	{
-		if (bIsHoveredNow)
-		{
-			OnHovered.ExecuteIfBound();
-		}
-		else
-		{
-			OnUnhovered.ExecuteIfBound();
-		}
+		SetHover(bIsHoveredNow);
+		ExecuteHoverStateChanged(false);
 	}
 }
 

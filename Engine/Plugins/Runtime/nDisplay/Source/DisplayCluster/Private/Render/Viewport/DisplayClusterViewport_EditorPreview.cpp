@@ -2,7 +2,7 @@
 
 #include "Components/DisplayClusterPreviewComponent.h"
 #include "Render/Viewport/DisplayClusterViewport.h"
-
+#include "Render/Viewport/DisplayClusterViewportProxy.h"
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 
 #include "Misc/DisplayClusterLog.h"
@@ -22,16 +22,44 @@
 #include "Components/DisplayClusterCameraComponent.h"
 #include "Components/DisplayClusterScreenComponent.h"
 
-
 #include "Render/Viewport/DisplayClusterViewportManager.h"
-#include "Render/Viewport/IDisplayClusterViewport.h"
+#include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
 
 #include "Render/Viewport/Configuration/DisplayClusterViewportConfigurationHelpers_Postprocess.h"
-
 
 ///////////////////////////////////////////////////////////////////////////////////////
 //          FDisplayClusterViewport
 ///////////////////////////////////////////////////////////////////////////////////////
+void FDisplayClusterViewport::CleanupViewState()
+{
+	for (FSceneViewStateReference& ViewState : ViewStates)
+	{
+		FSceneViewStateInterface* Ref = ViewState.GetReference();
+		if (Ref != nullptr)
+		{
+			Ref->ClearMIDPool();
+		}
+	}
+}
+
+FSceneViewStateInterface* FDisplayClusterViewport::GetViewState(uint32 ViewIndex)
+{
+	int32 RequiredAmount = (int32)ViewIndex - ViewStates.Num() + 1;
+	if(RequiredAmount > 0)
+	{
+		ViewStates.AddDefaulted(RequiredAmount);
+	}
+
+	if (ViewStates[ViewIndex].GetReference() == NULL)
+	{
+		const UWorld* CurrentWorld = Owner.GetCurrentWorld();
+		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+
+		ViewStates[ViewIndex].Allocate(FeatureLevel);
+	}
+
+	return ViewStates[ViewIndex].GetReference();
+}
 
 FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContext& InOutViewFamily, uint32 InContextNum)
 {
@@ -61,12 +89,12 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 		float StereoIPD = 0.f;
 		FIntRect ViewRect = Contexts[InContextNum].RenderTargetRect;
 
-		FEngineShowFlags ShowFlags = FEngineShowFlags(EShowFlagInitMode::ESFIM_Game);
-
 		FSceneViewInitOptions ViewInitOptions;
 
 		ViewInitOptions.SetViewRectangle(ViewRect);
 		ViewInitOptions.ViewFamily = &InOutViewFamily;
+
+		ViewInitOptions.SceneViewStateInterface = GetViewState(InContextNum);
 		ViewInitOptions.ViewActor = ViewOwner;
 
 		ViewInitOptions.ViewOrigin = ViewLocation;
@@ -75,6 +103,7 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 
 		ViewInitOptions.OverrideFarClippingPlaneDistance = MaxViewDistance;
 		ViewInitOptions.StereoPass = Contexts[InContextNum].StereoscopicPass;
+		ViewInitOptions.StereoViewIndex = Contexts[InContextNum].StereoViewIndex;
 
 		ViewInitOptions.LODDistanceFactor = FMath::Clamp(LODDistanceFactor, 0.01f, 100.0f);
 
@@ -86,7 +115,11 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 		ViewInitOptions.StereoIPD = StereoIPD * (ViewInitOptions.WorldToMetersScale / 100.0f);
 
 		ViewInitOptions.BackgroundColor = FLinearColor::Black;
-		//ViewInitOptions.OverlayColor = FLinearColor::Black;
+
+		if (Owner.GetRenderFrameSettings().bPreviewEnablePostProcess == false)
+		{
+			ViewInitOptions.OverlayColor = FLinearColor::Black;
+		}
 
 		FSceneView* View = new FSceneView(ViewInitOptions);
 
@@ -134,7 +167,7 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 		View->EndFinalPostprocessSettings(ViewInitOptions);
 
 		// Setup view extension for this view
-		for (int ViewExt = 0; ViewExt < InOutViewFamily.ViewExtensions.Num(); ViewExt++)
+		for (int32 ViewExt = 0; ViewExt < InOutViewFamily.ViewExtensions.Num(); ViewExt++)
 		{
 			InOutViewFamily.ViewExtensions[ViewExt]->SetupView(InOutViewFamily, *View);
 		}
@@ -212,24 +245,16 @@ bool FDisplayClusterViewport::ImplPreview_CalculateStereoViewOffset(const uint32
 	const float EyeOffset = CfgEyeDist / 2.f;
 	const float EyeOffsetValues[] = { -EyeOffset, 0.f, EyeOffset };
 
-	auto DecodeEyeType = [](const EStereoscopicPass EyePass)
-	{
-		switch (EyePass)
-		{
-		case EStereoscopicPass::eSSP_LEFT_EYE:
-			return EDisplayClusterEyeType::StereoLeft;
-		case EStereoscopicPass::eSSP_RIGHT_EYE:
-			return EDisplayClusterEyeType::StereoRight;
-		default:
-			break;
-		}
-
-		return EDisplayClusterEyeType::Mono;
-	};
-
 	// Decode current eye type	
-	const EDisplayClusterEyeType EyeType = DecodeEyeType(ViewportContext.StereoscopicEye);
-	const int   EyeIndex = (int)EyeType;
+	// Decode current eye type
+	EDisplayClusterEyeType EyeType = EDisplayClusterEyeType::Mono;
+	if (Contexts.Num() > 1)
+	{
+		// Support stereo:
+		EyeType = (InContextNum == 0) ? EDisplayClusterEyeType::StereoLeft : EDisplayClusterEyeType::StereoRight;
+	}
+
+	const int32 EyeIndex = (int32)EyeType;
 
 	float PassOffset = 0.f;
 	float PassOffsetSwap = 0.f;
@@ -240,7 +265,7 @@ bool FDisplayClusterViewport::ImplPreview_CalculateStereoViewOffset(const uint32
 		// * Force left (-1) ==> 0 left eye
 		// * Force right (1) ==> 2 right eye
 		// * Default (0) ==> 1 mono
-		const int EyeOffsetIdx =
+		const int32 EyeOffsetIdx =
 			(CfgEyeOffset == EDisplayClusterEyeStereoOffset::None ? 0 :
 				(CfgEyeOffset == EDisplayClusterEyeStereoOffset::Left ? -1 : 1));
 
@@ -297,4 +322,10 @@ FMatrix FDisplayClusterViewport::ImplPreview_GetStereoProjectionMatrix(const uin
 	return PrjMatrix;
 }
 
+bool FDisplayClusterViewport::GetPreviewPixels(TSharedPtr<FDisplayClusterViewportReadPixelsData, ESPMode::ThreadSafe>& OutPixelsData) const
+{
+	check(IsInGameThread());
+
+	return (ViewportProxy != nullptr) && ViewportProxy->GetPreviewPixels_GameThread(OutPixelsData);
+}
 #endif

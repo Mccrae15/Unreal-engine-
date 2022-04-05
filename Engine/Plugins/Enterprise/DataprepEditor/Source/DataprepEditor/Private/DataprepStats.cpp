@@ -7,6 +7,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Engine/World.h"
 #include "Engine/StaticMesh.h"
@@ -18,6 +19,8 @@
 
 const FName FDataprepStats::StatNameTriangles(TEXT("Triangles"));
 const FName FDataprepStats::StatNameVertices(TEXT("Vertices"));
+const FName FDataprepStats::StatNameNaniteTriangles(TEXT("NaniteTriangles"));
+const FName FDataprepStats::StatNameNaniteVertices(TEXT("NaniteVertices"));
 const FName FDataprepStats::StatNameTextures(TEXT("Textures"));
 const FName FDataprepStats::StatNameTextureSize(TEXT("TextureSize"));
 const FName FDataprepStats::StatNameMeshes(TEXT("Meshes"));
@@ -102,7 +105,7 @@ private:
 		{
 			for (AActor* Actor : Level->Actors)
 			{
-				const bool bIsValidActor = Actor && !Actor->IsPendingKill();
+				const bool bIsValidActor = IsValid(Actor);
 
 				if (bIsValidActor)
 				{
@@ -261,7 +264,7 @@ private:
 
 		// If we should skip the actor. Skip if the actor has no outer or if we are only showing selected actors and the actor isn't selected
 		// Dont' care about components without a resource.
-		if (InComponent->GetWorld() == World && !InComponent->IsPendingKill())
+		if (InComponent->GetWorld() == World && IsValidChecked(InComponent))
 		{
 			if( StaticMeshComponent )
 			{
@@ -278,6 +281,16 @@ private:
 						const FStaticMeshSection& StaticMeshSection = RenderData->LODResources[0].Sections[SectionIndex];
 						Stats.AddCount(FDataprepStats::StatNameTriangles, StaticMeshSection.NumTriangles);
 						Stats.AddCount(FDataprepStats::StatNameVertices, RenderData->LODResources[0].GetNumVertices());
+					}
+
+					if (StaticMesh->NaniteSettings.bEnabled && StaticMesh->HasValidNaniteData())
+					{
+						const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+						if (Resources.RootData.Num() > 0)
+						{
+							Stats.AddCount(FDataprepStats::StatNameNaniteTriangles, Resources.NumInputTriangles);
+							Stats.AddCount(FDataprepStats::StatNameNaniteVertices, Resources.NumInputVertices);
+						}
 					}
 				}
 			}

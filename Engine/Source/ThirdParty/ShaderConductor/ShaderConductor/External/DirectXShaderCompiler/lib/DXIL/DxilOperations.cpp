@@ -170,17 +170,23 @@ const OP::OpCodeProperty OP::m_OpCodeProps[(unsigned)OP::OpCode::NumOpCodes] = {
   {  OC::RenderTargetGetSampleCount, "RenderTargetGetSampleCount", OCC::RenderTargetGetSampleCount, "renderTargetGetSampleCount", {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::ReadOnly, },
 
   // Synchronization                                                                                                         void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
-  {  OC::AtomicBinOp,             "AtomicBinOp",              OCC::AtomicBinOp,              "atomicBinOp",               { false, false, false, false, false, false, false,  true, false, false, false}, Attribute::None,     },
-  {  OC::AtomicCompareExchange,   "AtomicCompareExchange",    OCC::AtomicCompareExchange,    "atomicCompareExchange",     { false, false, false, false, false, false, false,  true, false, false, false}, Attribute::None,     },
+  {  OC::AtomicBinOp,             "AtomicBinOp",              OCC::AtomicBinOp,              "atomicBinOp",               { false, false, false, false, false, false, false,  true,  true, false, false}, Attribute::None,     },
+  {  OC::AtomicCompareExchange,   "AtomicCompareExchange",    OCC::AtomicCompareExchange,    "atomicCompareExchange",     { false, false, false, false, false, false, false,  true,  true, false, false}, Attribute::None,     },
   {  OC::Barrier,                 "Barrier",                  OCC::Barrier,                  "barrier",                   {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::NoDuplicate, },
 
-  // Pixel shader                                                                                                            void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
+  // Derivatives                                                                                                             void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
   {  OC::CalculateLOD,            "CalculateLOD",             OCC::CalculateLOD,             "calculateLOD",              { false, false,  true, false, false, false, false, false, false, false, false}, Attribute::ReadOnly, },
+
+  // Pixel shader                                                                                                            void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
   {  OC::Discard,                 "Discard",                  OCC::Discard,                  "discard",                   {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::None,     },
+
+  // Derivatives                                                                                                             void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
   {  OC::DerivCoarseX,            "DerivCoarseX",             OCC::Unary,                    "unary",                     { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
   {  OC::DerivCoarseY,            "DerivCoarseY",             OCC::Unary,                    "unary",                     { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
   {  OC::DerivFineX,              "DerivFineX",               OCC::Unary,                    "unary",                     { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
   {  OC::DerivFineY,              "DerivFineY",               OCC::Unary,                    "unary",                     { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
+
+  // Pixel shader                                                                                                            void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
   {  OC::EvalSnapped,             "EvalSnapped",              OCC::EvalSnapped,              "evalSnapped",               { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
   {  OC::EvalSampleIndex,         "EvalSampleIndex",          OCC::EvalSampleIndex,          "evalSampleIndex",           { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
   {  OC::EvalCentroid,            "EvalCentroid",             OCC::EvalCentroid,             "evalCentroid",              { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
@@ -230,7 +236,7 @@ const OP::OpCodeProperty OP::m_OpCodeProps[(unsigned)OP::OpCode::NumOpCodes] = {
   {  OC::WaveActiveAllEqual,      "WaveActiveAllEqual",       OCC::WaveActiveAllEqual,       "waveActiveAllEqual",        { false,  true,  true,  true,  true,  true,  true,  true,  true, false, false}, Attribute::None,     },
   {  OC::WaveActiveBallot,        "WaveActiveBallot",         OCC::WaveActiveBallot,         "waveActiveBallot",          {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::None,     },
   {  OC::WaveReadLaneAt,          "WaveReadLaneAt",           OCC::WaveReadLaneAt,           "waveReadLaneAt",            { false,  true,  true,  true,  true,  true,  true,  true,  true, false, false}, Attribute::None,     },
-  {  OC::WaveReadLaneFirst,       "WaveReadLaneFirst",        OCC::WaveReadLaneFirst,        "waveReadLaneFirst",         { false,  true,  true, false,  true,  true,  true,  true,  true, false, false}, Attribute::None,     },
+  {  OC::WaveReadLaneFirst,       "WaveReadLaneFirst",        OCC::WaveReadLaneFirst,        "waveReadLaneFirst",         { false,  true,  true,  true,  true,  true,  true,  true,  true, false, false}, Attribute::None,     },
   {  OC::WaveActiveOp,            "WaveActiveOp",             OCC::WaveActiveOp,             "waveActiveOp",              { false,  true,  true,  true,  true,  true,  true,  true,  true, false, false}, Attribute::None,     },
   {  OC::WaveActiveBit,           "WaveActiveBit",            OCC::WaveActiveBit,            "waveActiveBit",             { false, false, false, false, false,  true,  true,  true,  true, false, false}, Attribute::None,     },
   {  OC::WavePrefixOp,            "WavePrefixOp",             OCC::WavePrefixOp,             "wavePrefixOp",              { false,  true,  true,  true, false,  true,  true,  true,  true, false, false}, Attribute::None,     },
@@ -261,7 +267,7 @@ const OP::OpCodeProperty OP::m_OpCodeProps[(unsigned)OP::OpCode::NumOpCodes] = {
   {  OC::WavePrefixBitCount,      "WavePrefixBitCount",       OCC::WavePrefixOp,             "wavePrefixOp",              {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::None,     },
 
   // Pixel shader                                                                                                            void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
-  {  OC::AttributeAtVertex,       "AttributeAtVertex",        OCC::AttributeAtVertex,        "attributeAtVertex",         { false,  true,  true, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
+  {  OC::AttributeAtVertex,       "AttributeAtVertex",        OCC::AttributeAtVertex,        "attributeAtVertex",         { false,  true,  true, false, false, false,  true,  true, false, false, false}, Attribute::ReadNone, },
 
   // Graphics shader                                                                                                         void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
   {  OC::ViewID,                  "ViewID",                   OCC::ViewID,                   "viewID",                    { false, false, false, false, false, false, false,  true, false, false, false}, Attribute::ReadNone, },
@@ -386,8 +392,18 @@ const OP::OpCodeProperty OP::m_OpCodeProps[(unsigned)OP::OpCode::NumOpCodes] = {
   {  OC::RayQuery_CommittedInstanceContributionToHitGroupIndex, "RayQuery_CommittedInstanceContributionToHitGroupIndex", OCC::RayQuery_StateScalar,     "rayQuery_StateScalar",      { false, false, false, false, false, false, false,  true, false, false, false}, Attribute::ReadOnly, },
 
   // Get handle from heap                                                                                                    void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
-  {  OC::CreateHandleFromHeap,    "CreateHandleFromHeap",     OCC::CreateHandleFromHeap,     "createHandleFromHeap",      {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::ReadOnly, },
   {  OC::AnnotateHandle,          "AnnotateHandle",           OCC::AnnotateHandle,           "annotateHandle",            {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
+  {  OC::CreateHandleFromBinding, "CreateHandleFromBinding",  OCC::CreateHandleFromBinding,  "createHandleFromBinding",   {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
+  {  OC::CreateHandleFromHeap,    "CreateHandleFromHeap",     OCC::CreateHandleFromHeap,     "createHandleFromHeap",      {  true, false, false, false, false, false, false, false, false, false, false}, Attribute::ReadNone, },
+
+  // Unpacking intrinsics                                                                                                    void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
+  {  OC::Unpack4x8,               "Unpack4x8",                OCC::Unpack4x8,                "unpack4x8",                 { false, false, false, false, false, false,  true,  true, false, false, false}, Attribute::ReadNone, },
+
+  // Packing intrinsics                                                                                                      void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
+  {  OC::Pack4x8,                 "Pack4x8",                  OCC::Pack4x8,                  "pack4x8",                   { false, false, false, false, false, false,  true,  true, false, false, false}, Attribute::ReadNone, },
+
+  // Helper Lanes                                                                                                            void,     h,     f,     d,    i1,    i8,   i16,   i32,   i64,   udt,   obj ,  function attribute
+  {  OC::IsHelperLane,            "IsHelperLane",             OCC::IsHelperLane,             "isHelperLane",              { false, false, false, false,  true, false, false, false, false, false, false}, Attribute::ReadOnly, },
 };
 // OPCODE-OLOADS:END
 
@@ -462,6 +478,17 @@ llvm::StringRef OP::GetTypeName(Type *Ty, std::string &str) {
     os.flush();
     return str;
   }
+}
+
+llvm::StringRef OP::ConstructOverloadName(Type *Ty, DXIL::OpCode opCode,
+                                          std::string &funcNameStorage) {
+  if (Ty == Type::getVoidTy(Ty->getContext())) {
+    funcNameStorage = (Twine(OP::m_NamePrefix) + Twine(GetOpCodeClassName(opCode))).str();
+  } else {
+    funcNameStorage = (Twine(OP::m_NamePrefix) + Twine(GetOpCodeClassName(opCode)) +
+                       "." + GetTypeName(Ty, funcNameStorage)).str();
+  }
+  return funcNameStorage;
 }
 
 const char *OP::GetOpCodeName(OpCode opCode) {
@@ -586,10 +613,10 @@ bool OP::IsDxilOpGradient(OpCode C) {
   unsigned op = (unsigned)C;
   /* <py::lines('OPCODE-GRADIENT')>hctdb_instrhelp.get_instrs_pred("op", "is_gradient")</py>*/
   // OPCODE-GRADIENT:BEGIN
-  // Instructions: Sample=60, SampleBias=61, SampleCmp=64, TextureGather=73,
-  // TextureGatherCmp=74, CalculateLOD=81, DerivCoarseX=83, DerivCoarseY=84,
-  // DerivFineX=85, DerivFineY=86
-  return (60 <= op && op <= 61) || op == 64 || (73 <= op && op <= 74) || op == 81 || (83 <= op && op <= 86);
+  // Instructions: Sample=60, SampleBias=61, SampleCmp=64, CalculateLOD=81,
+  // DerivCoarseX=83, DerivCoarseY=84, DerivFineX=85, DerivFineY=86,
+  // WriteSamplerFeedback=174, WriteSamplerFeedbackBias=175
+  return (60 <= op && op <= 61) || op == 64 || op == 81 || (83 <= op && op <= 86) || (174 <= op && op <= 175);
   // OPCODE-GRADIENT:END
 }
 
@@ -662,7 +689,7 @@ void OP::GetMinShaderModelAndMask(OpCode C, bool bWithTranslation,
   // Instructions: Sample=60, SampleBias=61, SampleCmp=64, CalculateLOD=81,
   // DerivCoarseX=83, DerivCoarseY=84, DerivFineX=85, DerivFineY=86
   if ((60 <= op && op <= 61) || op == 64 || op == 81 || (83 <= op && op <= 86)) {
-    mask = SFLAG(Library) | SFLAG(Pixel);
+    mask = SFLAG(Library) | SFLAG(Pixel) | SFLAG(Compute) | SFLAG(Amplification) | SFLAG(Mesh);
     return;
   }
   // Instructions: RenderTargetGetSamplePosition=76,
@@ -814,8 +841,9 @@ void OP::GetMinShaderModelAndMask(OpCode C, bool bWithTranslation,
     mask = SFLAG(Mesh);
     return;
   }
-  // Instructions: CreateHandleFromHeap=216, AnnotateHandle=217
-  if ((216 <= op && op <= 217)) {
+  // Instructions: AnnotateHandle=216, CreateHandleFromBinding=217,
+  // CreateHandleFromHeap=218, Unpack4x8=219, Pack4x8=220, IsHelperLane=221
+  if ((216 <= op && op <= 221)) {
     major = 6;  minor = 6;
     return;
   }
@@ -829,10 +857,28 @@ void OP::GetMinShaderModelAndMask(const llvm::CallInst *CI, bool bWithTranslatio
   OpCode opcode = OP::GetDxilOpFuncCallInst(CI);
   GetMinShaderModelAndMask(opcode, bWithTranslation, major, minor, mask);
 
+  unsigned op = (unsigned)opcode;
+  // These ops cannot indicate support for CS, AS, or MS,
+  // otherwise, it's saying these are guaranteed to be supported
+  // on the lowest shader model returned by this function
+  // for these shader stages.  For CS, SM 6.6 is required,
+  // and for AS/MS, an optional feature is required.
+  // This also breaks compatibility for existing validators.
+  // We need a different mechanism to be supported in functions
+  // for runtime linking.
+  // Instructions: Sample=60, SampleBias=61, SampleCmp=64, CalculateLOD=81,
+  // DerivCoarseX=83, DerivCoarseY=84, DerivFineX=85, DerivFineY=86
+  if ((60 <= op && op <= 61) || op == 64 || op == 81 || (83 <= op && op <= 86)) {
+    mask &= ~(SFLAG(Compute) | SFLAG(Amplification) | SFLAG(Mesh));
+    return;
+  }
+
   if (DXIL::CompareVersions(valMajor, valMinor, 1, 5) < 0) {
     // validator 1.4 didn't exclude wave ops in mask
     if (IsDxilOpWave(opcode))
       mask = ((unsigned)1 << (unsigned)DXIL::ShaderKind::Invalid) - 1;
+    // These shader models don't exist before 1.5
+    mask &= ~(SFLAG(Amplification) | SFLAG(Mesh));
     // validator 1.4 didn't have any additional rules applied:
     return;
   }
@@ -848,6 +894,15 @@ void OP::GetMinShaderModelAndMask(const llvm::CallInst *CI, bool bWithTranslatio
       mask = SFLAG(Library) | SFLAG(Compute) | SFLAG(Amplification) | SFLAG(Mesh);
     }
     return;
+  }
+
+  // 64-bit integer atomic ops require 6.6
+  else if (opcode == DXIL::OpCode::AtomicBinOp || opcode == DXIL::OpCode::AtomicCompareExchange) {
+    Type *pOverloadType = GetOverloadType(opcode, CI->getCalledFunction());
+    if (pOverloadType->isIntegerTy(64)) {
+      major = 6;
+      minor = 6;
+    }
   }
 }
 #undef SFLAG
@@ -881,6 +936,12 @@ OP::OP(LLVMContext &Ctx, Module *pModule)
       m_Ctx, {Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx)},
       "dx.types.ResourceProperties", pModule);
 
+  m_pResourceBindingType =
+      GetOrCreateStructType(m_Ctx,
+                            {Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx),
+                             Type::getInt32Ty(m_Ctx), Type::getInt8Ty(m_Ctx)},
+                            "dx.types.ResBind", pModule);
+
   Type *DimsType[4] = { Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx) };
   m_pDimensionsType = GetOrCreateStructType(m_Ctx, DimsType, "dx.types.Dimensions", pModule);
 
@@ -896,8 +957,20 @@ OP::OP(LLVMContext &Ctx, Module *pModule)
   Type *SplitDoubleTypes[2] = { Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx) }; // Lo, Hi.
   m_pSplitDoubleType = GetOrCreateStructType(m_Ctx, SplitDoubleTypes, "dx.types.splitdouble", pModule);
 
-  Type *Int4Types[4] = { Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx) }; // HiHi, HiLo, LoHi, LoLo
-  m_pInt4Type = GetOrCreateStructType(m_Ctx, Int4Types, "dx.types.fouri32", pModule);
+  Type *FourI32Types[4] = { Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx), Type::getInt32Ty(m_Ctx) }; // HiHi, HiLo, LoHi, LoLo
+  m_pFourI32Type = GetOrCreateStructType(m_Ctx, FourI32Types, "dx.types.fouri32", pModule);
+
+  Type *FourI16Types[4] = { Type::getInt16Ty(m_Ctx), Type::getInt16Ty(m_Ctx), Type::getInt16Ty(m_Ctx), Type::getInt16Ty(m_Ctx) }; // HiHi, HiLo, LoHi, LoLo
+  m_pFourI16Type = GetOrCreateStructType(m_Ctx, FourI16Types, "dx.types.fouri16", pModule);
+
+  // When loading a module into an existing context where types are merged,
+  // type names may change.  When this happens, any intrinsics overloaded on
+  // UDT types will no longer have matching overload names.
+  // This causes RefreshCache() to assert.
+  // This fixes the function names to they match the expected types,
+  // preventing RefreshCache() from failing due to this issue.
+  FixOverloadNames();
+
   // Try to find existing intrinsic function.
   RefreshCache();
 }
@@ -911,6 +984,30 @@ void OP::RefreshCache() {
       Function *OpFunc = GetOpFunc(OpCode, pOverloadType);
       (void)(OpFunc);
       DXASSERT_NOMSG(OpFunc == &F);
+    }
+  }
+}
+
+void OP::FixOverloadNames() {
+  // When merging code from multiple sources, such as with linking,
+  // type names that collide, but don't have the same type will be
+  // automically renamed with .0+ name disambiguation.  However,
+  // DXIL intrinsic overloads will not be renamed to disambiguate them,
+  // since they exist in separate modules at the time.
+  // This leads to name collisions between different types when linking.
+  // Do this after loading into a shared context, and before copying
+  // code into a common module, to prevent this problem.
+  for (Function &F : m_pModule->functions()) {
+    if (F.isDeclaration() && OP::IsDxilOpFunc(&F) && !F.user_empty()) {
+      CallInst *CI = cast<CallInst>(*F.user_begin());
+      DXIL::OpCode opCode = OP::GetDxilOpFuncCallInst(CI);
+      llvm::Type *Ty = OP::GetOverloadType(opCode, &F);
+      if (isa<StructType>(Ty)) {
+        std::string funcName;
+        if (OP::ConstructOverloadName(Ty, opCode, funcName).compare(F.getName()) != 0) {
+          F.setName(funcName);
+        }
+      }
     }
   }
 }
@@ -950,17 +1047,16 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   Type *p2I32 = GetBinaryWithTwoOutputsType();
   Type *pF64 = Type::getDoubleTy(m_Ctx);
   Type *pSDT = GetSplitDoubleType();  // Split double type.
-  Type *pI4S = GetInt4Type(); // 4 i32s in a struct.
+  Type *p4I32 = GetFourI32Type(); // 4 i32s in a struct.
+  
   Type *udt = pOverloadType;
   Type *obj = pOverloadType;
   Type *resProperty = GetResourcePropertiesType();
+  Type *resBind = GetResourceBindingType();
 
-  std::string funcName = (Twine(OP::m_NamePrefix) + Twine(GetOpCodeClassName(opCode))).str();
-  // Add ret type to the name.
-  if (pOverloadType != pV) {
-    std::string typeName;
-    funcName = Twine(funcName).concat(".").concat(GetTypeName(pOverloadType, typeName)).str();
-  } 
+  std::string funcName;
+  ConstructOverloadName(pOverloadType, opCode, funcName);
+
   // Try to find exist function with the same name in the module.
   if (Function *existF = m_pModule->getFunction(funcName)) {
     F = existF;
@@ -971,6 +1067,7 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
 #define A(_x) ArgTypes.emplace_back(_x)
 #define RRT(_y) A(GetResRetType(_y))
 #define CBRT(_y) A(GetCBufferRetType(_y))
+#define VEC4(_y) A(GetVectorType(4,_y))
 
 /* <py::lines('OPCODE-OLOAD-FUNCS')>hctdb_instrhelp.get_oloads_funcs()</py>*/
   switch (opCode) {            // return     opCode
@@ -1102,17 +1199,23 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   case OpCode::RenderTargetGetSampleCount:A(pI32);     A(pI32); break;
 
     // Synchronization
-  case OpCode::AtomicBinOp:            A(pI32);     A(pI32); A(pRes); A(pI32); A(pI32); A(pI32); A(pI32); A(pI32); break;
-  case OpCode::AtomicCompareExchange:  A(pI32);     A(pI32); A(pRes); A(pI32); A(pI32); A(pI32); A(pI32); A(pI32); break;
+  case OpCode::AtomicBinOp:            A(pETy);     A(pI32); A(pRes); A(pI32); A(pI32); A(pI32); A(pI32); A(pETy); break;
+  case OpCode::AtomicCompareExchange:  A(pETy);     A(pI32); A(pRes); A(pI32); A(pI32); A(pI32); A(pETy); A(pETy); break;
   case OpCode::Barrier:                A(pV);       A(pI32); A(pI32); break;
 
-    // Pixel shader
+    // Derivatives
   case OpCode::CalculateLOD:           A(pF32);     A(pI32); A(pRes); A(pRes); A(pF32); A(pF32); A(pF32); A(pI1);  break;
+
+    // Pixel shader
   case OpCode::Discard:                A(pV);       A(pI32); A(pI1);  break;
+
+    // Derivatives
   case OpCode::DerivCoarseX:           A(pETy);     A(pI32); A(pETy); break;
   case OpCode::DerivCoarseY:           A(pETy);     A(pI32); A(pETy); break;
   case OpCode::DerivFineX:             A(pETy);     A(pI32); A(pETy); break;
   case OpCode::DerivFineY:             A(pETy);     A(pI32); A(pETy); break;
+
+    // Pixel shader
   case OpCode::EvalSnapped:            A(pETy);     A(pI32); A(pI32); A(pI32); A(pI8);  A(pI32); A(pI32); break;
   case OpCode::EvalSampleIndex:        A(pETy);     A(pI32); A(pI32); A(pI32); A(pI8);  A(pI32); break;
   case OpCode::EvalCentroid:           A(pETy);     A(pI32); A(pI32); A(pI32); A(pI8);  break;
@@ -1160,7 +1263,7 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   case OpCode::WaveAnyTrue:            A(pI1);      A(pI32); A(pI1);  break;
   case OpCode::WaveAllTrue:            A(pI1);      A(pI32); A(pI1);  break;
   case OpCode::WaveActiveAllEqual:     A(pI1);      A(pI32); A(pETy); break;
-  case OpCode::WaveActiveBallot:       A(pI4S);     A(pI32); A(pI1);  break;
+  case OpCode::WaveActiveBallot:       A(p4I32);    A(pI32); A(pI1);  break;
   case OpCode::WaveReadLaneAt:         A(pETy);     A(pI32); A(pETy); A(pI32); break;
   case OpCode::WaveReadLaneFirst:      A(pETy);     A(pI32); A(pETy); break;
   case OpCode::WaveActiveOp:           A(pETy);     A(pI32); A(pETy); A(pI8);  A(pI8);  break;
@@ -1253,7 +1356,7 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   case OpCode::Dot4AddU8Packed:        A(pI32);     A(pI32); A(pI32); A(pI32); A(pI32); break;
 
     // Wave
-  case OpCode::WaveMatch:              A(pI4S);     A(pI32); A(pETy); break;
+  case OpCode::WaveMatch:              A(p4I32);    A(pI32); A(pETy); break;
   case OpCode::WaveMultiPrefixOp:      A(pETy);     A(pI32); A(pETy); A(pI32); A(pI32); A(pI32); A(pI32); A(pI8);  A(pI8);  break;
   case OpCode::WaveMultiPrefixBitCount:A(pI32);     A(pI32); A(pI1);  A(pI32); A(pI32); A(pI32); A(pI32); break;
 
@@ -1318,8 +1421,18 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   case OpCode::RayQuery_CommittedInstanceContributionToHitGroupIndex:A(pI32);     A(pI32); A(pI32); break;
 
     // Get handle from heap
-  case OpCode::CreateHandleFromHeap:   A(pRes);     A(pI32); A(pI32); A(pI1);  break;
-  case OpCode::AnnotateHandle:         A(pRes);     A(pI32); A(pRes); A(pI8);  A(pI8);  A(resProperty);break;
+  case OpCode::AnnotateHandle:         A(pRes);     A(pI32); A(pRes); A(resProperty);break;
+  case OpCode::CreateHandleFromBinding:A(pRes);     A(pI32); A(resBind);A(pI32); A(pI1);  break;
+  case OpCode::CreateHandleFromHeap:   A(pRes);     A(pI32); A(pI32); A(pI1);  A(pI1);  break;
+
+    // Unpacking intrinsics
+  case OpCode::Unpack4x8:              VEC4(pETy);  A(pI32); A(pI8);  A(pI32); break;
+
+    // Packing intrinsics
+  case OpCode::Pack4x8:                A(pI32);     A(pI32); A(pI8);  A(pETy); A(pETy); A(pETy); A(pETy); break;
+
+    // Helper Lanes
+  case OpCode::IsHelperLane:           A(pI1);      A(pI32); break;
   // OPCODE-OLOAD-FUNCS:END
   default: DXASSERT(false, "otherwise unhandled case"); break;
   }
@@ -1341,7 +1454,7 @@ Function *OP::GetOpFunc(OpCode opCode, Type *pOverloadType) {
   return F;
 }
 
-const SmallDenseMap<llvm::Type *, llvm::Function *, 8> &
+const SmallMapVector<llvm::Type *, llvm::Function *, 8> &
 OP::GetOpFuncList(OpCode opCode) const {
   DXASSERT(0 <= (unsigned)opCode && opCode < OpCode::NumOpCodes,
            "otherwise caller passed OOB OpCode");
@@ -1349,6 +1462,20 @@ OP::GetOpFuncList(OpCode opCode) const {
   return m_OpCodeClassCache[(unsigned)m_OpCodeProps[(unsigned)opCode]
                                 .opCodeClass]
       .pOverloads;
+}
+
+bool OP::IsDxilOpUsed(OpCode opcode) const {
+  auto &FnList = GetOpFuncList(opcode);
+  for (auto &it : FnList) {
+    llvm::Function *F = it.second;
+    if (!F) {
+      continue;
+    }
+    if (!F->user_empty()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void OP::RemoveFunction(Function *F) {
@@ -1369,6 +1496,7 @@ bool OP::GetOpCodeClass(const Function *F, OP::OpCodeClass &opClass) {
   if (iter == m_FunctionToOpClass.end()) {
     // When no user, cannot get opcode.
     DXASSERT(F->user_empty() || !IsDxilOpFunc(F), "dxil function without an opcode class mapping?");
+    opClass = OP::OpCodeClass::NumOpClasses;
     return false;
   }
   opClass = iter->second;
@@ -1398,11 +1526,13 @@ llvm::Type *OP::GetOverloadType(OpCode opCode, llvm::Function *F) {
   DXASSERT(F, "not work on nullptr");
   Type *Ty = F->getReturnType();
   FunctionType *FT = F->getFunctionType();
+  LLVMContext &Ctx = F->getContext();
 /* <py::lines('OPCODE-OLOAD-TYPES')>hctdb_instrhelp.get_funcs_oload_type()</py>*/
   switch (opCode) {            // return     OpCode
   // OPCODE-OLOAD-TYPES:BEGIN
   case OpCode::TempRegStore:
   case OpCode::CallShader:
+  case OpCode::Pack4x8:
     DXASSERT_NOMSG(FT->getNumParams() > 2);
     return FT->getParamType(2);
   case OpCode::MinPrecXRegStore:
@@ -1487,12 +1617,11 @@ llvm::Type *OP::GetOverloadType(OpCode opCode, llvm::Function *F) {
   case OpCode::RayQuery_Abort:
   case OpCode::RayQuery_CommitNonOpaqueTriangleHit:
   case OpCode::RayQuery_CommitProceduralPrimitiveHit:
-  case OpCode::CreateHandleFromHeap:
   case OpCode::AnnotateHandle:
-    return Type::getVoidTy(m_Ctx);
+  case OpCode::CreateHandleFromBinding:
+  case OpCode::CreateHandleFromHeap:
+    return Type::getVoidTy(Ctx);
   case OpCode::CheckAccessFullyMapped:
-  case OpCode::AtomicBinOp:
-  case OpCode::AtomicCompareExchange:
   case OpCode::SampleIndex:
   case OpCode::Coverage:
   case OpCode::InnerCoverage:
@@ -1527,7 +1656,7 @@ llvm::Type *OP::GetOverloadType(OpCode opCode, llvm::Function *F) {
   case OpCode::GeometryIndex:
   case OpCode::RayQuery_CandidateInstanceContributionToHitGroupIndex:
   case OpCode::RayQuery_CommittedInstanceContributionToHitGroupIndex:
-    return IntegerType::get(m_Ctx, 32);
+    return IntegerType::get(Ctx, 32);
   case OpCode::CalculateLOD:
   case OpCode::DomainLocation:
   case OpCode::WorldRayOrigin:
@@ -1553,15 +1682,16 @@ llvm::Type *OP::GetOverloadType(OpCode opCode, llvm::Function *F) {
   case OpCode::RayQuery_CandidateObjectRayDirection:
   case OpCode::RayQuery_CommittedObjectRayOrigin:
   case OpCode::RayQuery_CommittedObjectRayDirection:
-    return Type::getFloatTy(m_Ctx);
+    return Type::getFloatTy(Ctx);
   case OpCode::MakeDouble:
   case OpCode::SplitDouble:
-    return Type::getDoubleTy(m_Ctx);
+    return Type::getDoubleTy(Ctx);
   case OpCode::RayQuery_Proceed:
   case OpCode::RayQuery_CandidateProceduralPrimitiveNonOpaque:
   case OpCode::RayQuery_CandidateTriangleFrontFace:
   case OpCode::RayQuery_CommittedTriangleFrontFace:
-    return IntegerType::get(m_Ctx, 1);
+  case OpCode::IsHelperLane:
+    return IntegerType::get(Ctx, 1);
   case OpCode::CBufferLoadLegacy:
   case OpCode::Sample:
   case OpCode::SampleBias:
@@ -1574,6 +1704,7 @@ llvm::Type *OP::GetOverloadType(OpCode opCode, llvm::Function *F) {
   case OpCode::TextureGather:
   case OpCode::TextureGatherCmp:
   case OpCode::RawBufferLoad:
+  case OpCode::Unpack4x8:
   {
     StructType *ST = cast<StructType>(Ty);
     return ST->getElementType(0);
@@ -1589,6 +1720,10 @@ Type *OP::GetHandleType() const {
 
 Type *OP::GetResourcePropertiesType() const {
   return m_pResourcePropertiesType;
+}
+
+Type *OP::GetResourceBindingType() const {
+  return m_pResourceBindingType;
 }
 
 Type *OP::GetDimensionsType() const
@@ -1613,8 +1748,12 @@ Type *OP::GetSplitDoubleType() const {
   return m_pSplitDoubleType;
 }
 
-Type *OP::GetInt4Type() const {
-  return m_pInt4Type;
+Type *OP::GetFourI32Type() const {
+  return m_pFourI32Type;
+}
+
+Type *OP::GetFourI16Type() const {
+  return m_pFourI16Type;
 }
 
 bool OP::IsResRetType(llvm::Type *Ty) {
@@ -1666,6 +1805,18 @@ Type *OP::GetCBufferRetType(Type *pOverloadType) {
   return m_pCBufferRetType[TypeSlot];
 }
 
+Type *OP::GetVectorType(unsigned numElements, Type *pOverloadType) {
+  if (numElements == 4) {
+    if (pOverloadType == Type::getInt32Ty(pOverloadType->getContext())) {
+      return m_pFourI32Type;
+    }
+    else if (pOverloadType == Type::getInt16Ty(pOverloadType->getContext())) {
+      return m_pFourI16Type;
+    }
+  }
+  DXASSERT(false, "unexpected overload type");
+  return nullptr;
+}
 
 //------------------------------------------------------------------------------
 //

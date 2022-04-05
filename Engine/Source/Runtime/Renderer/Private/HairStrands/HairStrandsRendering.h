@@ -21,32 +21,29 @@
 #include "HairStrandsComposition.h"
 #include "HairStrandsDebug.h"
 #include "HairStrandsInterface.h"
-
-/// Hold all the hair strands data
-struct FHairStrandsRenderingData
-{
-	FHairStrandsVisibilityViews HairVisibilityViews;
-	FHairStrandsMacroGroupViews MacroGroupsPerViews;
-	FHairStrandsDebugData DebugData;
-};
+#include "HairStrandsData.h"
 
 void RenderHairPrePass(
 	FRDGBuilder& GraphBuilder,
 	FScene* Scene,
 	TArray<FViewInfo>& Views,
-	FHairStrandsRenderingData& OutHairDatas);
+	FInstanceCullingManager& InstanceCullingManager);
 
 void RenderHairBasePass(
 	FRDGBuilder& GraphBuilder,
 	FScene* Scene,
-	FSceneRenderTargets& SceneContext,
+	const FSceneTextures& SceneTextures,
 	TArray<FViewInfo>& Views,
-	FHairStrandsRenderingData& OutHairDatas);
+	FInstanceCullingManager& InstanceCullingManager);
 
 void RunHairStrandsBookmark(
 	FRDGBuilder& GraphBuilder, 
 	EHairStrandsBookmark Bookmark, 
 	FHairStrandsBookmarkParameters& Parameters);
 
-FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FViewInfo& View);
-FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(TArray<FViewInfo>& View);
+void RunHairStrandsBookmark(
+	EHairStrandsBookmark Bookmark,
+	FHairStrandsBookmarkParameters& Parameters);
+
+FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, FViewInfo& View);
+FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, TArray<FViewInfo>& View);

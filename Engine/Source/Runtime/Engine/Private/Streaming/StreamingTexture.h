@@ -7,13 +7,14 @@ StreamingTexture.h: Definitions of classes used for texture streaming.
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/Texture2D.h"
+#include "Engine/StreamableRenderAsset.h"
+#include "Engine/TextureDefines.h"
 
 struct FRenderAssetStreamingManager;
 struct FRenderAssetStreamingSettings;
 
 /*-----------------------------------------------------------------------------
-	FStreamingRenderAsset, the streaming system's version of UTexture2D.
+	FStreamingRenderAsset, the streaming system's version of UStreamableRenderAsset.
 -----------------------------------------------------------------------------*/
 
 /** Self-contained structure to manage a streaming texture/mesh, possibly on a separate thread. */
@@ -219,6 +220,8 @@ struct FStreamingRenderAsset
 	int32			MinAllowedMips;
 	/** (2) Max mip to be requested by the streaming  */
 	int32			MaxAllowedMips;
+	/** (2) LOD bias applied to no-ref meshes */
+	int32			NoRefLODBias;
 	/** (2) How much game time has elapsed since the texture was bound for rendering. Based on FApp::GetCurrentTime(). */
 	float			LastRenderTime;
 

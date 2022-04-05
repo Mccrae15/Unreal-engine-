@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "ObjectSnapshotData.generated.h"
 
+/** Shared data all saved objects in Level Snapshots have. */
 USTRUCT()
 struct LEVELSNAPSHOTS_API FObjectSnapshotData
 {
@@ -12,5 +13,9 @@ struct LEVELSNAPSHOTS_API FObjectSnapshotData
 
 	UPROPERTY()
 	TArray<uint8> SerializedData;
-	
+
+	UPROPERTY()
+	uint64 ObjectFlags {};
+
+	EObjectFlags GetObjectFlags() const { return static_cast<EObjectFlags>(ObjectFlags); }
 };

@@ -311,6 +311,12 @@ void FAudioThumbnail::GenerateWaveformPreview(TArray<uint8>& OutData, TRange<flo
 	
 	check(SoundWave->NumChannels == 1 || SoundWave->NumChannels == 2);
 
+	// If this SoundWave is generated procedurally, it's not possible to render a thumbnail.
+	if (SoundWave->bProcedural)
+	{
+		return;
+	}
+
 	uint32 SampleRate;
 	uint16 NumChannels;
 	TArray<uint8> RawPCMData;
@@ -606,7 +612,7 @@ void FAudioThumbnail::SampleAudio(int32 NumChannels, const int16* LookupData, in
 			int32 DataPoint = LookupData[Index + ChannelIndex];
 			int32 Sample = FMath::Clamp(FMath::TruncToInt(FMath::Abs(DataPoint) / 32768.f * MaxAmplitude), 0, MaxAmplitude - 1);
 
-			NewSample.RMS += FMath::Pow(Sample, 2);
+			NewSample.RMS += FMath::Pow(Sample, 2.f);
 			NewSample.Peak = FMath::Max(NewSample.Peak, Sample);
 			++NewSample.NumSamples;
 		}
@@ -960,28 +966,6 @@ void CopyInterpSoundTrack(TSharedRef<ISequencer> Sequencer, UInterpTrackSound* M
 	}
 }
 
-void FAudioTrackEditor::BuildTrackContextMenu( FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track )
-{
-	UInterpTrackSound* MatineeSoundTrack = nullptr;
-	for ( UObject* CopyPasteObject : GUnrealEd->MatineeCopyPasteBuffer )
-	{
-		MatineeSoundTrack = Cast<UInterpTrackSound>( CopyPasteObject );
-		if ( MatineeSoundTrack != nullptr )
-		{
-			break;
-		}
-	}
-	UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>( Track );
-	MenuBuilder.AddMenuEntry(
-		NSLOCTEXT( "Sequencer", "PasteMatineeSoundTrack", "Paste Matinee Sound Track" ),
-		NSLOCTEXT( "Sequencer", "PasteMatineeSoundTrackTooltip", "Pastes keys from a Matinee sound track into this track." ),
-		FSlateIcon(),
-		FUIAction(
-		FExecuteAction::CreateStatic( &CopyInterpSoundTrack, GetSequencer().ToSharedRef(), MatineeSoundTrack, AudioTrack ),
-		FCanExecuteAction::CreateLambda( [=]()->bool { return MatineeSoundTrack != nullptr && MatineeSoundTrack->Sounds.Num() > 0 && AudioTrack != nullptr; } ) ) );
-}
-
-
 const FSlateBrush* FAudioTrackEditor::GetIconBrush() const
 {
 	return FEditorStyle::GetBrush("Sequencer.Tracks.Audio");
@@ -1011,7 +995,7 @@ void FAudioTrackEditor::Resize(float NewSize, UMovieSceneTrack* InTrack)
 
 bool FAudioTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneAudioTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneAudioTrack::StaticClass()))
 	{
 		return false;
 	}
@@ -1042,7 +1026,7 @@ bool FAudioTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequen
 
 FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneAudioTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneAudioTrack::StaticClass()))
 	{
 		return FReply::Unhandled();
 	}
@@ -1289,6 +1273,7 @@ TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(FOnAssetSelected OnAsse
 		{
 			AssetPickerConfig.Filter.ClassNames.Add(ClassName);
 		}
+		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));

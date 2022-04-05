@@ -5,9 +5,16 @@ using UnrealBuildTool;
 
 public class OnlineSubsystemGoogle : ModuleRules
 {
+	protected virtual bool bUsesRestfulImpl
+	{
+		get =>
+			Target.Platform == UnrealTargetPlatform.Win64 ||
+			Target.Platform == UnrealTargetPlatform.Mac ||
+			Target.IsInPlatformGroup(UnrealPlatformGroup.Unix);
+	}
+
 	public OnlineSubsystemGoogle(ReadOnlyTargetRules Target) : base(Target)
 	{
-		bool bUsesRestfulImpl = false;
 		PrivateDefinitions.Add("ONLINESUBSYSTEMGOOGLE_PACKAGE=1");
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
@@ -16,6 +23,7 @@ public class OnlineSubsystemGoogle : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] { 
 				"Core",
+				"CoreOnline",
 				"CoreUObject",
 				"ApplicationCore",
 				"HTTP",
@@ -29,8 +37,7 @@ public class OnlineSubsystemGoogle : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
 			PublicDefinitions.Add("WITH_GOOGLE=1");
-			PublicDefinitions.Add("UE4_GOOGLE_VER=4.0.1");
-		   	PrivateIncludePaths.Add("Private/IOS");
+			PrivateIncludePaths.Add("Private/IOS");
 
 			// These are iOS system libraries that Google depends on
 			PublicFrameworks.AddRange(
@@ -66,37 +73,16 @@ public class OnlineSubsystemGoogle : ModuleRules
 			AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "OnlineSubsystemGoogle_UPL.xml"));
 
 			PrivateIncludePaths.Add("Private/Android");
-			
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		else if (bUsesRestfulImpl)
 		{
-			bUsesRestfulImpl = true;
+			PrivateIncludePaths.Add("Private/Rest");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Mac)
-		{
-			bUsesRestfulImpl = true;
-		}
-		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-		{
-			bUsesRestfulImpl = true;
-		}
-        else if (Target.Platform == UnrealTargetPlatform.Switch)
-        {
-            bUsesRestfulImpl = true;
-        }
 		else
 		{
 			PrecompileForTargets = PrecompileTargetsType.None;
 		}
 
-		if (bUsesRestfulImpl)
-		{
-			PublicDefinitions.Add("USES_RESTFUL_GOOGLE=1");
-			PrivateIncludePaths.Add("Private/Rest");
-		}
-		else
-		{
-			PublicDefinitions.Add("USES_RESTFUL_GOOGLE=0");
-		}
+		PublicDefinitions.Add("USES_RESTFUL_GOOGLE=" + (bUsesRestfulImpl ? "1" : "0"));
 	}
 }

@@ -51,6 +51,12 @@ public:
 	 */
 	void ComputeIndexWidth();
 
+	/**
+	 * Forces (or not) usage of 32 bits indices. No validation is made as to whether Indices can all be stored in 16 bits indices (if bIn32Bit == false) or not : 
+	 *  use only if you know the max value in Indices, otherwise, use ComputeIndexWidth
+	 */
+	void ForceUse32Bit(bool bIn32Bit) { b32Bit = bIn32Bit; }
+
 	// FRenderResource interface.
 	virtual void InitRHI() override;
 
@@ -86,7 +92,7 @@ class FIndexArrayView
 public:
 	/** Default constructor. */
 	FIndexArrayView()
-		: UntypedIndexData(NULL)
+		: UntypedIndexData(nullptr)
 		, NumIndices(0)
 		, b32Bit(false)
 	{
@@ -255,24 +261,29 @@ public:
 	/**
 	 * Computes the amount of memory allocated to store the indices.
 	 */
-	FORCEINLINE uint32 GetAllocatedSize() const
+	FORCEINLINE SIZE_T GetAllocatedSize() const
 	{
 		return IndexStorage.GetAllocatedSize();
+	}
+
+	FORCEINLINE bool GetAllowCPUAccess() const
+	{
+		return IndexStorage.GetAllowCPUAccess();
 	}
 
 	/** == GetNumIndices() * (b32Bit ? 4 : 2) */
 	int32 GetIndexDataSize() const { return IndexStorage.Num(); }
 
 	/** Create an RHI index buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
-	FIndexBufferRHIRef CreateRHIBuffer_RenderThread();
-	FIndexBufferRHIRef CreateRHIBuffer_Async();
+	FBufferRHIRef CreateRHIBuffer_RenderThread();
+	FBufferRHIRef CreateRHIBuffer_Async();
 
 	/** Copy everything, keeping reference to the same RHI resources. */
 	void CopyRHIForStreaming(const FRawStaticIndexBuffer& Other, bool InAllowCPUAccess);
 
 	/** Take over ownership of IntermediateBuffer */
 	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIIndexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
 		if (IndexBufferRHI && IntermediateBuffer)
 		{
@@ -313,7 +324,7 @@ public:
 
 private:
 	template <bool bRenderThread>
-	FIndexBufferRHIRef CreateRHIBuffer_Internal();
+	FBufferRHIRef CreateRHIBuffer_Internal();
 
 	/** Storage for indices. */
 	TResourceArray<uint8, INDEXBUFFER_ALIGNMENT> IndexStorage;
@@ -377,6 +388,7 @@ public:
 		: Indices(InNeedsCPUAccess)
 		, CachedNumIndices(0)
 	{
+		static_assert(sizeof(INDEX_TYPE) == 2 || sizeof(INDEX_TYPE) == 4, "FRawStaticIndexBuffer16or32 must have a stride of 2 or 4 bytes.");
 	}
 
 	/**
@@ -386,9 +398,9 @@ public:
 	{
 		IndexBufferRHI = CreateRHIBuffer_RenderThread();
 
-		if (IndexBufferRHI && IsSRVNeeded() && Indices.Num())
+		if (IndexBufferRHI && IsSRVNeeded() && Num())
 		{
-			SRVValue = RHICreateShaderResourceView(Indices.Num() ? IndexBufferRHI : nullptr);
+			SRVValue = RHICreateShaderResourceView(Num() ? IndexBufferRHI : nullptr);
 		}
 	}
 	
@@ -435,7 +447,7 @@ public:
 	virtual int32 AddItem(uint32 Val) override
 	{
 		++CachedNumIndices;
-		return Indices.Add(Val);
+		return Indices.Add((INDEX_TYPE)Val);
 	}
 
 	virtual uint32 Get(uint32 Idx) const override
@@ -481,12 +493,12 @@ public:
 	}
 
 	/** Create an RHI index buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
-	FIndexBufferRHIRef CreateRHIBuffer_RenderThread() { return CreateRHIBuffer_Internal<true>(); }
-	FIndexBufferRHIRef CreateRHIBuffer_Async() { return CreateRHIBuffer_Internal<false>(); }
+	FBufferRHIRef CreateRHIBuffer_RenderThread() { return CreateRHIBuffer_Internal<true>(); }
+	FBufferRHIRef CreateRHIBuffer_Async() { return CreateRHIBuffer_Internal<false>(); }
 
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIIndexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
 		if (IndexBufferRHI && IntermediateBuffer)
 		{
@@ -528,12 +540,12 @@ private:
 	}
 
 	template <bool bRenderThread>
-	FIndexBufferRHIRef CreateRHIBuffer_Internal()
+	FBufferRHIRef CreateRHIBuffer_Internal()
 	{
 		if (CachedNumIndices)
 		{
 			// Create the index buffer.
-			FRHIResourceCreateInfo CreateInfo(&Indices);
+			FRHIResourceCreateInfo CreateInfo(sizeof(INDEX_TYPE) == 4 ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"), &Indices);
 			EBufferUsageFlags Flags = BUF_Static;
 
 			if (IsSRVNeeded())
@@ -542,8 +554,12 @@ private:
 				Flags = (EBufferUsageFlags)(Flags | BUF_ShaderResource);
 			}
 
-			FIndexBufferRHIRef Ret;
-			const uint32 Size = Indices.Num() * sizeof(INDEX_TYPE);
+			// Need to cache number of indices from the source array *before* RHICreateIndexBuffer is called
+			// because it will empty the source array.
+			CachedNumIndices = Indices.Num();
+
+			FBufferRHIRef Ret;
+			const uint32 Size = CachedNumIndices * sizeof(INDEX_TYPE);
 			CreateInfo.bWithoutNativeResource = !Size;
 			if (bRenderThread)
 			{
@@ -554,7 +570,6 @@ private:
 				Ret = RHIAsyncCreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
 			}
 
-			CachedNumIndices = Indices.Num();
 			return Ret;
 		}
 		return nullptr;

@@ -77,7 +77,7 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 		FLinearColor FinalTint = FSequencerSectionPainter::BlendColor(Tint);
 		if (bIsHighlighted && Section.GetRange() != TRange<FFrameNumber>::All())
 		{
-			float Lum = FinalTint.ComputeLuminance() * 0.2f;
+			float Lum = FinalTint.GetLuminance() * 0.2f;
 			FinalTint = FinalTint + FLinearColor(Lum, Lum, Lum, 0.f);
 		}
 
@@ -241,12 +241,6 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 
 	void CalculateSelectionColor()
 	{
-		// Don't draw selected if infinite
-		if (Section.GetRange() == TRange<FFrameNumber>::All())
-		{
-			return;
-		}
-
 		FSequencerSelection& Selection = Sequencer.GetSelection();
 		FSequencerSelectionPreview& SelectionPreview = Sequencer.GetSelectionPreview();
 
@@ -398,14 +392,14 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 
 			if ((Upper.Location.X - Lower.Location.X)*.5f > MinTimeSize)
 			{
-				float      NewPointTime  = (Upper.Location.X + Lower.Location.X)*.5f;
+				FVector2D::FReal      NewPointTime  = (Upper.Location.X + Lower.Location.X)*.5f;
 				FFrameTime FrameTime     = NewPointTime * TimeToPixelConverter.GetTickResolution();
 				float      NewPointValue = SectionObject->EvaluateEasing(FrameTime);
 
 				// Check that the gradient is changing significantly
-				float LinearValue = (Upper.Location.Y + Lower.Location.Y) * .5f;
-				float PointGradient = NewPointValue - SectionObject->EvaluateEasing(FMath::Lerp(Lower.Location.X, NewPointTime, 0.9f) * TimeToPixelConverter.GetTickResolution());
-				float OuterGradient = Upper.Location.Y - Lower.Location.Y;
+				FVector2D::FReal LinearValue = (Upper.Location.Y + Lower.Location.Y) * .5f;
+				FVector2D::FReal PointGradient = NewPointValue - SectionObject->EvaluateEasing(FMath::Lerp(Lower.Location.X, NewPointTime, 0.9f) * TimeToPixelConverter.GetTickResolution());
+				FVector2D::FReal OuterGradient = Upper.Location.Y - Lower.Location.Y;
 				if (!FMath::IsNearlyEqual(OuterGradient, PointGradient, GradientThreshold) ||
 					!FMath::IsNearlyEqual(LinearValue, NewPointValue, ValueThreshold))
 				{
@@ -441,12 +435,12 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 		FSlateResourceHandle ResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*MyBrush);
 		const FSlateShaderResourceProxy* ResourceProxy = ResourceHandle.GetResourceProxy();
 
-		FVector2D AtlasOffset = ResourceProxy ? ResourceProxy->StartUV : FVector2D(0.f, 0.f);
-		FVector2D AtlasUVSize = ResourceProxy ? ResourceProxy->SizeUV : FVector2D(1.f, 1.f);
+		FVector2f AtlasOffset = ResourceProxy ? ResourceProxy->StartUV : FVector2f(0.f, 0.f);
+		FVector2f AtlasUVSize = ResourceProxy ? ResourceProxy->SizeUV : FVector2f(1.f, 1.f);
 
 		FSlateRenderTransform RenderTransform;
 
-		const FVector2D Pos = RangeGeometry.GetAbsolutePosition();
+		const FVector2f Pos = FVector2f(RangeGeometry.GetAbsolutePosition());	// LWC_TODO: Precision loss
 		const FVector2D Size = RangeGeometry.GetLocalSize();
 
 		FLinearColor EaseSelectionColor = FEditorStyle::GetSlateColor(SequencerSectionConstants::SelectionColorName).GetColor(FWidgetStyle());
@@ -483,19 +477,21 @@ struct FSequencerSectionPainterImpl : FSequencerSectionPainter
 			Indices.Reserve(CurvePoints.Num()*6);
 			Verts.Reserve(CurvePoints.Num()*2);
 
+			const FVector2f SizeAsFloatVec = FVector2f(Size);	// LWC_TODO: Precision loss
+
 			for (const FEasingCurvePoint& Point : CurvePoints)
 			{
 				float SegmentStartTime = UE::MovieScene::DiscreteInclusiveLower(Segment.Range) / TimeToPixelConverter.GetTickResolution();
 				float U = (Point.Location.X - SegmentStartTime) / ( FFrameNumber(UE::MovieScene::DiscreteSize(Segment.Range)) / TimeToPixelConverter.GetTickResolution() );
 
 				// Add verts top->bottom
-				FVector2D UV(U, 0.f);
-				Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, (Pos + UV*Size*RangeGeometry.Scale), AtlasOffset + UV*AtlasUVSize, FillColor));
+				FVector2f UV(U, 0.f);
+				Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, (Pos + UV*SizeAsFloatVec*RangeGeometry.Scale), AtlasOffset + UV*AtlasUVSize, FillColor));	// LWC_TODO: Precision loss
 
 				UV.Y = 1.f - Point.Location.Y;
-				BorderPoints.Add(UV*Size);
+				BorderPoints.Add(FVector2D(UV)*Size);
 				BorderPointColors.Add(Point.Color);
-				Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, (Pos + UV*Size*RangeGeometry.Scale), AtlasOffset + FVector2D(UV.X, 0.5f)*AtlasUVSize, FillColor));
+				Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, (Pos + UV*SizeAsFloatVec*RangeGeometry.Scale), AtlasOffset + FVector2f(UV.X, 0.5f)*AtlasUVSize, FillColor));	// LWC_TODO: Precision loss
 
 				if (Verts.Num() >= 4)
 				{
@@ -1028,8 +1024,8 @@ int32 SSequencerSection::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	const bool bLocked = SectionObject->IsLocked() || SectionObject->IsReadOnly();
 
 	bool bSetSectionToKey = false;
-
-	if (Track && Track->GetSectionToKey() == SectionObject)
+    // Only show section to key border if we have more than one section
+	if (Track && Track->GetAllSections().Num() > 1 && Track->GetSectionToKey() == SectionObject)
 	{
 		bSetSectionToKey = true;
 	}

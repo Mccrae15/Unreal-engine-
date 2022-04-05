@@ -14,7 +14,9 @@
 #include "ContentBrowserDataMenuContexts.h"
 #include "CollectionManagerTypes.h"
 #include "IContentBrowserSingleton.h"
-#include "Editor/ContentBrowser/Private/HistoryManager.h"
+#include "HistoryManager.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "Textures/SlateIcon.h"
 
 class FAssetContextMenu;
 class FFrontendFilter_Text;
@@ -30,6 +32,8 @@ class SPathView;
 class SSplitter;
 class UFactory;
 class UToolMenu;
+class SSearchToggleButton;
+class UContentBrowserToolbarMenuContext;
 
 struct FToolMenuContext;
 
@@ -51,13 +55,15 @@ public:
 	SLATE_BEGIN_ARGS( SContentBrowser )
 		: _ContainingTab()
 		, _InitiallyLocked(false)
+		, _IsDrawer(false)
 	{}
 		/** The tab in which the content browser resides */
-		SLATE_ARGUMENT( TSharedPtr<SDockTab>, ContainingTab )
+		SLATE_ARGUMENT(TSharedPtr<SDockTab>, ContainingTab)
 
 		/** If true, this content browser will not sync from external sources. */
-		SLATE_ARGUMENT( bool, InitiallyLocked )
+		SLATE_ARGUMENT(bool, InitiallyLocked )
 
+		SLATE_ARGUMENT(bool, IsDrawer)
 	SLATE_END_ARGS()
 
 	~SContentBrowser();
@@ -157,7 +163,7 @@ public:
 	void SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh = false);
 
 	/** Gets the current path if one exists, otherwise returns empty string. */
-	FString GetCurrentPath() const;
+	FString GetCurrentPath(const EContentBrowserPathType PathType) const;
 
 	/**
 	 * Forces the content browser to show plugin content
@@ -175,6 +181,13 @@ public:
 	/** Gives keyboard focus to the asset search box */
 	void SetKeyboardFocusOnSearch() const;
 
+	/**
+	 * Copies settings from a different browser to this browser
+	 * Note this overrides any settings already saved for this browser 
+	 */
+	void CopySettingsFromBrowser(TSharedPtr<SContentBrowser> OtherBrowser);
+
+	/** SWidget interface  */
 	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
 	virtual FReply OnMouseButtonDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
 	virtual FReply OnPreviewMouseButtonDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
@@ -251,6 +264,9 @@ private:
 	/** Called by the editable text control when the user commits a text change */
 	void OnSearchBoxCommitted(const FText& InSearchText, ETextCommit::Type CommitInfo);
 
+	/** Called by the editable text control to allow the content browser to handle specific key presses without it resulting in typing into the search box */
+	FReply OnSearchKeyDown(const FGeometry& Geometry, const FKeyEvent& InKeyEvent);
+
 	/** Should the "Save Search" button be enabled? */
 	bool IsSaveSearchButtonEnabled() const;
 
@@ -278,10 +294,10 @@ private:
 	TSharedRef<SWidget> GetPathPickerContent();
 
 	/** Register the context objects needed for the "Add New" menu */
-	void AppendNewMenuContextObjects(const EContentBrowserDataMenuContext_AddNewMenuDomain InDomain, const TArray<FName>& InSelectedPaths, FToolMenuContext& InOutMenuContext);
+	void AppendNewMenuContextObjects(const EContentBrowserDataMenuContext_AddNewMenuDomain InDomain, const TArray<FName>& InSelectedPaths, FToolMenuContext& InOutMenuContext, UContentBrowserToolbarMenuContext* CommonContext, bool bCanBeModified);
 
 	/** Handle creating a context menu for the "Add New" button */
-	TSharedRef<SWidget> MakeAddNewContextMenu(const EContentBrowserDataMenuContext_AddNewMenuDomain InDomain);
+	TSharedRef<SWidget> MakeAddNewContextMenu(const EContentBrowserDataMenuContext_AddNewMenuDomain InDomain, UContentBrowserToolbarMenuContext* CommonContext);
 
 	/** Handle populating a context menu for the "Add New" button */
 	void PopulateAddNewContextMenu(class UToolMenu* Menu);
@@ -316,20 +332,20 @@ private:
 	/** Handler for clicking the lock button */
 	FReply ToggleLockClicked();
 
-	/** Gets the brush used on the lock button */
-	const FSlateBrush* GetToggleLockImage() const;
+	/** Handler for clicking the dock drawer in layout button */
+	FReply DockInLayoutClicked();
+
+	/** Gets the menu text */
+	FText GetLockMenuText() const;
+
+	/** Gets icon for the lock button */
+	const FSlateBrush* GetLockIcon() const;
 
 	/** Gets the visibility state of the asset tree */
 	EVisibility GetSourcesViewVisibility() const;
 
-	/** Gets the brush used to on the sources toggle button */
-	const FSlateBrush* GetSourcesToggleImage() const;
-
 	/** Handler for clicking the tree expand/collapse button */
 	FReply SourcesViewExpandClicked();
-
-	/** Gets the visibility of the path expander button */
-	EVisibility GetPathExpanderVisibility() const;
 
 	/** Gets the visibility of the source switch button */
 	EVisibility GetSourcesSwitcherVisibility() const;
@@ -343,9 +359,6 @@ private:
 	/** Handler for clicking the source switch button */
 	FReply OnSourcesSwitcherClicked();
 
-	/** Gets the source search hint text */
-	FText GetSourcesSearchHintText() const;
-
 	/** Called to handle the Content Browser settings changing */
 	void OnContentBrowserSettingsChanged(FName PropertyName);
 
@@ -354,6 +367,9 @@ private:
 
 	/** Handler for clicking the history forward button */
 	FReply ForwardClicked();
+
+	/** Handler for clicking the add collection button */
+	FReply OnAddCollectionClicked();
 
 	/** Handler to check to see if a rename command is allowed */
 	bool HandleRenameCommandCanExecute() const;
@@ -484,6 +500,12 @@ private:
 	/** Get the visibility of the docked collections view */
 	EVisibility GetDockedCollectionsVisibility() const;
 
+	/** Get the visibility of the lock button */
+	EVisibility GetLockButtonVisibility() const;
+
+	/** Whether or not the collections view is docked or exists in its own panel in the same area as the sources view */
+	bool IsCollectionViewDocked() const;
+
 	/** Toggles the favorite status of an array of folders*/
 	void ToggleFolderFavorite(const TArray<FString>& FolderPaths);
 
@@ -499,6 +521,26 @@ private:
 	/** Add data so that menus can access content browser */
 	void ExtendAssetViewButtonMenuContext(FToolMenuContext& InMenuContext);
 
+	/** Creates various widgets for the content browser main view */
+	TSharedRef<SWidget> CreateToolBar(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreateLockButton(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreateAssetView(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreateFavoritesView(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreatePathView(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreateDockedCollectionsView(const FContentBrowserConfig* Config);
+	TSharedRef<SWidget> CreateDrawerDockButton(const FContentBrowserConfig* Config);
+
+	/** Adds menu options to the view menu */
+	void ExtendViewOptionsMenu(const FContentBrowserConfig* Config);
+
+	/** Creates the content browser toolbar menu */
+	void RegisterContentBrowserToolBar();
+
+	/** Gets the size rule for various areas. When areas are a collapsed the splitter slot becomes auto sized, otherwise it is user sized */
+	SSplitter::ESizeRule GetFavoritesAreaSizeRule() const;
+	SSplitter::ESizeRule GetPathAreaSizeRule() const;
+	SSplitter::ESizeRule GetCollectionsAreaSizeRule() const;
+
 private:
 
 	/** The tab that contains this browser */
@@ -513,8 +555,14 @@ private:
 	/** The context menu manager for the path view */
 	TSharedPtr<class FPathContextMenu> PathContextMenu;
 
-	/** The sources search, shared between the paths and collections views */
+	/** The sources search for favorites */
+	TSharedPtr<FSourcesSearch> FavoritesSearch;
+
+	/** The sources search for paths */
 	TSharedPtr<FSourcesSearch> SourcesSearch;
+
+	/** The sources search for collections*/
+	TSharedPtr<FSourcesSearch> CollectionSearch;
 
 	/** The asset tree widget */
 	TSharedPtr<SPathView> PathViewPtr;
@@ -540,6 +588,24 @@ private:
 	/** The path picker */
 	TSharedPtr<SComboButton> PathPickerButton;
 
+	/** Favorites area widget */
+	TSharedPtr<SExpandableArea> FavoritesArea;
+
+	/** Toggle button for showing/hiding favorites search area */
+	TSharedPtr<SSearchToggleButton> FavoritesSearchToggleButton;
+
+	/** Path area widget */
+	TSharedPtr<SExpandableArea> PathArea;
+
+	/** Toggle button for showing/hiding path search area */
+	TSharedPtr<SSearchToggleButton> PathSearchToggleButton;
+
+	/** Collection area widget */
+	TSharedPtr<SExpandableArea> CollectionArea;
+
+	/** Toggle button for showing/hiding collection search area */
+	TSharedPtr<SSearchToggleButton> CollectionSearchToggleButton;
+
 	/** Index of the active sources widget */
 	int32 ActiveSourcesWidgetIndex = 0;
 
@@ -551,6 +617,9 @@ private:
 
 	/** True if this content browser can be set to the primary browser. */
 	bool bCanSetAsPrimaryBrowser;
+
+	/** True if this content browser is an a drawer */
+	bool bIsDrawer;
 
 	/** Unique name for this Content Browser. */
 	FName InstanceName;

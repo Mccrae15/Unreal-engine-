@@ -216,7 +216,7 @@ FBXImportOptions* GetImportOptions( UnFbx::FFbxImporter* FbxImporter, UFbxImport
 		}
 
 		// Compute centered window position based on max window size, which include when all categories are expanded
-		const float FbxImportWindowWidth = 410.0f;
+		const float FbxImportWindowWidth = 450.0f;
 		const float FbxImportWindowHeight = 750.0f;
 		FVector2D FbxImportWindowSize = FVector2D(FbxImportWindowWidth, FbxImportWindowHeight); // Max window size it can get based on current slate
 
@@ -351,6 +351,8 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		InOutImportOptions.MinimumLodNumber			= ImportUI->MinimumLodNumber;
 	}
 
+	InOutImportOptions.bBuildNanite = ImportUI->StaticMeshImportData->bBuildNanite;
+
 	//Animation and skeletal mesh options
 	{
 		InOutImportOptions.bImportAnimations		= ImportUI->bImportAnimations;
@@ -398,6 +400,7 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		InOutImportOptions.VertexColorImportOption	= StaticMeshData->VertexColorImportOption;
 		InOutImportOptions.VertexOverrideColor		= StaticMeshData->VertexOverrideColor;
 		InOutImportOptions.bReorderMaterialToFbxOrder = StaticMeshData->bReorderMaterialToFbxOrder;
+		InOutImportOptions.DistanceFieldResolutionScale = StaticMeshData->DistanceFieldResolutionScale;
 	}
 	else if ( ImportUI->MeshTypeToImport == FBXIT_SkeletalMesh )
 	{
@@ -463,7 +466,6 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 	{
 		InOutImportOptions.bCombineToSingle				= ImportUI->StaticMeshImportData->bCombineMeshes;
 		InOutImportOptions.bRemoveDegenerates			= ImportUI->StaticMeshImportData->bRemoveDegenerates;
-		InOutImportOptions.bBuildAdjacencyBuffer		= ImportUI->StaticMeshImportData->bBuildAdjacencyBuffer;
 		InOutImportOptions.bBuildReversedIndexBuffer	= ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer;
 		InOutImportOptions.bGenerateLightmapUVs			= ImportUI->StaticMeshImportData->bGenerateLightmapUVs;
 		InOutImportOptions.bOneConvexHullPerUCX			= ImportUI->StaticMeshImportData->bOneConvexHullPerUCX;
@@ -1023,8 +1025,13 @@ bool FFbxImporter::OpenFile(FString Filename)
 	// version of FBX SDK that you are using.
 	FbxManager::GetFileFormatVersion(SDKMajor, SDKMinor, SDKRevision);
 
+	if (SdkManager->GetIOSettings())
+	{
+		SdkManager->GetIOSettings()->SetBoolProp(IMP_RELAXED_FBX_CHECK, true);
+	}
+
 	// Initialize the importer by providing a filename.
-	const bool bImportStatus = Importer->Initialize(TCHAR_TO_UTF8(*Filename));
+	const bool bImportStatus = Importer->Initialize(TCHAR_TO_UTF8(*Filename), -1, SdkManager->GetIOSettings());
 	
 	FbxCreator = EFbxCreator::Unknow;
 	FbxIOFileHeaderInfo *FileHeaderInfo = Importer->GetFileHeaderInfo();
@@ -1602,7 +1609,6 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 				  * @EventParam MorphThresholdPosition float Returns the morph target threshold delta to compute deltas
 				  * @EventParam AutoComputeLodDistances boolean Returns whether the importer should set the auto compute LOD distance
 				  * @EventParam LodNumber integer Returns the LOD number we should have after the import
-				  * @EventParam BuildAdjacencyBuffer boolean Returns whether the importer should fill the adjacency buffer when building the static mesh
 				  * @EventParam BuildReversedIndexBuffer boolean Returns whether the importer should fill the reverse index buffer when building the static mesh
 				  * @EventParam GenerateLightmapUVs boolean Returns whether the importer should generate light map UVs
 				  * @EventParam ImportStaticMeshLODs boolean Returns whether the importer should import the LODs
@@ -1704,7 +1710,6 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 						{
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt AutoComputeLodDistances"), CaptureImportOptions->bAutoComputeLodDistances));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt LodNumber"), CaptureImportOptions->LodNumber));
-							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt BuildAdjacencyBuffer"), CaptureImportOptions->bBuildAdjacencyBuffer));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt BuildReversedIndexBuffer"), CaptureImportOptions->bBuildReversedIndexBuffer));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt GenerateLightmapUVs"), CaptureImportOptions->bGenerateLightmapUVs));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("StaticMeshOpt ImportStaticMeshLODs"), CaptureImportOptions->bImportStaticMeshLODs));
@@ -1803,7 +1808,7 @@ FString FFbxImporter::MakeName(const ANSICHAR* Name)
 
 FString FFbxImporter::MakeString(const ANSICHAR* Name)
 {
-	return FString(ANSI_TO_TCHAR(Name));
+	return FString(UTF8_TO_TCHAR(Name));
 }
 
 FName FFbxImporter::MakeNameForMesh(FString InName, FbxObject* FbxObject)

@@ -17,11 +17,7 @@
 
 namespace Chaos
 {
-#if INTEL_ISPC
-	extern bool bChaos_Collision_ISPC_Enabled;
-#endif
-
-	namespace Collisions
+	namespace CVars
 	{
 		int32 Chaos_Collision_EnergyClampEnabled = 1;
 		FAutoConsoleVariableRef CVarChaosCollisionEnergyClampEnabled(TEXT("p.Chaos.Collision.EnergyClampEnabled"), Chaos_Collision_EnergyClampEnabled, TEXT("Whether to use energy clamping in collision apply step"));
@@ -33,7 +29,7 @@ namespace Chaos
 		FAutoConsoleVariableRef CVarChaosCollisionPrevVelocityRestitutionEnabled(TEXT("p.Chaos.Collision.PrevVelocityRestitutionEnabled"), Chaos_Collision_PrevVelocityRestitutionEnabled, TEXT("If enabled restitution will be calculated on previous frame velocities instead of current frame velocities"));
 
 		FRealSingle Chaos_Collision_ContactMovementAllowance = 0.05f;
-		FAutoConsoleVariableRef CVarChaosCollisionContactMovementAllowance(TEXT("p.Chaos.Collision.AntiJitterContactMovementAllowance"), Chaos_Collision_ContactMovementAllowance, 
+		FAutoConsoleVariableRef CVarChaosCollisionContactMovementAllowance(TEXT("p.Chaos.Collision.AntiJitterContactMovementAllowance"), Chaos_Collision_ContactMovementAllowance,
 			TEXT("If a contact is close to where it was during a previous iteration, we will assume it is the same contact that moved (to reduce jitter). Expressed as the fraction of movement distance and Centre of Mass distance to the contact point"));
 
 		int32 Chaos_Collision_UseAccumulatedImpulseClipSolve = 0; // This requires multiple contact points per iteration per pair and contact points that don't move too much (in body space) to have an effect
@@ -42,99 +38,108 @@ namespace Chaos
 		int32 Chaos_Collision_UseShockPropagation = 1;
 		FAutoConsoleVariableRef CVarChaosCollisionUseShockPropagation(TEXT("p.Chaos.Collision.UseShockPropagation"), Chaos_Collision_UseShockPropagation, TEXT(""));
 
-		FReal Chaos_Collision_CollisionClipTolerance = 0.01f;
+		FRealSingle Chaos_Collision_CollisionClipTolerance = 0.01f;
 		FAutoConsoleVariableRef CVarChaosCollisionClipTolerance(TEXT("p.Chaos.Collision.ClipTolerance"), Chaos_Collision_CollisionClipTolerance, TEXT(""));
 
 		bool Chaos_Collision_CheckManifoldComplete = false;
 		FAutoConsoleVariableRef CVarChaosCollisionCheckManifoldComplete(TEXT("p.Chaos.Collision.CheckManifoldComplete"), Chaos_Collision_CheckManifoldComplete, TEXT(""));
+	}
+	using namespace CVars;
 
-		void Update(FRigidBodyPointContactConstraint& Constraint, const FReal Dt)
+	namespace Collisions
+	{
+		void Update(FPBDCollisionConstraint& Constraint, const FReal Dt)
 		{
-			const FRigidTransform3 Transform0 = GetTransform(Constraint.Particle[0]);
-			const FRigidTransform3 Transform1 = GetTransform(Constraint.Particle[1]);
+			// NOTE: These are actor transforms, not CoM transforms
+			// \todo(chaos): see if we can easily switch to CoM transforms now in collision loop (shapes are held in actor space)
+			const FSolverBody& Body0 = *Constraint.GetSolverBody0();
+			const FSolverBody& Body1 = *Constraint.GetSolverBody1();
+			const FRigidTransform3 Transform0 = FRigidTransform3(Body0.ActorP(), Body0.ActorQ());
+			const FRigidTransform3 Transform1 = FRigidTransform3(Body1.ActorP(), Body1.ActorQ());
 
 			Constraint.ResetPhi(Constraint.GetCullDistance());
-			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodyPointContactConstraint>(Constraint, Transform0, Transform1, Dt);
+			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(Constraint, Transform0, Transform1, Dt);
 		}
 
-		void UpdateSwept(FRigidBodySweptPointContactConstraint& Constraint, const FReal Dt)
+		void UpdateSwept(FPBDCollisionConstraint& Constraint, const FReal Dt)
 		{
-			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
 			// Note: This is unusual but we are using a mix of the previous and current transform
-			// This is due to how CCD only rewinds the position
-			const FRigidTransform3 TransformXQ0(Particle0->X(), Particle0->Q());
-			const FRigidTransform3 Transform1 = GetTransform(Constraint.Particle[1]);
+			// This is due to how CCD rewinds the position (not rotation) and then sweeps to find the first contact at the current orientation
+			// NOTE: These are actor transforms, not CoM transforms
+			// \todo(chaos): see if we can easily switch to CoM transforms now in collision loop (shapes are held in actor space)
+			const FSolverBody& Body0 = *Constraint.GetSolverBody0();
+			const FSolverBody& Body1 = *Constraint.GetSolverBody1();
+			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.GetParticle0());
+			const FRigidTransform3 TransformXQ0(Body0.X() - Body0.ActorQ().RotateVector(Particle0->CenterOfMass()), Body0.ActorQ());
+			const FRigidTransform3 Transform1 = FRigidTransform3(Body1.ActorP(), Body1.ActorQ());
+
 			Constraint.ResetPhi(Constraint.GetCullDistance());
-			
-			// Update as a point constraint (base class).
-			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodySweptPointContactConstraint>(Constraint, TransformXQ0, Transform1, Dt);
+			UpdateConstraintFromGeometrySwept<ECollisionUpdateType::Deepest>(Constraint, TransformXQ0, Transform1, Dt);
 		}
 
 
 		// A PBD collision penetration correction.
 		// Currently only used by RBAN
-		FVec3 ApplyContact2(FCollisionContact& Contact,
-			FGenericParticleHandle Particle0,
-			FGenericParticleHandle Particle1,
+		FVec3 ApplyContact2(FPBDCollisionConstraint& Constraint,
 			const FContactIterationParameters& IterationParameters,
 			const FContactParticleParameters& ParticleParameters)
 		{
 			FVec3 AccumulatedImpulse(0);
-			TPBDRigidParticleHandle<FReal, 3>* PBDRigid0 = Particle0->CastToRigidParticle();
-			TPBDRigidParticleHandle<FReal, 3>* PBDRigid1 = Particle1->CastToRigidParticle();
-			bool bIsRigidDynamic0 = PBDRigid0 && PBDRigid0->ObjectState() == EObjectStateType::Dynamic;
-			bool bIsRigidDynamic1 = PBDRigid1 && PBDRigid1->ObjectState() == EObjectStateType::Dynamic;
 
-			FVec3 P0 = FParticleUtilities::GetCoMWorldPosition(Particle0);
-			FVec3 P1 = FParticleUtilities::GetCoMWorldPosition(Particle1);
-			FRotation3 Q0 = FParticleUtilities::GetCoMWorldRotation(Particle0);
-			FRotation3 Q1 = FParticleUtilities::GetCoMWorldRotation(Particle1);
-			FVec3 VectorToPoint0 = Contact.Location - P0;
-			FVec3 VectorToPoint1 = Contact.Location - P1;
+			FSolverBody& Body0 = *Constraint.GetSolverBody0();
+			FSolverBody& Body1 = *Constraint.GetSolverBody1();
 
-			if (Contact.Phi < 0)
+			const FVec3 ContactLocation = Constraint.CalculateWorldContactLocation();
+			const FVec3 ContactNormal = Constraint.CalculateWorldContactNormal();
+			const FReal ContactFriction = Constraint.GetDynamicFriction();
+			const FReal ContactRestitution = Constraint.GetRestitution();
+			FReal ContactPhi = Constraint.GetPhi();
+			FReal ContactRestitutionPadding = Constraint.GetRestitutionPadding();
+
+			FVec3 VectorToPoint0 = ContactLocation - Body0.P();
+			FVec3 VectorToPoint1 = ContactLocation - Body1.P();
+
+			if (ContactPhi < 0)
 			{
 				*IterationParameters.NeedsAnotherIteration = true;
 
-				bool bApplyResitution = (Contact.Restitution > 0.0f);
-				bool bHaveRestitutionPadding = (Contact.RestitutionPadding > 0.0f);
-				bool bApplyFriction = (Contact.Friction > 0) && (IterationParameters.Dt > SMALL_NUMBER);
+				bool bApplyResitution = (ContactRestitution > 0.0f);
+				bool bHaveRestitutionPadding = (ContactRestitutionPadding > 0.0f);
+				bool bApplyFriction = (ContactFriction > 0) && (IterationParameters.Dt > SMALL_NUMBER);
 
-				// If we have restitution, padd the constraint by an amount that enforces the outgoing velocity constraint
+				// If we have restitution, pad the constraint by an amount that enforces the outgoing velocity constraint
 				// Really this should be per contact point, not per constraint.
 				// NOTE: once we have calculated a padding, it is locked in for the rest of the iterations, and automatically
 				// included in the Phi we get back from collision detection. The first time we calculate it, we must also
 				// add the padding to the Phi (since it was from pre-padded collision detection).
 				if (bApplyResitution && !bHaveRestitutionPadding)
 				{
-					FVec3 V0 = Particle0->V();
-					FVec3 W0 = Particle0->W();
-					FVec3 V1 = Particle1->V();
-					FVec3 W1 = Particle1->W();
-					FVec3 CV0 = V0 + FVec3::CrossProduct(W0, VectorToPoint0);
-					FVec3 CV1 = V1 + FVec3::CrossProduct(W1, VectorToPoint1);
+					const FVec3 BodyV0 = Body0.V() + (FVec3(Body0.DP()) / IterationParameters.Dt);
+					const FVec3 BodyW0 = Body0.W() + (FVec3(Body0.DQ()) / IterationParameters.Dt);
+					const FVec3 BodyV1 = Body1.V() + (FVec3(Body1.DP()) / IterationParameters.Dt);
+					const FVec3 BodyW1 = Body1.W() + (FVec3(Body1.DQ()) / IterationParameters.Dt);
+					FVec3 CV0 = BodyV0 + FVec3::CrossProduct(BodyW0, VectorToPoint0);
+					FVec3 CV1 = BodyV1 + FVec3::CrossProduct(BodyW1, VectorToPoint1);
 					FVec3 CV = CV0 - CV1;
-					FReal CVNormal = FVec3::DotProduct(CV, Contact.Normal);
+					FReal CVNormal = FVec3::DotProduct(CV, ContactNormal);
 
 					// No restitution below threshold normal velocity (CVNormal is negative here)
 					if (CVNormal < -ParticleParameters.RestitutionVelocityThreshold)
 					{
-						Contact.RestitutionPadding = -(1.0f + Contact.Restitution) * CVNormal * IterationParameters.Dt + Contact.Phi;
-						Contact.Phi -= Contact.RestitutionPadding;
+						ContactRestitutionPadding = -(1.0f + ContactRestitution) * CVNormal * IterationParameters.Dt + ContactPhi;
+						ContactPhi -= ContactRestitutionPadding;
+
+						Constraint.SetRestitutionPadding(ContactRestitutionPadding);
 					}
 				}
 			
-				FReal InvM0 = bIsRigidDynamic0 ? PBDRigid0->InvM() : 0.0f;
-				FReal InvM1 = bIsRigidDynamic1 ? PBDRigid1->InvM() : 0.0f;
-				FMatrix33 InvI0 = bIsRigidDynamic0 ? Utilities::ComputeWorldSpaceInertia(Q0, PBDRigid0->InvI()) * Contact.InvInertiaScale0 : FMatrix33(0);
-				FMatrix33 InvI1 = bIsRigidDynamic1 ? Utilities::ComputeWorldSpaceInertia(Q1, PBDRigid1->InvI()) * Contact.InvInertiaScale1 : FMatrix33(0);
 				FMatrix33 ContactInvI =
-					(bIsRigidDynamic0 ? ComputeFactorMatrix3(VectorToPoint0, InvI0, InvM0) : FMatrix33(0)) +
-					(bIsRigidDynamic1 ? ComputeFactorMatrix3(VectorToPoint1, InvI1, InvM1) : FMatrix33(0));
+					(Body0.IsDynamic() ? ComputeFactorMatrix3(VectorToPoint0, FMatrix33(Body0.InvI()), FReal(Body0.InvM())) : FMatrix33(0)) +
+					(Body1.IsDynamic() ? ComputeFactorMatrix3(VectorToPoint1, FMatrix33(Body1.InvI()), FReal(Body1.InvM())) : FMatrix33(0));
 
 				// Calculate the normal correction
-				FVec3 NormalError = Contact.Phi * Contact.Normal;
-				FReal NormalImpulseDenominator = FVec3::DotProduct(Contact.Normal, ContactInvI * Contact.Normal);
+				FVec3 NormalError = ContactPhi * ContactNormal;
+				FReal NormalImpulseDenominator = FVec3::DotProduct(ContactNormal, ContactInvI * ContactNormal);
 				FVec3 NormalImpulseNumerator = -NormalError;
 				FVec3 NormalCorrection = NormalImpulseNumerator / NormalImpulseDenominator;
 
@@ -143,21 +148,17 @@ namespace Chaos
 				if (bApplyFriction)
 				{
 					// @todo(ccaulfield): use initial velocity (as for restitution) and accumulate friction force per contact point
-					FVec3 X0 = FParticleUtilitiesXR::GetCoMWorldPosition(Particle0);
-					FVec3 X1 = FParticleUtilitiesXR::GetCoMWorldPosition(Particle1);
-					FRotation3 R0 = FParticleUtilitiesXR::GetCoMWorldRotation(Particle0);
-					FRotation3 R1 = FParticleUtilitiesXR::GetCoMWorldRotation(Particle1);
-					FVec3 V0 = FVec3::CalculateVelocity(X0, P0, IterationParameters.Dt);
-					FVec3 W0 = FRotation3::CalculateAngularVelocity(R0, Q0, IterationParameters.Dt);
-					FVec3 V1 = FVec3::CalculateVelocity(X1, P1, IterationParameters.Dt);
-					FVec3 W1 = FRotation3::CalculateAngularVelocity(R1, Q1, IterationParameters.Dt);
+					FVec3 V0 = FVec3::CalculateVelocity(Body0.X(), Body0.CorrectedP(), IterationParameters.Dt);
+					FVec3 W0 = FRotation3::CalculateAngularVelocity(Body0.R(), Body0.CorrectedQ(), IterationParameters.Dt);
+					FVec3 V1 = FVec3::CalculateVelocity(Body1.X(), Body1.CorrectedP(), IterationParameters.Dt);
+					FVec3 W1 = FRotation3::CalculateAngularVelocity(Body1.R(), Body1.CorrectedQ(), IterationParameters.Dt);
 					FVec3 CV0 = V0 + FVec3::CrossProduct(W0, VectorToPoint0);
 					FVec3 CV1 = V1 + FVec3::CrossProduct(W1, VectorToPoint1);
 					FVec3 CV = CV0 - CV1;
-					FReal CVNormal = FVec3::DotProduct(CV, Contact.Normal);
+					FReal CVNormal = FVec3::DotProduct(CV, ContactNormal);
 					if (CVNormal < 0.0f)
 					{
-						FVec3 CVLateral = CV - CVNormal * Contact.Normal;
+						FVec3 CVLateral = CV - CVNormal * ContactNormal;
 						FReal CVLateralMag = CVLateral.Size();
 						if (CVLateralMag > KINDA_SMALL_NUMBER)
 						{
@@ -167,9 +168,9 @@ namespace Chaos
 							LateralCorrection = LateralImpulseNumerator / LateralImpulseDenominator;
 							FReal LateralImpulseMag = LateralCorrection.Size();
 							FReal NormalImpulseMag = NormalCorrection.Size();
-							if (LateralImpulseMag > Contact.Friction * NormalImpulseMag)
+							if (LateralImpulseMag > ContactFriction * NormalImpulseMag)
 							{
-								LateralCorrection *= Contact.Friction * NormalImpulseMag / LateralImpulseMag;
+								LateralCorrection *= ContactFriction * NormalImpulseMag / LateralImpulseMag;
 							}
 						}
 					}
@@ -178,23 +179,21 @@ namespace Chaos
 				// Net Correction
 				FVec3 DX = NormalCorrection + LateralCorrection;
 				
-				if (bIsRigidDynamic0)
+				if (Body0.IsDynamic())
 				{
-					FVec3 DP0 = InvM0 * DX;
-					FVec3 DR0 = Utilities::Multiply(InvI0, FVec3::CrossProduct(VectorToPoint0, DX));
-					P0 += DP0;
-					Q0 += FRotation3::FromElements(DR0, 0.f) * Q0 * FReal(0.5);
-					Q0.Normalize();
-					FParticleUtilities::SetCoMWorldTransform(PBDRigid0, P0, Q0);
+					FVec3 DP0 = Body0.InvM() * DX;
+					FVec3 DR0 = Utilities::Multiply(FMatrix33(Body0.InvI()), FVec3::CrossProduct(VectorToPoint0, DX));
+					Body0.ApplyTransformDelta(DP0, DR0);
+					Body0.ApplyCorrections();
+					Body0.UpdateRotationDependentState();
 				}
-				if (bIsRigidDynamic1)
+				if (Body1.IsDynamic())
 				{
-					FVec3 DP1 = InvM1 * -DX;
-					FVec3 DR1 = Utilities::Multiply(InvI1, FVec3::CrossProduct(VectorToPoint1, -DX));
-					P1 += DP1;
-					Q1 += FRotation3::FromElements(DR1, 0.f) * Q1 * FReal(0.5);
-					Q1.Normalize();
-					FParticleUtilities::SetCoMWorldTransform(PBDRigid1, P1, Q1);
+					FVec3 DP1 = Body1.InvM() * -DX;
+					FVec3 DR1 = Utilities::Multiply(FMatrix33(Body1.InvI()), FVec3::CrossProduct(VectorToPoint1, -DX));
+					Body1.ApplyTransformDelta(DP1, DR1);
+					Body1.ApplyCorrections();
+					Body1.UpdateRotationDependentState();
 				}
 			}
 			return AccumulatedImpulse;
@@ -204,16 +203,16 @@ namespace Chaos
 		template<typename T_CONSTRAINT>
 		void ApplyImpl(T_CONSTRAINT& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
 		{
-			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
-			FGenericParticleHandle Particle1 = FGenericParticleHandle(Constraint.Particle[1]);
-
 			for (int32 PairIt = 0; PairIt < IterationParameters.NumPairIterations; ++PairIt)
 			{
 				// Update the contact information based on current particles' positions
-				bool bRequiresCollisionUpdate = true;
-				if (bRequiresCollisionUpdate)
+				if (Constraint.GetUseIncrementalCollisionDetection() || (Constraint.GetManifoldPoints().Num() == 0))
 				{
 					Collisions::Update(Constraint, IterationParameters.Dt);
+				}
+				else
+				{
+					Constraint.UpdateManifoldContacts();
 				}
 
 				// Permanently disable a constraint that is beyond the cull distance
@@ -235,8 +234,12 @@ namespace Chaos
 				}
 
 				// @todo(chaos): fix the collided flag - it will sometimes be set if clipping is enabled, even if there was no contact...
+				// @todo(chaos): this doesn't seem to be being set or used...remove Collided and the Aux Collided array if so. If it is supposed 
+				// to work, it should be set via the Scatter method of the SolverBody
 				if (ParticleParameters.Collided)
 				{
+					FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.GetParticle0());
+					FGenericParticleHandle Particle1 = FGenericParticleHandle(Constraint.GetParticle1());
 					Particle0->AuxilaryValue(*ParticleParameters.Collided) = true;
 					Particle1->AuxilaryValue(*ParticleParameters.Collided) = true;
 				}
@@ -246,18 +249,18 @@ namespace Chaos
 				{
 				case EConstraintSolverType::GbfPbd:
 					{
-						ApplyContactManifold(Constraint, Particle0, Particle1, IterationParameters, ParticleParameters);
+						ensure(false);	// not currently working
+						ApplyContactManifold(Constraint, IterationParameters, ParticleParameters);
 					}
 					break;
 				case EConstraintSolverType::StandardPbd:
 					{
-						Constraint.AccumulatedImpulse += ApplyContact2(Constraint.Manifold, Particle0, Particle1, IterationParameters, ParticleParameters);
+						Constraint.AccumulatedImpulse += ApplyContact2(Constraint, IterationParameters, ParticleParameters);
 					}
 					break;
 				case EConstraintSolverType::QuasiPbd:
 					{
-						FPBDCollisionSolver CollisionSolver;
-						CollisionSolver.SolvePosition(Constraint, IterationParameters, ParticleParameters);
+						check(false);	// does not use this path
 					}
 					break;
 				default:
@@ -266,15 +269,17 @@ namespace Chaos
 			}
 		}
 		
-		void ApplySweptImpl(FRigidBodySweptPointContactConstraint& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
+		void ApplySweptImpl(FPBDCollisionConstraint& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
 		{
-			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
-			FGenericParticleHandle Particle1 = FGenericParticleHandle(Constraint.Particle[1]);
+			check(Constraint.GetCCDType() == ECollisionCCDType::Enabled);
+
+			FSolverBody& Body0 = *Constraint.GetSolverBody0();
+			FSolverBody& Body1 = *Constraint.GetSolverBody1();
 
 			Collisions::UpdateSwept(Constraint, IterationParameters.Dt);
 			
 			const FContactParticleParameters CCDParticleParamaters{ ParticleParameters.RestitutionVelocityThreshold, true, ParticleParameters.Collided };
-			if (Constraint.TimeOfImpact == 1)
+			if (Constraint.TimeOfImpact >= 1)
 			{
 				// If TOI = 1 (normal constraint) we don't want to split timestep at TOI.
 				ApplyImpl(Constraint, IterationParameters, CCDParticleParamaters);
@@ -291,53 +296,53 @@ namespace Chaos
 			const FContactIterationParameters IterationParametersRemainingDT{ RemainingDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.SolverType, IterationParameters.NeedsAnotherIteration };
 
 			// Rewind P to TOI and Apply
-			Particle0->P() = FMath::Lerp(Particle0->X(), Particle0->P(), Constraint.TimeOfImpact);
+			Body0.SetP(FMath::Lerp(Body0.X(), Body0.P(), Constraint.TimeOfImpact));
 			ApplyImpl(Constraint, IterationParametersPartialDT, CCDParticleParamaters);
 
-			// Advance P to end of frame from TOI, and Apply
-			if (IterationParameters.Iteration + 1 < IterationParameters.NumIterations)
+			// @todo(chaos): Make this work properly for real Stanard and QPBD implementations (they do not alter velocity)
+			if (IterationParameters.SolverType == EConstraintSolverType::GbfPbd)
 			{
-				Particle0->P() = Particle0->P() + Particle0->V() * RemainingDT; // If we are tunneling through something else due to this, it will be resolved in the next iteration
-				ApplyImpl(Constraint, IterationParametersRemainingDT, CCDParticleParamaters);
-			}
-			else
-			{
-				// We get here if we cannot solve CCD collisions with the given number of iterations and restitution settings.
-				// So don't do the remaining dt update. This will bleed the energy! (also: Ignore rotation)
-				// To prevent this condition: increase number of iterations and/or reduce restitution and/or reduce velocities
-				if (IterationParameters.Dt > SMALL_NUMBER)
+				// Advance P to end of frame from TOI, and Apply
+				if (CCDAlwaysSweepRemainingDT || IterationParameters.Iteration + 1 < IterationParameters.NumIterations)
 				{
-					// Update velocity to be consistent with PBD
-					Particle0->SetV(1 / IterationParameters.Dt * (Particle0->P() - Particle0->X()));
+					Body0.SetP(Body0.P() + Body0.V() * RemainingDT); // If we are tunneling through something else due to this, it will be resolved in the next iteration
+					ApplyImpl(Constraint, IterationParametersRemainingDT, CCDParticleParamaters);
 				}
 				else
 				{
-					Particle0->SetV(FVec3(0));
+					// We get here if we cannot solve CCD collisions with the given number of iterations and restitution settings.
+					// So don't do the remaining dt update. This will bleed the energy! (also: Ignore rotation)
+					// To prevent this condition: increase number of iterations and/or reduce restitution and/or reduce velocities
+					if (IterationParameters.Dt > SMALL_NUMBER)
+					{
+						// Update velocity to be consistent with PBD
+						const FReal InvDt = FReal(1) / IterationParameters.Dt;
+						Body0.SetV((Body0.P() - Body0.X()) * InvDt);
+					}
+					else
+					{
+						Body0.SetV(FVec3(0));
+					}
 				}
 			}
 		}
 
 
-		void Apply(FCollisionConstraintBase& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
+		void Apply(FPBDCollisionConstraint& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
 		{
-			if (Constraint.GetType() == FCollisionConstraintBase::FType::SinglePoint)
+			if (Constraint.GetCCDType() == ECollisionCCDType::Disabled)
 			{
-				ApplyImpl(*Constraint.As<FRigidBodyPointContactConstraint>(), IterationParameters, ParticleParameters);
+				ApplyImpl(Constraint, IterationParameters, ParticleParameters);
 			}
-			else if (Constraint.GetType() == FCollisionConstraintBase::FType::SinglePointSwept)
+			else if (Constraint.GetCCDType() == ECollisionCCDType::Enabled)
 			{
-				ApplySweptImpl(*Constraint.As<FRigidBodySweptPointContactConstraint>(), IterationParameters, ParticleParameters);
+				ApplySweptImpl(Constraint, IterationParameters, ParticleParameters);
 			}
 		}
 
 
-		template<typename T_CONSTRAINT>
-		void ApplyPushOutImpl(T_CONSTRAINT& Constraint, const TSet<const TGeometryParticleHandle<FReal, 3>*>& IsTemporarilyStatic,
-			const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters, const FVec3& GravityDir)
+		void ApplyPushOutImpl(FPBDCollisionConstraint& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
 		{
-			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
-			FGenericParticleHandle Particle1 = FGenericParticleHandle(Constraint.Particle[1]);
-
 			for (int32 PairIt = 0; PairIt < IterationParameters.NumPairIterations; ++PairIt)
 			{
 				Update(Constraint, IterationParameters.Dt);
@@ -353,25 +358,26 @@ namespace Chaos
 					return;
 				}
 
-				if (FRigidBodyPointContactConstraint* PointConstraint = Constraint.template As<FRigidBodyPointContactConstraint>())
+				// @todo(chaos): is this supposed to run for swept contacts as well?
+				if (Constraint.GetCCDType() == ECollisionCCDType::Disabled)
 				{
 					switch (IterationParameters.SolverType)
 					{
 					case EConstraintSolverType::GbfPbd:
 						{
-							ApplyPushOutManifold(*PointConstraint, IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
+							ensure(false);	// not currently working
+							ApplyPushOutManifold(Constraint, IterationParameters, ParticleParameters);
 						}
 						break;
 					case EConstraintSolverType::StandardPbd:
 						{
 							// Shouldn't have PushOut for Standard Pbd, but this is for experimentation (Collision PushOut Iterations should normally be set to 0 instead)
-							ApplyPushOutManifold(*PointConstraint, IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
+							ApplyPushOutManifold(Constraint, IterationParameters, ParticleParameters);
 						}
 						break;
 					case EConstraintSolverType::QuasiPbd:
 						{
-							FPBDCollisionSolver CollisionSolver;
-							CollisionSolver.SolveVelocity(Constraint, IterationParameters, ParticleParameters);
+							check(false);
 						}
 						break;
 					default:
@@ -381,17 +387,9 @@ namespace Chaos
 			}
 		}
 
-		void ApplyPushOut(FCollisionConstraintBase& Constraint, const TSet<const TGeometryParticleHandle<FReal, 3>*>& IsTemporarilyStatic, 
-			const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters, const FVec3& GravityDir)
+		void ApplyPushOut(FPBDCollisionConstraint& Constraint, const FContactIterationParameters & IterationParameters, const FContactParticleParameters & ParticleParameters)
 		{
-			if (Constraint.GetType() == FCollisionConstraintBase::FType::SinglePoint)
-			{
-				ApplyPushOutImpl<FRigidBodyPointContactConstraint>(*Constraint.As<FRigidBodyPointContactConstraint>(), IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
-			}
-			else if (Constraint.GetType() == FCollisionConstraintBase::FType::SinglePointSwept)
-			{
-				ApplyPushOutImpl(*Constraint.As<FRigidBodySweptPointContactConstraint>(), IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
-			}
+			ApplyPushOutImpl(Constraint, IterationParameters, ParticleParameters);
 		}
 
 	} // Collisions

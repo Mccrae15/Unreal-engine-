@@ -20,7 +20,7 @@ FRecastTileData::FRawData::FRawData(uint8* InData)
 FRecastTileData::FRawData::~FRawData()
 {
 #if WITH_RECAST
-	dtFree(RawData);
+	dtFree(RawData, DT_ALLOC_PERM_TILE_DATA);
 #else
 	FMemory::Free(RawData);
 #endif
@@ -56,7 +56,7 @@ FRecastTileData::FRecastTileData(int32 DataSize, uint8* RawData, int32 CacheData
 static uint8* DuplicateRecastRawData(uint8* Src, int32 SrcSize)
 {
 #if WITH_RECAST	
-	uint8* DupData = (uint8*)dtAlloc(SrcSize, DT_ALLOC_PERM);
+	uint8* DupData = (uint8*)dtAlloc(SrcSize, DT_ALLOC_PERM_TILE_DATA);
 #else
 	uint8* DupData = (uint8*)FMemory::Malloc(SrcSize);
 #endif
@@ -86,10 +86,23 @@ void URecastNavMeshDataChunk::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
+		auto CleanUpBadVersion = [&Ar, RecastNavMeshSizePos, RecastNavMeshSizeBytes]()
+		{
+			// incompatible, just skip over this data. Navmesh needs rebuilt.
+			Ar.Seek(RecastNavMeshSizePos + RecastNavMeshSizeBytes);
+		};
+
 		if (NavMeshVersion < NAVMESHVER_MIN_COMPATIBLE)
 		{
-			// incompatible, just skip over this data.  navmesh needs rebuilt.
-			Ar.Seek(RecastNavMeshSizePos + RecastNavMeshSizeBytes);
+			UE_LOG(LogNavigation, Warning, TEXT("%s: URecastNavMeshDataChunk: Nav mesh version %d < Min compatible %d. Nav mesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_MIN_COMPATIBLE);
+
+			CleanUpBadVersion();
+		}
+		else if (NavMeshVersion > NAVMESHVER_LATEST)
+		{
+			UE_LOG(LogNavigation, Warning, TEXT("%s: URecastNavMeshDataChunk: Nav mesh version %d > NAVMESHVER_LATEST %d. Newer nav mesh should not be loaded by older versioned code. At a minimum the nav mesh needs to be rebuilt. \n"), *GetFullName(), NavMeshVersion, NAVMESHVER_LATEST);
+
+			CleanUpBadVersion();
 		}
 #if WITH_RECAST
 		else if (RecastNavMeshSizeBytes > 4)
@@ -140,11 +153,7 @@ void URecastNavMeshDataChunk::SerializeRecastData(FArchive& Ar, int32 NavMeshVer
 				// Load compressed tile cache layer
 				int32 TileCacheDataSize = 0;
 				uint8* TileCacheRawData = nullptr;
-				if (Ar.UE4Ver() >= VER_UE4_ADD_MODIFIERS_RUNTIME_GENERATION && 
-					(Ar.EngineVer().GetMajor() != 4 || Ar.EngineVer().GetMinor() != 7)) // Merged package from 4.7 branch
-				{
-					FPImplRecastNavMesh::SerializeCompressedTileCacheData(Ar, NavMeshVersion, TileCacheRawData, TileCacheDataSize); //allocates TileCacheRawData on load
-				}
+				FPImplRecastNavMesh::SerializeCompressedTileCacheData(Ar, NavMeshVersion, TileCacheRawData, TileCacheDataSize); //allocates TileCacheRawData on load
 				
 				// We are owner of tile raw data
 				FRecastTileData TileData(TileDataSize, TileRawData, TileCacheDataSize, TileCacheRawData);
@@ -254,7 +263,7 @@ TArray<uint32> URecastNavMeshDataChunk::AttachTiles(FPImplRecastNavMesh& NavMesh
 	}
 #endif// WITH_RECAST
 
-	UE_LOG(LogNavigation, Log, TEXT("Attached %d tiles to NavMesh - %s"), Result.Num(), *NavigationDataName.ToString());
+	UE_LOG(LogNavigation, Verbose, TEXT("Attached %d tiles to NavMesh - %s"), Result.Num(), *NavigationDataName.ToString());
 	return Result;
 }
 
@@ -326,14 +335,14 @@ TArray<uint32> URecastNavMeshDataChunk::DetachTiles(FPImplRecastNavMesh& NavMesh
 	}
 #endif// WITH_RECAST
 
-	UE_LOG(LogNavigation, Log, TEXT("Detached %d tiles from NavMesh - %s"), Result.Num(), *NavigationDataName.ToString());
+	UE_LOG(LogNavigation, Verbose, TEXT("Detached %d tiles from NavMesh - %s"), Result.Num(), *NavigationDataName.ToString());
 	return Result;
 }
 
-void URecastNavMeshDataChunk::MoveTiles(FPImplRecastNavMesh& NavMeshImpl, const FIntPoint& Offset, const float RotationDeg, const FVector2D& RotationCenter)
+void URecastNavMeshDataChunk::MoveTiles(FPImplRecastNavMesh& NavMeshImpl, const FIntPoint& Offset, const FVector::FReal RotationDeg, const FVector2D& RotationCenter)
 {
 #if WITH_RECAST	
-	UE_LOG(LogNavigation, Log, TEXT("%s Moving %i tiles on navmesh %s."), ANSI_TO_TCHAR(__FUNCTION__), Tiles.Num(), *NavigationDataName.ToString());
+	UE_LOG(LogNavigation, Verbose, TEXT("%s Moving %i tiles on navmesh %s."), ANSI_TO_TCHAR(__FUNCTION__), Tiles.Num(), *NavigationDataName.ToString());
 
 	dtNavMesh* NavMesh = NavMeshImpl.DetourNavMesh;
 	if (NavMesh != nullptr)
@@ -350,11 +359,11 @@ void URecastNavMeshDataChunk::MoveTiles(FPImplRecastNavMesh& NavMeshImpl, const 
 			{
 				const FVector RcRotationCenter = Unreal2RecastPoint(FVector(RotationCenter.X, RotationCenter.Y, 0.f));
 
-				const float TileWidth = NavMesh->getParams()->tileWidth;
-				const float TileHeight = NavMesh->getParams()->tileHeight;
+				const FVector::FReal TileWidth = NavMesh->getParams()->tileWidth;
+				const FVector::FReal TileHeight = NavMesh->getParams()->tileHeight;
 
 				const dtMeshHeader* Header = (dtMeshHeader*)TileData.TileRawData->RawData;
-				if (Header->magic != DT_NAVMESH_MAGIC || Header->version != DT_NAVMESH_VERSION)
+				if (Header->version != DT_NAVMESH_VERSION)
 				{
 					continue;
 				}
@@ -368,13 +377,13 @@ void URecastNavMeshDataChunk::MoveTiles(FPImplRecastNavMesh& NavMeshImpl, const 
 
 				const int OffsetWithRotX = Offset.X + DeltaX;
 				const int OffsetWithRotY = Offset.Y + DeltaY;
-				const bool bSuccess = dtTransformTileData(TileData.TileRawData->RawData, TileData.TileDataSize, OffsetWithRotX, OffsetWithRotY, TileWidth, TileHeight, RotationDeg);
-				UE_CLOG(bSuccess, LogNavigation, Log, TEXT("   Moved tile from (%i,%i) to (%i,%i)."), TileData.OriginalX, TileData.OriginalY, (TileData.OriginalX + OffsetWithRotX), (TileData.OriginalY + OffsetWithRotY));
+				const bool bSuccess = dtTransformTileData(TileData.TileRawData->RawData, TileData.TileDataSize, OffsetWithRotX, OffsetWithRotY, TileWidth, TileHeight, RotationDeg, NavMesh->getBVQuantFactor());
+				UE_CLOG(bSuccess, LogNavigation, Verbose, TEXT("   Moved tile from (%i,%i) to (%i,%i)."), TileData.OriginalX, TileData.OriginalY, (TileData.OriginalX + OffsetWithRotX), (TileData.OriginalY + OffsetWithRotY));
 			}
 		}
 	}
 
-	UE_LOG(LogNavigation, Log, TEXT("%s Moving done."), ANSI_TO_TCHAR(__FUNCTION__));
+	UE_LOG(LogNavigation, Verbose, TEXT("%s Moving done."), ANSI_TO_TCHAR(__FUNCTION__));
 #endif// WITH_RECAST
 }
 
@@ -434,6 +443,21 @@ void URecastNavMeshDataChunk::GetTiles(const FPImplRecastNavMesh* NavMeshImpl, c
 			RecastTileData.bAttached = bMarkAsAttached;
 
 			Tiles.Add(RecastTileData);
+		}
+	}
+}
+
+void URecastNavMeshDataChunk::GetTilesBounds(const FPImplRecastNavMesh& NavMeshImpl, const TArray<int32>& TileIndices, FBox& OutBounds) const
+{
+	OutBounds.Init();
+	const dtNavMesh* NavMesh = NavMeshImpl.DetourNavMesh;
+
+	for (const int32 TileIdx : TileIndices)
+	{
+		const dtMeshTile* Tile = NavMesh->getTile(TileIdx);
+		if (Tile && Tile->header)
+		{
+			OutBounds += Recast2UnrealBox(Tile->header->bmin, Tile->header->bmax);
 		}
 	}
 }

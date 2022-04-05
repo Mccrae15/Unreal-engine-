@@ -46,7 +46,6 @@
 #include "GenericPlatform/GenericPlatformTime.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "ICustomSceneOutliner.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Materials/MaterialInstance.h"
@@ -274,9 +273,8 @@ FDataprepEditor::FDataprepEditor()
 	, bIgnoreCloseRequest(false)
 	, PreviewSystem( MakeShared<FDataprepPreviewSystem>() )
 {
-	UPackage* DataprepPackage = NewObject<UPackage>(nullptr, *GetRootPackagePath(), RF_Transient);
-	FName UniqueWorldName = MakeUniqueObjectName(DataprepPackage, UWorld::StaticClass(), FName( *(LOCTEXT("PreviewWorld", "Preview").ToString()) ));
-	PreviewWorld = NewObject<UWorld>(DataprepPackage, UniqueWorldName);
+	FName UniqueWorldName = MakeUniqueObjectName(GetTransientPackage(), UWorld::StaticClass(), FName( *(LOCTEXT("PreviewWorld", "Preview").ToString()) ));
+	PreviewWorld = NewObject<UWorld>(GetTransientPackage(), UniqueWorldName);
 	PreviewWorld->WorldType = EWorldType::EditorPreview;
 
 	FWorldContext& WorldContext = GEngine->CreateNewWorldContext(PreviewWorld->WorldType);
@@ -349,13 +347,13 @@ FDataprepEditor::~FDataprepEditor()
 			return bDirectoryIsEmpty;
 		};
 
-		FString RootTempDir = FPaths::Combine( GetRootTemporaryDir(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ) );
+		FString RootTempDir = FPaths::Combine( DataprepCorePrivateUtils::GetRootTemporaryDir(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ) );
 		if(IsDirectoryEmpty( *RootTempDir ))
 		{
 			DeleteDirectory( RootTempDir );
 		}
 
-		const FString PackagePathToDelete = FPaths::Combine( GetRootPackagePath(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ) );
+		const FString PackagePathToDelete = FPaths::Combine( DataprepCorePrivateUtils::GetRootPackagePath(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ) );
 		FString PackagePathToDeleteOnDisk;
 		if (FPackageName::TryConvertLongPackageNameToFilename(PackagePathToDelete, PackagePathToDeleteOnDisk))
 		{
@@ -452,7 +450,7 @@ void FDataprepEditor::CleanUpTemporaryDirectories()
 	const int32 CurrentProcessID = FPlatformProcess::GetCurrentProcessId();
 
 	TSet<FString> TempDirectories;
-	IFileManager::Get().IterateDirectory( *GetRootTemporaryDir(), [&](const TCHAR* FilenameOrDirectory, bool bIsDirectory) -> bool
+	IFileManager::Get().IterateDirectory( *DataprepCorePrivateUtils::GetRootTemporaryDir(), [&](const TCHAR* FilenameOrDirectory, bool bIsDirectory) -> bool
 	{
 		if (bIsDirectory)
 		{
@@ -468,16 +466,16 @@ void FDataprepEditor::CleanUpTemporaryDirectories()
 					// Delete directories if process is not valid
 					bool bDeleteDirectories = !ProcHandle.IsValid();
 
-					// Process is valid, check if application associated with process id is UE4 editor
+					// Process is valid, check if application associated with process id is UnrealEditor
 					if(!bDeleteDirectories)
 					{
 						const FString ApplicationName = FPlatformProcess::GetApplicationName( ProcessID );
-						bDeleteDirectories = !ApplicationName.StartsWith(TEXT("UE4Editor"));
+						bDeleteDirectories = !ApplicationName.StartsWith(TEXT("UnrealEditor"));
 					}
 
 					if(bDeleteDirectories)
 					{
-						FString PackagePathToDelete = FPaths::Combine( GetRootPackagePath(), DirectoryName );
+						FString PackagePathToDelete = FPaths::Combine( DataprepCorePrivateUtils::GetRootPackagePath(), DirectoryName );
 						FString PackagePathToDeleteOnDisk;
 						if (FPackageName::TryConvertLongPackageNameToFilename(PackagePathToDelete, PackagePathToDeleteOnDisk))
 						{
@@ -497,17 +495,6 @@ void FDataprepEditor::CleanUpTemporaryDirectories()
 		FString AbsolutePath = FPaths::ConvertRelativePathToFull( TempDirectory );
 		IFileManager::Get().DeleteDirectory( *AbsolutePath, false, true );
 	}
-}
-
-const FString& FDataprepEditor::GetRootTemporaryDir()
-{
-	static FString RootTemporaryDir = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("DataprepTemp") );
-	return RootTemporaryDir;
-}
-
-const FString& FDataprepEditor::GetRootPackagePath()
-{
-	return DataprepCorePrivateUtils::GetRootPackagePath();
 }
 
 void FDataprepEditor::InitDataprepEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, UDataprepAssetInterface* InDataprepAssetInterface)
@@ -549,7 +536,7 @@ void FDataprepEditor::InitDataprepEditor(const EToolkitMode::Type Mode, const TS
 
 	// Create temporary directory to store transient data
 	CleanUpTemporaryDirectories();
-	TempDir = FPaths::Combine( GetRootTemporaryDir(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ), SessionID);
+	TempDir = FPaths::Combine( DataprepCorePrivateUtils::GetRootTemporaryDir(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ), SessionID);
 	IFileManager::Get().MakeDirectory(*TempDir);
 
 	GEditor->RegisterForUndo(this);
@@ -813,7 +800,7 @@ void FDataprepEditor::CleanPreviewWorld()
 
 		for( AActor* Actor : LevelActors )
 		{
-			if (Actor && !Actor->IsPendingKill() && !DefaultActorsInPreviewWorld.Contains(Actor))
+			if (IsValid(Actor) && !DefaultActorsInPreviewWorld.Contains(Actor))
 			{
 				PreviewWorld->EditorDestroyActor(Actor, true);
 
@@ -886,7 +873,7 @@ void FDataprepEditor::OnExecutePipeline()
 	{
 		FTimeLogger TimeLogger( TEXT("ExecutePipeline") );
 
-		// Some operation can indirectly call FAssetEditorManager::CloseAllAssetEditors (eg. Remove Asset)
+		// Some operation can indirectly call UAssetEditorSubsystem::CloseAllAssetEditors (eg. Remove Asset)
 		// Editors can individually refuse this request: we ignore it during the pipeline traversal.
 		TGuardValue<bool> IgnoreCloseRequestGuard(bIgnoreCloseRequest, true);
 
@@ -929,6 +916,8 @@ void FDataprepEditor::OnExecutePipeline()
 	bIsFirstRun = false;
 	// Reset tracking of pipeline changes between execution
 	bPipelineChanged = false;
+
+	SceneOutliner->FullRefresh();
 
 	// Get stats now that the pipeline has executed
 	PostExecuteStatsPtr = FDataprepStats::GenerateWorldStats(PreviewWorld);
@@ -1060,6 +1049,9 @@ void FDataprepEditor::CreateTabs()
 
 	// Create Details Panel
 	CreateDetailsViews();
+
+	AssetPreviewView->OnKeyDown().BindSP( SceneViewportView.Get(), &SDataprepEditorViewport::OnKeyDown );
+	ScenePreviewView->OnKeyDown().BindRaw( SceneViewportView.Get(), &SDataprepEditorViewport::OnKeyDown );
 }
 
 TSharedRef<SDockTab> FDataprepEditor::SpawnTabScenePreview(const FSpawnTabArgs & Args)
@@ -1067,7 +1059,6 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabScenePreview(const FSpawnTabArgs &
 	check(Args.GetTabId() == ScenePreviewTabId);
 
 	return SNew(SDockTab)
-		//.Icon(FDataprepEditorStyle::Get()->GetBrush("DataprepEditor.Tabs.ScenePreview"))
 		.Label(LOCTEXT("DataprepEditor_ScenePreviewTab_Title", "Scene Preview"))
 		[
 			ScenePreviewView.ToSharedRef()
@@ -1079,7 +1070,6 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabAssetPreview(const FSpawnTabArgs &
 	check(Args.GetTabId() == AssetPreviewTabId);
 
 	return SNew(SDockTab)
-		//.Icon(FDataprepEditorStyle::Get()->GetBrush("DataprepEditor.Tabs.AssetPreview"))
 		.Label(LOCTEXT("DataprepEditor_AssetPreviewTab_Title", "Asset Preview"))
 		[
 			SNew(SBorder)
@@ -1261,7 +1251,6 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabPalette(const FSpawnTabArgs & Args
 	if(!bIsDataprepInstance)
 	{
 		return SNew(SDockTab)
-			.Icon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.Palette").GetIcon())
 			.Label(LOCTEXT("PaletteTab", "Palette"))
 			[
 				SNew(SDataprepPalette)
@@ -1345,7 +1334,6 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabStatistics(const FSpawnTabArgs & A
 
 	TSharedRef<SDockTab> StatsTab = SNew(SDockTab)
 		.Label(LOCTEXT("DataprepEditor_StatisticsTab_Title", "Statistics"))
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.StatsViewer"))
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
@@ -1360,6 +1348,8 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabStatistics(const FSpawnTabArgs & A
 	StatsWidget->AddStat(StatNameDrawCalls, CategoryScene, FDataprepStat(LOCTEXT("DataprepEditor_Stats_DrawCalls", "Draw Calls")));
 	StatsWidget->AddStat(FDataprepStats::StatNameTriangles, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_Triangles", "Triangles")));
 	StatsWidget->AddStat(FDataprepStats::StatNameVertices, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_Vertices", "Vertices")));
+	StatsWidget->AddStat(FDataprepStats::StatNameNaniteTriangles, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_NaniteTriangles", "Nanite Triangles")));
+	StatsWidget->AddStat(FDataprepStats::StatNameNaniteVertices, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_NaniteVertices", "Nanite Vertices")));
 	StatsWidget->AddStat(FDataprepStats::StatNameTextures, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_Textures", "Textures")));
 	StatsWidget->AddStat(FDataprepStats::StatNameTextureSize, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_TextureSize", "Max Texture Size")));
 	StatsWidget->AddStat(FDataprepStats::StatNameMeshes, CategoryAssets, FDataprepStat(LOCTEXT("DataprepEditor_Stats_Meshes", "Meshes")));
@@ -1398,7 +1388,6 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabGraphEditor(const FSpawnTabArgs & 
 	if(!bIsDataprepInstance)
 	{
 		return SNew(SDockTab)
-			//.Icon(FDataprepEditorStyle::Get()->GetBrush("DataprepEditor.Tabs.Pipeline"))
 			.Label(LOCTEXT("DataprepEditor_GraphEditorTab_Title", "Recipe Graph"))
 			[
 				GraphEditor.ToSharedRef()
@@ -1410,17 +1399,10 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabGraphEditor(const FSpawnTabArgs & 
 
 TSharedRef<FTabManager::FLayout> FDataprepEditor::CreateDataprepLayout()
 {
-	return FTabManager::NewLayout("Standalone_DataprepEditor_Layout_v0.9")
+	return FTabManager::NewLayout("Standalone_DataprepEditor_Layout_v0.10")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)
@@ -1497,19 +1479,10 @@ TSharedRef<FTabManager::FLayout> FDataprepEditor::CreateDataprepLayout()
 
 TSharedRef<FTabManager::FLayout> FDataprepEditor::CreateDataprepInstanceLayout()
 {
-	return FTabManager::NewLayout("Standalone_DataprepEditor_InstanceLayout_v0.2")
+	return FTabManager::NewLayout("Standalone_DataprepEditor_InstanceLayout_v0.3")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				// Don't want the secondary toolbar tab to be opened if there's nothing in it
-				//->AddTab(SecondaryToolbarTabId, ETabState::ClosedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)
@@ -1621,7 +1594,7 @@ bool FDataprepEditor::CanCommitWorld()
 
 FString FDataprepEditor::GetTransientContentFolder()
 {
-	return FPaths::Combine( GetRootPackagePath(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ), SessionID );
+	return FPaths::Combine( DataprepCorePrivateUtils::GetRootPackagePath(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ), SessionID );
 }
 
 bool FDataprepEditor::OnCanExecuteNextStep(UDataprepActionAsset* ActionAsset)
@@ -1643,8 +1616,8 @@ void FDataprepEditor::RefreshColumnsForPreviewSystem()
 {
 	if ( PreviewSystem->HasObservedObjects() )
 	{
-		SceneOutliner->RemoveColumn( SceneOutliner::FBuiltInColumnTypes::ActorInfo() );
-		SceneOutliner::FColumnInfo ColumnInfo( SceneOutliner::EColumnVisibility::Visible, 100, FCreateSceneOutlinerColumn::CreateLambda( [Preview = PreviewSystem](ISceneOutliner& InSceneOutliner) -> TSharedRef< ISceneOutlinerColumn >
+		SceneOutliner->RemoveColumn( FSceneOutlinerBuiltInColumnTypes::ActorInfo() );
+		FSceneOutlinerColumnInfo ColumnInfo(ESceneOutlinerColumnVisibility::Visible, 100, FCreateSceneOutlinerColumn::CreateLambda([Preview = PreviewSystem](ISceneOutliner& InSceneOutliner) -> TSharedRef< ISceneOutlinerColumn >
 			{
 				return MakeShared<FDataprepPreviewOutlinerColumn>( InSceneOutliner, Preview );
 			} ) );
@@ -1656,9 +1629,11 @@ void FDataprepEditor::RefreshColumnsForPreviewSystem()
 	{
 		SceneOutliner->RemoveColumn( FDataprepPreviewOutlinerColumn::ColumnID );
 		FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
-		SceneOutliner::FDefaultColumnInfo* ActorInfoColumPtr = SceneOutlinerModule.DefaultColumnMap.Find( SceneOutliner::FBuiltInColumnTypes::ActorInfo() );
-		check( ActorInfoColumPtr );
-		SceneOutliner->AddColumn( SceneOutliner::FBuiltInColumnTypes::ActorInfo(), ActorInfoColumPtr->ColumnInfo );
+		FSceneOutlinerColumnInfo* ActorInfoColumPtr = SceneOutlinerModule.DefaultColumnMap.Find( FSceneOutlinerBuiltInColumnTypes::ActorInfo() );
+		if ( ActorInfoColumPtr )
+		{
+			SceneOutliner->AddColumn( FSceneOutlinerBuiltInColumnTypes::ActorInfo(), *ActorInfoColumPtr );
+		}
 
 		AssetPreviewView->RemoveColumn( FDataprepPreviewAssetColumn::ColumnID );
 	}

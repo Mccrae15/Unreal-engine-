@@ -17,6 +17,8 @@
 class UMaterial;
 class UTexture;
 struct FPropertyChangedEvent;
+class FMaterialHLSLGenerator;
+class FMaterialHLSLTree;
 
 /** Usage set on a material function determines feature compatibility and validation. */
 UENUM()
@@ -27,6 +29,8 @@ enum class EMaterialFunctionUsage : uint8
 	MaterialLayerBlend
 };
 
+using FMFRecursionGuard = TMaterialRecursionGuard<class UMaterialFunctionInterface>;
+
 /**
  * A Material Function is a collection of material expressions that can be reused in different materials
  */
@@ -36,6 +40,8 @@ class UMaterialFunctionInterface : public UObject
 	GENERATED_UCLASS_BODY()
 
 	//~ Begin UObject Interface.
+	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -45,6 +51,15 @@ class UMaterialFunctionInterface : public UObject
 	/** Used by materials using this function to know when to recompile. */
 	UPROPERTY(duplicatetransient)
 	FGuid StateId;
+
+#if WITH_EDITOR
+public:
+	FMaterialHLSLTree& AcquireHLSLTree(FMaterialHLSLGenerator& Generator);
+#endif
+#if WITH_EDITORONLY_DATA
+private:
+	FMaterialHLSLTree* CachedHLSLTree = nullptr;
+#endif
 
 protected:
 	/** The intended usage of this function, required for material layers. */
@@ -61,6 +76,8 @@ public:
 
 	virtual void GetInputsAndOutputs(TArray<struct FFunctionExpressionInput>& OutInputs, TArray<struct FFunctionExpressionOutput>& OutOutputs) const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetInputsAndOutputs,);
+
+	virtual void ForceRecompileForRendering(FMaterialUpdateContext& UpdateContext, UMaterial* InPreviewMaterial);
 #endif
 
 	virtual bool ValidateFunctionUsage(class FMaterialCompiler* Compiler, const FFunctionExpressionOutput& Output)
@@ -118,7 +135,7 @@ public:
 
 	/** Information for thumbnail rendering */
 	UPROPERTY(VisibleAnywhere, Instanced, Category = Thumbnail)
-	class UThumbnailInfo* ThumbnailInfo;
+	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
 #endif
 	
 	virtual UMaterialFunctionInterface* GetBaseFunction()
@@ -128,7 +145,7 @@ public:
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetBaseFunction,return nullptr;);
 
 #if WITH_EDITORONLY_DATA
-	virtual const TArray<UMaterialExpression*>* GetFunctionExpressions() const
+	virtual const TArray<TObjectPtr<UMaterialExpression>>* GetFunctionExpressions() const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetFunctionExpressions,return nullptr;);
 #endif // WITH_EDITORONLY_DATA
 
@@ -147,23 +164,28 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Finds the names of all matching type parameters */
 	template<typename ExpressionType>
+	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const
 	{
 		if (const UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
 		{
 			const UClass* TargetClass = UMaterialExpressionMaterialFunctionCall::StaticClass();
-			for (UMaterialExpression* Expression : *ParameterFunction->GetFunctionExpressions())
+			for (const TObjectPtr<UMaterialExpression>& Expression : *ParameterFunction->GetFunctionExpressions())
 			{
-				if (const UMaterialExpressionMaterialFunctionCall* FunctionExpression = (Expression && Expression->IsA(TargetClass)) ? (const UMaterialExpressionMaterialFunctionCall*)Expression : nullptr)
+				if (const UMaterialExpressionMaterialFunctionCall* FunctionExpression = (Expression && Expression.IsA(TargetClass)) ? (const UMaterialExpressionMaterialFunctionCall*)Expression.Get() : nullptr)
 				{
 					if (FunctionExpression->MaterialFunction)
 					{
+						PRAGMA_DISABLE_DEPRECATION_WARNINGS
 						FunctionExpression->MaterialFunction->GetAllParameterInfo<const ExpressionType>(OutParameterInfo, OutParameterIds, InBaseParameterInfo);
+						PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					}
 				}
 				else if (const ExpressionType* ParameterExpression = Cast<const ExpressionType>(Expression))
 				{
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					ParameterExpression->GetAllParameterInfo(OutParameterInfo, OutParameterIds, InBaseParameterInfo);
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 			}
 
@@ -212,138 +234,6 @@ public:
 				return true;
 			}
 			return !GetExpressionParameterByNamePredicate(ParameterFunction);
-		}
-
-		return false;
-	}
-
-	/** Finds the first matching parameter's group name */
-	bool GetParameterGroupName(const FHashedMaterialParameterInfo& ParameterInfo, FName& OutGroup)
-	{
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
-		{
-			TArray<UMaterialFunctionInterface*> Functions;
-			ParameterFunction->GetDependentFunctions(Functions);
-			Functions.AddUnique(ParameterFunction);
-
-			for (UMaterialFunctionInterface* Function : Functions)
-			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
-				{
-					if (const UMaterialExpressionParameter* Parameter = Cast<const UMaterialExpressionParameter>(FunctionExpression))
-					{
-						if (Parameter->ParameterName == ParameterInfo.Name)
-						{
-							OutGroup = Parameter->Group;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionTextureSampleParameter* TexParameter = Cast<const UMaterialExpressionTextureSampleParameter>(FunctionExpression))
-					{
-						if (TexParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutGroup = TexParameter->Group;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionFontSampleParameter* FontParameter = Cast<const UMaterialExpressionFontSampleParameter>(FunctionExpression))
-					{
-						if (FontParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutGroup = FontParameter->Group;
-							return true;
-						}
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-	/** Finds the first matching parameter's group name */
-	bool GetParameterSortPriority(const FHashedMaterialParameterInfo& ParameterInfo, int32& OutSortPriority)
-	{
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
-		{
-			TArray<UMaterialFunctionInterface*> Functions;
-			ParameterFunction->GetDependentFunctions(Functions);
-			Functions.AddUnique(ParameterFunction);
-
-			for (UMaterialFunctionInterface* Function : Functions)
-			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
-				{
-					if (const UMaterialExpressionParameter* Parameter = Cast<const UMaterialExpressionParameter>(FunctionExpression))
-					{
-						if (Parameter->ParameterName == ParameterInfo.Name)
-						{
-							OutSortPriority = Parameter->SortPriority;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionTextureSampleParameter* TexParameter = Cast<const UMaterialExpressionTextureSampleParameter>(FunctionExpression))
-					{
-						if (TexParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutSortPriority = TexParameter->SortPriority;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionFontSampleParameter* FontParameter = Cast<const UMaterialExpressionFontSampleParameter>(FunctionExpression))
-					{
-						if (FontParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutSortPriority = FontParameter->SortPriority;
-							return true;
-						}
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-	/** Finds the first matching parameter's description */
-	bool GetParameterDesc(const FHashedMaterialParameterInfo& ParameterInfo, FString& OutDesc)
-	{
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
-		{
-			TArray<UMaterialFunctionInterface*> Functions;
-			ParameterFunction->GetDependentFunctions(Functions);
-			Functions.AddUnique(ParameterFunction);
-
-			for (UMaterialFunctionInterface* Function : Functions)
-			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
-				{
-					if (const UMaterialExpressionParameter* Parameter = Cast<const UMaterialExpressionParameter>(FunctionExpression))
-					{
-						if (Parameter->ParameterName == ParameterInfo.Name)
-						{
-							OutDesc = Parameter->Desc;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionTextureSampleParameter* TexParameter = Cast<const UMaterialExpressionTextureSampleParameter>(FunctionExpression))
-					{
-						if (TexParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutDesc = TexParameter->Desc;
-							return true;
-						}
-					}
-					else if (const UMaterialExpressionFontSampleParameter* FontParameter = Cast<const UMaterialExpressionFontSampleParameter>(FunctionExpression))
-					{
-						if (FontParameter->ParameterName == ParameterInfo.Name)
-						{
-							OutDesc = FontParameter->Desc;
-							return true;
-						}
-					}
-				}
-			}
 		}
 
 		return false;
@@ -435,38 +325,15 @@ public:
 	}
 #endif // WITH_EDITORONLY_DATA
 
-	virtual bool OverrideNamedScalarParameter(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue)
-	{
-		return false;
-	}
+#if WITH_EDITOR
+	virtual bool GetParameterOverrideValue(EMaterialParameterType Type, const FName& ParameterName, FMaterialParameterMetadata& OutValue, FMFRecursionGuard RecursionGuard = FMFRecursionGuard()) const;
 
-	virtual bool OverrideNamedVectorParameter(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue)
-	{
-		return false;
-	}
-
-	virtual bool OverrideNamedTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue)
-	{
-		return false;
-	}
-	
-	virtual bool OverrideNamedRuntimeVirtualTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue)
-	{
-		return false;
-	}
-
-	virtual bool OverrideNamedFontParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage)
-	{
-		return false;
-	}
-
-	virtual bool OverrideNamedStaticSwitchParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid)
-	{
-		return false;
-	}
-
-	virtual bool OverrideNamedStaticComponentMaskParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid)
-	{
-		return false;
-	}
+	ENGINE_API bool OverrideNamedScalarParameter(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue);
+	ENGINE_API bool OverrideNamedVectorParameter(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue);
+	ENGINE_API bool OverrideNamedTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue);
+	ENGINE_API bool OverrideNamedRuntimeVirtualTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue);
+	ENGINE_API bool OverrideNamedFontParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage);
+	ENGINE_API bool OverrideNamedStaticSwitchParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid);
+	ENGINE_API bool OverrideNamedStaticComponentMaskParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid);
+#endif // WITH_EDITOR
 };

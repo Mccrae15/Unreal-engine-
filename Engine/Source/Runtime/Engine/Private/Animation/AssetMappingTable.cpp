@@ -191,7 +191,7 @@ void UAssetMappingTable::ReplaceReferredAnimations(const TMap<UAnimationAsset*, 
 {
 	for (FAssetMapping& AssetMapping : MappedAssets)
 	{
-		UAnimationAsset*& AnimAsset = AssetMapping.SourceAsset;
+		TObjectPtr<UAnimationAsset>& AnimAsset = AssetMapping.SourceAsset;
 		if (AnimAsset)
 		{
 			// now fix everythign else

@@ -3,13 +3,15 @@
 
 #include "Chaos/Core.h"
 #include "Chaos/ArrayCollectionArray.h"
+#include "Chaos/Collision/CollisionApplyType.h"
 #include "Chaos/Evolution/SimulationSpace.h"
+#include "Chaos/Evolution/SolverDatas.h"
 #include "Chaos/ParticleHandleFwd.h"
 
 
 namespace Chaos
 {
-	class FParticlePairCollisionDetector;
+	class FBasicCollisionDetector;
 	class FPBDCollisionConstraints;
 	class FSimpleConstraintRule;
 	class FPBDRigidsSOAs;
@@ -27,7 +29,7 @@ namespace Chaos
 	public:
 		// @todo(ccaulfield): make it so that CollisionDetection is plugged in with a constraint rule...
 
-		using FCollisionDetector = FParticlePairCollisionDetector;
+		using FCollisionDetector = FBasicCollisionDetector;
 		using FEvolutionCallback = TFunction<void()>;
 		using FRigidParticleSOAs = FPBDRigidsSOAs;
 
@@ -38,11 +40,33 @@ namespace Chaos
 		void Advance(const FReal StepDt, const int32 NumSteps, const FReal RewindDt);
 		void AdvanceOneTimeStep(const FReal Dt, const FReal StepFraction);
 
+		void SetSolverType(const EConstraintSolverType InSolverType)
+		{
+			SolverType = InSolverType;
+		}
+
+		void SetNumPositionIterations(const int32 NumIts)
+		{
+			NumPositionIterations = NumIts;
+		}
+
+		void SetNumVelocityIterations(const int32 NumIts)
+		{
+			NumVelocityIterations = NumIts;
+		}
+
+		void SetNumProjectionIterations(const int32 NumIts)
+		{
+			NumProjectionIterations = NumIts;
+		}
+
+		// Legacy
 		void SetNumIterations(const int32 NumIts)
 		{
 			NumApplyIterations = NumIts;
 		}
 
+		// Legacy
 		void SetNumPushOutIterations(const int32 NumIts)
 		{
 			NumApplyPushOutIterations = NumIts;
@@ -103,17 +127,15 @@ namespace Chaos
 		void UnprepareTick();
 		void Rewind(FReal Dt, FReal RewindDt);
 		void Integrate(FReal Dt);
-		void IntegrateImpl(FReal Dt);
-		void IntegrateImpl2(FReal Dt);
-		void IntegrateImplISPC(FReal Dt);
 		void ApplyKinematicTargets(FReal Dt, FReal StepFraction);
 		void DetectCollisions(FReal Dt);
-		void PrepareIteration(FReal Dt);
-		void UnprepareIteration(FReal Dt);
-		void ApplyConstraints(FReal Dt);
+		void GatherInput(FReal Dt);
+		void ScatterOutput(FReal Dt);
+		void ApplyConstraintsPhase1(FReal Dt);
 		void UpdateVelocities(FReal Dt);
-		void ApplyPushOutConstraints(FReal Dt);
-		void UpdatePositions(FReal Dt);
+		void ApplyConstraintsPhase2(FReal Dt);
+		void ApplyCorrections(FReal Dt);
+		void ApplyConstraintsPhase3(FReal Dt);
 
 		FRigidParticleSOAs& Particles;
 		FCollisionDetector& CollisionDetector;
@@ -123,9 +145,14 @@ namespace Chaos
 
 		TArray<FSimpleConstraintRule*> ConstraintRules;
 		TArray<FSimpleConstraintRule*> PrioritizedConstraintRules;
+		FPBDIslandSolverData SolverData;
 
+		EConstraintSolverType SolverType;
 		int32 NumApplyIterations;
 		int32 NumApplyPushOutIterations;
+		int32 NumPositionIterations;
+		int32 NumVelocityIterations;
+		int32 NumProjectionIterations;
 		FReal BoundsExtension;
 		FVec3 Gravity;
 		FSimulationSpaceSettings SimulationSpaceSettings;

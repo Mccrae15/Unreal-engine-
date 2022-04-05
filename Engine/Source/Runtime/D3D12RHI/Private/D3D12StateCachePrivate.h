@@ -135,8 +135,8 @@ struct FD3D12ResourceCache
 	inline void DirtyGraphics(const ResourceSlotMask& SlotMask = -1)
 	{
 		Dirty(SF_Vertex, SlotMask);
-		Dirty(SF_Hull, SlotMask);
-		Dirty(SF_Domain, SlotMask);
+		Dirty(SF_Mesh, SlotMask);
+		Dirty(SF_Amplification, SlotMask);
 		Dirty(SF_Pixel, SlotMask);
 		Dirty(SF_Geometry, SlotMask);
 	}
@@ -260,7 +260,7 @@ struct FD3D12SamplerStateCache : public FD3D12ResourceCache<SamplerSlotMask>
 };
 
 
-static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(uint32 PrimitiveType, bool bUsingTessellation)
+static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(uint32 PrimitiveType)
 {
 	static const uint8 D3D12PrimitiveType[] =
 	{
@@ -308,19 +308,6 @@ static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(uint32 PrimitiveType,
 		D3D_PRIMITIVE_TOPOLOGY_32_CONTROL_POINT_PATCHLIST, // PT_32_ControlPointPatchList
 	};
 	static_assert(UE_ARRAY_COUNT(D3D12PrimitiveType) == PT_Num, "Primitive lookup table is wrong size");
-
-	if (bUsingTessellation)
-	{
-		if (PrimitiveType == PT_TriangleList)
-		{
-			// This is the case for tessellation without AEN or other buffers, so just flip to 3 CPs
-			return D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
-		}
-		else/* if (PrimitiveType < PT_1_ControlPointPatchList)*/
-		{
-			checkf(PrimitiveType >= PT_1_ControlPointPatchList, TEXT("Invalid type specified for tessellated render, probably missing a case in FSkeletalMeshSceneProxy::DrawDynamicElementsByMaterial or FStaticMeshSceneProxy::GetMeshElement"));
-		}
-	}
 
 	D3D_PRIMITIVE_TOPOLOGY D3DType = (D3D_PRIMITIVE_TOPOLOGY) D3D12PrimitiveType[PrimitiveType];
 	checkf(D3DType, TEXT("Unknown primitive type: %u"), PrimitiveType);
@@ -450,14 +437,14 @@ protected:
 	{ \
 		static const EShaderFrequency Frequency = SF_##Name; \
 		static FD3D12##Name##Shader* GetShader(FD3D12BoundShaderState* BSS) { return BSS ? BSS->Get##Name##Shader() : nullptr; } \
-		static FD3D12##Name##Shader* GetShader(FD3D12GraphicsPipelineState* PSO) { return PSO ? (FD3D12##Name##Shader*)PSO->PipelineStateInitializer.BoundShaderState.##Name##ShaderRHI : nullptr; } \
+		static FD3D12##Name##Shader* GetShader(FD3D12GraphicsPipelineState* PSO) { return PSO ? (FD3D12##Name##Shader*)PSO->PipelineStateInitializer.BoundShaderState.Get##Name##Shader() : nullptr; } \
 	}
 	DECLARE_SHADER_TRAITS(Vertex);
-	DECLARE_SHADER_TRAITS(Pixel);
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	DECLARE_SHADER_TRAITS(Domain);
-	DECLARE_SHADER_TRAITS(Hull);
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	DECLARE_SHADER_TRAITS(Mesh);
+	DECLARE_SHADER_TRAITS(Amplification);
 #endif
+	DECLARE_SHADER_TRAITS(Pixel);
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	DECLARE_SHADER_TRAITS(Geometry);
 #endif
@@ -478,11 +465,6 @@ protected:
 			// Shader changed so its resource table is dirty
 			SetDirtyUniformBuffers(this->CmdContext, Traits::Frequency);
 		}
-	}
-
-	template <typename TShader> D3D12_STATE_CACHE_INLINE void GetShader(TShader** Shader)
-	{
-		*Shader = StateCacheShaderTraits<TShader>::GetShader(GetGraphicsPipelineState());
 	}
 
 	template <ED3D12PipelineType PipelineType>
@@ -737,26 +719,38 @@ public:
 	void SetStencilRef(uint32 StencilRef);
 	uint32 GetStencilRef() const { return PipelineState.Graphics.CurrentReferenceStencil; }
 
+	template <typename TShader>
+	D3D12_STATE_CACHE_INLINE TShader* GetShader()
+	{
+		return StateCacheShaderTraits<TShader>::GetShader(GetGraphicsPipelineState());
+	}
+
+	template <typename TShader>
+	D3D12_STATE_CACHE_INLINE void GetShader(TShader** Shader)
+	{
+		*Shader = GetShader<TShader>();
+	}
+
 	D3D12_STATE_CACHE_INLINE void GetVertexShader(FD3D12VertexShader** Shader)
 	{
 		GetShader(Shader);
 	}
 
-	D3D12_STATE_CACHE_INLINE void GetHullShader(FD3D12HullShader** Shader)
+	D3D12_STATE_CACHE_INLINE void GetMeshShader(FD3D12MeshShader** Shader)
 	{
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+#if PLATFORM_SUPPORTS_MESH_SHADERS
 		GetShader(Shader);
 #else
-		*Shader = nullptr;
+		* Shader = nullptr;
 #endif
 	}
 
-	D3D12_STATE_CACHE_INLINE void GetDomainShader(FD3D12DomainShader** Shader)
+	D3D12_STATE_CACHE_INLINE void GetAmplificationShader(FD3D12AmplificationShader** Shader)
 	{
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+#if PLATFORM_SUPPORTS_MESH_SHADERS
 		GetShader(Shader);
 #else
-		*Shader = nullptr;
+		* Shader = nullptr;
 #endif
 	}
 
@@ -774,18 +768,18 @@ public:
 		GetShader(Shader);
 	}
 
-	D3D12_STATE_CACHE_INLINE void SetGraphicsPipelineState(FD3D12GraphicsPipelineState* GraphicsPipelineState, bool bTessellationChanged)
+	D3D12_STATE_CACHE_INLINE void SetGraphicsPipelineState(FD3D12GraphicsPipelineState* GraphicsPipelineState)
 	{
 		check(GraphicsPipelineState);
 		if (PipelineState.Graphics.CurrentPipelineStateObject != GraphicsPipelineState)
 		{
 			SetStreamStrides(GraphicsPipelineState->StreamStrides);
 			SetShader(GraphicsPipelineState->GetVertexShader());
-			SetShader(GraphicsPipelineState->GetPixelShader());
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-			SetShader(GraphicsPipelineState->GetDomainShader());
-			SetShader(GraphicsPipelineState->GetHullShader());
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+			SetShader(GraphicsPipelineState->GetMeshShader());
+			SetShader(GraphicsPipelineState->GetAmplificationShader());
 #endif
+			SetShader(GraphicsPipelineState->GetPixelShader());
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 			SetShader(GraphicsPipelineState->GetGeometryShader());
 #endif
@@ -800,11 +794,10 @@ public:
 			PipelineState.Graphics.CurrentPipelineStateObject = GraphicsPipelineState;
 
 			EPrimitiveType PrimitiveType = GraphicsPipelineState->PipelineStateInitializer.PrimitiveType;
-			if (PipelineState.Graphics.CurrentPrimitiveType != PrimitiveType || bTessellationChanged)
+			if (PipelineState.Graphics.CurrentPrimitiveType != PrimitiveType)
 			{
-				const bool bUsingTessellation = GraphicsPipelineState->GetHullShader() && GraphicsPipelineState->GetDomainShader();
 				PipelineState.Graphics.CurrentPrimitiveType = PrimitiveType;
-				PipelineState.Graphics.CurrentPrimitiveTopology = GetD3D12PrimitiveType(PrimitiveType, bUsingTessellation);
+				PipelineState.Graphics.CurrentPrimitiveTopology = GetD3D12PrimitiveType(PrimitiveType);
 				bNeedSetPrimitiveTopology = true;
 
 				static_assert(PT_Num == 38, "This computation needs to be updated, matching that of GetVertexCountForPrimitiveCount()");
@@ -864,7 +857,7 @@ public:
 				continue;
 			}
 
-			for (int32 j = 0; j < PipelineState.Common.SRVCache.MaxBoundIndex[i]; ++j)
+			for (int32 j = 0; j <= PipelineState.Common.SRVCache.MaxBoundIndex[i]; ++j)
 			{
 				if (PipelineState.Common.SRVCache.Views[i][j] && PipelineState.Common.SRVCache.Views[i][j]->GetResourceLocation())
 				{
@@ -879,17 +872,15 @@ public:
 		return false;
 	}
 
-	D3D12_STATE_CACHE_INLINE bool IsStreamSource(const FD3D12ResourceLocation* VertexBufferLocation) const
+	D3D12_STATE_CACHE_INLINE void ClearVertexBuffer(const FD3D12ResourceLocation* VertexBufferLocation)
 	{
 		for (int32 index = 0; index <= PipelineState.Graphics.VBCache.MaxBoundVertexBufferIndex; ++index)
 		{
 			if (PipelineState.Graphics.VBCache.CurrentVertexBufferResources[index] == VertexBufferLocation)
 			{
-				return true;
+				PipelineState.Graphics.VBCache.CurrentVertexBufferResources[index] = nullptr;
 			}
 		}
-
-		return false;
 	}
 
 public:

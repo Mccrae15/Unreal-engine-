@@ -14,6 +14,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"DatasmithContent",
 					"DesktopPlatform",
+					"EditorFramework",
 					"EditorStyle",
 					"Engine",
 					"Projects",
@@ -24,9 +25,11 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"InputCore",
 					"PropertyEditor",
 					"SlateCore",
 					"Slate",
+					"ToolMenus",
 					"DetailCustomizations",
                 }
 			);

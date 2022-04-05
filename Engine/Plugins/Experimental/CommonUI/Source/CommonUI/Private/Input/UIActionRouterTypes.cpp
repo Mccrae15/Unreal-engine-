@@ -235,7 +235,7 @@ void FUIActionBinding::CleanRegistrations()
 	int32 NumRemoved = 0;
 	for (auto Iter = AllRegistrationsByHandle.CreateIterator(); Iter; ++Iter)
 	{
-		if (!Iter->Value->BoundWidget.IsValid() || !ensure(Iter->Value->OnExecuteAction.IsBound()))
+		if (!Iter->Value->BoundWidget.IsValid() || !ensureMsgf(Iter->Value->OnExecuteAction.IsBound(), TEXT("Unbound Action: %s"), *Iter->Value->ActionName.ToString()))
 		{
 			if (Iter->Value->OwningCollection.IsValid())
 			{
@@ -355,7 +355,7 @@ bool FUIActionBindingHandle::IsValid() const
 }
 
 //@todo DanH: With widgets caching binding handles that are auto registered/unregistered on construct/destruct, it's less clear what this should be doing
-//		The big question is whether this should fully nuke the binding object, or just unregister it from the node (if it's actually live)
+//		The big question is whether this should fully destroy the binding object, or just unregister it from the node (if it's actually live)
 //		Perhaps we remove the function from here entirely, and you have to pass the handle to the router for unbinding?
 void FUIActionBindingHandle::Unregister()
 {
@@ -576,6 +576,11 @@ void FActionRouterBindingCollection::AddBinding(FUIActionBinding& Binding)
 		ActionBindings.Add(Binding.Handle);
 		Binding.OwningCollection = AsShared();
 
+		if (Binding.HoldMappings.Num() > 0)
+		{
+			++HoldBindingsCount;
+		}
+
 		if (IsReceivingInput())
 		{
 			GetActionRouter().OnBoundActionsUpdated().Broadcast();
@@ -590,6 +595,12 @@ void FActionRouterBindingCollection::RemoveBinding(FUIActionBindingHandle Bindin
 		if (TSharedPtr<FUIActionBinding> UIBinding = FUIActionBinding::FindBinding(BindingHandle))
 		{
 			UIBinding->OwningCollection.Reset();
+
+			if (UIBinding->HoldMappings.Num() > 0)
+			{
+				--HoldBindingsCount;
+				ensure(HoldBindingsCount >= 0);
+			}
 		}
 
 		if (IsReceivingInput())
@@ -715,8 +726,19 @@ bool FActivatableTreeNode::ProcessNormalInput(ECommonInputMode ActiveInputMode, 
 	return false;
 }
 
+bool FActivatableTreeNode::IsWidgetValid() const
+{ 
+	return RepresentedWidget.IsValid();
+}
+
 bool FActivatableTreeNode::IsWidgetActivated() const
 {
+#if !UE_BUILD_SHIPPING
+	UE_CLOG(!RepresentedWidget.IsValid(), LogUIActionRouter, Warning, 
+		TEXT("Represented Widget not Valid: %s - %s"), 
+		*DebugWidgetName, 
+		Parent.IsValid() ? *Parent.Pin()->DebugWidgetName : TEXT("No Parent"));
+#endif
 	return ensure(RepresentedWidget.IsValid()) && RepresentedWidget->IsActivated();
 }
 
@@ -1127,6 +1149,10 @@ bool FActivatableTreeRoot::UpdateLeafmostActiveNode(FActivatableTreeNodePtr Base
 
 	// Starting from the provided candidate, find the leafmost active node (which may well just be the candidate itself)
 	FActivatableTreeNodePtr NewLeafmostNode = BaseCandidateNode ? FindLeafmostActiveChild(BaseCandidateNode.ToSharedRef()) : nullptr;
+
+	// Always trigger on valid canidates to allow to bound actions to update
+	OnLeafmostActiveNodeChanged.ExecuteIfBound();
+
 	if (NewLeafmostNode != LeafmostActiveNode)
 	{
 		if (LeafmostActiveNode.IsValid())
@@ -1151,7 +1177,6 @@ bool FActivatableTreeRoot::UpdateLeafmostActiveNode(FActivatableTreeNodePtr Base
 			}
 		}
 
-		OnLeafmostActiveNodeChanged.ExecuteIfBound();
 		return true;
 	}
 	return false;

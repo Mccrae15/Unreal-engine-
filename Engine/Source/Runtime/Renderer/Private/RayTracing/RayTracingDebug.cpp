@@ -11,7 +11,7 @@
 #include "SceneRenderTargets.h"
 #include "RenderGraphBuilder.h"
 #include "SceneUtils.h"
-#include "RayTracingDebugDefinitions.h"
+#include "RaytracingDebugDefinitions.h"
 #include "RayTracing/RayTracingLighting.h"
 #include "RayTracing/RaytracingOptions.h"
 
@@ -32,6 +32,24 @@ TAutoConsoleVariable<int32> CVarRayTracingDebugModeOpaqueOnly(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<float> CVarRayTracingDebugTimingScale(
+	TEXT("r.RayTracing.DebugTimingScale"),
+	1.0f,
+	TEXT("Scaling factor for ray timing heat map visualization. (default = 1)\n")
+);
+
+static TAutoConsoleVariable<float> CVarRayTracingDebugTraversalBoxScale(
+	TEXT("r.RayTracing.DebugTraversalScale.Box"),
+	150.0f,
+	TEXT("Scaling factor for box traversal heat map visualization. (default = 150)\n")
+);
+
+static TAutoConsoleVariable<float> CVarRayTracingDebugTraversalTriangleScale(
+	TEXT("r.RayTracing.DebugTraversalScale.Triangle"),
+	30.0f,
+	TEXT("Scaling factor for triangle traversal heat map visualization. (default = 30)\n")
+);
+
 class FRayTracingDebugRGS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FRayTracingDebugRGS)
@@ -40,6 +58,10 @@ class FRayTracingDebugRGS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, VisualizationMode)
 		SHADER_PARAMETER(int32, ShouldUsePreExposure)
+		SHADER_PARAMETER(float, TimingScale)
+		SHADER_PARAMETER(float, MaxTraceDistance)
+		SHADER_PARAMETER(float, FarFieldMaxTraceDistance)
+		SHADER_PARAMETER(FVector3f, FarFieldReferencePos)
 		SHADER_PARAMETER(int32, OpaqueOnly)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
@@ -53,12 +75,82 @@ class FRayTracingDebugRGS : public FGlobalShader
 };
 IMPLEMENT_GLOBAL_SHADER(FRayTracingDebugRGS, "/Engine/Private/RayTracing/RayTracingDebug.usf", "RayTracingDebugMainRGS", SF_RayGen);
 
-void FDeferredShadingSceneRenderer::PrepareRayTracingDebug(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
+class FRayTracingDebugCHS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRayTracingDebugCHS);
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	}
+
+public:
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	FRayTracingDebugCHS() = default;
+	FRayTracingDebugCHS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{}
+};
+IMPLEMENT_SHADER_TYPE(, FRayTracingDebugCHS, TEXT("/Engine/Private/RayTracing/RayTracingDebug.usf"), TEXT("RayTracingDebugMainCHS"), SF_RayHitGroup);
+
+class FRayTracingDebugTraversalCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRayTracingDebugTraversalCS)
+	SHADER_USE_PARAMETER_STRUCT(FRayTracingDebugTraversalCS, FGlobalShader)
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, VisualizationMode)
+		SHADER_PARAMETER(float, TraversalBoxScale)
+		SHADER_PARAMETER(float, TraversalTriangleScale)
+		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
+		OutEnvironment.CompilerFlags.Add(CFLAG_InlineRayTracing);
+
+		OutEnvironment.SetDefine(TEXT("INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X"), ThreadGroupSizeX);
+		OutEnvironment.SetDefine(TEXT("INLINE_RAY_TRACING_THREAD_GROUP_SIZE_Y"), ThreadGroupSizeY);
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsRayTracingEnabledForProject(Parameters.Platform) && RHISupportsRayTracing(Parameters.Platform) && RHISupportsInlineRayTracing(Parameters.Platform);
+	}
+
+	static constexpr uint32 ThreadGroupSizeX = 8;
+	static constexpr uint32 ThreadGroupSizeY = 4;
+	static_assert(ThreadGroupSizeX*ThreadGroupSizeY == 32, "Current inline ray tracing implementation requires 1:1 mapping between thread groups and waves and only supports wave32 mode.");
+};
+IMPLEMENT_GLOBAL_SHADER(FRayTracingDebugTraversalCS, "/Engine/Private/RayTracing/RayTracingDebugTraversal.usf", "RayTracingDebugTraversalCS", SF_Compute);
+
+static bool RequiresRayTracingDebugCHS(uint32 DebugVisualizationMode)
+{
+	return DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_INSTANCES || DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_TRIANGLES;
+}
+
+static bool IsRayTracingDebugTraversalMode(uint32 DebugVisualizationMode)
+{
+	return DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_TRAVERSAL_NODE || 
+		DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_TRAVERSAL_TRIANGLE || 
+		DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_TRAVERSAL_ALL;
+}
+
+void FDeferredShadingSceneRenderer::PrepareRayTracingDebug(const FSceneViewFamily& ViewFamily, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
 	// Declare all RayGen shaders that require material closest hit shaders to be bound
-	if (View.RayTracingRenderMode == ERayTracingRenderMode::RayTracingDebug)
+	bool bEnabled = ViewFamily.EngineShowFlags.RayTracingDebug && ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::FullPipeline);
+	if (bEnabled)
 	{
-		auto RayGenShader = View.ShaderMap->GetShader<FRayTracingDebugRGS>();
+		auto RayGenShader = GetGlobalShaderMap(ViewFamily.GetShaderPlatform())->GetShader<FRayTracingDebugRGS>();
 		OutRayGenShaders.Add(RayGenShader.GetRayTracingShader());
 	}
 }
@@ -90,6 +182,13 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("PrimaryRays", "PrimaryRays").ToString()),										RAY_TRACING_DEBUG_VIZ_PRIMARY_RAYS);
 		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("World Tangent", "World Tangent").ToString()),									RAY_TRACING_DEBUG_VIZ_WORLD_TANGENT);
 		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Anisotropy", "Anisotropy").ToString()),										RAY_TRACING_DEBUG_VIZ_ANISOTROPY);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Instances", "Instances").ToString()),											RAY_TRACING_DEBUG_VIZ_INSTANCES);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Performance", "Performance").ToString()),										RAY_TRACING_DEBUG_VIZ_PERFORMANCE);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Triangles", "Triangles").ToString()),											RAY_TRACING_DEBUG_VIZ_TRIANGLES);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("FarField", "FarField").ToString()),											RAY_TRACING_DEBUG_VIZ_FAR_FIELD);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Traversal Node", "Traversal Node").ToString()),								RAY_TRACING_DEBUG_VIZ_TRAVERSAL_NODE);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Traversal Triangle", "Traversal Triangle").ToString()),						RAY_TRACING_DEBUG_VIZ_TRAVERSAL_TRIANGLE);
+		RayTracingDebugVisualizationModes.Emplace(FName(*LOCTEXT("Traversal All", "Traversal All").ToString()),									RAY_TRACING_DEBUG_VIZ_TRAVERSAL_ALL);
 	}
 
 	uint32 DebugVisualizationMode;
@@ -110,10 +209,40 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 		DebugVisualizationMode = RAY_TRACING_DEBUG_VIZ_BASE_COLOR;
 	}
 
-
 	if (DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_BARYCENTRICS)
 	{
 		return RenderRayTracingBarycentrics(GraphBuilder, View, SceneColorTexture);
+	}
+
+	if (IsRayTracingDebugTraversalMode(DebugVisualizationMode) && ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::Inline))
+	{
+		FRayTracingDebugTraversalCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRayTracingDebugTraversalCS::FParameters>();
+
+		PassParameters->VisualizationMode = DebugVisualizationMode;
+		PassParameters->TraversalBoxScale = CVarRayTracingDebugTraversalBoxScale.GetValueOnAnyThread();
+		PassParameters->TraversalTriangleScale = CVarRayTracingDebugTraversalTriangleScale.GetValueOnAnyThread();
+		PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+		PassParameters->Output = GraphBuilder.CreateUAV(SceneColorTexture);
+
+		FIntRect ViewRect = View.ViewRect;
+
+		RDG_GPU_STAT_SCOPE(GraphBuilder, RayTracingDebug);
+
+		const FIntPoint GroupSize(FRayTracingDebugTraversalCS::ThreadGroupSizeX, FRayTracingDebugTraversalCS::ThreadGroupSizeY);
+		const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(ViewRect.Size(), GroupSize);
+		
+		TShaderRef<FRayTracingDebugTraversalCS> ComputeShader = GetGlobalShaderMap(FeatureLevel)->GetShader<FRayTracingDebugTraversalCS>();
+
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("RayTracingDebug"), ComputeShader, PassParameters, GroupCount);
+		return;
+	}
+
+	// Debug modes other than barycentrics and traversal require pipeline support.
+	const bool bRayTracingPipeline = ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::FullPipeline);
+	if (!bRayTracingPipeline)
+	{
+		return;
 	}
 
 	if (DebugVisualizationMode == RAY_TRACING_DEBUG_VIZ_PRIMARY_RAYS) 
@@ -129,38 +258,65 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 		return;
 	}
 
-
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
-
 	auto RayGenShader = ShaderMap->GetShader<FRayTracingDebugRGS>();
 
 	FRayTracingPipelineState* Pipeline = View.RayTracingMaterialPipeline;
 
-	FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+	if (RequiresRayTracingDebugCHS(DebugVisualizationMode))
+	{
+		FRayTracingPipelineStateInitializer Initializer;
+
+		FRHIRayTracingShader* RayGenShaderTable[] = { RayGenShader.GetRayTracingShader() };
+		Initializer.SetRayGenShaderTable(RayGenShaderTable);
+
+		auto ClosestHitShader = ShaderMap->GetShader<FRayTracingDebugCHS>();
+		FRHIRayTracingShader* HitGroupTable[] = { ClosestHitShader.GetRayTracingShader() };
+		Initializer.SetHitGroupTable(HitGroupTable);
+		Initializer.bAllowHitGroupIndexing = false; // Use the same hit shader for all geometry in the scene by disabling SBT indexing.
+		Initializer.MaxPayloadSizeInBytes = RAY_TRACING_MAX_ALLOWED_PAYLOAD_SIZE;
+
+		Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(GraphBuilder.RHICmdList, Initializer);
+	}
 
 	FRayTracingDebugRGS::FParameters* RayGenParameters = GraphBuilder.AllocParameters<FRayTracingDebugRGS::FParameters>();
 
 	RayGenParameters->VisualizationMode = DebugVisualizationMode;
 	RayGenParameters->ShouldUsePreExposure = View.Family->EngineShowFlags.Tonemapper;
+	RayGenParameters->TimingScale = CVarRayTracingDebugTimingScale.GetValueOnAnyThread() / 25000.0f;
 	RayGenParameters->OpaqueOnly = CVarRayTracingDebugModeOpaqueOnly.GetValueOnRenderThread();
-	RayGenParameters->TLAS = RayTracingSceneRHI->GetShaderResourceView();
+	
+	if (Lumen::UseFarField(ViewFamily))
+	{
+		RayGenParameters->MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
+		RayGenParameters->FarFieldMaxTraceDistance = Lumen::GetFarFieldMaxTraceDistance();
+		RayGenParameters->FarFieldReferencePos = (FVector3f)Lumen::GetFarFieldReferencePos();	// LWC_TODO: Precision Loss
+	}
+	else
+	{
+		RayGenParameters->MaxTraceDistance = 0.0f;
+		RayGenParameters->FarFieldMaxTraceDistance = 0.0f;
+		RayGenParameters->FarFieldReferencePos = FVector3f(0.0f);
+	}
+	
+	RayGenParameters->TLAS = View.GetRayTracingSceneViewChecked();
 	RayGenParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	RayGenParameters->Output = GraphBuilder.CreateUAV(SceneColorTexture);
 
 	FIntRect ViewRect = View.ViewRect;
 
+	RDG_GPU_STAT_SCOPE(GraphBuilder, RayTracingDebug);
+
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("RayTracingDebug"),
 		RayGenParameters,
 		ERDGPassFlags::Compute,
-		[this, RayGenParameters, RayGenShader, RayTracingSceneRHI, Pipeline, ViewRect](FRHICommandList& RHICmdList)
+		[this, RayGenParameters, RayGenShader, &View, Pipeline, ViewRect](FRHIRayTracingCommandList& RHICmdList)
 	{
-		SCOPED_GPU_STAT(RHICmdList, RayTracingDebug);
-
 		FRayTracingShaderBindingsWriter GlobalResources;
 		SetShaderParameters(GlobalResources, RayGenShader, *RayGenParameters);
 
-		RHICmdList.RayTraceDispatch(Pipeline, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, ViewRect.Size().X, ViewRect.Size().Y);
+		RHICmdList.RayTraceDispatch(Pipeline, RayGenShader.GetRayTracingShader(), View.GetRayTracingSceneChecked(), GlobalResources, ViewRect.Size().X, ViewRect.Size().Y);
 	});
 }
 

@@ -4,79 +4,42 @@
 #include "Misc/DisplayClusterLog.h"
 #include "Engine/GameEngine.h"
 
+#include "Async/Async.h"
+
 #if WITH_EDITOR
 #include "Editor/UnrealEd/Public/UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
 #endif
 
-FCriticalSection FDisplayClusterAppExit::InternalsSyncScope;
 
-auto FDisplayClusterAppExit::ExitTypeToStr(EExitType ExitType)
-{
-	switch (ExitType)
-	{
-	case EExitType::KillImmediately:
-		return TEXT("KILL");
-	case EExitType::NormalSoft:
-		return TEXT("UE_soft");
-	case EExitType::NormalForce:
-		return TEXT("UE_force");
-	default:
-		return TEXT("unknown");
-	}
-}
-
-void FDisplayClusterAppExit::ExitApplication(EExitType ExitType, const FString& Msg)
+void FDisplayClusterAppExit::ExitApplication(const FString& Msg)
 {
 	if (GEngine && GEngine->IsEditor())
 	{
 #if WITH_EDITOR
-		UE_LOG(LogDisplayClusterModule, Log, TEXT("PIE STOP: %s application quit requested: %s"), ExitTypeToStr(ExitType), *Msg);
+		UE_LOG(LogDisplayClusterModule, Log, TEXT("PIE end requested - %s"), *Msg);
 		GUnrealEd->RequestEndPlayMap();
 #endif
-		return;
 	}
 	else
 	{
-		FScopeLock lock(&InternalsSyncScope);
-
-		// We process only first call. Thus we won't have a lot of requests from different socket threads.
-		// We also will know the first requester which may be useful in step-by-step problem solving.
-		static bool bRequestedBefore = false;
-		if (bRequestedBefore == false || ExitType == EExitType::KillImmediately)
+		if (!IsEngineExitRequested())
 		{
-			bRequestedBefore = true;
-			UE_LOG(LogDisplayClusterModule, Log, TEXT("%s application quit requested: %s"), ExitTypeToStr(ExitType), *Msg);
+			UE_LOG(LogDisplayClusterModule, Log, TEXT("Exit requested - %s"), *Msg);
 
-			GLog->Flush();
-
-			switch (ExitType)
+			if (IsInGameThread())
 			{
-				case EExitType::KillImmediately:
+				FPlatformMisc::RequestExit(false);
+			}
+			else
+			{
+				// For some reason UE4 generates crash info if FPlatformMisc::RequestExit gets called
+				// from a thread other than GameThread. Since it may be called from the networking
+				// session threads (failover pipeline), we don't want to generate unnecessary crash reports.
+				AsyncTask(ENamedThreads::GameThread, []()
 				{
-					FProcHandle hProc = FPlatformProcess::OpenProcess(FPlatformProcess::GetCurrentProcessId());
-					FPlatformProcess::TerminateProc(hProc, true);
-					break;
-				}
-
-				case EExitType::NormalSoft:
-				{
-					FProcHandle hProc = FPlatformProcess::OpenProcess(FPlatformProcess::GetCurrentProcessId());
-					FPlatformProcess::TerminateProc(hProc, true);
-					break;
-				}
-
-				case EExitType::NormalForce:
-				{
-					FPlatformMisc::RequestExit(true);
-					break;
-				}
-
-				default:
-				{
-					UE_LOG(LogDisplayClusterModule, Warning, TEXT("Unknown exit type requested"));
-					break;
-				}
+					FPlatformMisc::RequestExit(false);
+				});
 			}
 		}
 	}

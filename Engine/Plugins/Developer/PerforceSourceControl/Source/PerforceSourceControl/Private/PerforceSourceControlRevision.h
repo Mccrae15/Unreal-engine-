@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ISourceControlProvider.h"
 #include "ISourceControlRevision.h"
 
 class FPerforceSourceControlRevision : public ISourceControlRevision, public TSharedFromThis<FPerforceSourceControlRevision, ESPMode::ThreadSafe>
@@ -13,11 +14,12 @@ public:
 		, Date(0)
 		, ChangelistNumber(0)
 		, FileSize(0)
+		, bIsShelve(false)
 	{
 	}
 
 	/** ISourceControlRevision interface */
-	virtual bool Get( FString& InOutFilename ) const override;
+	virtual bool Get( FString& InOutFilename, EConcurrency::Type InConcurrency = EConcurrency::Synchronous) const override;
 	virtual bool GetAnnotated( TArray<FAnnotationLine>& OutLines ) const override;
 	virtual bool GetAnnotated( FString& InOutFilename ) const override;
 	virtual const FString& GetFilename() const override;
@@ -65,4 +67,7 @@ public:
 
 	/** The size of the change */
 	int32 FileSize;
+
+	/** Whether this reprensents a revision bound to a shelved file in a changelist */
+	bool bIsShelve;
 };

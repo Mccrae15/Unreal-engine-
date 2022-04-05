@@ -13,7 +13,8 @@
 #include "Shader.h"
 #include "RenderResource.h"
 #include "RenderGraphResources.h"
-#include "GpuDebugRendering.h"
+#include "ShaderDebug.h"
+#include "ShaderPrintParameters.h"
 
 class UTexture2D;
 
@@ -31,9 +32,9 @@ ENUM_CLASS_FLAGS(ERDGImportedBufferFlags);
 
 struct RENDERER_API FRDGExternalBuffer
 {
-	TRefCountPtr<FRDGPooledBuffer> Buffer;
-	FShaderResourceViewRHIRef SRV;
-	FUnorderedAccessViewRHIRef UAV;
+	TRefCountPtr<FRDGPooledBuffer> Buffer = nullptr;
+	FShaderResourceViewRHIRef SRV = nullptr;
+	FUnorderedAccessViewRHIRef UAV = nullptr;
 	EPixelFormat Format = PF_Unknown;
 	void Release();
 };
@@ -63,9 +64,13 @@ enum class EHairStrandsDebugMode : uint8
 	RenderHairSeed,
 	RenderHairDimension,
 	RenderHairRadiusVariation,
+	RenderHairTangent,
 	RenderHairBaseColor,
 	RenderHairRoughness,
 	RenderVisCluster,
+	RenderHairGroup,
+	RenderLODColoration,
+	RenderHairControlPoints,
 	Count
 };
 
@@ -97,20 +102,6 @@ enum class EHairDebugMode : uint8
 RENDERER_API EHairStrandsDebugMode GetHairStrandsDebugStrandsMode();
 RENDERER_API EHairDebugMode GetHairStrandsDebugMode();
 
-struct FMinHairRadiusAtDepth1
-{
-	float Primary = 1;
-	float Velocity = 1;
-	float Stable = 1;
-};
-
-/// Compute the strand radius at a distance of 1 meter
-RENDERER_API FMinHairRadiusAtDepth1 ComputeMinStrandRadiusAtDepth1(
-	const FIntPoint& Resolution,
-	const float FOV,
-	const uint32 SampleCount,
-	const float OverrideStrandHairRasterizationScale);
-
 struct FHairStrandClusterCullingData;
 struct IPooledRenderTarget;
 struct FRWBuffer;
@@ -128,8 +119,38 @@ enum EHairGeometryType
 	NoneGeometry
 };
 
+enum EHairBindingType
+{
+	NoneBinding,
+	Rigid,
+	Skinning
+};
+
+enum EHairInterpolationType
+{
+	NoneSkinning,				// Use no skinning data (i.e. with no binding)
+	RigidSkinning,				// Use skinning data & apply a rigid triangle deformation
+	OffsetSkinning,				// Use skinning data & apply a offset deformation
+	SmoothSkinning,				// Use skinning data & apply a smooth (rotation) offset
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Public group data 
+
+struct RENDERER_API FHairStrandsInstance
+{
+	virtual ~FHairStrandsInstance() = default;
+	uint32 GetRefCount() const;
+	uint32 AddRef() const;
+	uint32 Release() const;
+	int32 RegisteredIndex = -1;
+	virtual const FBoxSphereBounds* GetBounds() const { return nullptr; }
+	virtual const FHairGroupPublicData* GetHairData() const { return nullptr; }
+protected:
+	mutable uint32 RefCount = 0;
+};
+typedef TArray<FHairStrandsInstance*> FHairStrandsInstances;
+
 class RENDERER_API FHairGroupPublicData : public FRenderResource
 {
 public:
@@ -139,6 +160,9 @@ public:
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
 	virtual FString GetFriendlyName() const override { return TEXT("FHairGroupPublicData"); }
+	void Allocate(FRDGBuilder& GraphBuilder);
+	void Release();
+	uint32 GetResourcesSize() const;
 
 	// The primitive count when no culling and neither lod happens
 	uint32 GetGroupInstanceVertexCount() const { return GroupControlTriangleStripVertexCount; }
@@ -151,6 +175,7 @@ public:
 	FRDGExternalBuffer& GetDrawIndirectBuffer() { return DrawIndirectBuffer; }
 	FRDGExternalBuffer& GetClusterAABBBuffer() { return ClusterAABBBuffer; }
 	FRDGExternalBuffer& GetGroupAABBBuffer() { return GroupAABBBuffer; }
+	const FRDGExternalBuffer& GetGroupAABBBuffer() const { return GroupAABBBuffer; }
 
 	const FRDGExternalBuffer& GetCulledVertexIdBuffer() const { return CulledVertexIdBuffer; }
 	const FRDGExternalBuffer& GetCulledVertexRadiusScaleBuffer() const { return CulledVertexRadiusScaleBuffer; }
@@ -170,6 +195,36 @@ public:
 	void SetLODVisibilities(const TArray<bool>& InLODVisibility) { LODVisibilities = InLODVisibility; }
 	const TArray<bool>& GetLODVisibilities() const { return LODVisibilities; }
 
+	bool IsVisible(int32 InLODIndex) const
+	{
+		if (InLODIndex < 0 && InLODIndex >= LODVisibilities.Num()) return false;
+		return LODVisibilities[InLODIndex];
+	}
+
+	EHairGeometryType GetGeometryType(int32 InLODIndex) const
+	{
+		if (InLODIndex < 0 && InLODIndex >= LODGeometryTypes.Num()) return EHairGeometryType::NoneGeometry;
+		return LODGeometryTypes[InLODIndex];
+	}
+
+	EHairBindingType GetBindingType(int32 InLODIndex) const
+	{ 
+		if (InLODIndex < 0 || InLODIndex >= BindingTypes.Num()) return EHairBindingType::NoneBinding;
+		return BindingTypes[InLODIndex];
+	}	
+
+	bool IsSimulationEnable(int32 InLODIndex) const
+	{
+		if (InLODIndex < 0 || InLODIndex >= LODSimulations.Num()) return false;
+		return LODSimulations[InLODIndex];
+	}
+
+	bool IsGlobalInterpolationEnable(int32 InLODIndex) const 
+	{
+		if (InLODIndex < 0 || InLODIndex >= LODGlobalInterpolations.Num()) return false;
+		return LODGlobalInterpolations[InLODIndex];
+	}
+
 	void SetLODScreenSizes(const TArray<float>& ScreenSizes) { LODScreenSizes = ScreenSizes; }
 	const TArray<float>& GetLODScreenSizes() const { return LODScreenSizes;  }
 
@@ -180,6 +235,9 @@ public:
 	float GetLODIndex() const { return LODIndex; }
 	int32 GetIntLODIndex() const { return FMath::Max(0, FMath::FloorToInt(LODIndex)); }
 
+	void SetMeshLODIndex(float InMeshLODIndex) { MeshLODIndex = InMeshLODIndex; }
+	float GetMeshLODIndex() const { return MeshLODIndex; }
+
 	void SetLODVisibility(bool bVisible) { bLODVisibility = bVisible; }
 	bool GetLODVisibility() const { return bLODVisibility; }
 
@@ -188,24 +246,38 @@ public:
 	{
 		struct FStrands
 		{
-			FShaderResourceViewRHIRef PositionBuffer = nullptr;
-			FShaderResourceViewRHIRef PrevPositionBuffer = nullptr;
-			FShaderResourceViewRHIRef TangentBuffer = nullptr;
-			FShaderResourceViewRHIRef MaterialBuffer = nullptr;
-			FShaderResourceViewRHIRef AttributeBuffer = nullptr;
+			FRDGImportedBuffer PositionBuffer;
+			FRDGImportedBuffer PrevPositionBuffer;
+			FRDGImportedBuffer TangentBuffer;
+			FRDGImportedBuffer MaterialBuffer;
+			FRDGImportedBuffer Attribute0Buffer;
+			FRDGImportedBuffer Attribute1Buffer;
+			FRDGImportedBuffer PositionOffsetBuffer;
+			FRDGImportedBuffer PrevPositionOffsetBuffer;
+
+			FShaderResourceViewRHIRef PositionBufferRHISRV				= nullptr;
+			FShaderResourceViewRHIRef PrevPositionBufferRHISRV			= nullptr;
+			FShaderResourceViewRHIRef TangentBufferRHISRV				= nullptr;
+			FShaderResourceViewRHIRef MaterialBufferRHISRV				= nullptr;
+			FShaderResourceViewRHIRef Attribute0BufferRHISRV			= nullptr;
+			FShaderResourceViewRHIRef Attribute1BufferRHISRV			= nullptr;
+			FShaderResourceViewRHIRef PositionOffsetBufferRHISRV		= nullptr;
+			FShaderResourceViewRHIRef PrevPositionOffsetBufferRHISRV	= nullptr;
 
 			FVector PositionOffset = FVector::ZeroVector;
 			FVector PrevPositionOffset = FVector::ZeroVector;
 
-			FShaderResourceViewRHIRef PositionOffsetBuffer = nullptr;
-			FShaderResourceViewRHIRef PrevPositionOffsetBuffer = nullptr;
-
 			uint32 VertexCount = 0;
 			float HairRadius = 0;
+			float HairRootScale = 0;
+			float HairTipScale = 0;
+			float HairRaytracingRadiusScale = 0;
+			float HairLengthScale = 1.f;
 			float HairLength = 0;
 			float HairDensity = 0;
 			bool bUseStableRasterization = false;
 			bool bScatterSceneLighting = false;
+			bool bUseRaytracingGeometry = false;
 		} Strands;
 
 		struct FCards
@@ -220,11 +292,16 @@ public:
 
 		bool bHasLODSwitch = false;
 		EHairGeometryType GeometryType = EHairGeometryType::NoneGeometry;
+		EHairBindingType BindingType = EHairBindingType::NoneBinding;
 		FTransform LocalToWorldTransform;
 	};
+
+	// Current hook for retriving instance data. 
+	// This needs to be refactor to merge FHairGroupPublicData & HairStrandsInstance
+	FHairStrandsInstance* Instance = nullptr;
+
 	FVertexFactoryInput VFInput;
 	uint32 ClusterDataIndex = ~0; // #hair_todo: move this into instance data, or remove FHairStrandClusterData
-//private:
 
 	uint32 GroupControlTriangleStripVertexCount;
 	uint32 GroupIndex;
@@ -238,24 +315,38 @@ public:
 	/* Hair Cluster & Hair Group bounding box buffer */
 	FRDGExternalBuffer ClusterAABBBuffer;
 	FRDGExternalBuffer GroupAABBBuffer;
+	bool bGroupAABBValid = false;
+	bool bClusterAABBValid = false;
 
 	/* Culling & LODing results for a hair group */ // Better to be transient?
 	FRDGExternalBuffer CulledVertexIdBuffer;
 	FRDGExternalBuffer CulledVertexRadiusScaleBuffer;
 	bool bCullingResultAvailable = false;
 	bool bSupportVoxelization = true;
+	bool bIsInitialized = false;
 
 	/* CPU LOD selection. Hair LOD selection can be done by CPU or GPU. If bUseCPULODSelection is true, 
 	   CPU LOD selection is enabled otherwise the GPU selection is used. CPU LOD selection use the CPU 
 	   bounding box, which might not be as accurate as the GPU ones*/
 	TArray<bool> LODVisibilities;
-	TArray<float> LODScreenSizes;
+	TArray<float>LODScreenSizes;
+	TArray<bool> LODSimulations;
+	TArray<bool> LODGlobalInterpolations;
 	TArray<EHairGeometryType> LODGeometryTypes;
 
+	TArray<EHairBindingType> BindingTypes;
+
 	// Data change every frame by the groom proxy based on views data
-	float LODIndex = 0;			// Current LOD used for all views
+	float MeshLODIndex = -1;
+	float LODIndex = -1;		// Current LOD used for all views
 	float LODBias = 0;			// Current LOD bias
 	bool bLODVisibility = true; // Enable/disable hair rendering for this component
+
+	// Debug
+	bool  bDebugDrawLODInfo = false; // Enable/disable hair LOD info
+	float DebugScreenSize = 0.f;
+	FLinearColor DebugGroupColor;
+	EHairStrandsDebugMode DebugMode = EHairStrandsDebugMode::NoneDebug;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -290,8 +381,11 @@ struct FHairStrandClusterData
 		bool GetCullingResultAvailable() const							{ return HairGroupPublicPtr ? HairGroupPublicPtr->GetCullingResultAvailable() : false; }
 		void SetCullingResultAvailable(bool b)							{ if (HairGroupPublicPtr) HairGroupPublicPtr->SetCullingResultAvailable(b); }
 
-		TRefCountPtr<FRDGPooledBuffer> ClusterDebugInfoBuffer;							// Null if this debug is not enabled.
-		TRefCountPtr<FRDGPooledBuffer> CulledDispatchIndirectParametersClusterCount;	// Null if this debug is not enabled.
+		TRefCountPtr<FRDGPooledBuffer> ClusterDebugInfoBuffer;	// Null if this debug is not enabled.
+		FRDGBufferRef CulledClusterCountBuffer = nullptr;
+		FRDGBufferRef CulledCluster1DIndirectArgsBuffer = nullptr;
+		FRDGBufferRef CulledCluster2DIndirectArgsBuffer = nullptr;
+		uint32 GroupSize1D = 0;
 
 		FHairGroupPublicData* HairGroupPublicPtr = nullptr;
 	};
@@ -314,25 +408,7 @@ RENDERER_API bool IsHairStrandsSupported(EHairStrandsShaderType Type, EShaderPla
 RENDERER_API bool IsHairStrandsEnabled(EHairStrandsShaderType Type, EShaderPlatform Platform = EShaderPlatform::SP_NumPlatforms);
 RENDERER_API void SetHairStrandsEnabled(bool In);
 
-// Return strands & guide indices to be preserved, while all others strands/guides should be culled
-enum class EHairCullMode : uint8
-{
-	None,
-	Render,
-	Sim
-};
-struct FHairCullInfo
-{
-	int32 ExplicitIndex = -1; 
-	float NormalizedIndex = 0; // [0,1]
-	EHairCullMode CullMode = EHairCullMode::None;
-};
-RENDERER_API FHairCullInfo GetHairStrandsCullInfo();
-
 RENDERER_API bool IsHairRayTracingEnabled();
-
-// Return true if the hair should be rendered using the sub-pixel lighting path, false if the regular gbuffer lighting path should be used
-RENDERER_API bool IsHairStrandsComplexLightingEnabled();
 
 // Return true if hair simulation is enabled.
 RENDERER_API bool IsHairStrandsSimulationEnable();
@@ -351,9 +427,6 @@ RENDERER_API float GetHairCoverage(uint32 HairCount, float AverageHairRadius);
 /// Return the average hair normalized radius for a given hair count and a given coverage value
 RENDERER_API float GetHairAvgRadius(uint32 InCount, float InCoverage);
 
-/// Helper to enable debug information about hair LOD
-RENDERER_API void SetHairScreenLODInfo(bool bEnable);
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // HairStrands Bookmark API
@@ -371,24 +444,27 @@ enum class EHairStrandsBookmark : uint8
 struct FHairStrandsBookmarkParameters
 {
 	class FGPUSkinCache* SkinCache = nullptr;
-	FShaderDrawDebugData* DebugShaderData = nullptr;
-	EWorldType::Type WorldType = EWorldType::None;
+	FShaderDrawDebugData* ShaderDebugData = nullptr;
+	FShaderPrintData* ShaderPrintData = nullptr;
 	class FGlobalShaderMap* ShaderMap = nullptr;
 
+	uint32 ViewUniqueID = ~0; // View 0
 	FIntRect ViewRect; // View 0
+	FHairStrandsInstances VisibleInstances;
+	FHairStrandsInstances* Instances = nullptr;
 	const FSceneView* View = nullptr;// // View 0
 	TArray<const FSceneView*> AllViews;
-	TRefCountPtr<IPooledRenderTarget> SceneColorTexture = nullptr;
+	FRDGTextureRef SceneColorTexture = nullptr;
+	FRDGTextureRef SceneDepthTexture = nullptr; 
 
 	bool bHzbRequest = false;
-	bool bHasElements = false;
-	bool bStrandsGeometryEnabled = false;
 	uint32 FrameIndex = ~0;
 
 	// Temporary
 	FHairStrandClusterData HairClusterData;
+
+	inline bool HasInstances() const { return Instances != nullptr && Instances->Num() > 0; }
 };
 
-typedef void (*THairStrandsParameterFunction)(FHairStrandsBookmarkParameters& Parameters);
-typedef void (*THairStrandsBookmarkFunction)(FRDGBuilder& GraphBuilder, EHairStrandsBookmark Bookmark, FHairStrandsBookmarkParameters& Parameters);
-RENDERER_API void RegisterBookmarkFunction(THairStrandsBookmarkFunction Bookmark, THairStrandsParameterFunction Parameters);
+typedef void (*THairStrandsBookmarkFunction)(FRDGBuilder* GraphBuilder, EHairStrandsBookmark Bookmark, FHairStrandsBookmarkParameters& Parameters);
+RENDERER_API void RegisterBookmarkFunction(THairStrandsBookmarkFunction Bookmark);

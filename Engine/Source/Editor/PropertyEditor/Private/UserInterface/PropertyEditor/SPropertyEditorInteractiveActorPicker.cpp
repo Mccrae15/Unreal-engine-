@@ -8,12 +8,13 @@
 
 SPropertyEditorInteractiveActorPicker::~SPropertyEditorInteractiveActorPicker()
 {
-	FActorPickerModeModule& ActorPickerMode = FModuleManager::Get().GetModuleChecked<FActorPickerModeModule>("ActorPickerMode");
-
-	// make sure we are unregistered when this widget goes away
-	if (ActorPickerMode.IsInActorPickingMode())
+	if (FActorPickerModeModule* ActorPickerMode = FModuleManager::Get().GetModulePtr<FActorPickerModeModule>("ActorPickerMode"))
 	{
-		ActorPickerMode.EndActorPickingMode();
+		// make sure we are unregistered when this widget goes away
+		if (ActorPickerMode->IsInActorPickingMode())
+		{
+			ActorPickerMode->EndActorPickingMode();
+		}
 	}
 }
 
@@ -32,7 +33,7 @@ void SPropertyEditorInteractiveActorPicker::Construct( const FArguments& InArgs 
 		.IsFocusable(false)
 		[ 
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_PickActorInteractive") )
+			.Image( FEditorStyle::GetBrush("Icons.EyeDropper") )
 			.ColorAndOpacity( FSlateColor::UseForeground() )
 		]
 	);

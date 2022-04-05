@@ -31,7 +31,7 @@ private:
 
 	/** Name of the enum being switched on */
 	UPROPERTY()
-	UEnum* Enum;
+	TObjectPtr<UEnum> Enum;
 
 	/** List of the current entries in the enum (Pin Names) */
 	UPROPERTY()
@@ -83,6 +83,7 @@ public:
 
 	// INodeDependingOnEnumInterface
 	virtual class UEnum* GetEnum() const override { return Enum; }
+	virtual void ReloadEnum(class UEnum* InEnum) override;
 	virtual bool ShouldBeReconstructedAfterEnumChanged() const override { return true; }
 	// End of INodeDependingOnEnumInterface
 

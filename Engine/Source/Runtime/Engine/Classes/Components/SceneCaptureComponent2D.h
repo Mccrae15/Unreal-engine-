@@ -34,9 +34,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Projection)
 	float OrthoWidth;
 
-	/** Output render target of the scene capture that can be read in materals. */
+	/** Output render target of the scene capture that can be read in materials. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SceneCapture)
-	class UTextureRenderTarget2D* TextureTarget;
+	TObjectPtr<class UTextureRenderTarget2D> TextureTarget;
 
 	/** When enabled, the scene capture will composite into the render target instead of overwriting its contents. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SceneCapture)
@@ -66,7 +66,24 @@ public:
 	UPROPERTY(BlueprintReadWrite, AdvancedDisplay, Category = Projection)
 	FMatrix CustomProjectionMatrix;
 
-	/** 
+	/** In case of orthographic camera, generate a fake view position that has a non-zero W component. The view position will be derived based on the view matrix. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Projection, meta = (editcondition = "ProjectionType==1"))
+	bool bUseFauxOrthoViewPos = false;
+
+	/** Render the scene in n frames (i.e TileCount) - Ignored in Perspective mode, works only in Orthographic mode when CaptureSource uses SceneColor (not FinalColor)
+	* If CaptureSource uses FinalColor, tiling will be ignored and a Warning message will be logged	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Projection, meta = (editcondition = "ProjectionType==1"))
+	bool bEnableOrthographicTiling = false;
+
+	/** Number of X tiles to render. Ignored in Perspective mode, works only in Orthographic mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Projection, meta = (ClampMin = "1", ClampMax = "64", editcondition = "ProjectionType==1 && bEnableOrthographicTiling"))
+	int32 NumXTiles = 4;
+
+	/** Number of Y tiles to render. Ignored in Perspective mode, works only in Orthographic mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Projection, meta = (ClampMin = "1", ClampMax = "64", editcondition = "ProjectionType==1 && bEnableOrthographicTiling"))
+	int32 NumYTiles = 4;
+
+	/**
 	 * Enables a clip plane while rendering the scene capture which is useful for portals.  
 	 * The global clip plane must be enabled in the renderer project settings for this to work.
 	 */
@@ -104,6 +121,9 @@ public:
 	/** Array of scene view extensions specifically to apply to this scene capture */
 	TArray< TWeakPtr<ISceneViewExtension, ESPMode::ThreadSafe> > SceneViewExtensions;
 
+	/** Which tile to render of the orthographic view (ignored in Perspective mode) */
+	int32 TileID = 0;
+
 	//~ Begin UActorComponent Interface
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 	virtual void OnRegister() override;
@@ -114,6 +134,10 @@ public:
 		return true;
 	}
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
+
+	/** Reset Orthographic tiling counter */
+	void ResetOrthographicTilingCounter();
+
 	//~ End UActorComponent Interface
 
 	//~ Begin UObject Interface
@@ -153,6 +177,15 @@ public:
 	void CaptureScene();
 
 	void UpdateSceneCaptureContents(FSceneInterface* Scene) override;
+
+	/* Return if orthographic tiling rendering is enabled or not */
+	bool GetEnableOrthographicTiling() const;
+
+	/* Return number of X tiles to render (to be used when orthographic tiling rendering is enabled) */
+	int32 GetNumXTiles() const;
+
+	/* Return number of Y tiles to render (to be used when orthographic tiling rendering is enabled) */
+	int32 GetNumYTiles() const;
 
 #if WITH_EDITORONLY_DATA
 	void UpdateDrawFrustum();

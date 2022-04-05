@@ -7,7 +7,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.ServiceProcess;
-using Tools.DotNETCommon;
+using System.Text.Json;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -15,10 +17,10 @@ namespace UnrealBuildTool
 	{
 		public override string Name => "SNDBS";
 
-		private static readonly string SCERoot = Environment.GetEnvironmentVariable("SCE_ROOT_DIR");
+		private static readonly string? SCERoot = Environment.GetEnvironmentVariable("SCE_ROOT_DIR");
 		private static readonly string SNDBSExecutable = Path.Combine(SCERoot ?? string.Empty, "Common", "SN-DBS", "bin", "dbsbuild.exe");
 
-		private static readonly DirectoryReference IntermediateDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "Build", "SNDBS");
+		private static readonly DirectoryReference IntermediateDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "SNDBS");
 		private static readonly FileReference IncludeRewriteRulesFile = FileReference.Combine(IntermediateDir, "include-rewrite-rules.ini");
 		private static readonly FileReference ScriptFile = FileReference.Combine(IntermediateDir, "sndbs.json");
 
@@ -44,7 +46,7 @@ namespace UnrealBuildTool
 			return ServiceController.GetServices().Any(s => s.ServiceName.StartsWith("SNDBS") && s.Status == ServiceControllerStatus.Running);
 		}
 
-		public override bool ExecuteActions(List<Action> Actions, bool bLogDetailedActionStats)
+		public override bool ExecuteActions(List<LinkedAction> Actions)
 		{
 			if (Actions.Count == 0)
 				return true;
@@ -63,7 +65,7 @@ namespace UnrealBuildTool
 
 			// Build the json script file to describe all the actions and their dependencies
 			var ActionIds = Actions.ToDictionary(a => a, a => Guid.NewGuid().ToString());
-			File.WriteAllText(ScriptFile.FullName, Json.Serialize(new Dictionary<string, object>()
+			File.WriteAllText(ScriptFile.FullName, JsonSerializer.Serialize(new Dictionary<string, object>()
 			{
 				["jobs"] = Actions.ToDictionary(a => ActionIds[a], a =>
 				{
@@ -76,7 +78,7 @@ namespace UnrealBuildTool
 						["run_locally"] = !(a.bCanExecuteRemotely && a.bCanExecuteRemotelyWithSNDBS)
 					};
 
-					if (a.PrerequisiteItems.Count > 0)
+					if (a.PrerequisiteItems.Count() > 0)
 					{
 						Job["explicit_input_files"] = a.PrerequisiteItems.Select(i => new Dictionary<string, object>()
 						{
@@ -114,9 +116,12 @@ namespace UnrealBuildTool
 				var TemplateFile = FileReference.Combine(IntermediateDir, $"{Template.Key}.sn-dbs-tool.ini");
 				var TemplateText = Template.Value;
 
-				foreach (DictionaryEntry Variable in Environment.GetEnvironmentVariables(EnvironmentVariableTarget.Process))
+				foreach (Nullable<DictionaryEntry> Variable in Environment.GetEnvironmentVariables(EnvironmentVariableTarget.Process))
 				{
-					TemplateText = TemplateText.Replace($"{{{Variable.Key}}}", Variable.Value.ToString());
+					if (Variable.HasValue)
+					{
+						TemplateText = TemplateText.Replace($"{{{Variable.Value.Key}}}", Variable.Value.Value!.ToString());
+					}
 				}
 
 				File.WriteAllText(TemplateFile.FullName, TemplateText);
@@ -215,6 +220,67 @@ filter03=vcruntime140*.dll
 filter04=appcrt140*.dll
 filter05=desktopcrt140*.dll
 filter06=concrt140*.dll",
+			["cl.exe"] = @"
+[tool]
+family=msvc
+vc_major_version=14
+use_surrogate=true
+force_synchronous_pdb_writes=true
+error_report_mode=prompt
+
+[group]
+server={VC_COMPILER_DIR}\mspdbsrv.exe
+
+[files]
+main={VC_COMPILER_DIR}\cl.exe
+file01={VC_COMPILER_DIR}\c1.dll
+file01={VC_COMPILER_DIR}\c1ui.dll
+file02={VC_COMPILER_DIR}\c1xx.dll
+file03={VC_COMPILER_DIR}\c2.dll
+file04={VC_COMPILER_DIR}\mspdb140.dll
+file05={VC_COMPILER_DIR}\mspdbcore.dll
+file06={VC_COMPILER_DIR}\mspdbsrv.exe
+file07={VC_COMPILER_DIR}\mspft140.dll
+file08={VC_COMPILER_DIR}\vcmeta.dll
+file09={VC_COMPILER_DIR}\*\clui.dll
+file10={VC_COMPILER_DIR}\*\mspft140ui.dll
+file11={VC_COMPILER_DIR}\localespc.dll
+file12={VC_COMPILER_DIR}\cppcorecheck.dll
+file13={VC_COMPILER_DIR}\experimentalcppcorecheck.dll
+file14={VC_COMPILER_DIR}\espxengine.dll
+
+[output-file-patterns]
+outputfile01=\s*""([^ "",]+\.cpp\.txt\.json)\""
+
+[output-file-rules]
+rule01=*\sqmcpp*.log|discard=true
+rule02=*\vctoolstelemetry*.dat|discard=true
+rule03=*\Microsoft\Windows\Temporary Internet Files\*|discard=true
+rule04=*\Microsoft\Windows\INetCache\*|discard=true
+
+[input-file-rules]
+rule01=*\sqmcpp*.log|ignore_transient_errors=true;ignore_unexpected_input=true
+rule02=*\vctoolstelemetry*.dat|ignore_transient_errors=true;ignore_unexpected_input=true
+rule03=*\Microsoft\Windows\Temporary Internet Files\*|ignore_transient_errors=true;ignore_unexpected_input=true
+rule04=*\Microsoft\Windows\INetCache\*|ignore_transient_errors=true;ignore_unexpected_input=true
+
+[system-file-filters]
+filter01=msvcr*.dll
+filter02=msvcp*.dll
+filter03=vcruntime140*.dll
+filter04=appcrt140*.dll
+filter05=desktopcrt140*.dll
+filter06=concrt140*.dll",
+			["mspdbsrv.exe"] = @"
+[tool]
+use_cache=no
+
+[files]
+main={VC_COMPILER_DIR}\mspdbsrv.exe
+
+[openmp]
+omp=true
+omp_min_threads=1",
 			["clang++.exe"] = @"
 [tool]
 family=clang-cl

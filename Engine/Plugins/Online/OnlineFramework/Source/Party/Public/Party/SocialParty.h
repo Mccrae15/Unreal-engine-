@@ -118,7 +118,7 @@ public:
 	}
 
 	bool ContainsUser(const USocialUser& User) const;
-	
+
 	ULocalPlayer& GetOwningLocalPlayer() const;
 	const FUniqueNetIdRepl& GetOwningLocalUserId() const { return OwningLocalUserId; }
 	const FUniqueNetIdRepl& GetPartyLeaderId() const { return CurrentLeaderId; }
@@ -192,13 +192,21 @@ public:
 	FOnInviteSent& OnInviteSent() const { return OnInviteSentEvent; }
 
 	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyJIPApproved, const FOnlinePartyId&, bool /* Success*/);
+	UE_DEPRECATED(5.0, "Use OnPartyJIPResponse instead of OnPartyJIPApproved")
 	FOnPartyJIPApproved& OnPartyJIPApproved() const { return OnPartyJIPApprovedEvent; }
+
+	DECLARE_EVENT_ThreeParams(USocialParty, FOnPartyJIPResponse, const FOnlinePartyId&, bool /* Success*/, const FString& /*DeniedResultCode*/);
+	FOnPartyJIPResponse& OnPartyJIPResponse() const { return OnPartyJIPResponseEvent; }
 
 	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyMemberConnectionStatusChanged, UPartyMember&, EMemberConnectionStatus);
 	FOnPartyMemberConnectionStatusChanged& OnPartyMemberConnectionStatusChanged() const { return OnPartyMemberConnectionStatusChangedEvent; }
 
 	void ResetPrivacySettings();
 	const FPartyPrivacySettings& GetPrivacySettings() const;
+
+	virtual bool ShouldAlwaysJoinPlatformSession(const FSessionId& SessionId) const;
+
+	virtual void JoinSessionCompleteAnalytics(const FSessionId& SessionId, const FString& JoinBootableGroupSessionResult);
 
 PACKAGE_SCOPE:
 	void InitializeParty(const TSharedRef<const FOnlineParty>& InOssParty);
@@ -221,7 +229,7 @@ PACKAGE_SCOPE:
 	bool CanPromoteMember(const UPartyMember& PartyMember) const;
 	bool CanKickMember(const UPartyMember& PartyMember) const;
 	
-	bool TryInviteUser(const USocialUser& UserToInvite);
+	bool TryInviteUser(const USocialUser& UserToInvite, const ESocialPartyInviteMethod InviteMethod = ESocialPartyInviteMethod::Other);
 	bool TryPromoteMember(const UPartyMember& PartyMember);
 	bool TryKickMember(const UPartyMember& PartyMember);
 	//--------------------------
@@ -241,12 +249,15 @@ protected:
 	virtual void OnLeftPartyInternal(EMemberExitedReason Reason);
 
 	/** Virtual versions of the package-scoped "CanX" methods above, as a virtual declared within package scoping cannot link (exported public, imported protected) */
-	virtual bool CanInviteUserInternal(const USocialUser& User) const;
+	virtual ESocialPartyInviteFailureReason CanInviteUserInternal(const USocialUser& User) const;
 	virtual bool CanPromoteMemberInternal(const UPartyMember& PartyMember) const;
 	virtual bool CanKickMemberInternal(const UPartyMember& PartyMember) const;
 
-	virtual void OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful);
-	
+	virtual void OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful, const ESocialPartyInviteFailureReason FailureReason, const ESocialPartyInviteMethod InviteMethod);
+
+	/* Deprecated version */
+	virtual void OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful) {};
+
 	virtual void HandlePartySystemStateChange(EPartySystemState NewState);
 
 	/** Determines the joinability of this party for a group of users requesting to join */
@@ -260,6 +271,8 @@ protected:
 
 	/** Override in child classes to specify the type of UPartyMember to create */
 	virtual TSubclassOf<UPartyMember> GetDesiredMemberClass(bool bLocalPlayer) const;
+
+	bool IsInviteRateLimited(const USocialUser& User, ESocialSubsystem SubsystemType) const;
 
 	bool ApplyCrossplayRestriction(FPartyJoinApproval& JoinApproval, const FUserPlatform& Platform, const FOnlinePartyData& JoinData) const;
 	FName GetGameSessionName() const;
@@ -328,7 +341,7 @@ private:	// Handlers
 	void HandlePartyMemberExited(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, EMemberExitedReason ExitReason);
 	void HandlePartyMemberDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, const FName& Namespace, const FOnlinePartyData& PartyMemberData);
 	void HandlePartyMemberJoined(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId);
-	void HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success);
+	void HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success, int32 DeniedResultCode);
 	void HandlePartyMemberPromoted(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& NewLeaderId);
 	void HandlePartyPromotionLockoutChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool bArePromotionsLocked);
 
@@ -358,6 +371,14 @@ private:
 
 	UPROPERTY(config)
 	bool bEnableAutomaticPartyRejoin = true;
+
+	TMap<FUniqueNetIdRepl, double> LastInviteSentById;
+
+	UPROPERTY(config)
+	double PlatformUserInviteCooldown = 10.f;
+
+	UPROPERTY(config)
+	double PrimaryUserInviteCooldown = 0.f;
 
 	FPartyConfiguration CurrentConfig;
 
@@ -432,4 +453,5 @@ private:
 	mutable FOnPartyFunctionalityDegradedChanged OnPartyFunctionalityDegradedChangedEvent;
 	mutable FOnInviteSent OnInviteSentEvent;
 	mutable FOnPartyJIPApproved OnPartyJIPApprovedEvent;
+	mutable FOnPartyJIPResponse OnPartyJIPResponseEvent;
 };

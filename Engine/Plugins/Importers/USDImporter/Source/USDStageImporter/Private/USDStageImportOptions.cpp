@@ -14,12 +14,13 @@ UUsdStageImportOptions::UUsdStageImportOptions(const FObjectInitializer& ObjectI
 	bImportActors = true;
 	bImportGeometry = true;
 	bImportSkeletalAnimations = true;
+	bImportLevelSequences = true;
 	bImportMaterials = true;
 
 	PurposesToImport = (int32) (EUsdPurpose::Default | EUsdPurpose::Proxy | EUsdPurpose::Render | EUsdPurpose::Guide);
+	NaniteTriangleThreshold = INT32_MAX;
 	IUsdSchemasModule& UsdSchemasModule = FModuleManager::Get().LoadModuleChecked< IUsdSchemasModule >( TEXT("USDSchemas") );
-	RenderContextToImport = UsdSchemasModule.GetRenderContextRegistry().GetUniversalRenderContext();
-	ImportTime = 0.0f;
+	RenderContextToImport = UsdSchemasModule.GetRenderContextRegistry().GetUnrealRenderContext();
 	bOverrideStageOptions = false;
 	StageOptions.MetersPerUnit = 0.01f;
 	StageOptions.UpAxis = EUsdUpAxis::ZAxis;
@@ -29,7 +30,7 @@ UUsdStageImportOptions::UUsdStageImportOptions(const FObjectInitializer& ObjectI
 	ExistingAssetPolicy = EReplaceAssetPolicy::Replace;
 
 	bPrimPathFolderStructure = false;
-	bCollapse = true;
+	KindsToCollapse = ( int32 ) ( EUsdDefaultKind::Component | EUsdDefaultKind::Subcomponent );
 	bInterpretLODs = true;
 }
 

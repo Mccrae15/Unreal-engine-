@@ -86,7 +86,7 @@ FVector2D SRichTextBlock::ComputeDesiredSize(float LayoutScaleMultiplier) const
 {
 	// ComputeDesiredSize will also update the text layout cache if required
 	const FVector2D TextSize = TextLayoutCache->ComputeDesiredSize(
-		FSlateTextBlockLayout::FWidgetArgs(BoundText, HighlightText, WrapTextAt, AutoWrapText, WrappingPolicy, TransformPolicy, Margin, LineHeightPercentage, Justification),
+		FSlateTextBlockLayout::FWidgetDesiredSizeArgs(BoundText.Get(), HighlightText.Get(), WrapTextAt.Get(), AutoWrapText.Get(), WrappingPolicy.Get(), TransformPolicy.Get(), Margin.Get(), LineHeightPercentage.Get(), Justification.Get()),
 		LayoutScaleMultiplier * TextBlockScale, TextStyle) * TextBlockScale;
 
 	return FVector2D(FMath::Max(TextSize.X, MinDesiredWidth.Get()), TextSize.Y);
@@ -106,13 +106,22 @@ void SRichTextBlock::OnArrangeChildren(const FGeometry& AllottedGeometry, FArran
 
 void SRichTextBlock::SetText( const TAttribute<FText>& InTextAttr )
 {
+	if (!BoundText.IsBound() && !InTextAttr.IsBound() && InTextAttr.Get().IdenticalTo(BoundText.Get(), ETextIdenticalModeFlags::DeepCompare | ETextIdenticalModeFlags::LexicalCompareInvariants))
+	{
+		return;
+	}
+
 	BoundText = InTextAttr;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
-	InvalidatePrepass();
+	Invalidate(EInvalidateWidget::LayoutAndVolatility | EInvalidateWidgetReason::Prepass);
 }
 
 void SRichTextBlock::SetHighlightText( const TAttribute<FText>& InHighlightText )
 {
+	if (!HighlightText.IsBound() && !InHighlightText.IsBound() && InHighlightText.Get().IdenticalTo(HighlightText.Get(), ETextIdenticalModeFlags::DeepCompare | ETextIdenticalModeFlags::LexicalCompareInvariants))
+	{
+		return;
+	}
+
 	HighlightText = InHighlightText;
 	Invalidate(EInvalidateWidget::LayoutAndVolatility);
 }
@@ -136,8 +145,7 @@ void SRichTextBlock::SetWrapTextAt(const TAttribute<float>& InWrapTextAt)
 
 void SRichTextBlock::SetAutoWrapText(const TAttribute<bool>& InAutoWrapText)
 {
-	SetAttribute(AutoWrapText, InAutoWrapText, EInvalidateWidgetReason::Layout);
-	InvalidatePrepass();
+	SetAttribute(AutoWrapText, InAutoWrapText, EInvalidateWidgetReason::Prepass);
 }
 
 void SRichTextBlock::SetWrappingPolicy(const TAttribute<ETextWrappingPolicy>& InWrappingPolicy)
@@ -185,11 +193,19 @@ void SRichTextBlock::SetDecoratorStyleSet(const ISlateStyle* NewDecoratorStyleSe
 	}
 }
 
+void SRichTextBlock::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	TextLayoutCache->SetTextOverflowPolicy(InOverflowPolicy);
+	Invalidate(EInvalidateWidget::Layout);
+}
+
 void SRichTextBlock::SetTextBlockScale(const float NewTextBlockScale)
 {
-	TextBlockScale = NewTextBlockScale;
-	Invalidate(EInvalidateWidget::Layout);
-	InvalidatePrepass();
+	if (TextBlockScale != NewTextBlockScale)
+	{
+		TextBlockScale = NewTextBlockScale;
+		Invalidate(EInvalidateWidget::Prepass);
+	}
 }
 
 void SRichTextBlock::Refresh()

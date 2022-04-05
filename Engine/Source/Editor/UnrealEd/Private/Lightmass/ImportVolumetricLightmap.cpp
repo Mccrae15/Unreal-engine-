@@ -76,7 +76,7 @@ void CopyBetweenAtlasVolumeTextures(
 	}
 }
 
-int32 ComputeLinearVoxelIndex(FIntVector VoxelCoordinate, FIntVector VolumeDimensions)
+static int32 ComputeLinearVoxelIndex(FIntVector VoxelCoordinate, FIntVector VolumeDimensions)
 {
 	return (VoxelCoordinate.Z * VolumeDimensions.Y + VoxelCoordinate.Y) * VolumeDimensions.X + VoxelCoordinate.X;
 }
@@ -1068,7 +1068,7 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 		}
 	}
 
-	ULevel* StorageLevel = System.LightingScenario ? System.LightingScenario : System.GetWorld()->PersistentLevel;
+	ULevel* StorageLevel = System.LightingScenario ? System.LightingScenario : ToRawPtr(System.GetWorld()->PersistentLevel);
 	UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
 	FPrecomputedVolumetricLightmapData CurrentLevelData;
 
@@ -1233,7 +1233,7 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 	}
 
 	const float InvBrickSize = 1.0f / BrickSize;
-	const FVector DetailCellSize = VolumetricLightmapSettings.VolumeSize / FVector(VolumetricLightmapSettings.TopLevelGridSize * DetailCellsPerTopLevelBrick);
+	const FVector DetailCellSize = FVector(VolumetricLightmapSettings.VolumeSize) / FVector(VolumetricLightmapSettings.TopLevelGridSize * DetailCellsPerTopLevelBrick);
 
 	for (int32 DilatePassIndex = 0; DilatePassIndex < NumDilateOverEmbeddedVoxelsPasses; DilatePassIndex++)
 	{

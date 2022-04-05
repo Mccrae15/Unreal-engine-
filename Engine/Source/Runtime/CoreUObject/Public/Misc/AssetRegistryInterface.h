@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
+#include "Containers/ContainersFwd.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 
@@ -37,9 +39,7 @@ namespace EAssetRegistryDependencyType
 class IAssetRegistry;
 class UAssetRegistryImpl;
 
-namespace UE
-{
-namespace AssetRegistry
+namespace UE::AssetRegistry
 {
 
 	/**
@@ -98,7 +98,7 @@ namespace AssetRegistry
 		Soft = NotHard,
 
 		Game = 0x004,			// Return only dependencies with EDependencyProperty::Game
-		NotGame = 0x008,		// Return only dependencies without EDependencyProperty::Hard
+		NotGame = 0x008,		// Return only dependencies without EDependencyProperty::Game
 		EditorOnly = NotGame,
 
 		Build = 0x010,			// Return only dependencies with EDependencyProperty::Build
@@ -115,6 +115,13 @@ namespace AssetRegistry
 		ManageMask = 0x0f00,
 	};
 	ENUM_CLASS_FLAGS(EDependencyQuery);
+
+	/** Options used to read/write the DevelopmentAssetRegistry when serializing, which includes all data */
+	enum class ESerializationTarget : uint8
+	{
+		ForGame,
+		ForDevelopment
+	};
 
 	/**
 	 * A struct that is equivalent to EDependencyQuery, but is more useful for performance in filtering operations.
@@ -183,17 +190,35 @@ namespace AssetRegistry
 	class COREUOBJECT_API FFiltering
 	{
 	public:
-		/** Called to check whether we should filter out assets of the given class and package flags from the editor's asset registry */
+		/** Return whether to filter out assets of the given class and flags from the editor's asset registry */
 		static bool ShouldSkipAsset(FName AssetClass, uint32 PackageFlags);
 
-		/** Called to check whether we should filter out the given object (assumed to be an asset) from the editor's asset registry */
+		/** Return whether to filter out the given object (assumed to be an asset) from the editor's asset registry */
 		static bool ShouldSkipAsset(const UObject* InAsset);
 
 		/** Call to invalidate the list of skip assets and cause their next use to recreate them on demand */
 		static void MarkDirty();
+
+#if WITH_ENGINE && WITH_EDITOR
+		/** Copy the global skip classes set from the given external sets that were already populated. */
+		static void SetSkipClasses(const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+#endif
 	};
 
+#if WITH_ENGINE && WITH_EDITOR
+namespace Utils
+{
+	/** Return whether to filter out assets of the given class and flags based on the skip classes */
+	COREUOBJECT_API bool ShouldSkipAsset(FName AssetClass, uint32 PackageFlags,
+		const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+	/** Return whether to filter out the given object (assumed to be an asset) based on the skip classes */
+	COREUOBJECT_API bool ShouldSkipAsset(const UObject* InAsset,
+		const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+	/** Run the calculation of which classes to skip and store results in the given sets. */
+	COREUOBJECT_API void PopulateSkipClasses(TSet<FName>& OutSkipUncookedClasses, TSet<FName>& OutSkipCookedClasses);
 }
+#endif
+
 }
 
 // Enums used in public Engine headers

@@ -53,6 +53,11 @@ public:
 	virtual void RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE) = 0;
 
 	/**
+	 * Returns true if the Default Main Frame is being recreated. 
+	 */
+	virtual bool IsRecreatingDefaultMainFrame() const = 0;
+
+	/**
 	 * Generates a menu that includes application global commands, such as "Save All", "Exit", etc.  If you're building
 	 * a menu for your tab, you should call this function to create your menu, passing in an extender object to add your
 	 * tab-specific menu items!
@@ -73,7 +78,6 @@ public:
 	 *
 	 * @return	The newly-created menu widget
 	 */
-	virtual TSharedRef<SWidget> MakeMainTabMenu( const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext ) const = 0;
 
 	/**
 	 * Generates a menu for status and developer

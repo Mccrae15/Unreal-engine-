@@ -82,7 +82,7 @@ void FSessionService::SendLog(const TCHAR* Data, ELogVerbosity::Type Verbosity, 
 		if (LogSubscribers.Num() > 0)
 		{
 			MessageEndpoint->Send(
-				new FSessionServiceLog(
+				FMessageEndpoint::MakeMessage<FSessionServiceLog>(
 					Category,
 					Data,
 					FApp::GetInstanceId(),
@@ -104,7 +104,7 @@ void FSessionService::SendNotification(const TCHAR* NotificationText, const FMes
 	}
 
 	MessageEndpoint->Send(
-		new FSessionServiceLog(
+		FMessageEndpoint::MakeMessage<FSessionServiceLog>(
 			FName("RemoteSession"),
 			NotificationText,
 			FApp::GetInstanceId(),
@@ -123,7 +123,7 @@ void FSessionService::SendPong(const TSharedRef<IMessageContext, ESPMode::Thread
 		return;
 	}
 
-	FSessionServicePong* Message = new FSessionServicePong();
+	FSessionServicePong* Message = FMessageEndpoint::MakeMessage<FSessionServicePong>();
 	{
 		Message->Authorized = FApp::IsAuthorizedUser(UserName);
 		Message->BuildDate = FApp::GetBuildDate();

@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Blueprint/ListViewDesignerPreviewItem.h"
+#include "Styling/UMGCoreStyle.h"
 #include "UMGPrivate.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
@@ -12,10 +13,60 @@
 /////////////////////////////////////////////////////
 // UListView
 
+static FTableViewStyle* DefaultListViewStyle = nullptr;
+static FScrollBarStyle* DefaultListViewScrollBarStyle = nullptr;
+
+#if WITH_EDITOR
+static FTableViewStyle* EditorListViewStyle = nullptr;
+static FScrollBarStyle* EditorListViewScrollBarStyle = nullptr;
+#endif 
+
 UListView::UListView(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, Orientation(EOrientation::Orient_Vertical)
 {
+	if (DefaultListViewStyle == nullptr)
+	{
+		DefaultListViewStyle = new FTableViewStyle(FUMGCoreStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView"));
+
+		// Unlink UMG default colors.
+		DefaultListViewStyle->UnlinkColors();
+	}
+
+	if (DefaultListViewScrollBarStyle == nullptr)
+	{
+		DefaultListViewScrollBarStyle = new FScrollBarStyle(FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
+
+		// Unlink UMG default colors.
+		DefaultListViewScrollBarStyle->UnlinkColors();
+	}
+
+	WidgetStyle = *DefaultListViewStyle;
+	ScrollBarStyle = *DefaultListViewScrollBarStyle;
+
+#if WITH_EDITOR 
+	if (EditorListViewStyle == nullptr)
+	{
+		EditorListViewStyle = new FTableViewStyle(FAppStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView"));
+
+		// Unlink UMG default colors.
+		EditorListViewStyle->UnlinkColors();
+	}
+
+	if (EditorListViewScrollBarStyle == nullptr)
+	{
+		EditorListViewScrollBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
+
+		// Unlink UMG default colors.
+		EditorListViewScrollBarStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorListViewStyle;
+		ScrollBarStyle = *EditorListViewScrollBarStyle;
+	}
+#endif // WITH_EDITOR
 }
 
 void UListView::ReleaseSlateResources(bool bReleaseChildren)
@@ -34,11 +85,22 @@ void UListView::OnRefreshDesignerItems()
 
 void UListView::AddItem(UObject* Item)
 {
+	if (Item == nullptr)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot add null item into ListView."), ELogVerbosity::Warning, "NullListViewItem");
+		return;
+	}
+
+	if (ListItems.Contains(Item))
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot add duplicate item into ListView."), ELogVerbosity::Warning, "DuplicateListViewItem");
+		return;
+	}
+
 	ListItems.Add(Item);
 
-	TArray<UObject*> Added;
-	TArray<UObject*> Removed;
-	Added.Add(Item);
+	const TArray<UObject*> Added = { Item };
+	const TArray<UObject*> Removed;
 	OnItemsChanged(Added, Removed);
 
 	RequestRefresh();
@@ -48,9 +110,8 @@ void UListView::RemoveItem(UObject* Item)
 {
 	ListItems.Remove(Item);
 
-	TArray<UObject*> Added;
-	TArray<UObject*> Removed;
-	Removed.Add(Item);
+	const TArray<UObject*> Added;
+	const TArray<UObject*> Removed = { Item };
 	OnItemsChanged(Added, Removed);
 
 	RequestRefresh();
@@ -66,15 +127,15 @@ int32 UListView::GetNumItems() const
 	return ListItems.Num();
 }
 
-int32 UListView::GetIndexForItem(UObject* Item) const
+int32 UListView::GetIndexForItem(const UObject* Item) const
 {
-	return ListItems.Find(Item);
+	return ListItems.IndexOfByKey(Item);
 }
 
 void UListView::ClearListItems()
 {
-	TArray<UObject*> Added;
-	TArray<UObject*> Removed = MoveTemp(ListItems);
+	const TArray<UObject*> Added;
+	const TArray<UObject*> Removed = MoveTemp(ListItems);
 
 	ListItems.Reset();
 
@@ -196,6 +257,45 @@ void UListView::BP_ClearSelection()
 void UListView::OnItemsChanged(const TArray<UObject*>& AddedItems, const TArray<UObject*>& RemovedItems)
 {
 	// Allow subclasses to do special things when objects are added or removed from the list.
+
+	// Keep track of references to Actors and make sure to release them when Actors are about to be removed
+	for (UObject* AddedItem : AddedItems)
+	{
+		if (AActor* AddedActor = Cast<AActor>(AddedItem))
+		{
+			AddedActor->OnEndPlay.AddDynamic(this, &UListView::OnListItemEndPlayed);
+		}
+		else if (AActor* AddedItemOuterActor = AddedItem->GetTypedOuter<AActor>())
+		{
+			// Unique so that we don't spam events for shared actor outers but this also means we can't
+			// unsubscribe when processing RemovedItems
+			AddedItemOuterActor->OnEndPlay.AddUniqueDynamic(this, &UListView::OnListItemOuterEndPlayed);
+		}
+	}
+	for (UObject* RemovedItem : RemovedItems)
+	{
+		if (AActor* RemovedActor = Cast<AActor>(RemovedItem))
+		{
+			RemovedActor->OnEndPlay.RemoveDynamic(this, &UListView::OnListItemEndPlayed);
+		}
+	}
+}
+
+void UListView::OnListItemEndPlayed(AActor* Item, EEndPlayReason::Type EndPlayReason)
+{
+	RemoveItem(Item);
+}
+
+void UListView::OnListItemOuterEndPlayed(AActor* ItemOuter, EEndPlayReason::Type EndPlayReason)
+{
+	for (int32 ItemIndex = ListItems.Num() - 1; ItemIndex >= 0; --ItemIndex)
+	{
+		UObject* Item = ListItems[ItemIndex];
+		if (Item->IsIn(ItemOuter))
+		{
+			RemoveItem(Item);
+		}
+	}
 }
 
 TSharedRef<STableViewBase> UListView::RebuildListWidget()

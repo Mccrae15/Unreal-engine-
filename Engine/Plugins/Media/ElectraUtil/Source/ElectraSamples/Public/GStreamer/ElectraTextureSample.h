@@ -34,10 +34,10 @@ public:
 	{
 		check(IsInRenderingThread());
 
-		const uint32 CreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
+		const ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
 
 		TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("DummyTexture2D"));
 
 		RHICreateTargetableShaderResource2D(
 			TotalSize.X,
@@ -125,9 +125,6 @@ public:
 	{
 		return Texture;
 	}
-
-	// We hold a weak reference to the video renderer. During destruction the video renderer could be destroyed while samples are still out there..
-	TWeakPtr<MEDIArendererVideoUE, ESPMode::ThreadSafe> OwningRenderer;
 
 private:
 	TRefCountPtr<FRHITexture2D> Texture;

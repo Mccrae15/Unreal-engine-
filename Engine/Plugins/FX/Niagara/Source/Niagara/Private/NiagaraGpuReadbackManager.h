@@ -20,6 +20,14 @@ protected:
 	};
 
 public:
+	struct FBufferRequest
+	{
+		FRHIBuffer*	Buffer = nullptr;
+		uint32		Offset = 0;
+		uint32		Size = 0;
+	};
+
+public:
 	FNiagaraGpuReadbackManager();
 	~FNiagaraGpuReadbackManager();
 
@@ -35,10 +43,12 @@ public:
 	void WaitCompletion(FRHICommandListImmediate& RHICmdList);
 
 	// Enqueue a readback of a single buffer
-	void EnqueueReadback(FRHICommandList& RHICmdList, FRHIVertexBuffer* Buffer, FCompletionCallback Callback);
+	void EnqueueReadback(FRHICommandList& RHICmdList, FRHIBuffer* Buffer, FCompletionCallback Callback);
+	void EnqueueReadback(FRHICommandList& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 NumBytes, FCompletionCallback Callback);
 
 	// Enqueue a readback of multiple buffers
-	void EnqueueReadbacks(FRHICommandList& RHICmdList, TConstArrayView<FRHIVertexBuffer*> Buffers, FCompletionCallback Callback);
+	void EnqueueReadbacks(FRHICommandList& RHICmdList, TConstArrayView<FRHIBuffer*> Buffers, FCompletionCallback Callback);
+	void EnqueueReadbacks(FRHICommandList& RHICmdList, TConstArrayView<FBufferRequest> BufferRequest, FCompletionCallback Callback);
 
 private:
 	TQueue<FPendingReadback> PendingReadbacks;

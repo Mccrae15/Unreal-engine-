@@ -23,6 +23,7 @@
 class FActiveTimerHandle;
 class FSlateWindowElementList;
 class IToolTip;
+class IMenu;
 class UEdGraph;
 
 DECLARE_DELEGATE( FOnUpdateGraphPanel )
@@ -81,6 +82,7 @@ public:
 		SLATE_EVENT( SGraphEditor::FOnSpawnNodeByShortcut, OnSpawnNodeByShortcut )
 		SLATE_EVENT( FOnUpdateGraphPanel, OnUpdateGraphPanel )
 		SLATE_EVENT( SGraphEditor::FOnDisallowedPinConnection, OnDisallowedPinConnection )
+		SLATE_EVENT( SGraphEditor::FOnDoubleClicked, OnDoubleClicked )
 		//SLATE_ATTRIBUTE( FGraphAppearanceInfo, Appearance )
 	SLATE_END_ARGS()
 
@@ -125,6 +127,7 @@ public:
 	void ArrangeChildrenForContextMenuSummon(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const;
 	TSharedPtr<SWidget> SummonContextMenu(const FVector2D& WhereToSummon, const FVector2D& WhereToAddNode, UEdGraphNode* ForNode, UEdGraphPin* ForPin, const TArray<UEdGraphPin*>& DragFromPins);
 	void SummonCreateNodeMenuFromUICommand(uint32 NumNodesAdded);
+	void DismissContextMenu();
 
 	void OnBeginMakingConnection(UEdGraphPin* InOriginatingPin);
 	void OnBeginMakingConnection(FGraphPinHandle PinHandle);
@@ -277,6 +280,9 @@ protected:
 	/** Called when the user generates a warning tooltip because a connection was invalid */
 	SGraphEditor::FOnDisallowedPinConnection OnDisallowedPinConnection;
 
+	/** Called when the graph itself is double clicked */
+	SGraphEditor::FOnDoubleClicked OnDoubleClicked;
+
 	/** Whether to draw the overlay indicating we're in PIE */
 	bool bShowPIENotification;
 
@@ -331,4 +337,7 @@ private:
 
 	/** The current node factory to create nodes, pins and connections. Uses the static FNodeFactory if not set. */
 	TSharedPtr<class FGraphNodeFactory> NodeFactory;
+
+	/** Weak pointer to the last summoned context menu, for dismissing it when requested. */
+	TWeakPtr<IMenu> ContextMenu;
 };

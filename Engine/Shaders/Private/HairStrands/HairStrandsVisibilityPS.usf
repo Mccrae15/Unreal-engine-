@@ -1,8 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "HairStrandsVisibilityCommonStruct.ush"
-#include "HairStrandsVoxelPageCommonStruct.ush" 
-
 #include "../Common.ush"
 
 //#define SceneTexturesStruct DeepShadowPass.SceneTextures
@@ -21,7 +18,7 @@
 
 #define SUPPORT_OPACITY_MASK 0
 
-#if HAIR_RENDER_MODE == RENDER_MODE_MSAA || HAIR_RENDER_MODE == RENDER_MODE_PPLL
+#if HAIR_RENDER_MODE == RENDER_MODE_PPLL
 #define SUPPORT_MATERIAL_PROPERTY 1
 #endif
 
@@ -47,7 +44,7 @@ void MainVisibility(
 	centroid FVertexFactoryInterpolantsVSToPS Interpolants
 #endif
 	, in float4 SvPosition	: SV_Position
-#if HAIR_RENDER_MODE == RENDER_MODE_MSAA || HAIR_RENDER_MODE == RENDER_MODE_PPLL
+#if HAIR_RENDER_MODE == RENDER_MODE_PPLL
 	, centroid in float WorldStrandRadius : TEXCOORD8
 	, const float4 PackedVelocityA : TEXCOORD9
 	, const float4 PackedVelocityC : TEXCOORD12
@@ -60,13 +57,6 @@ void MainVisibility(
 #elif HAIR_RENDER_MODE == RENDER_MODE_TRANSMITTANCE_AND_HAIRCOUNT
 	, out float OutColor0 : SV_Target0
 	, out float2 OutColor1 : SV_Target1
-#elif HAIR_RENDER_MODE == RENDER_MODE_MSAA
-	, out uint2 OutColor0	: SV_Target0
-  #if SUPPORT_MATERIAL_PROPERTY
-	, out float4 OutColor1	: SV_Target1
-	, out float4 OutColor2	: SV_Target2
-	, out float2 OutColor3	: SV_Target3
-  #endif
 #elif HAIR_RENDER_MODE == RENDER_MODE_MSAA_VISIBILITY
 	, out uint OutColor0 : SV_Target0
 #endif
@@ -106,7 +96,7 @@ void MainVisibility(
 	OutColor1 = float2(Coverage, 1);
 #endif
 
-#if HAIR_RENDER_MODE == RENDER_MODE_MSAA || HAIR_RENDER_MODE == RENDER_MODE_PPLL
+#if HAIR_RENDER_MODE == RENDER_MODE_PPLL
   #if HAIR_STRAND_MESH_FACTORY
 	float3 Tangent = normalize(Interpolants.TangentToWorld2.xyz);
 	const uint PrimitiveId = Interpolants.HairPrimitiveId;
@@ -134,6 +124,18 @@ void MainVisibility(
 		float3 TranslatedWorldPosition = SvPositionToResolvedTranslatedWorld(SvPosition);
 		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, SvPosition, ScreenPosition, bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);
 
+#if PROJECT_STRATA && MATERIAL_IS_STRATA
+		FStrataBSDF HairBSDF = PixelMaterialInputs.FrontMaterial.Layers[0].BSDFs[0];
+
+		BaseColor		 = HAIR_BASECOLOR(HairBSDF);
+		Roughness		 = HAIR_ROUGHNESS(HairBSDF);
+		half  Metallic	 = HAIR_SCATTER(HairBSDF);
+		Specular		 = HAIR_SPECULAR(HairBSDF);
+		Backlit			 = HAIR_BACKLIT(HairBSDF);
+		float MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
+
+		Tangent = MaterialParameters.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(HairBSDF)];	// Strata normals are all world space already
+#else
 		BaseColor		 = GetMaterialBaseColor(PixelMaterialInputs);
 		Roughness		 = GetMaterialRoughness(PixelMaterialInputs);
 		half  Metallic	 = GetMaterialMetallic(PixelMaterialInputs);
@@ -142,19 +144,13 @@ void MainVisibility(
 		float MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
 
 		Tangent = mul(normalize(GetMaterialNormalRaw(PixelMaterialInputs)), MaterialParameters.TangentToWorld);
+#endif
 	}
 	{
 		Velocity = Calculate3DVelocity(PackedVelocityA, PackedVelocityC).xy;
 		EncodedVelocity = EncodeVelocityToTexture(float3(Velocity, 0.0)).xy;
 	}
 	#endif
-#endif
-
-#if HAIR_RENDER_MODE == RENDER_MODE_MSAA
-	OutColor0 = PackHairMRT0(PrimitiveId, MacroGroupId, Coverage8bit, Tangent);
-	OutColor1 = PackHairMRT1(BaseColor, Roughness);
-	OutColor2 = PackHairMRT2(Specular, HairVisibilityPass_LightChannelMask, Backlit, bUseScatterSceneLighting);
-	OutColor3 = EncodedVelocity;
 #endif
 
 #if HAIR_RENDER_MODE == RENDER_MODE_PPLL
@@ -192,7 +188,7 @@ void MainVisibility(
 
 #if HAIR_RENDER_MODE == RENDER_MODE_MSAA_VISIBILITY
   #if HAIR_STRAND_MESH_FACTORY
-	OutColor0 = PackHairVisSample(HairPrimitiveId, HairVisibilityPass_HairMaterialId);
+	OutColor0 = PackHairVisPrimitiveMaterialId(HairPrimitiveId, HairVisibilityPass_HairMaterialId);
   #else
 	OutColor0 = 0;
   #endif

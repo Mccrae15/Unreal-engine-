@@ -3,11 +3,13 @@
 #pragma once
 
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
+#include "NiagaraEditorCommon.h"
 #include "NiagaraModule.h"
 #include "INiagaraMergeManager.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCommon.h"
 #include "NiagaraMessages.h"
+#include "NiagaraEmitterEditorData.h"
 
 #include "Templates/SharedPointer.h"
 #include "UObject/WeakObjectPtr.h"
@@ -205,6 +207,19 @@ private:
 	TWeakObjectPtr<UNiagaraRendererProperties> Renderer;
 };
 
+class FNiagaraInputSummaryMergeAdapter
+{
+public:
+	FNiagaraInputSummaryMergeAdapter(const FFunctionInputSummaryViewKey& Key, const FFunctionInputSummaryViewMetadata& Value);
+
+	const FFunctionInputSummaryViewKey& GetKey() const;
+	const FFunctionInputSummaryViewMetadata& GetValue() const;
+
+private:
+	const FFunctionInputSummaryViewKey Key;
+	const FFunctionInputSummaryViewMetadata Value;
+};
+
 class FNiagaraScratchPadMergeAdapter
 {
 public:
@@ -367,6 +382,18 @@ struct FNiagaraEmitterDiffResults
 	TArray<TSharedRef<FNiagaraRendererMergeAdapter>> ModifiedBaseRenderers;
 	TArray<TSharedRef<FNiagaraRendererMergeAdapter>> ModifiedOtherRenderers;
 
+	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> RemovedInputSummaryEntries;
+	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> AddedInputSummaryEntries;
+	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> ModifiedInputSummaryEntries;
+	TArray<TSharedRef<FNiagaraInputSummaryMergeAdapter>> ModifiedOtherInputSummaryEntries;
+
+	TArray<FNiagaraStackSection> RemovedBaseSummarySections;
+	TArray<FNiagaraStackSection> AddedOtherSummarySections;
+	TArray<FNiagaraStackSection> ModifiedBaseSummarySections;
+	TArray<FNiagaraStackSection> ModifiedOtherSummarySections;
+
+	TOptional<bool> NewShouldShowSummaryViewValue;
+	
 	bool bScratchPadModified;
 
 	TMap<FString, FText> ModifiedStackEntryDisplayNames;
@@ -436,6 +463,8 @@ public:
 	void DiffSimulationStages(const TArray<TSharedRef<FNiagaraSimulationStageMergeAdapter>>& BaseSimulationStages, const TArray<TSharedRef<FNiagaraSimulationStageMergeAdapter>>& OtherSimulationStages, FNiagaraEmitterDiffResults& DiffResults) const;
 
 	void DiffRenderers(const TArray<TSharedRef<FNiagaraRendererMergeAdapter>>& BaseRenderers, const TArray<TSharedRef<FNiagaraRendererMergeAdapter>>& OtherRenderers, FNiagaraEmitterDiffResults& DiffResults) const;
+	
+	void DiffEmitterSummary(const UNiagaraEmitterEditorData* BaseEditorData, const UNiagaraEmitterEditorData* OtherEditorData, FNiagaraEmitterDiffResults& DiffResults) const;
 
 	void DiffScriptStacks(TSharedRef<FNiagaraScriptStackMergeAdapter> BaseScriptStackAdapter, TSharedRef<FNiagaraScriptStackMergeAdapter> OtherScriptStackAdapter, FNiagaraScriptStackDiffResults& DiffResults) const;
 
@@ -484,6 +513,8 @@ private:
 
 	FApplyDiffResults ApplyRendererDiff(UNiagaraEmitter& BaseEmitter, const FNiagaraEmitterDiffResults& DiffResults, const bool bNoParentAtLastMerge) const;
 
+	FApplyDiffResults ApplyEmitterSummaryDiff(UNiagaraEmitter& Emitter, const FNiagaraEmitterDiffResults& DiffResults, const bool bNoParentAtLastMerge) const;
+	
 	FApplyDiffResults ApplyStackEntryDisplayNameDiffs(UNiagaraEmitter& Emitter, const FNiagaraEmitterDiffResults& DiffResults) const;
 
 	FApplyDiffResults AddModule(

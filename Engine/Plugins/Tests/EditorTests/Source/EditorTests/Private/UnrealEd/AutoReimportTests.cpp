@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/WildcardString.h"
@@ -78,7 +78,7 @@ struct FAutoReimportTestPayload
 	}
 	~FAutoReimportTestPayload()
 	{
-		// Avoid writing out the file after we've nuked the directory
+		// Avoid writing out the file after we've deleted the directory
 		FileCache = nullptr;
 		if (!IFileManager::Get().DeleteDirectory(*WorkingDir, false, true))
 		{

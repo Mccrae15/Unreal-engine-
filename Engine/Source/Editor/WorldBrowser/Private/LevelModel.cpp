@@ -228,7 +228,7 @@ bool FLevelModel::IsFileReadOnly() const
 		FName PackageName = GetLongPackageName();
 		
 		FString PackageFileName;
-		if (FPackageName::DoesPackageExist(PackageName.ToString(), NULL, &PackageFileName))
+		if (FPackageName::DoesPackageExist(PackageName.ToString(), &PackageFileName))
 		{
 			return IFileManager::Get().IsReadOnly(*PackageFileName);
 		}
@@ -757,8 +757,7 @@ void FLevelModel::ConvertLevelToExternalActors(bool bUseExternal)
 		return;
 	}
 	Level->Modify();
-	Level->SetUseExternalActors(bUseExternal);
-	Level->ConvertAllActorsToPackaging(Level->IsUsingExternalActors());
+	Level->ConvertAllActorsToPackaging(bUseExternal);
 }
 
 bool FLevelModel::CanConvertLevelToExternalActors(bool bToExternal)

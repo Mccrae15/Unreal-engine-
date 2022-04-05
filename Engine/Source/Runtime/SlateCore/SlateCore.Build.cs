@@ -51,6 +51,7 @@ public class SlateCore : ModuleRules
 			}
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "HarfBuzz");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "Nanosvg");
 		}
 		else
 		{
@@ -58,8 +59,7 @@ public class SlateCore : ModuleRules
 			PublicDefinitions.Add("WITH_HARFBUZZ=0");
 		}
 
-		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-			(Target.Platform == UnrealTargetPlatform.Win32))
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "XInput");
 		}

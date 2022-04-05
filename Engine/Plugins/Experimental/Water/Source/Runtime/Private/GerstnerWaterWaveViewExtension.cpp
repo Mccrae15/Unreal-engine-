@@ -4,8 +4,18 @@
 #include "GerstnerWaterWaveSubsystem.h"
 #include "WaterBodyActor.h"
 #include "GerstnerWaterWaves.h"
+#include "WaterBodyManager.h"
+#include "WaterSubsystem.h"
 
 FGerstnerWaterWaveViewExtension::FGerstnerWaterWaveViewExtension(const FAutoRegister& AutoReg, UWorld* InWorld) : FWorldSceneViewExtension(AutoReg, InWorld), WaveGPUData(MakeShared<FWaveGPUResources, ESPMode::ThreadSafe>())
+{
+}
+
+FGerstnerWaterWaveViewExtension::~FGerstnerWaterWaveViewExtension()
+{
+}
+
+void FGerstnerWaterWaveViewExtension::Initialize()
 {
 	if (UGerstnerWaterWaveSubsystem* GerstnerWaterWaveSubsystem = GEngine->GetEngineSubsystem<UGerstnerWaterWaveSubsystem>())
 	{
@@ -13,7 +23,7 @@ FGerstnerWaterWaveViewExtension::FGerstnerWaterWaveViewExtension(const FAutoRegi
 	}
 }
 
-FGerstnerWaterWaveViewExtension::~FGerstnerWaterWaveViewExtension()
+void FGerstnerWaterWaveViewExtension::Deinitialize()
 {
 	ENQUEUE_RENDER_COMMAND(DeallocateWaterInstanceDataBuffer)
 	(
@@ -21,34 +31,33 @@ FGerstnerWaterWaveViewExtension::~FGerstnerWaterWaveViewExtension()
 		[WaveGPUData=WaveGPUData](FRHICommandListImmediate& RHICmdList){}
 	);
 
-	if (GEngine != nullptr)
+	if (UGerstnerWaterWaveSubsystem* GerstnerWaterWaveSubsystem = GEngine->GetEngineSubsystem<UGerstnerWaterWaveSubsystem>())
 	{
-		if (UGerstnerWaterWaveSubsystem* GerstnerWaterWaveSubsystem = GEngine->GetEngineSubsystem<UGerstnerWaterWaveSubsystem>())
-		{
-			GerstnerWaterWaveSubsystem->Unregister(this);
-		}
+		GerstnerWaterWaveSubsystem->Unregister(this);
 	}
 }
 
 void FGerstnerWaterWaveViewExtension::SetupViewFamily(FSceneViewFamily& InViewFamily)
 {
-	if (bRebuildGPUData && WaterBodies)
+	if (bRebuildGPUData)
 	{
-		TResourceArray<FVector4> WaterIndirectionBuffer;
-		TResourceArray<FVector4> WaterDataBuffer;
+		TResourceArray<FVector4f> WaterIndirectionBuffer;
+		TResourceArray<FVector4f> WaterDataBuffer;
 
-		// Some max value
-		const int32 MaxWavesPerWaterBody = 4096;
+		const TWeakObjectPtr<UWorld> WorldPtr = GetWorld();
+		check(WorldPtr.IsValid())
 
-		const int32 NumFloat4PerWave = 2;
-
-		for (const AWaterBody* WaterBody : *WaterBodies)
+		UWaterSubsystem::ForEachWaterBodyComponent(WorldPtr.Get(), [&WaterIndirectionBuffer, &WaterDataBuffer](UWaterBodyComponent* WaterBodyComponent)
 		{
+			// Some max value
+			constexpr int32 MaxWavesPerWaterBody = 4096;
+			constexpr int32 NumFloat4PerWave = 2;
+
 			WaterIndirectionBuffer.AddZeroed();
 
-			if (WaterBody && WaterBody->HasWaves())
+			if (WaterBodyComponent && WaterBodyComponent->HasWaves())
 			{
-				const UWaterWavesBase* WaterWavesBase = WaterBody->GetWaterWaves();
+				const UWaterWavesBase* WaterWavesBase = WaterBodyComponent->GetWaterWaves();
 				check(WaterWavesBase != nullptr);
 				if (const UGerstnerWaterWaves* GerstnerWaves = Cast<const UGerstnerWaterWaves>(WaterWavesBase->GetWaterWaves()))
 				{
@@ -65,10 +74,10 @@ void FGerstnerWaterWaveViewExtension::SetupViewFamily(FSceneViewFamily& InViewFa
 					// Y: Num waves
 					// Z: TargetWaveMaskDepth
 					// W: Unused
-					FVector4& Header = WaterIndirectionBuffer.Last();
+					FVector4f& Header = WaterIndirectionBuffer.Last();
 					Header.X = DataBaseIndex;
 					Header.Y = NumWaves;
-					Header.Z = WaterBody->TargetWaveMaskDepth;
+					Header.Z = WaterBodyComponent->TargetWaveMaskDepth;
 					Header.W = 0.0f;
 
 					for (int32 i = 0; i < NumWaves; i++)
@@ -77,12 +86,13 @@ void FGerstnerWaterWaveViewExtension::SetupViewFamily(FSceneViewFamily& InViewFa
 
 						const int32 WaveIndex = DataBaseIndex + (i * NumFloat4PerWave);
 
-						WaterDataBuffer[WaveIndex] = FVector4(Wave.Direction.X, Wave.Direction.Y, Wave.WaveLength, Wave.Amplitude);
-						WaterDataBuffer[WaveIndex + 1] = FVector4(Wave.Steepness, 0.0f, 0.0f, 0.0f);
+						WaterDataBuffer[WaveIndex] = FVector4f(Wave.Direction.X, Wave.Direction.Y, Wave.WaveLength, Wave.Amplitude);
+						WaterDataBuffer[WaveIndex + 1] = FVector4f(Wave.Steepness, 0.0f, 0.0f, 0.0f);
 					}
 				}
 			}
-		}
+			return true;
+		});
 
 		if (WaterIndirectionBuffer.Num() == 0)
 		{
@@ -96,19 +106,15 @@ void FGerstnerWaterWaveViewExtension::SetupViewFamily(FSceneViewFamily& InViewFa
 
 		ENQUEUE_RENDER_COMMAND(AllocateWaterInstanceDataBuffer)
 		(
-			[this, WaterDataBuffer, WaterIndirectionBuffer](FRHICommandListImmediate& RHICmdList) mutable
+			[WaveGPUData=WaveGPUData, WaterDataBuffer, WaterIndirectionBuffer](FRHICommandListImmediate& RHICmdList) mutable
 			{
-				FRHIResourceCreateInfo CreateInfoData;
-				CreateInfoData.ResourceArray = &WaterDataBuffer;
-				CreateInfoData.DebugName = TEXT("WaterDataBuffer");
-				WaveGPUData->DataBuffer = RHICreateStructuredBuffer(sizeof(FVector4), WaterDataBuffer.GetResourceDataSize(), BUF_StructuredBuffer | BUF_ShaderResource | BUF_Static, ERHIAccess::SRVMask, CreateInfoData);
-				WaveGPUData->DataSRV = RHICreateShaderResourceView(WaveGPUData->DataBuffer);
+				FRHIResourceCreateInfo CreateInfoData(TEXT("WaterDataBuffer"), &WaterDataBuffer);
+				WaveGPUData->DataBuffer = RHICreateBuffer(WaterDataBuffer.GetResourceDataSize(), BUF_VertexBuffer | BUF_ShaderResource | BUF_Static, sizeof(FVector4f), ERHIAccess::SRVMask, CreateInfoData);
+				WaveGPUData->DataSRV = RHICreateShaderResourceView(WaveGPUData->DataBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
 
-				FRHIResourceCreateInfo CreateInfoIndirection;
-				CreateInfoIndirection.ResourceArray = &WaterIndirectionBuffer;
-				CreateInfoIndirection.DebugName = TEXT("WaterIndirectionBuffer");
-				WaveGPUData->IndirectionBuffer = RHICreateStructuredBuffer(sizeof(FVector4), WaterIndirectionBuffer.GetResourceDataSize(), BUF_StructuredBuffer | BUF_ShaderResource | BUF_Static, ERHIAccess::SRVMask, CreateInfoIndirection);
-				WaveGPUData->IndirectionSRV = RHICreateShaderResourceView(WaveGPUData->IndirectionBuffer);
+				FRHIResourceCreateInfo CreateInfoIndirection(TEXT("WaterIndirectionBuffer"), &WaterIndirectionBuffer);
+				WaveGPUData->IndirectionBuffer = RHICreateBuffer(WaterIndirectionBuffer.GetResourceDataSize(), BUF_VertexBuffer | BUF_ShaderResource | BUF_Static, sizeof(FVector4f), ERHIAccess::SRVMask, CreateInfoIndirection);
+				WaveGPUData->IndirectionSRV = RHICreateShaderResourceView(WaveGPUData->IndirectionBuffer, sizeof(FVector4f), PF_A32B32G32R32F);
 			}
 		);
 

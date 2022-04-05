@@ -106,7 +106,7 @@ void SColorPicker::Construct( const FArguments& InArgs )
 
 	bool bAdvancedSectionExpanded = false;
 
-	if (!FPaths::FileExists(GEditorPerProjectIni))
+	if (FPaths::FileExists(GEditorPerProjectIni))
 	{
 		bool WheelMode = true;
 
@@ -241,7 +241,7 @@ BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpanded )
 {	
 	// The height of the gradient bars beneath the sliders
-	const FSlateFontInfo SmallLayoutFont = FCoreStyle::Get().GetFontStyle("ColorPicker.Font");
+	const FSlateFontInfo SmallLayoutFont = FAppStyle::Get().GetFontStyle("ColorPicker.Font");
 
 	TSharedPtr<SColorThemesViewer> ThemesViewer = ColorThemesViewer.Pin();
 
@@ -257,9 +257,13 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 
 	// The standard button to open the color themes can temporarily become a trash for colors
 	ColorThemeComboButton = SNew(SComboButton)
-		.ContentPadding(3.0f)
-		.MenuPlacement(MenuPlacement_ComboBox)
-		.ToolTipText(LOCTEXT("OpenThemeManagerToolTip", "Open Color Theme Manager"));
+		.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+		.VAlign(VAlign_Center)
+		.ButtonContent()
+		[
+			SNew(SImage)
+			.Image(FAppStyle::Get().GetBrush("ColorPicker.ColorThemes"))
+		];
 
 	ColorThemeComboButton->SetMenuContent(ThemesViewer.ToSharedRef());
 
@@ -285,9 +289,9 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 					.Padding(0.0f, 1.0f, 20.0f, 1.0f)
 					[
 						SNew(SHorizontalBox)
-
+						
 						+ SHorizontalBox::Slot()
-							.FillWidth(1.0f)
+							.FillWidth(0.91f)
 							.Padding(0.0f, 1.0f)
 							[
 								SNew(SOverlay)
@@ -318,7 +322,7 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 							]
 
 						+ SHorizontalBox::Slot()
-							.AutoWidth()
+							.FillWidth(0.09f)
 							[
 								// color theme selector
 								SAssignNew(ColorThemeButtonOrSmallTrash, SBorder)
@@ -346,7 +350,7 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 					.Padding(0.0f, 8.0f, 20.0f, 0.0f)
 					[
 						SNew(SBorder)
-							.BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+							.BorderImage(FAppStyle::Get().GetBrush("NoBorder"))
 							.Padding(0.0f)
 							.OnMouseButtonDown(this, &SColorPicker::HandleColorAreaMouseDown)
 							[
@@ -436,7 +440,7 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 											.Content()
 											[
 												SNew(SImage)
-													.Image(FCoreStyle::Get().GetBrush("ColorPicker.Mode"))
+													.Image(FAppStyle::Get().GetBrush("ColorPicker.Mode"))
 													.ToolTipText(LOCTEXT("ColorPickerModeEToolTip", "Toggle between color wheel and color spectrum."))
 											]									
 									]
@@ -600,16 +604,16 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
 			[
 				SNew(SUniformGridPanel)
-					.MinDesiredSlotHeight(FCoreStyle::Get().GetFloat("StandardDialog.MinDesiredSlotHeight"))
-					.MinDesiredSlotWidth(FCoreStyle::Get().GetFloat("StandardDialog.MinDesiredSlotWidth"))
-					.SlotPadding(FCoreStyle::Get().GetMargin("StandardDialog.SlotPadding"))
+					.MinDesiredSlotHeight(FAppStyle::Get().GetFloat("StandardDialog.MinDesiredSlotHeight"))
+					.MinDesiredSlotWidth(FAppStyle::Get().GetFloat("StandardDialog.MinDesiredSlotWidth"))
+					.SlotPadding(FAppStyle::Get().GetMargin("StandardDialog.SlotPadding"))
 					.Visibility((ParentWindowPtr.IsValid() || bValidCreationOverrideExists) ? EVisibility::Visible : EVisibility::Collapsed)
 
 				+ SUniformGridPanel::Slot(0, 0)
 					[
 						// ok button
 						SNew(SButton)
-							.ContentPadding( FCoreStyle::Get().GetMargin("StandardDialog.ContentPadding") )
+							.ContentPadding(FAppStyle::Get().GetMargin("StandardDialog.ContentPadding") )
 							.HAlign(HAlign_Center)
 							.Text(LOCTEXT("OKButton", "OK"))
 							.OnClicked(this, &SColorPicker::HandleOkButtonClicked)
@@ -619,7 +623,7 @@ void SColorPicker::GenerateDefaultColorPickerContent( bool bAdvancedSectionExpan
 					[
 						// cancel button
 						SNew(SButton)
-							.ContentPadding( FCoreStyle::Get().GetMargin("StandardDialog.ContentPadding") )
+							.ContentPadding(FAppStyle::Get().GetMargin("StandardDialog.ContentPadding") )
 							.HAlign(HAlign_Center)
 							.Text(LOCTEXT("CancelButton", "Cancel"))
 							.OnClicked(this, &SColorPicker::HandleCancelButtonClicked)
@@ -881,7 +885,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorSlider( EColorPickerChannels Channel 
 				.EndColor(this, &SColorPicker::HandleColorSliderEndColor, Channel)
 				.StartColor(this, &SColorPicker::HandleColorSliderStartColor, Channel)
 				.Orientation(Orient_Horizontal)
-				.UseSRGB(SharedThis(this), &SColorPicker::HandleColorPickerUseSRGB)
+				//.UseSRGB(SharedThis(this), &SColorPicker::HandleColorPickerUseSRGB)
 		]
 
 	+ SOverlay::Slot()
@@ -890,7 +894,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorSlider( EColorPickerChannels Channel 
 				.IndentHandle(false)
 				.Orientation(Orient_Vertical)
 				.SliderBarColor(FLinearColor::Transparent)
-				.Style(&FCoreStyle::Get().GetWidgetStyle<FSliderStyle>("ColorPicker.Slider"))
+				.Style(&FAppStyle::Get().GetWidgetStyle<FSliderStyle>("ColorPicker.Slider"))
 				.Value(this, &SColorPicker::HandleColorSpinBoxValue, Channel)
 				.OnMouseCaptureBegin(const_cast<SColorPicker*>(this), &SColorPicker::HandleInteractiveChangeBegin)
 				.OnMouseCaptureEnd(const_cast<SColorPicker*>(this), &SColorPicker::HandleInteractiveChangeEnd)
@@ -908,7 +912,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorSpinBox( EColorPickerChannels Channel
 
 	const int32 GradientHeight = 6;
 	const float HDRMaxValue = (TargetFColors.Num()) ? 1.f : FLT_MAX;
-	const FSlateFontInfo SmallLayoutFont = FCoreStyle::Get().GetFontStyle("ColorPicker.Font");
+	const FSlateFontInfo SmallLayoutFont = FAppStyle::Get().GetFontStyle("ColorPicker.Font");
 
 	// create gradient widget
 	TSharedPtr<SWidget> GradientWidget;
@@ -930,8 +934,8 @@ TSharedRef<SWidget> SColorPicker::MakeColorSpinBox( EColorPickerChannels Channel
 		GradientWidget = SNew(SSimpleGradient)
 			.StartColor(this, &SColorPicker::GetGradientStartColor, Channel)
 			.EndColor(this, &SColorPicker::GetGradientEndColor, Channel)
-			.HasAlphaBackground(Channel == EColorPickerChannels::Alpha)
-			.UseSRGB(SharedThis(this), &SColorPicker::HandleColorPickerUseSRGB);
+			.HasAlphaBackground(Channel == EColorPickerChannels::Alpha);
+			//.UseSRGB(SharedThis(this), &SColorPicker::HandleColorPickerUseSRGB);
 	}
 	
 	// create spin box
@@ -1062,7 +1066,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorPreviewBox() const
 							// old color
 							SNew(SColorBlock) 
 								.ColorIsHSV(true) 
-								.IgnoreAlpha(true)
+								.AlphaDisplayMode(EColorBlockAlphaDisplayMode::Ignore)
 								.ToolTipText(LOCTEXT("OldColorToolTip", "Old color without alpha (drag to theme bar to save)"))
 								.Color(OldColor) 
 								.OnMouseButtonDown(const_cast<SColorPicker*>(this), &SColorPicker::HandleOldColorBlockMouseButtonDown, false)
@@ -1094,7 +1098,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorPreviewBox() const
 							// new color
 							SNew(SColorBlock) 
 								.ColorIsHSV(true) 
-								.IgnoreAlpha(true)
+								.AlphaDisplayMode(EColorBlockAlphaDisplayMode::Ignore)
 								.ToolTipText(LOCTEXT("NewColorToolTip", "New color without alpha (drag to theme bar to save)"))
 								.Color(this, &SColorPicker::GetCurrentColor)
 								.OnMouseButtonDown(const_cast<SColorPicker*>(this), &SColorPicker::HandleNewColorBlockMouseButtonDown, false)
@@ -1140,7 +1144,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorPreviewBox() const
 						.WidthOverride(4.0f)
 						[
 							SNew(SBorder)
-								.BorderImage(FCoreStyle::Get().GetBrush("ColorPicker.Separator"))
+								.BorderImage(FAppStyle::Get().GetBrush("ColorPicker.Separator"))
 								.Padding(0.0f)
 						]
 				]
@@ -1154,7 +1158,7 @@ TSharedRef<SWidget> SColorPicker::MakeColorPreviewBox() const
 						.WidthOverride(4.0f)
 						[
 							SNew(SBorder)
-								.BorderImage(FCoreStyle::Get().GetBrush("ColorPicker.Separator"))
+								.BorderImage(FAppStyle::Get().GetBrush("ColorPicker.Separator"))
 								.Padding(0.0f)
 						]
 				]
@@ -1684,7 +1688,7 @@ bool OpenColorPicker(const FColorPickerArgs& Args)
 
 	TSharedPtr<SWindow> Window = nullptr;
 	TSharedRef<SBorder> WindowContent = SNew(SBorder)
-			.BorderImage(FCoreStyle::Get().GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
 			.Padding(FMargin(8.0f, 8.0f));
 	
 	bool bNeedToAddWindow = true;

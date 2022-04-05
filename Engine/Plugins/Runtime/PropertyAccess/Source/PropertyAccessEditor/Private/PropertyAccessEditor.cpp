@@ -7,6 +7,7 @@
 #include "IPropertyAccessEditor.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 
 #define LOCTEXT_NAMESPACE "PropertyAccessEditor"
 
@@ -14,7 +15,7 @@ struct FPropertyAccessEditorSystem
 {
 	struct FResolveSegmentsContext
 	{
-		FResolveSegmentsContext(const UStruct* InStruct, TArrayView<FString> InPath, FPropertyAccessPath& InAccessPath)
+		FResolveSegmentsContext(const UStruct* InStruct, TArrayView<const FString> InPath, FPropertyAccessPath& InAccessPath)
 			: Struct(InStruct)
 			, CurrentStruct(InStruct)
 			, Path(InPath)
@@ -22,13 +23,13 @@ struct FPropertyAccessEditorSystem
 		{}
 
 		// Starting struct
-		const UStruct* Struct;
+		const UStruct* Struct = nullptr;
 
 		// Current struct
-		const UStruct* CurrentStruct;
+		const UStruct* CurrentStruct = nullptr;
 
 		// Path as FStrings with optional array markup
-		TArrayView<FString> Path;
+		TArrayView<const FString> Path;
 
 		// The access path we are building
 		FPropertyAccessPath& AccessPath;
@@ -40,10 +41,13 @@ struct FPropertyAccessEditorSystem
 		FText ErrorMessage;
 
 		// The current segment index (or that at which the last error occurred)
-		int32 SegmentIndex;
+		int32 SegmentIndex = INDEX_NONE;
 
 		// Whether this is the final segment
-		bool bFinalSegment;
+		bool bFinalSegment = false;
+
+		// Whether this path was determined to be thread safe
+		bool bWasThreadSafe = true;
 	};
 
 	// The result of a segment resolve operation
@@ -51,15 +55,11 @@ struct FPropertyAccessEditorSystem
 	{
 		Failed,
 
-		SucceededInternal,
-
-		SucceededExternal,
+		Succeeded,
 	};
 
-	static ESegmentResolveResult ResolveSegments_CheckProperty(FPropertyAccessSegment& InSegment, FProperty* InProperty, FResolveSegmentsContext& InContext)
+	static ESegmentResolveResult ResolveSegments_CheckProperty(FPropertyAccessSegment& InSegment, FProperty* InProperty, FResolveSegmentsContext& InContext, bool& bOutThreadSafe)
 	{
-		ESegmentResolveResult Result = ESegmentResolveResult::SucceededInternal;
-
 		InSegment.Property = InProperty;
 
 		// Check to see if it is an array first, as arrays get handled the same for 'leaf' and 'branch' nodes
@@ -79,7 +79,7 @@ struct FPropertyAccessEditorSystem
 				InSegment.Struct = ArrayOfObjectsProperty->PropertyClass;
 				if(!InContext.bFinalSegment)
 				{
-					Result = ESegmentResolveResult::SucceededExternal;
+					bOutThreadSafe = false;
 				}
 			}
 			else
@@ -106,7 +106,7 @@ struct FPropertyAccessEditorSystem
 			InSegment.Struct = ObjectProperty->PropertyClass;
 			if(!InContext.bFinalSegment)
 			{
-				Result = ESegmentResolveResult::SucceededExternal;
+				bOutThreadSafe = false;
 			}
 		}
 		// Check to see if this is a simple weak object property (eg. not an array of weak objects).
@@ -116,7 +116,7 @@ struct FPropertyAccessEditorSystem
 			InSegment.Struct = WeakObjectProperty->PropertyClass;
 			if(!InContext.bFinalSegment)
 			{
-				Result = ESegmentResolveResult::SucceededExternal;
+				bOutThreadSafe = false;
 			}
 		}
 		// Check to see if this is a simple soft object property (eg. not an array of soft objects).
@@ -126,21 +126,16 @@ struct FPropertyAccessEditorSystem
 			InSegment.Struct = SoftObjectProperty->PropertyClass;
 			if(!InContext.bFinalSegment)
 			{
-				Result = ESegmentResolveResult::SucceededExternal;
+				bOutThreadSafe = false;
 			}
 		}
 		else
 		{
+			InContext.ErrorMessage = FText::Format(LOCTEXT("UnrecognisedProperty", "Property '{0}' is unrecognised in property path for @@"), InProperty ? FText::FromName(InProperty->GetFName()) : LOCTEXT("Null", "Null"));
 			return ESegmentResolveResult::Failed;
 		}
 
-		static const FName PropertyEventMetadata("PropertyEvent");
-		if(InProperty->HasMetaData(PropertyEventMetadata))
-		{
-			InSegment.Flags |= (uint16)EPropertyAccessSegmentFlags::Event;
-		}
-
-		return Result;
+		return ESegmentResolveResult::Succeeded;
 	}
 
 	static ESegmentResolveResult ResolveSegments_CheckFunction(FPropertyAccessSegment& InSegment, UFunction* InFunction, FResolveSegmentsContext& InContext)
@@ -163,17 +158,17 @@ struct FPropertyAccessEditorSystem
 		}
 
 		// Treat the function's return value as the struct/class we want to use for the next segment
-		ESegmentResolveResult Result = ResolveSegments_CheckProperty(InSegment, ReturnProperty, InContext);
+		bool bThreadSafeProperty = true;
+		const ESegmentResolveResult Result = ResolveSegments_CheckProperty(InSegment, ReturnProperty, InContext, bThreadSafeProperty);
 		if(Result != ESegmentResolveResult::Failed)
 		{
-			// See if a function's thread safety means it should be considered 'external'.
+			// Check a function's thread safety.
 			// Note that this logic means that an external (ie. thread unsafe) object dereference returned from ResolveSegments_CheckProperty
 			// can be overridden here if the function that returns the value promises that it is thread safe to access that object.
 			// An example of this is would be something like accessing the main anim BP from a linked anim BP, where it is 'safe' to access
 			// the other object while running animation updated on a worker thread.
-			const UClass* FunctionClass = InFunction->GetOuterUClass();
-			const bool bThreadSafe = InFunction->HasMetaData(TEXT("BlueprintThreadSafe")) || (FunctionClass && FunctionClass->HasMetaData(TEXT("BlueprintThreadSafe")) && !InFunction->HasMetaData(TEXT("NotBlueprintThreadSafe")));
-			Result = bThreadSafe ? ESegmentResolveResult::SucceededInternal : ESegmentResolveResult::SucceededExternal;
+			const bool bThreadSafeFunction = FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(InFunction); 
+			InContext.bWasThreadSafe &= (bThreadSafeProperty && bThreadSafeFunction) || (!bThreadSafeProperty && bThreadSafeFunction);
 		}
 
 		return Result;
@@ -186,8 +181,6 @@ struct FPropertyAccessEditorSystem
 
 		if(InContext.Path.Num() > 0)
 		{
-			EPropertyAccessResolveResult Result = EPropertyAccessResolveResult::SucceededInternal;
-
 			for(int32 SegmentIndex = 0; SegmentIndex < InContext.Path.Num(); ++SegmentIndex)
 			{
 				const FString& SegmentString = InContext.Path[SegmentIndex];
@@ -221,24 +214,14 @@ struct FPropertyAccessEditorSystem
 
 				if(FProperty* Property = Field.Get<FProperty>())
 				{
-					ESegmentResolveResult PropertyResult = ResolveSegments_CheckProperty(Segment, Property, InContext);
-					if(PropertyResult == ESegmentResolveResult::SucceededExternal)
-					{
-						Result = EPropertyAccessResolveResult::SucceededExternal;
-					}
-					else if(PropertyResult == ESegmentResolveResult::Failed)
+					if(ResolveSegments_CheckProperty(Segment, Property, InContext, InContext.bWasThreadSafe) == ESegmentResolveResult::Failed)
 					{
 						return EPropertyAccessResolveResult::Failed;
 					}
 				}
 				else if(UFunction* Function = Field.Get<UFunction>())
 				{
-					ESegmentResolveResult FunctionResult = ResolveSegments_CheckFunction(Segment, Function, InContext);
-					if(FunctionResult == ESegmentResolveResult::SucceededExternal)
-					{
-						Result = EPropertyAccessResolveResult::SucceededExternal;
-					}
-					else if(FunctionResult == ESegmentResolveResult::Failed)
+					if(ResolveSegments_CheckFunction(Segment, Function, InContext) == ESegmentResolveResult::Failed)
 					{
 						return EPropertyAccessResolveResult::Failed;
 					}
@@ -247,7 +230,15 @@ struct FPropertyAccessEditorSystem
 				InContext.CurrentStruct = Segment.Struct;
 			}
 
-			return InContext.Segments.Num() > 0 ? Result : EPropertyAccessResolveResult::Failed;
+			if(InContext.Segments.Num() > 0)
+			{
+				return EPropertyAccessResolveResult::Succeeded;
+			}
+			else
+			{
+				InContext.ErrorMessage = LOCTEXT("NoSegments", "Unable to resolve any property path segments for @@");
+				return EPropertyAccessResolveResult::Failed;
+			}
 		}
 		else
 		{
@@ -256,23 +247,84 @@ struct FPropertyAccessEditorSystem
 		}
 	}
 
-	static EPropertyAccessResolveResult ResolveLeafProperty(const UStruct* InStruct, TArrayView<FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex)
+	static FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex)
 	{
 		FPropertyAccessPath AccessPath;
 		FResolveSegmentsContext Context(InStruct, InPath, AccessPath);
-		EPropertyAccessResolveResult Result = ResolveSegments(Context);
-		if(Result != EPropertyAccessResolveResult::Failed)
+		FPropertyAccessResolveResult Result;
+		Result.Result = ResolveSegments(Context);
+		Result.bIsThreadSafe = Context.bWasThreadSafe;
+		if(Result.Result != EPropertyAccessResolveResult::Failed)
 		{
 			const FPropertyAccessSegment& LeafSegment = Context.Segments.Last();
 			OutProperty = LeafSegment.Property.Get();
 			OutArrayIndex = LeafSegment.ArrayIndex;
-			return Result;
 		}
 
 		return Result;
 	}
 
-	static EPropertyAccessCopyType GetCopyType(const FPropertyAccessSegment& InSrcSegment, const FPropertyAccessSegment& InDestSegment)
+	static FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, const IPropertyAccessEditor::FResolvePropertyAccessArgs& InArgs)
+	{
+		FPropertyAccessPath AccessPath;
+		FResolveSegmentsContext Context(InStruct, InPath, AccessPath);
+		FPropertyAccessResolveResult Result;
+		Result.Result = ResolveSegments(Context);
+		Result.bIsThreadSafe = Context.bWasThreadSafe;
+		if(Result.Result != EPropertyAccessResolveResult::Failed)
+		{
+			for(int32 SegmentIndex = 0; SegmentIndex < Context.Segments.Num(); ++SegmentIndex)
+			{
+				const FPropertyAccessSegment& Segment = Context.Segments[SegmentIndex];
+				if(EnumHasAllFlags((EPropertyAccessSegmentFlags)Segment.Flags, EPropertyAccessSegmentFlags::Function))
+				{
+					if(InArgs.FunctionFunction != nullptr)
+					{
+						check(Segment.Function != nullptr);
+						check(Segment.Property.Get());
+						InArgs.FunctionFunction(SegmentIndex, Segment.Function, Segment.Property.Get());
+					}
+				}
+				else
+				{
+					switch((EPropertyAccessSegmentFlags)Segment.Flags & ~EPropertyAccessSegmentFlags::ModifierFlags)
+					{
+					case EPropertyAccessSegmentFlags::Struct:
+					case EPropertyAccessSegmentFlags::Leaf:
+					case EPropertyAccessSegmentFlags::Object:
+					case EPropertyAccessSegmentFlags::WeakObject:
+					case EPropertyAccessSegmentFlags::SoftObject:
+					{
+						if(InArgs.PropertyFunction != nullptr)
+						{
+							check(Segment.Property.Get());
+							InArgs.PropertyFunction(SegmentIndex, Segment.Property.Get(), Segment.ArrayIndex);
+						}
+						break;
+					}
+					case EPropertyAccessSegmentFlags::Array:
+					case EPropertyAccessSegmentFlags::ArrayOfStructs:
+					case EPropertyAccessSegmentFlags::ArrayOfObjects:
+					{
+						if(InArgs.ArrayFunction != nullptr)
+						{
+							FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(Segment.Property.Get());
+							InArgs.ArrayFunction(SegmentIndex, ArrayProperty, Segment.ArrayIndex);
+						}
+						break;
+					}
+					default:
+						check(false);
+						break;
+					}
+				}
+			}
+		}
+
+		return Result;
+	}
+	
+	static EPropertyAccessCopyType GetCopyType(const FPropertyAccessSegment& InSrcSegment, const FPropertyAccessSegment& InDestSegment, FText& OutErrorMessage)
 	{
 		FProperty* SrcProperty = InSrcSegment.Property.Get();
 		check(SrcProperty);
@@ -351,6 +403,10 @@ struct FPropertyAccessEditorSystem
 				{
 					return EPropertyAccessCopyType::PromoteBoolToFloat;
 				}
+				else if (DestProperty->IsA<FDoubleProperty>())
+				{
+					return EPropertyAccessCopyType::PromoteBoolToDouble;
+				}
 			}
 			else if(SrcProperty->IsA<FByteProperty>())
 			{
@@ -366,6 +422,10 @@ struct FPropertyAccessEditorSystem
 				{
 					return EPropertyAccessCopyType::PromoteByteToFloat;
 				}
+				else if (DestProperty->IsA<FDoubleProperty>())
+				{
+					return EPropertyAccessCopyType::PromoteByteToDouble;
+				}
 			}
 			else if(SrcProperty->IsA<FIntProperty>())
 			{
@@ -377,15 +437,53 @@ struct FPropertyAccessEditorSystem
 				{
 					return EPropertyAccessCopyType::PromoteInt32ToFloat;
 				}
+				else if (DestProperty->IsA<FDoubleProperty>())
+				{
+					return EPropertyAccessCopyType::PromoteInt32ToDouble;
+				}
+			}
+			else if (SrcProperty->IsA<FFloatProperty>())
+			{
+				if (DestProperty->IsA<FDoubleProperty>())
+				{
+					return EPropertyAccessCopyType::PromoteFloatToDouble;
+				}
+			}
+			else if (SrcProperty->IsA<FDoubleProperty>())
+			{
+				if (DestProperty->IsA<FFloatProperty>())
+				{
+					return EPropertyAccessCopyType::DemoteDoubleToFloat;
+				}
+			}
+			else if (SrcProperty->IsA<FArrayProperty>() && DestProperty->IsA<FArrayProperty>())
+			{
+				const FArrayProperty* SrcArrayProperty = CastField<const FArrayProperty>(SrcProperty);
+				const FArrayProperty* DestArrayProperty = CastField<const FArrayProperty>(DestProperty);
+
+				if (SrcArrayProperty->Inner->IsA<FFloatProperty>())
+				{
+					if (DestArrayProperty->Inner->IsA<FDoubleProperty>())
+					{
+						return EPropertyAccessCopyType::PromoteArrayFloatToDouble;
+					}
+				}
+				else if (SrcArrayProperty->Inner->IsA<FDoubleProperty>())
+				{
+					if (DestArrayProperty->Inner->IsA<FFloatProperty>())
+					{
+						return EPropertyAccessCopyType::DemoteArrayDoubleToFloat;
+					}
+				}
 			}
 		}
 
-		checkf(false, TEXT("Couldnt determine property copy type (%s -> %s)"), *SrcProperty->GetName(), *DestProperty->GetName());
+		OutErrorMessage = FText::Format(LOCTEXT("CopyTypeInvalidFormat", "@@ Cannot copy property ({0} -> {1})"), FText::FromString(SrcProperty->GetCPPType()), FText::FromString(DestProperty->GetCPPType()));
 
 		return EPropertyAccessCopyType::None;
 	}
 
-	static bool CompileCopy(const UStruct* InStruct, FPropertyAccessLibrary& InLibrary, FPropertyAccessLibraryCompiler::FQueuedCopy& OutCopy)
+	static bool CompileCopy(const UStruct* InStruct, const FOnPropertyAccessDetermineBatchId& InOnDetermineBatchId, FPropertyAccessLibrary& InLibrary, FPropertyAccessLibraryCompiler::FQueuedCopy& OutCopy)
 	{
 		FPropertyAccessPath SrcAccessPath;
 		FPropertyAccessPath DestAccessPath;
@@ -400,37 +498,46 @@ struct FPropertyAccessEditorSystem
 
 		if(OutCopy.SourceResult != EPropertyAccessResolveResult::Failed && OutCopy.DestResult != EPropertyAccessResolveResult::Failed)
 		{
-			const bool bExternal = OutCopy.SourceResult == EPropertyAccessResolveResult::SucceededExternal ||  OutCopy.DestResult == EPropertyAccessResolveResult::SucceededExternal;
-
-			// Decide on batch type
-			EPropertyAccessCopyBatch CopyBatch;
-			if(bExternal)
+			FText CopyTypeError;
+			EPropertyAccessCopyType CopyType = GetCopyType(SrcContext.Segments.Last(), DestContext.Segments.Last(), CopyTypeError);
+			if(CopyType != EPropertyAccessCopyType::None)
 			{
-				CopyBatch = OutCopy.BatchType == EPropertyAccessBatchType::Unbatched ? EPropertyAccessCopyBatch::ExternalUnbatched : EPropertyAccessCopyBatch::ExternalBatched;
+				FPropertyAccessCopyContext CopyContext;
+				CopyContext.Object = OutCopy.AssociatedObject;
+				CopyContext.ContextId = OutCopy.ContextId;
+				CopyContext.SourcePathAsText = PropertyAccess::MakeTextPath(OutCopy.SourcePath, InStruct);
+				CopyContext.DestPathAsText = PropertyAccess::MakeTextPath(OutCopy.DestPath, InStruct);
+				CopyContext.bSourceThreadSafe = DestContext.bWasThreadSafe;
+				CopyContext.bDestThreadSafe = SrcContext.bWasThreadSafe;
+				
+				OutCopy.BatchId = InOnDetermineBatchId.IsBound() ? InOnDetermineBatchId.Execute(CopyContext) : 0;
+				check(OutCopy.BatchId >= 0);
+				InLibrary.CopyBatchArray.SetNum(FMath::Max(OutCopy.BatchId + 1, InLibrary.CopyBatchArray.Num()));
+				
+				OutCopy.BatchIndex = InLibrary.CopyBatchArray[OutCopy.BatchId].Copies.Num();
+				FPropertyAccessCopy& Copy = InLibrary.CopyBatchArray[OutCopy.BatchId].Copies.AddDefaulted_GetRef();
+				Copy.AccessIndex = InLibrary.SrcPaths.Num();
+				Copy.DestAccessStartIndex = InLibrary.DestPaths.Num();
+				Copy.DestAccessEndIndex = InLibrary.DestPaths.Num() + 1;
+				Copy.Type = CopyType;
+
+				SrcAccessPath.PathSegmentStartIndex = InLibrary.PathSegments.Num();
+				SrcAccessPath.PathSegmentCount = SrcContext.Segments.Num();
+				InLibrary.SrcPaths.Add(SrcAccessPath);
+				InLibrary.PathSegments.Append(SrcContext.Segments);
+
+				DestAccessPath.PathSegmentStartIndex = InLibrary.PathSegments.Num();
+				DestAccessPath.PathSegmentCount = DestContext.Segments.Num();
+				InLibrary.DestPaths.Add(DestAccessPath);
+				InLibrary.PathSegments.Append(DestContext.Segments);
+
+				return true;
 			}
 			else
 			{
-				CopyBatch = OutCopy.BatchType == EPropertyAccessBatchType::Unbatched ? EPropertyAccessCopyBatch::InternalUnbatched : EPropertyAccessCopyBatch::InternalBatched;
+				OutCopy.SourceResult = EPropertyAccessResolveResult::Failed;
+				OutCopy.SourceErrorText = CopyTypeError;
 			}
-
-			OutCopy.BatchIndex = InLibrary.CopyBatches[(__underlying_type(EPropertyAccessCopyBatch))CopyBatch].Copies.Num();
-			FPropertyAccessCopy& Copy = InLibrary.CopyBatches[(__underlying_type(EPropertyAccessCopyBatch))CopyBatch].Copies.AddDefaulted_GetRef();
-			Copy.AccessIndex = InLibrary.SrcPaths.Num();
-			Copy.DestAccessStartIndex = InLibrary.DestPaths.Num();
-			Copy.DestAccessEndIndex = InLibrary.DestPaths.Num() + 1;
-			Copy.Type = GetCopyType(SrcContext.Segments.Last(), DestContext.Segments.Last());
-
-			SrcAccessPath.PathSegmentStartIndex = InLibrary.PathSegments.Num();
-			SrcAccessPath.PathSegmentCount = SrcContext.Segments.Num();
-			InLibrary.SrcPaths.Add(SrcAccessPath);
-			InLibrary.PathSegments.Append(SrcContext.Segments);
-
-			DestAccessPath.PathSegmentStartIndex = InLibrary.PathSegments.Num();
-			DestAccessPath.PathSegmentCount = DestContext.Segments.Num();
-			InLibrary.DestPaths.Add(DestAccessPath);
-			InLibrary.PathSegments.Append(DestContext.Segments);
-
-			return true;
 		}
 
 		return false;
@@ -439,9 +546,14 @@ struct FPropertyAccessEditorSystem
 
 namespace PropertyAccess
 {
-	EPropertyAccessResolveResult ResolveLeafProperty(const UStruct* InStruct, TArrayView<FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex)
+	FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex)
 	{
-		return ::FPropertyAccessEditorSystem::ResolveLeafProperty(InStruct, InPath, OutProperty, OutArrayIndex);
+		return ::FPropertyAccessEditorSystem::ResolvePropertyAccess(InStruct, InPath, OutProperty, OutArrayIndex);
+	}
+
+	FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, const IPropertyAccessEditor::FResolvePropertyAccessArgs& InArgs)
+	{
+		return ::FPropertyAccessEditorSystem::ResolvePropertyAccess(InStruct, InPath, InArgs);
 	}
 
 	EPropertyAccessCompatibility GetPropertyCompatibility(const FProperty* InPropertyA, const FProperty* InPropertyB)
@@ -459,7 +571,12 @@ namespace PropertyAccess
 		// Special case for object properties
 		if(InPropertyA->IsA<FObjectPropertyBase>() && InPropertyB->IsA<FObjectPropertyBase>())
 		{
-			return EPropertyAccessCompatibility::Compatible;
+			const FObjectPropertyBase* ObjectPropertyA = CastField<FObjectPropertyBase>(InPropertyA);
+			const FObjectPropertyBase* ObjectPropertyB = CastField<FObjectPropertyBase>(InPropertyB);
+			if(ObjectPropertyA->PropertyClass->IsChildOf(ObjectPropertyB->PropertyClass))
+			{
+				return EPropertyAccessCompatibility::Compatible;
+			}
 		}
 
 		// Extract underlying types for enums
@@ -482,23 +599,57 @@ namespace PropertyAccess
 			// Not directly compatible, check for promotions
 			if(InPropertyA->IsA<FBoolProperty>())
 			{
-				if(InPropertyB->IsA<FByteProperty>() || InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+				if(InPropertyB->IsA<FByteProperty>() || InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>() || InPropertyB->IsA<FDoubleProperty>())
 				{
 					return EPropertyAccessCompatibility::Promotable;
 				}
 			}
 			else if(InPropertyA->IsA<FByteProperty>())
 			{
-				if(InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+				if(InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>() || InPropertyB->IsA<FDoubleProperty>())
 				{
 					return EPropertyAccessCompatibility::Promotable;
 				}
 			}
 			else if(InPropertyA->IsA<FIntProperty>())
 			{
-				if(InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+				if(InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>() || InPropertyB->IsA<FDoubleProperty>())
 				{
 					return EPropertyAccessCompatibility::Promotable;
+				}
+			}
+			else if (InPropertyA->IsA<FFloatProperty>())
+			{
+				if (InPropertyB->IsA<FDoubleProperty>())
+				{
+					return EPropertyAccessCompatibility::Promotable;
+				}
+			}
+			else if (InPropertyA->IsA<FDoubleProperty>())
+			{
+				if (InPropertyB->IsA<FFloatProperty>())
+				{
+					return EPropertyAccessCompatibility::Promotable;	// LWC_TODO: Incorrect! Do not ship this!
+				}
+			}
+			else if (InPropertyA->IsA<FArrayProperty>() && InPropertyB->IsA<FArrayProperty>())
+			{
+				const FArrayProperty* ArrayPropertyA = CastField<const FArrayProperty>(InPropertyA);
+				const FArrayProperty* ArrayPropertyB = CastField<const FArrayProperty>(InPropertyB);
+
+				if (ArrayPropertyA->Inner->IsA<FFloatProperty>())
+				{
+					if (ArrayPropertyB->Inner->IsA<FDoubleProperty>())
+					{
+						return EPropertyAccessCompatibility::Promotable;
+					}
+				}
+				else if (ArrayPropertyA->Inner->IsA<FDoubleProperty>())
+				{
+					if (ArrayPropertyB->Inner->IsA<FFloatProperty>())
+					{
+						return EPropertyAccessCompatibility::Promotable;
+					}
 				}
 			}
 		}
@@ -509,30 +660,30 @@ namespace PropertyAccess
 	EPropertyAccessCompatibility GetPinTypeCompatibility(const FEdGraphPinType& InPinTypeA, const FEdGraphPinType& InPinTypeB)
 	{
 		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
-		if(Schema->ArePinTypesCompatible(InPinTypeA, InPinTypeB))
+		if (Schema->ArePinTypesCompatible(InPinTypeA, InPinTypeB))
 		{
 			return EPropertyAccessCompatibility::Compatible;
 		}
 		else
 		{
 			// Not directly compatible, check for promotions
-			if(InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Boolean)
+			if (InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Boolean)
 			{
-				if(InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Byte || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Float)
+				if (InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Byte || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Real)
 				{
 					return EPropertyAccessCompatibility::Promotable;
 				}
 			}
-			else if(InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Byte)
+			else if (InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Byte)
 			{
-				if(InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Float)
+				if (InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Real)
 				{
 					return EPropertyAccessCompatibility::Promotable;
 				}
 			}
-			else if(InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Int)
+			else if (InPinTypeA.PinCategory == UEdGraphSchema_K2::PC_Int)
 			{
-				if(InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Float)
+				if (InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Int64 || InPinTypeB.PinCategory == UEdGraphSchema_K2::PC_Real)
 				{
 					return EPropertyAccessCompatibility::Promotable;
 				}
@@ -568,15 +719,104 @@ namespace PropertyAccess
 			}
 		});
 	}
+
+	FText MakeTextPath(const TArray<FString>& InPath, const UStruct* InStruct = nullptr)
+	{
+		TStringBuilder<128> StringBuilder;
+		
+		if(InPath.Num() > 0)
+		{
+			const int32 LastIndex = InPath.Num() - 1;
+			bool bResolved = InStruct != nullptr;
+			
+			if(InStruct)
+			{
+				IPropertyAccessEditor::FResolvePropertyAccessArgs ResolveArgs;
+				auto PropertyFunction = [&StringBuilder](FProperty* InProperty, int32 InArrayIndex, bool bLast)
+				{
+					if(InProperty->IsNative())
+					{
+						if(const FString* ScriptNamePtr = InProperty->FindMetaData("ScriptName"))
+						{
+							StringBuilder.Append(*ScriptNamePtr);
+						}
+						else
+						{
+							StringBuilder.Append(InProperty->GetName());
+						}
+					}
+					else
+					{
+						StringBuilder.Append(InProperty->GetDisplayNameText().ToString());
+					}
+
+					if(InArrayIndex != INDEX_NONE)
+					{
+						StringBuilder.Appendf(TEXT("[%d]"), InArrayIndex);
+					}
+
+					if(!bLast)
+					{
+						StringBuilder.Append(TEXT("."));
+					}
+				};
+				
+				ResolveArgs.PropertyFunction = [&PropertyFunction, LastIndex](int32 InSegmentIndex, FProperty* InProperty, int32 InStaticArrayIndex)
+				{
+					PropertyFunction(InProperty, InStaticArrayIndex, InSegmentIndex == LastIndex);
+				};
+				ResolveArgs.ArrayFunction = [&PropertyFunction, LastIndex](int32 InSegmentIndex, FArrayProperty* InProperty, int32 InArrayIndex)
+				{
+					PropertyFunction(InProperty, InArrayIndex, InSegmentIndex == LastIndex);
+				};
+				ResolveArgs.FunctionFunction = [&StringBuilder, LastIndex](int32 InSegmentIndex, UFunction* InFunction, FProperty* /*ReturnProperty*/)
+				{
+					if(const FString* ScriptNamePtr = InFunction->FindMetaData("ScriptName"))
+					{
+						StringBuilder.Append(*ScriptNamePtr);
+					}
+					else
+					{
+						StringBuilder.Append(InFunction->GetName());
+					}
+
+					if(InSegmentIndex != LastIndex)
+					{
+						StringBuilder.Append(TEXT("."));
+					}
+				};
+				
+				if(FPropertyAccessEditorSystem::ResolvePropertyAccess(InStruct, InPath, ResolveArgs).Result == EPropertyAccessResolveResult::Failed)
+				{
+					bResolved = false;
+				}
+			}
+
+			// Fallback to string concatenation if we didnt/couldnt resolve 
+			if(!bResolved)
+			{
+				StringBuilder.Append(InPath[0]);
+
+				for(int32 SegmentIndex = 1; SegmentIndex < InPath.Num(); ++SegmentIndex)
+				{
+					StringBuilder.Append(TEXT("."));
+					StringBuilder.Append(InPath[SegmentIndex]);
+				}
+			}
+		}
+
+		return FText::FromString(StringBuilder.ToString());
+	}
 }
 
-FPropertyAccessLibraryCompiler::FPropertyAccessLibraryCompiler()
-	: Library(nullptr)
-	, Class(nullptr)
+FPropertyAccessLibraryCompiler::FPropertyAccessLibraryCompiler(FPropertyAccessLibrary* InLibrary, const UClass* InClass, const FOnPropertyAccessDetermineBatchId& InOnDetermineBatchId)
+	: Library(InLibrary)
+	, Class(InClass)
+	, OnDetermineBatchId(InOnDetermineBatchId)
 {
 }
 
-void FPropertyAccessLibraryCompiler::BeginCompilation(const UClass* InClass)
+void FPropertyAccessLibraryCompiler::BeginCompilation()
 {
 	if(Class && Library)
 	{
@@ -584,17 +824,17 @@ void FPropertyAccessLibraryCompiler::BeginCompilation(const UClass* InClass)
 	}
 }
 
-int32 FPropertyAccessLibraryCompiler::AddCopy(TArrayView<FString> InSourcePath, TArrayView<FString> InDestPath, EPropertyAccessBatchType InBatchType, UObject* InAssociatedObject)
+FPropertyAccessHandle FPropertyAccessLibraryCompiler::AddCopy(TArrayView<FString> InSourcePath, TArrayView<FString> InDestPath, const FName& InContextId, UObject* InAssociatedObject)
 {
 	FQueuedCopy QueuedCopy;
 	QueuedCopy.SourcePath = InSourcePath;
 	QueuedCopy.DestPath = InDestPath;
-	QueuedCopy.BatchType = InBatchType;
+	QueuedCopy.ContextId = InContextId;
 	QueuedCopy.AssociatedObject = InAssociatedObject;
 
 	QueuedCopies.Add(MoveTemp(QueuedCopy));
 
-	return QueuedCopies.Num() - 1;
+	return FPropertyAccessHandle(QueuedCopies.Num() - 1);
 }
 
 bool FPropertyAccessLibraryCompiler::FinishCompilation()
@@ -605,13 +845,13 @@ bool FPropertyAccessLibraryCompiler::FinishCompilation()
 		for(int32 CopyIndex = 0; CopyIndex < QueuedCopies.Num(); ++CopyIndex)
 		{
 			FQueuedCopy& Copy = QueuedCopies[CopyIndex];
-			bResult &= ::FPropertyAccessEditorSystem::CompileCopy(Class, *Library, Copy);
-			CopyMap.Add(CopyIndex, Copy.BatchIndex);
+			bResult &= ::FPropertyAccessEditorSystem::CompileCopy(Class, OnDetermineBatchId, *Library, Copy);
+			CopyMap.Add(FPropertyAccessHandle(CopyIndex), FCompiledPropertyAccessHandle(Copy.BatchIndex, Copy.BatchId));
 		}
 
 		// Always rebuild the library even if we detected a 'failure'. Otherwise we could fail to copy data for both
 		// valid and invalid copies 
-		PropertyAccess::PostLoadLibrary(*Library);
+		PropertyAccess::PatchPropertyOffsets(*Library);
 
 		return bResult;
 	}
@@ -638,20 +878,14 @@ void FPropertyAccessLibraryCompiler::IterateErrors(TFunctionRef<void(const FText
 	}
 }
 
-int32 FPropertyAccessLibraryCompiler::MapCopyIndex(int32 InIndex) const
+FCompiledPropertyAccessHandle FPropertyAccessLibraryCompiler::GetCompiledHandle(FPropertyAccessHandle InHandle) const
 {
-	if(const int32* FoundIndex = CopyMap.Find(InIndex))
+	if(const FCompiledPropertyAccessHandle* FoundHandle = CopyMap.Find(InHandle))
 	{
-		return *FoundIndex;
+		return *FoundHandle;
 	}
 
-	return INDEX_NONE;
-}
-
-void FPropertyAccessLibraryCompiler::Setup(const UClass* InClass, FPropertyAccessLibrary* InLibrary)
-{
-	Class = InClass;
-	Library = InLibrary;
+	return FCompiledPropertyAccessHandle();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -9,7 +9,7 @@ class FVulkanSurface;
 
 struct FVulkanPipelineBarrier
 {
-	FVulkanPipelineBarrier() : SrcStageMask(0), DstStageMask(0), Semaphore(nullptr)
+	FVulkanPipelineBarrier() : SrcStageMask(0), DstStageMask(0), Semaphore(nullptr), bHasMemoryBarrier(false)
 	{
 		ZeroVulkanStruct(MemoryBarrier, VK_STRUCTURE_TYPE_MEMORY_BARRIER);
 	}
@@ -20,10 +20,17 @@ struct FVulkanPipelineBarrier
 	TArray<VkImageMemoryBarrier, TInlineAllocator<2>> ImageBarriers;
 	TArray<VkBufferMemoryBarrier> BufferBarriers;
 	VulkanRHI::FSemaphore* Semaphore;
+	bool bHasMemoryBarrier;
 
 	// We need to keep the texture pointers around, because we need to call OnTransitionResource on them, and we need mip and layer counts for the tracking code.
-	TArray<FVulkanTextureBase*, TInlineAllocator<2>> Textures;
+	struct ImageBarrierExtraData
+	{
+		FVulkanTextureBase* BaseTexture = nullptr;
+		bool IsAliasingBarrier = false;
+	};
+	TArray<ImageBarrierExtraData, TInlineAllocator<2>> ImageBarrierExtras;
 
+	void AddMemoryBarrier(VkAccessFlags SrcAccessFlags, VkAccessFlags DstAccessFlags, VkPipelineStageFlags SrcStageMask, VkPipelineStageFlags DstStageMask);
 	void AddImageLayoutTransition(VkImage Image, VkImageLayout SrcLayout, VkImageLayout DstLayout, const VkImageSubresourceRange& SubresourceRange);
 	void AddImageLayoutTransition(VkImage Image, VkImageAspectFlags AspectMask, const struct FVulkanImageLayout& SrcLayout, VkImageLayout DstLayout);
 	void AddImageLayoutTransition(VkImage Image, VkImageAspectFlags AspectMask, VkImageLayout SrcLayout, const struct FVulkanImageLayout& DstLayout);
@@ -188,7 +195,7 @@ public:
 			return *Layout;
 		}
 		return Layouts.Add(Image, FVulkanImageLayout(LayoutIfNotFound, NumMips, NumLayers));
-		}
+	}
 
 	VULKANRHI_API VkImageLayout& FindOrAddLayoutRW(VkImage Image, VkImageLayout LayoutIfNotFound, uint32 NumMips, uint32 NumLayers)
 	{

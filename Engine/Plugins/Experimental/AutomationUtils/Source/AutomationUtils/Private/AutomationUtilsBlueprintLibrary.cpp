@@ -45,9 +45,7 @@ public:
 		ShowFlags.SetBloom(0);
 
 		// Turn off time the ultimate source of noise.
-		InViewFamily.CurrentWorldTime = 0;
-		InViewFamily.CurrentRealTime = 0;
-		InViewFamily.DeltaWorldTime = 0;
+		InViewFamily.Time = FGameTime();
 	}
 
 	bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext&) const
@@ -148,6 +146,8 @@ FAutomationUtilsGameplayAutomationScreenshotInstance::FAutomationUtilsGameplayAu
 		JsonObject->SetNumberField(TEXT("viewDistanceQuality"), QualityLevels.ViewDistanceQuality);
 		JsonObject->SetNumberField(TEXT("antiAliasingQuality"), QualityLevels.AntiAliasingQuality);
 		JsonObject->SetNumberField(TEXT("shadowQuality"), QualityLevels.ShadowQuality);
+		JsonObject->SetNumberField(TEXT("globalIlluminationQuality"), QualityLevels.GlobalIlluminationQuality);
+		JsonObject->SetNumberField(TEXT("reflectionQuality"), QualityLevels.ReflectionQuality);
 		JsonObject->SetNumberField(TEXT("postProcessQuality"), QualityLevels.PostProcessQuality);
 		JsonObject->SetNumberField(TEXT("textureQuality"), QualityLevels.TextureQuality);
 		JsonObject->SetNumberField(TEXT("effectsQuality"), QualityLevels.EffectsQuality);
@@ -212,9 +212,17 @@ FAutomationUtilsGameplayAutomationScreenshotInstance::FAutomationUtilsGameplayAu
 			HardwareDetailsString.RightChopInline(1, false);
 		}
 
+		// We need a unique ID for filenames from this run. We used to use GetDeviceId() but that is not guaranteed to return
+		// a valid string on some platforms.
+		FString DeviceIdString = FPlatformMisc::GetDeviceId();
+		if (DeviceIdString.IsEmpty())
+		{
+			DeviceIdString = FGuid::NewGuid().ToString(EGuidFormats::Short).ToLower();
+		}
+
 		//now plop that back onto the path we're building
 		DeterminedPath = DeterminedPath / HardwareDetailsString;
-		DeterminedPath = DeterminedPath / FPlatformMisc::GetDeviceId() + TEXT(".png");
+		DeterminedPath = DeterminedPath / DeviceIdString + TEXT(".png");
 
 		//Remove as many noisy rendering conditions as we can until the screenshot has been taken
 		AutomationViewExtension = FSceneViewExtensions::NewExtension<FAutomationUtilsGameplayViewExtension>();
@@ -223,7 +231,7 @@ FAutomationUtilsGameplayAutomationScreenshotInstance::FAutomationUtilsGameplayAu
 	}
 	else
 	{
-		FTicker::GetCoreTicker().AddTicker(TEXT("FAutomationUtilsGameplayScreenshotInstanceAutoCleanup"), 0.1f, [this](float)
+		FTSTicker::GetCoreTicker().AddTicker(TEXT("FAutomationUtilsGameplayScreenshotInstanceAutoCleanup"), 0.1f, [this](float)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FAutomationUtilsGameplayScreenshotInstanceAutoCleanup);
 			FAutomationUtilsGameplayAutomationScreenshotFactory::RequestDeleteScreenshotInstance(ScreenshotName);
@@ -248,8 +256,8 @@ void FAutomationUtilsGameplayAutomationScreenshotInstance::HandleScreenshotData(
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(DeterminedPath), true);
 
 	//Save Image File
-	TArray<uint8> CompressedBitmap;
-	FImageUtils::CompressImageArray(InSizeX, InSizeY, InImageData, CompressedBitmap);
+	TArray64<uint8> CompressedBitmap;
+	FImageUtils::PNGCompressImageArray(InSizeX, InSizeY, TArrayView64<const FColor>(InImageData.GetData(), InImageData.Num()), CompressedBitmap);
 	FFileHelper::SaveArrayToFile(CompressedBitmap, *DeterminedPath);
 	GLog->Log(FString::Printf(TEXT("Saved %d bytes of screenshot image to %s"), CompressedBitmap.Num(), *DeterminedPath));
 
@@ -337,14 +345,14 @@ UAutomationUtilsBlueprintLibrary::UAutomationUtilsBlueprintLibrary(const FObject
 
 void UAutomationUtilsBlueprintLibrary::TakeGameplayAutomationScreenshot(const FString ScreenshotName, float MaxGlobalError, float MaxLocalError, FString MapNameOverride)
 {
+	FlushAsyncLoading();
+
 	//Finish Loading Before Screenshot
 	if (!FPlatformProperties::RequiresCookedData())
 	{
-		//Finish Compiling all shaders
-		GShaderCompilingManager->FinishAllCompilation();
+		//Finish Compiling all shaders and other async assets
+		FAssetCompilingManager::Get().FinishAllCompilation();
 	}
-
-	FlushAsyncLoading();
 
 	// Make sure we finish all level streaming
 	if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))

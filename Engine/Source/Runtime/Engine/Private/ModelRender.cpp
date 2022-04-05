@@ -22,7 +22,6 @@
 #include "Materials/Material.h"
 #include "MeshBatch.h"
 #include "SceneManagement.h"
-#include "TessellationRendering.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
@@ -165,7 +164,7 @@ void UModelComponent::BuildRenderData()
 					{
 						for(int32 VertexIndex = 0; VertexIndex < Node.NumVertices; VertexIndex++)
 						{
-							Element.BoundingBox += TheModel->Points[TheModel->Verts[Node.iVertPool + VertexIndex].pVertex];
+							Element.BoundingBox += (FVector)TheModel->Points[TheModel->Verts[Node.iVertPool + VertexIndex].pVertex];
 						}
 
 						for(int32 VertexIndex = 2; VertexIndex < Node.NumVertices; VertexIndex++)
@@ -517,7 +516,7 @@ public:
 		if (!HasViewDependentDPG())
 		{
 			// Determine the DPG the primitive should be drawn in.
-			uint8 PrimitiveDPG = GetStaticDepthPriorityGroup();
+			ESceneDepthPriorityGroup PrimitiveDPG = GetStaticDepthPriorityGroup();
 
 			PDI->ReserveMemoryForMeshes(Elements.Num());
 
@@ -538,7 +537,7 @@ public:
 					BatchElement.MaxVertexIndex = ModelElement.MaxVertexIndex;
 					BatchElement.VertexFactoryUserData = Elements[ElementIndex].GetVertexFactoryUniformBuffer();
 					MeshElement.Type = PT_TriangleList;
-					MeshElement.DepthPriorityGroup = PrimitiveDPG;
+					MeshElement.DepthPriorityGroup = (uint8)PrimitiveDPG;
 					MeshElement.LODIndex = 0;
 					const bool bValidIndexBuffer = !BatchElement.IndexBuffer || (BatchElement.IndexBuffer && BatchElement.IndexBuffer->IsInitialized() && BatchElement.IndexBuffer->IndexBufferRHI);
 					ensure(bValidIndexBuffer);
@@ -694,12 +693,6 @@ private:
 
 			// Determine the material applied to the model element.
 			Material = InModelElement.Material;
-
-			if (RequiresAdjacencyInformation(Material, InVertexFactory->GetType(), InModelElement.Component->GetScene()->GetFeatureLevel()))
-			{
-				UE_LOG(LogModelComponent, Warning, TEXT("Material %s requires adjacency information because of Crack Free Displacement or PN Triangle Tesselation, which is not supported with model components. Falling back to DefaultMaterial."), *Material->GetName());
-				Material = nullptr;
-			}
 
 			// If there isn't an applied material, or if we need static lighting and it doesn't support it, fall back to the default material.
 			if(!Material || (bHasStaticLighting && !Material->CheckMaterialUsage(MATUSAGE_StaticLighting)))
@@ -870,7 +863,7 @@ FBoxSphereBounds UModelComponent::CalcBounds(const FTransform& LocalToWorld) con
 			FBspNode& Node = Model->Nodes[Nodes[NodeIndex]];
 			for(int32 VertexIndex = 0;VertexIndex < Node.NumVertices;VertexIndex++)
 			{
-				BoundingBox += Model->Points[Model->Verts[Node.iVertPool + VertexIndex].pVertex];
+				BoundingBox += (FVector)Model->Points[Model->Verts[Node.iVertPool + VertexIndex].pVertex];
 			}
 		}
 		return FBoxSphereBounds(BoundingBox.TransformBy(LocalToWorld));

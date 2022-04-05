@@ -3,19 +3,20 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/VarArgs.h"
-#include "Misc/AssertionMacros.h"
-#include "Templates/EnableIf.h"
-#include "Templates/IsEnumClass.h"
-#include "Templates/Function.h"
 #include "HAL/PlatformProperties.h"
+#include "Internationalization/TextNamespaceFwd.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/CompressionFlags.h"
 #include "Misc/EngineVersionBase.h"
-#include "Internationalization/TextNamespaceFwd.h"
-#include "Templates/IsValidVariadicFunctionArg.h"
+#include "Misc/VarArgs.h"
 #include "Templates/AndOrNot.h"
+#include "Templates/EnableIf.h"
+#include "Templates/Function.h"
 #include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsEnumClass.h"
 #include "Templates/IsSigned.h"
+#include "Templates/IsValidVariadicFunctionArg.h"
+#include "UObject/ObjectVersion.h"
 
 class FArchive;
 class FCustomVersionContainer;
@@ -27,6 +28,7 @@ class ITargetPlatform;
 class UObject;
 class FProperty;
 struct FUntypedBulkData;
+namespace UE::Serialization{ class FEditorBulkData; }
 struct FArchiveSerializedPropertyChain;
 template<class TEnum> class TEnumAsByte;
 typedef TFunction<bool (double RemainingTime)> FExternalReadCallback;
@@ -186,15 +188,29 @@ public:
 	}
 
 	/** Returns the global engine serialization version used for this archive. */
-	FORCEINLINE int32 UE4Ver() const
+	FORCEINLINE FPackageFileVersion UEVer() const
 	{
-		return ArUE4Ver;
+		return ArUEVer;
 	}
 
 	/** Returns the licensee-specific version used for this archive, will be 0 by default. */
+	FORCEINLINE int32 LicenseeUEVer() const
+	{
+		return ArLicenseeUEVer;
+	}
+
+	/** Returns the global engine serialization version used for this archive. */
+	UE_DEPRECATED(5.0, "Use UEVer instead which returns the version as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
+	FORCEINLINE int32 UE4Ver() const
+	{
+		return ArUEVer.FileVersionUE4;
+	}
+
+	/** Returns the licensee-specific version used for this archive, will be 0 by default. */
+	UE_DEPRECATED(5.0, "Use LicenseeUEVer instead")
 	FORCEINLINE int32 LicenseeUE4Ver() const
 	{
-		return ArLicenseeUE4Ver;
+		return LicenseeUEVer();
 	}
 
 	/** Returns the compiled engine version used for this archive. */
@@ -227,6 +243,12 @@ public:
 	FORCEINLINE bool IsLoading() const
 	{
 		return ArIsLoading;
+	}
+
+	/** Returns true if this archive is loading from a cooked package. */
+ 	FORCEINLINE bool IsLoadingFromCookedPackage() const
+	{
+		return ArIsLoadingFromCookedPackage;
 	}
 
 	/** Returns true if this archive is for saving data, this can also be a pre-save preparation archive. */
@@ -285,6 +307,24 @@ public:
 	FORCEINLINE bool IsPersistent() const
 	{
 		return ArIsPersistent;
+	}
+
+	/**
+	 * Set whether or not it is allowed to skip serialization on assets still being compiled to avoid waiting unless strictly necessary.
+	 * 
+	 * @param Enabled	Set to true to enable skip serialization on compiling assets.
+	 */
+	void SetShouldSkipCompilingAssets(bool Enabled)
+	{
+		ArShouldSkipCompilingAssets = Enabled;
+	}
+
+	/**
+	 * Returns true if it is allowed to skip serialization on assets still being compiled to avoid waiting unless strictly necessary. 
+	 */
+	FORCEINLINE bool ShouldSkipCompilingAssets() const
+	{
+		return ArShouldSkipCompilingAssets;
 	}
 
 	/** Returns true if this archive contains errors, which means that further serialization is generally not safe. */
@@ -688,6 +728,9 @@ protected:
 	/** Whether this archive is for loading data. */
 	uint8 ArIsLoading : 1;
 
+	/** Whether this archive is loading from a cooked package. */
+	uint8 ArIsLoadingFromCookedPackage : 1;
+
 	/** Whether this archive is for saving data. */
 	uint8 ArIsSaving : 1;
 
@@ -715,6 +758,9 @@ private:
 
 	/** Whether this archive contains critical errors that cannot be recovered from */
 	uint8 ArIsCriticalError : 1;
+
+	/** Whether or not it is allowed to skip serialization on assets still being compiled to avoid waiting unless strictly necessary. */
+	uint8 ArShouldSkipCompilingAssets : 1;
 
 public:
 	/** Quickly tell if an archive contains script code. */
@@ -790,6 +836,12 @@ public:
 	 */
 	virtual void SetIsLoading(bool bInIsLoading);
 
+	/** 
+	 * Sets whether the archive is loading from a cooked package.
+	 * @param bInIsLoadingFromCookedPackage  true if this archive is loading from a cooked package, false otherwise
+	 */
+	virtual void SetIsLoadingFromCookedPackage(bool bInIsLoadingFromCookedPackage);
+
 	/**
 	 * Sets whether this archive is for saving data.
 	 *
@@ -840,9 +892,16 @@ public:
 	 * Sets the archive version number. Used by the code that makes sure that FLinkerLoad's 
 	 * internal archive versions match the file reader it creates.
 	 *
-	 * @param UE4Ver	new version number
+	 * @param UEVer	new version number
 	 */
-	virtual void SetUE4Ver(int32 InVer);
+	virtual void SetUEVer(FPackageFileVersion InVer);
+
+	UE_DEPRECATED(5.0, "Use SetUEVer instead which takes the version as a FPackageFileVersion. See the @FPackageFileVersion documentation for further details")
+	FORCEINLINE void SetUE4Ver(int32 InVer)
+	{
+		FPackageFileVersion PackageFileVersion = FPackageFileVersion::CreateUE4Version((EUnrealEngineObjectUE4Version)InVer);
+		SetUEVer(PackageFileVersion);
+	}
 
 	/**
 	 * Sets the archive licensee version number. Used by the code that makes sure that FLinkerLoad's 
@@ -850,7 +909,13 @@ public:
 	 *
 	 * @param Ver	new version number
 	 */
-	virtual void SetLicenseeUE4Ver(int32 InVer);
+	virtual void SetLicenseeUEVer(int32 InVer);
+
+	UE_DEPRECATED(5.0, "Use SetLicenseeUEVer instead")
+	FORCEINLINE void SetLicenseeUE4Ver(int32 InVer)
+	{
+		SetLicenseeUEVer(InVer);
+	}
 
 	/**
 	 * Sets the archive engine version. Used by the code that makes sure that FLinkerLoad's
@@ -873,10 +938,10 @@ public:
 // These will be private in FArchive
 protected:
 	/** Holds the archive version. */
-	int32 ArUE4Ver;
+	FPackageFileVersion ArUEVer;
 
 	/** Holds the archive version for licensees. */
-	int32 ArLicenseeUE4Ver;
+	int32 ArLicenseeUEVer;
 
 	/** Holds the engine version. */
 	FEngineVersionBase ArEngineVer;
@@ -1145,6 +1210,16 @@ public:
 	 * @return This instance.
 	 */
 	virtual FArchive& operator<<(struct FLazyObjectPtr& Value);
+
+	/**
+	 * Serializes a wrapped object pointer value from or into this archive.
+	 *
+	 * Most of the time, FObjectPtrs are serialized as UObject*, but some archives need to override this.
+	 *
+	 * @param Value The value to serialize.
+	 * @return This instance.
+	 */
+	virtual FArchive& operator<<(struct FObjectPtr& Value);
 	
 	/**
 	 * Serializes asset pointer from or into this archive.
@@ -1555,6 +1630,7 @@ public:
 	 * @param	BulkData	Bulk data object to associate
 	 */
 	virtual void AttachBulkData(UObject* Owner, FUntypedBulkData* BulkData) { }
+	virtual void AttachBulkData(UE::Serialization::FEditorBulkData* BulkData) {}
 
 	/**
 	 * Detaches the passed in bulk data object from the linker.
@@ -1563,6 +1639,7 @@ public:
 	 * @param	bEnsureBulkDataIsLoaded	Whether to ensure that the bulk data is loaded before detaching
 	 */
 	virtual void DetachBulkData(FUntypedBulkData* BulkData, bool bEnsureBulkDataIsLoaded) { }
+	virtual void DetachBulkData(UE::Serialization::FEditorBulkData* BulkData, bool bEnsureBulkDataIsLoaded) {}
 
 	/**
 	* Determine if the given archive is a valid "child" of this archive. In general, this means "is exactly the same" but
@@ -1631,18 +1708,41 @@ public:
 	}
 
 	/**
-	 * Serializes and compresses/ uncompresses data. This is a shared helper function for compression
-	 * support. The data is saved in a way compatible with FIOSystem::LoadCompressedData.
+	 * Serializes and compresses/ uncompresses data. This is a shared helper function for compression support. 
+	 
+	 // @@ old comment ? remove me ?
+	 The data is saved in a way compatible with FIOSystem::LoadCompressedData.
+
+	 *
+	 * prefer SerializeCompressedNew instead.
+	 *
 	 *
 	 * @param	V		Data pointer to serialize data from/ to
 	 * @param	Length	Length of source data if we're saving, unused otherwise
+	 * @param   CompressionFormatCannotChange  Compression Format to use for encoding & decoding - cannot be changed without breaking file compatibility
 	 * @param	Flags	Flags to control what method to use for [de]compression and optionally control memory vs speed when compressing
 	 * @param	bTreatBufferAsFileReader true if V is actually an FArchive, which is used when saving to read data - helps to avoid single huge allocations of source data
-	 * @param	bUsePlatformBitWindow use a platform specific bitwindow setting
 	 */
-	void SerializeCompressed(void* V, int64 Length, FName CompressionFormat, ECompressionFlags Flags=COMPRESS_NoFlags, bool bTreatBufferAsFileReader=false);
-
-
+	void SerializeCompressed(void* V, int64 Length, FName CompressionFormatCannotChange,
+		ECompressionFlags Flags=COMPRESS_NoFlags, bool bTreatBufferAsFileReader=false);
+	
+	/**
+	 * Serializes and compresses/ uncompresses data. This is a shared helper function for compression support. 
+	 *
+	 * call SerializeCompressedNew instead of SerializeCompressed
+	 *
+	 * @param	V		Data pointer to serialize data from/ to
+	 * @param	Length	Length of source data if we're saving, unused otherwise
+	 * @param   CompressionFormatToEncode  Compression Format to use for encoding, can be changed freely without breaking compatibility
+	 * @param   CompressionFormatToDecodeOldV1Files  Compression Format to decode old data with that didn't write compressor in header, cannot change, usually NAME_Zlib
+	 * @param	Flags	Flags to control what method to use for [de]compression and optionally control memory vs speed when compressing
+	 * @param	bTreatBufferAsFileReader true if V is actually an FArchive, which is used when saving to read data - helps to avoid single huge allocations of source data
+	 * @param	OutPartialReadLength if not null, partial reads are allowed and the size is filled here
+	 */
+	void SerializeCompressedNew(void* V, int64 Length, FName CompressionFormatToEncode, FName CompressionFormatToDecodeOldV1Files,
+		ECompressionFlags Flags=COMPRESS_NoFlags, bool bTreatBufferAsFileReader=false,
+		int64 * OutPartialReadLength=nullptr);
+		
 	using FArchiveState::IsByteSwapping;
 
 	/** Used to do byte swapping on small items. This does not happen usually, so we don't want it inline. */
@@ -1706,8 +1806,9 @@ public:
 		LogfImpl(Fmt, Args...);
 	}
 
+	using FArchiveState::UEVer;
 	using FArchiveState::UE4Ver;
-	using FArchiveState::LicenseeUE4Ver;
+	using FArchiveState::LicenseeUEVer;
 	using FArchiveState::EngineVer;
 	using FArchiveState::EngineNetVer;
 	using FArchiveState::GameNetVer;
@@ -1734,6 +1835,7 @@ public:
 	}
 
 	using FArchiveState::IsLoading;
+	using FArchiveState::IsLoadingFromCookedPackage;
 	using FArchiveState::IsSaving;
 	using FArchiveState::IsTransacting;
 	using FArchiveState::IsTextFormat;
@@ -1814,12 +1916,8 @@ public:
 	 *
 	 * @return true if dependency has been added, false if Archive does not support them
 	 */
-	virtual bool AttachExternalReadDependency(FExternalReadCallback& ReadCallback) { return false; };
+	virtual bool AttachExternalReadDependency(FExternalReadCallback& ReadCallback) { return false; }
 
-	/**
-	 * Returns whether the Event Driven Loader is enabled or not.
-	 */
-	virtual bool IsUsingEventDrivenLoader() const;
 
 #if USE_STABLE_LOCALIZATION_KEYS
 	using FArchiveState::SetLocalizationNamespace;
@@ -1909,6 +2007,7 @@ private:
 
 private:
 	using FArchiveState::ArIsLoading;
+	using FArchiveState::ArIsLoadingFromCookedPackage;
 	using FArchiveState::ArIsSaving;
 	using FArchiveState::ArIsTransacting;
 	using FArchiveState::ArIsTextFormat;
@@ -1945,6 +2044,7 @@ public:
 
 public:
 	using FArchiveState::SetIsLoading;
+	using FArchiveState::SetIsLoadingFromCookedPackage;
 	using FArchiveState::SetIsSaving;
 	using FArchiveState::SetIsTransacting;
 	using FArchiveState::SetIsTextFormat;
@@ -1952,20 +2052,23 @@ public:
 	using FArchiveState::SetUseUnversionedPropertySerialization;
 	using FArchiveState::SetForceUnicode;
 	using FArchiveState::SetIsPersistent;
+	using FArchiveState::SetUEVer;
 	using FArchiveState::SetUE4Ver;
-	using FArchiveState::SetLicenseeUE4Ver;
+	using FArchiveState::SetLicenseeUEVer;
 	using FArchiveState::SetEngineVer;
 	using FArchiveState::SetEngineNetVer;
 	using FArchiveState::SetGameNetVer;
-
+	using FArchiveState::ShouldSkipCompilingAssets;
+	
 private:
-	using FArchiveState::ArUE4Ver;
-	using FArchiveState::ArLicenseeUE4Ver;
+	using FArchiveState::ArUEVer;
+	using FArchiveState::ArLicenseeUEVer;
 	using FArchiveState::ArEngineVer;
 	using FArchiveState::ArEngineNetVer;
 	using FArchiveState::ArGameNetVer;
 	using FArchiveState::CustomVersionContainer;
-
+protected:
+	using FArchiveState::SetShouldSkipCompilingAssets;
 public:
 	/** Custom property list attribute. If the flag below is set, only these properties will be iterated during serialization. If NULL, then no properties will be iterated. */
 	using FArchiveState::ArCustomPropertyList;

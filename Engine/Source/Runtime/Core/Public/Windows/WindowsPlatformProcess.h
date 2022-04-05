@@ -154,7 +154,8 @@ public:
 	static const FString GetModulesDirectory();
 	static bool CanLaunchURL(const TCHAR* URL);
 	static void LaunchURL( const TCHAR* URL, const TCHAR* Parms, FString* Error );
-	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild = nullptr);
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild = nullptr);
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild);
 	static bool SetProcPriority(FProcHandle & InProcHandle, int32 PriorityModifier);
 	static FProcHandle OpenProcess(uint32 ProcessID);
 	static bool IsProcRunning( FProcHandle & ProcessHandle );
@@ -167,19 +168,21 @@ public:
 	static bool IsApplicationRunning( uint32 ProcessId );
 	static bool IsApplicationRunning( const TCHAR* ProcName );
 	static FString GetApplicationName( uint32 ProcessId );	
-	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL);
+	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL, bool bShouldEndWithParentProcess  = false);
 	static bool ExecElevatedProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode);
-	static void LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open );
+	static FProcHandle CreateElevatedProcess(const TCHAR* URL, const TCHAR* Params);
+	static bool LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open, bool bPromptToOpenOnFailure = true );
 	static void ExploreFolder( const TCHAR* FilePath );
 	static bool ResolveNetworkPath( FString InUNCPath, FString& OutPath ); 
 	static void Sleep(float Seconds);
 	static void SleepNoStats(float Seconds);
-	static void SleepInfinite();
+	[[noreturn]] static void SleepInfinite();
 	static void YieldThread();
+	UE_DEPRECATED(5.0, "Please use GetSynchEventFromPool to create a new event, and ReturnSynchEventToPool to release the event.")
 	static class FEvent* CreateSynchEvent(bool bIsManualReset = false);
 	static class FRunnableThread* CreateRunnableThread();
 	static void ClosePipe( void* ReadPipe, void* WritePipe );
-	static bool CreatePipe( void*& ReadPipe, void*& WritePipe );
+	static bool CreatePipe(void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal = false);
 	static FString ReadPipe( void* ReadPipe );
 	static bool ReadPipeToArray(void* ReadPipe, TArray<uint8> & Output);
 	static bool WritePipe(void* WritePipe, const FString& Message, FString* OutWritten = nullptr);
@@ -188,6 +191,7 @@ public:
 	static FSemaphore* NewInterprocessSynchObject(const TCHAR* Name, bool bCreate, uint32 MaxLocks = 1);
 	static bool DeleteInterprocessSynchObject(FSemaphore * Object);
 	static bool Daemonize();
+	static void SetupGameThread();
 	static void SetupAudioThread();
 	static void TeardownAudioThread();
 protected:

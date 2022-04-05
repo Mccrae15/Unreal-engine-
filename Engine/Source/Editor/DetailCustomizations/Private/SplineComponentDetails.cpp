@@ -303,6 +303,8 @@ void FSplinePointDetails::GenerateHeaderRowContent(FDetailWidgetRow& NodeRow)
 
 void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBuilder& ChildrenBuilder)
 {
+	FMargin ButtonPadding(2.f, 0.f);
+
 	ChildrenBuilder.AddCustomRow(LOCTEXT("SelectSplinePoints", "Select Spline Points"))
 	.NameContent()
 	[
@@ -311,14 +313,17 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 		.Text(LOCTEXT("SelectSplinePoints", "Select Spline Points"))
 	]
 	.ValueContent()
-	.MaxDesiredWidth(125.f)
-	.MinDesiredWidth(125.f)
+	.VAlign(VAlign_Fill)
+	.MaxDesiredWidth(170.f)
+	.MinDesiredWidth(170.f)
 	[
 		SNew(SHorizontalBox)
 		.Clipping(EWidgetClipping::ClipToBounds)
+
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
+		.AutoWidth()
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.SelectFirst")
@@ -327,8 +332,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.OnClicked(this, &FSplinePointDetails::OnSelectFirstLastSplinePoint, true)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.AddPrev")
@@ -338,8 +344,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.IsEnabled(this, &FSplinePointDetails::ArePointsSelected)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.SelectPrev")
@@ -351,8 +358,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.IsEnabled(this, &FSplinePointDetails::ArePointsSelected)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.SelectAll")
@@ -363,8 +371,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.OnClicked(this, &FSplinePointDetails::OnSelectAllSplinePoints)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.SelectNext")
@@ -376,8 +385,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.IsEnabled(this, &FSplinePointDetails::ArePointsSelected)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.AddNext")
@@ -389,8 +399,9 @@ void FSplinePointDetails::GenerateSplinePointSelectionControls(IDetailChildrenBu
 			.IsEnabled(this, &FSplinePointDetails::ArePointsSelected)
 		]
 		+ SHorizontalBox::Slot()
-		.HAlign(HAlign_Center)
+		.AutoWidth()
 		.VAlign(VAlign_Center)
+		.Padding(ButtonPadding)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "SplineComponentDetails.SelectLast")
@@ -410,17 +421,17 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 
 	// Message which is shown when no points are selected
 	ChildrenBuilder.AddCustomRow(LOCTEXT("NoneSelected", "None selected"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsDisabled))
-	[
-		SNew(SBox)
-		.HAlign(HAlign_Center)
+		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsDisabled))
+		[
+			SNew(SBox)
+			.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("NoPointsSelected", "No spline points are selected."))
-			.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
-	];
+		];
 
 	if (!SplineComp)
 	{
@@ -429,49 +440,48 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 
 	// Input key
 	ChildrenBuilder.AddCustomRow(LOCTEXT("InputKey", "Input Key"))
-	.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-	.NameContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("InputKey", "Input Key"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	.MinDesiredWidth(125.0f)
-	.MaxDesiredWidth(125.0f)
-	[
-		SNew(SNumericEntryBox<float>)
-		.IsEnabled(TAttribute<bool>(this, &FSplinePointDetails::IsOnePointSelected))
-		.Value(this, &FSplinePointDetails::GetInputKey)
-		.UndeterminedString(LOCTEXT("Multiple", "Multiple"))
-		.OnValueCommitted(this, &FSplinePointDetails::OnSetInputKey)
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	];
-
-	// Position
-	if (SplineComp->AllowsSpinePointLocationEditing())
-	{
-		ChildrenBuilder.AddCustomRow(LOCTEXT("Location", "Location"))
-		.CopyAction(CreateCopyAction(ESplinePointProperty::Location))
-		.PasteAction(CreatePasteAction(ESplinePointProperty::Location))
 		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
 		.NameContent()
 		.HAlign(HAlign_Left)
 		.VAlign(VAlign_Center)
 		[
-			BuildSplinePointPropertyLabel(ESplinePointProperty::Location)
+			SNew(STextBlock)
+			.Text(LOCTEXT("InputKey", "Input Key"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
-		.ValueContent()
-		.MinDesiredWidth(375.0f)
-		.MaxDesiredWidth(375.0f)
+	.ValueContent()
+		.MinDesiredWidth(125.0f)
+		.MaxDesiredWidth(125.0f)
 		[
-			SNew(SVectorInputBox)
-			.X(this, &FSplinePointDetails::GetPositionX)
+			SNew(SNumericEntryBox<float>)
+			.IsEnabled(TAttribute<bool>(this, &FSplinePointDetails::IsOnePointSelected))
+		.Value(this, &FSplinePointDetails::GetInputKey)
+		.UndeterminedString(LOCTEXT("Multiple", "Multiple"))
+		.OnValueCommitted(this, &FSplinePointDetails::OnSetInputKey)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
+
+	// Position
+	if (SplineComp->AllowsSpinePointLocationEditing())
+	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("Location", "Location"))
+			.CopyAction(CreateCopyAction(ESplinePointProperty::Location))
+			.PasteAction(CreatePasteAction(ESplinePointProperty::Location))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				BuildSplinePointPropertyLabel(ESplinePointProperty::Location)
+			]
+		.ValueContent()
+			.MinDesiredWidth(375.0f)
+			.MaxDesiredWidth(375.0f)
+			[
+				SNew(SVectorInputBox)
+				.X(this, &FSplinePointDetails::GetPositionX)
 			.Y(this, &FSplinePointDetails::GetPositionY)
 			.Z(this, &FSplinePointDetails::GetPositionZ)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(true)
 			.bColorAxisLabels(true)
 			.SpinDelta(1.f)
@@ -484,64 +494,62 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 			.OnBeginSliderMovement(this, &FSplinePointDetails::OnBeginPositionSlider)
 			.OnEndSliderMovement(this, &FSplinePointDetails::OnEndSlider)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		];
+			];
 	}
 
 	// Rotation
 	if (SplineComp->AllowsSplinePointRotationEditing())
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("Rotation", "Rotation"))
-		.CopyAction(CreateCopyAction(ESplinePointProperty::Rotation))
-		.PasteAction(CreatePasteAction(ESplinePointProperty::Rotation))
-		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-		.NameContent()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			BuildSplinePointPropertyLabel(ESplinePointProperty::Rotation)
-		]
+			.CopyAction(CreateCopyAction(ESplinePointProperty::Rotation))
+			.PasteAction(CreatePasteAction(ESplinePointProperty::Rotation))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				BuildSplinePointPropertyLabel(ESplinePointProperty::Rotation)
+			]
 		.ValueContent()
-		.MinDesiredWidth(375.0f)
-		.MaxDesiredWidth(375.0f)
-		[
-			SNew(SRotatorInputBox)
-			.Roll(this, &FSplinePointDetails::GetRotationRoll)
+			.MinDesiredWidth(375.0f)
+			.MaxDesiredWidth(375.0f)
+			[
+				SNew(SRotatorInputBox)
+				.Roll(this, &FSplinePointDetails::GetRotationRoll)
 			.Pitch(this, &FSplinePointDetails::GetRotationPitch)
 			.Yaw(this, &FSplinePointDetails::GetRotationYaw)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(false)
 			.bColorAxisLabels(false)
 			.OnRollCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::X)
 			.OnPitchCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::Y)
 			.OnYawCommitted(this, &FSplinePointDetails::OnSetRotation, EAxis::Z)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		];
+			];
 	}
 
 	// Scale
 	if (SplineComp->AllowsSplinePointScaleEditing())
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("Scale", "Scale"))
-		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-		.CopyAction(CreateCopyAction(ESplinePointProperty::Scale))
-		.PasteAction(CreatePasteAction(ESplinePointProperty::Scale))
-		.NameContent()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("ScaleLabel", "Scale"))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.CopyAction(CreateCopyAction(ESplinePointProperty::Scale))
+			.PasteAction(CreatePasteAction(ESplinePointProperty::Scale))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ScaleLabel", "Scale"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		]
+			]
 		.ValueContent()
-		.MinDesiredWidth(375.0f)
-		.MaxDesiredWidth(375.0f)
-		[
-			SNew(SVectorInputBox)
-			.X(this, &FSplinePointDetails::GetScaleX)
+			.MinDesiredWidth(375.0f)
+			.MaxDesiredWidth(375.0f)
+			[
+				SNew(SVectorInputBox)
+				.X(this, &FSplinePointDetails::GetScaleX)
 			.Y(this, &FSplinePointDetails::GetScaleY)
 			.Z(this, &FSplinePointDetails::GetScaleZ)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(true)
 			.bColorAxisLabels(true)
 			.OnXChanged(this, &FSplinePointDetails::OnSetScale, ETextCommit::Default, EAxis::X)
@@ -553,103 +561,101 @@ void FSplinePointDetails::GenerateChildContent(IDetailChildrenBuilder& ChildrenB
 			.OnBeginSliderMovement(this, &FSplinePointDetails::OnBeginScaleSlider)
 			.OnEndSliderMovement(this, &FSplinePointDetails::OnEndSlider)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		];
+			];
 	}
-	
+
 	// ArriveTangent
 	if (SplineComp->AllowsSplinePointArriveTangentEditing())
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("ArriveTangent", "Arrive Tangent"))
-		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-		.CopyAction(CreateCopyAction(ESplinePointProperty::ArriveTangent))
-		.PasteAction(CreatePasteAction(ESplinePointProperty::ArriveTangent))
-		.NameContent()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("ArriveTangent", "Arrive Tangent"))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.CopyAction(CreateCopyAction(ESplinePointProperty::ArriveTangent))
+			.PasteAction(CreatePasteAction(ESplinePointProperty::ArriveTangent))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ArriveTangent", "Arrive Tangent"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		]
+			]
 		.ValueContent()
-		.MinDesiredWidth(375.0f)
-		.MaxDesiredWidth(375.0f)
-		[
-			SNew(SVectorInputBox)
-			.X(this, &FSplinePointDetails::GetArriveTangentX)
+			.MinDesiredWidth(375.0f)
+			.MaxDesiredWidth(375.0f)
+			[
+				SNew(SVectorInputBox)
+				.X(this, &FSplinePointDetails::GetArriveTangentX)
 			.Y(this, &FSplinePointDetails::GetArriveTangentY)
 			.Z(this, &FSplinePointDetails::GetArriveTangentZ)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(false)
 			.bColorAxisLabels(false)
 			.OnXCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::X)
 			.OnYCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::Y)
 			.OnZCommitted(this, &FSplinePointDetails::OnSetArriveTangent, EAxis::Z)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		];
+			];
 	}
-	
+
 
 	// LeaveTangent
 	if (SplineComp->AllowsSplinePointLeaveTangentEditing())
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("LeaveTangent", "Leave Tangent"))
-		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-		.CopyAction(CreateCopyAction(ESplinePointProperty::LeaveTangent))
-		.PasteAction(CreatePasteAction(ESplinePointProperty::LeaveTangent))
-		.NameContent()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("LeaveTangent", "Leave Tangent"))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.CopyAction(CreateCopyAction(ESplinePointProperty::LeaveTangent))
+			.PasteAction(CreatePasteAction(ESplinePointProperty::LeaveTangent))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("LeaveTangent", "Leave Tangent"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		]
+			]
 		.ValueContent()
-		.MinDesiredWidth(375.0f)
-		.MaxDesiredWidth(375.0f)
-		[
-			SNew(SVectorInputBox)
-			.X(this, &FSplinePointDetails::GetLeaveTangentX)
+			.MinDesiredWidth(375.0f)
+			.MaxDesiredWidth(375.0f)
+			[
+				SNew(SVectorInputBox)
+				.X(this, &FSplinePointDetails::GetLeaveTangentX)
 			.Y(this, &FSplinePointDetails::GetLeaveTangentY)
 			.Z(this, &FSplinePointDetails::GetLeaveTangentZ)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(false)
 			.bColorAxisLabels(false)
 			.OnXCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::X)
 			.OnYCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::Y)
 			.OnZCommitted(this, &FSplinePointDetails::OnSetLeaveTangent, EAxis::Z)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		];
+			];
 	}
 
 	// Type
 	if (SplineComp->GetEnabledSplinePointTypes().Num() > 1)
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("Type", "Type"))
-		.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
-		.NameContent()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("Type", "Type"))
+			.Visibility(TAttribute<EVisibility>(this, &FSplinePointDetails::IsEnabled))
+			.NameContent()
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("Type", "Type"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		]
+			]
 		.ValueContent()
-		.MinDesiredWidth(125.0f)
-		.MaxDesiredWidth(125.0f)
-		[
-			SNew(SComboBox<TSharedPtr<FString>>)
-			.OptionsSource(&SplinePointTypes)
+			.MinDesiredWidth(125.0f)
+			.MaxDesiredWidth(125.0f)
+			[
+				SNew(SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(&SplinePointTypes)
 			.OnGenerateWidget(this, &FSplinePointDetails::OnGenerateComboWidget)
 			.OnSelectionChanged(this, &FSplinePointDetails::OnSplinePointTypeChanged)
 			[
 				SNew(STextBlock)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text(this, &FSplinePointDetails::GetPointType)
+			.Text(this, &FSplinePointDetails::GetPointType)
 			]
-		];
+			];
 	}
 
 	if (SplineVisualizer.IsValid() && SplineVisualizer->GetSelectedKeys().Num() > 0)
@@ -732,8 +738,8 @@ void FSplinePointDetails::UpdateValues()
 				if (!bAlreadyWarnedInvalidIndex)
 				{
 					UE_LOG(LogSplineComponentDetails, Error, TEXT("Spline component details selected keys contains invalid index %d for spline %s with %d points, %d rotations, %d scales"),
-						Index, 
-						*SplineComp->GetPathName(), 
+						Index,
+						*SplineComp->GetPathName(),
 						SplineComp->GetSplinePointsPosition().Points.Num(),
 						SplineComp->GetSplinePointsRotation().Points.Num(),
 						SplineComp->GetSplinePointsScale().Points.Num());
@@ -1033,7 +1039,7 @@ void FSplinePointDetails::OnSetRotation(float NewValue, ETextCommit::Type Commit
 			case EAxis::Y: NewRotationRotator.Pitch = NewValue; break;
 			case EAxis::Z: NewRotationRotator.Yaw = NewValue; break;
 			}
-			
+
 			NewRotationRelative = NewRotationRotator.Quaternion();
 		}
 
@@ -1324,15 +1330,15 @@ TSharedRef<SWidget> FSplinePointDetails::BuildSplinePointPropertyLabel(ESplinePo
 		[
 			MenuBuilder.MakeWidget()
 		]
-		.ButtonContent()
+	.ButtonContent()
 		[
 			SNew(SBox)
 			.Padding(FMargin(0.0f, 0.0f, 2.0f, 0.0f))
-			[
-				SNew(STextBlock)
-				.Text(this, &FSplinePointDetails::GetSplinePointPropertyText, SplinePointProp)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
+		[
+			SNew(STextBlock)
+			.Text(this, &FSplinePointDetails::GetSplinePointPropertyText, SplinePointProp)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
 		];
 }
 
@@ -1460,7 +1466,7 @@ void FSplinePointDetails::OnCopy(ESplinePointProperty SplinePointProp)
 		break;
 	case ESplinePointProperty::Scale:
 		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), Scale.X.GetValue(), Scale.Y.GetValue(), Scale.Z.GetValue());
-		break; 
+		break;
 	case ESplinePointProperty::ArriveTangent:
 		CopyStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"), ArriveTangent.X.GetValue(), ArriveTangent.Y.GetValue(), ArriveTangent.Z.GetValue());
 		break;
@@ -1574,7 +1580,7 @@ void FSplineComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	// Hide the SplineCurves property
 	TSharedPtr<IPropertyHandle> SplineCurvesProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USplineComponent, SplineCurves));
 	SplineCurvesProperty->MarkHiddenByCustomization();
-	 
+
 
 	TArray<TWeakObjectPtr<UObject>> ObjectsBeingCustomized;
 	DetailBuilder.GetObjectsBeingCustomized(ObjectsBeingCustomized);

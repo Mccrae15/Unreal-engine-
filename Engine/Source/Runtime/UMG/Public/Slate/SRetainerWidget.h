@@ -81,12 +81,11 @@ public:
 
 	void SetTextureParameter(FName TextureParameter);
 
-	/** SWidget interface */
+	//~ SWidget interface
 	virtual FChildren* GetChildren() override;
-	virtual FChildren* GetAllChildren() override;
-
-	/** FInvalidationRoot interface */
-	virtual bool PaintRetainedContent(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry);
+#if WITH_SLATE_DEBUGGING
+	virtual FChildren* Debug_GetChildrenForReflector() override;
+#endif
 
 	void SetWorld(UWorld* World);
 
@@ -107,9 +106,10 @@ protected:
 		NotPainted,
 		Painted,
 		Queued,
-		InvalidSize,
+		TextureSizeTooBig,
+		TextureSizeZero,
 	};
-	EPaintRetainedContentResult PaintRetainedContentImpl(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry);
+	EPaintRetainedContentResult PaintRetainedContentImpl(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry, int32 LayerId);
 	//~ End FSlateInvalidationRoot interface
 
 	void RefreshRenderingMode();
@@ -124,15 +124,15 @@ private:
 	static void OnRetainerModeCVarChanged( IConsoleVariable* CVar );
 	static FOnRetainedModeChanged OnRetainerModeChangedDelegate;
 #endif
-	FSimpleSlot EmptyChildSlot;
 
 	mutable FSlateBrush SurfaceBrush;
 
-	FVector2D PreviousRenderSize;
+	FIntPoint PreviousRenderSize;
 	FGeometry PreviousAllottedGeometry;
-	FVector2D PreviousClipRectSize;
+	FIntPoint PreviousClipRectSize;
 	TOptional<FSlateClippingState> PreviousClippingState;
-	FLinearColor PreviousColorAndOpacity;
+	FColor PreviousColorAndOpacity;
+	int32 LastIncomingLayerId;
 
 	void UpdateWidgetRenderer();
 

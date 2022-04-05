@@ -57,4 +57,13 @@ public:
 		return ImportUsedInGame.Num() == ImportMap.Num() &&
 			SoftPackageUsedInGame.Num() == SoftPackageReferenceList.Num();
 	}
+
+	/** Returns the amount of memory allocated by this container, not including sizeof(*this). */
+	SIZE_T GetAllocatedSize() const
+	{
+		SIZE_T Result = FLinkerTables::GetAllocatedSize();
+		Result += ImportUsedInGame.GetAllocatedSize();
+		Result += SoftPackageUsedInGame.GetAllocatedSize();
+		return Result;
+	}
 };

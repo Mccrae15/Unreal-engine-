@@ -157,7 +157,7 @@
 
 	switch( Expr )
 	{
-		case EX_PrimitiveCast:
+		case EX_Cast:
 		{
 			// A type conversion.
 			XFER(uint8); //which kind of conversion
@@ -354,6 +354,11 @@
 			XFER(float);
 			break;
 		}
+		case EX_DoubleConst:
+		{
+			XFER(double);
+			break;
+		}
 		case EX_StringConst:
 		{
 			XFERSTRING();
@@ -393,22 +398,53 @@
 		}
 		case EX_RotationConst:
 		{
-			XFER(int32); XFER(int32); XFER(int32);
+			if(Ar.UEVer() >= EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+			{
+				XFER(int64); XFER(int64); XFER(int64);
+			}
+			else
+			{
+				XFER(int32); XFER(int32); XFER(int32);
+			}
 			break;
 		}
 		case EX_VectorConst:
+		{
+			if(Ar.UEVer() >= EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+			{
+				XFER(double); XFER(double); XFER(double);
+			}
+			else
+			{
+				XFER(float); XFER(float); XFER(float);
+			}
+			break;
+		}
+		case EX_Vector3fConst:
 		{
 			XFER(float); XFER(float); XFER(float);
 			break;
 		}
 		case EX_TransformConst:
 		{
-			// Rotation
-			XFER(float); XFER(float); XFER(float); XFER(float);
-			// Translation
-			XFER(float); XFER(float); XFER(float);
-			// Scale
-			XFER(float); XFER(float); XFER(float);
+			if(Ar.UEVer() >= EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+			{
+				// Rotation
+				XFER(double); XFER(double); XFER(double); XFER(double);
+				// Translation
+				XFER(double); XFER(double); XFER(double);
+				// Scale
+				XFER(double); XFER(double); XFER(double);
+			}
+			else
+			{
+				// Rotation
+				XFER(float); XFER(float); XFER(float); XFER(float);
+				// Translation
+				XFER(float); XFER(float); XFER(float);
+				// Scale
+				XFER(float); XFER(float); XFER(float);
+			}
 			break;
 		}
 		case EX_StructConst:
@@ -421,7 +457,7 @@
 		case EX_SetArray:
 		{
 			// If not loading, or its a newer version
-			if((!GetLinker()) || !Ar.IsLoading() || (Ar.UE4Ver() >= VER_UE4_CHANGE_SETARRAY_BYTECODE))
+			if((!GetLinker()) || !Ar.IsLoading() || (Ar.UEVer() >= VER_UE4_CHANGE_SETARRAY_BYTECODE))
 			{
 				// Array property to assign to
 				EExprToken TargetToken = SerializeExpr( iCode, Ar );
@@ -543,11 +579,11 @@
 			break;
 		}
 		case EX_ArrayGetByRef:
-			{
-				SerializeExpr( iCode, Ar );
-				SerializeExpr( iCode, Ar );
-				break;
-			}
+		{
+			SerializeExpr( iCode, Ar );
+			SerializeExpr( iCode, Ar );
+			break;
+		}
 		default:
 		{
 			// This should never occur.

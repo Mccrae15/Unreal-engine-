@@ -54,6 +54,13 @@ static FAutoConsoleVariableRef CVarAndroidOldXBoxWirelessFirmware(
 	TEXT("Determines how XBox Wireless controller mapping is handled. 0 assumes new firmware, 1 will use old firmware mapping (Default: 0)"),
 	ECVF_Default);
 
+bool AndroidUnifyMotionSpace = false;
+static FAutoConsoleVariableRef CVarAndroidUnifyMotionSpace(
+	TEXT("Android.UnifyMotionSpace"),
+	AndroidUnifyMotionSpace,
+	TEXT("Motion inputs will be processed to keep rotation rate right-handed and keep other motion inputs in the same space as rotation rate. This also forces rotation rate units to be radians/s and acceleration units to be g. Default: false"),
+	ECVF_Default);
+
 TSharedRef< FAndroidInputInterface > FAndroidInputInterface::Create(const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler, const TSharedPtr< ICursor >& InCursor)
 {
 	return MakeShareable(new FAndroidInputInterface(InMessageHandler, InCursor));
@@ -127,7 +134,7 @@ void FAndroidInputInterface::ResetGamepadAssignments()
 	{
 		if (DeviceMapping[DeviceIndex].DeviceState == MappingState::Valid)
 		{
-			FCoreDelegates::OnControllerConnectionChange.Broadcast(false, -1, DeviceIndex);
+			FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, DeviceIndex);
 		}
 
 		DeviceMapping[DeviceIndex].DeviceInfo.DeviceId = 0;
@@ -142,7 +149,7 @@ void FAndroidInputInterface::ResetGamepadAssignmentToController(int32 Controller
 
 	if (DeviceMapping[ControllerId].DeviceState == MappingState::Valid)
 	{
-		FCoreDelegates::OnControllerConnectionChange.Broadcast(false, -1, ControllerId);
+		FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, ControllerId);
 	}
 
 	DeviceMapping[ControllerId].DeviceInfo.DeviceId = 0;
@@ -877,6 +884,7 @@ void FAndroidInputInterface::SendControllerEvents()
 						CurrentDevice.bMapZRZToTriggers = false;
 						CurrentDevice.bRightStickZRZ = true;
 						CurrentDevice.bRightStickRXRY = false;
+						CurrentDevice.bMapRXRYToTriggers = false;
 
 						// Use device name to decide on mapping scheme
 						if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Amazon")))
@@ -958,6 +966,9 @@ void FAndroidInputInterface::SendControllerEvents()
 							CurrentDevice.ControllerClass = ControllerClassType::PlaystationWireless;
 							CurrentDevice.bSupportsHat = true;
 							CurrentDevice.bRightStickZRZ = true;
+							CurrentDevice.bMapRXRYToTriggers = true;
+							CurrentDevice.LTAnalogRangeMinimum = -1.0f;
+							CurrentDevice.RTAnalogRangeMinimum = -1.0f;
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("glap QXPGP001")))
 						{
@@ -972,7 +983,7 @@ void FAndroidInputInterface::SendControllerEvents()
 							CurrentDevice.bSupportsHat = true;
 						}
 
-						FCoreDelegates::OnControllerConnectionChange.Broadcast(true, -1, DeviceIndex);
+						FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, DeviceIndex);
 
 						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Assigned new gamepad controller %d: DeviceId=%d, ControllerId=%d, DeviceName=%s, Descriptor=%s"),
 							DeviceIndex, CurrentDevice.DeviceInfo.DeviceId, CurrentDevice.DeviceInfo.ControllerId, *CurrentDevice.DeviceInfo.Name, *CurrentDevice.DeviceInfo.Descriptor);
@@ -991,7 +1002,7 @@ void FAndroidInputInterface::SendControllerEvents()
 						OldControllerData[FoundMatch].DeviceId = FoundMatch;
 
 						//@TODO: uncomment this line in the future when disconnects are detected
-						//FCoreDelegates::OnControllerConnectionChange.Broadcast(true, -1, FoundMatch);
+						//FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, FoundMatch);
 
 						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Reconnected gamepad controller %d: DeviceId=%d, ControllerId=%d, DeviceName=%s, Descriptor=%s"),
 							FoundMatch, DeviceMapping[FoundMatch].DeviceInfo.DeviceId, CurrentDevice.DeviceInfo.ControllerId, *CurrentDevice.DeviceInfo.Name, *CurrentDevice.DeviceInfo.Descriptor);
@@ -1309,31 +1320,38 @@ void FAndroidInputInterface::JoystickAxisEvent(int32 deviceId, int32 axisId, flo
 	if (deviceId == -1)
 		return;
 
-	// Left trigger may need range correction
-	if (axisId == AMOTION_EVENT_AXIS_LTRIGGER && DeviceMapping[deviceId].LTAnalogRangeMinimum != 0.0f)
+	auto RemapTriggerFunction = [](const float Minimum, const float Value)
 	{
-		const float AdjustMin = DeviceMapping[deviceId].LTAnalogRangeMinimum;
-		const float AdjustMax = 1.0f - AdjustMin;
-		NewControllerData[deviceId].LTAnalog = FMath::Clamp(axisValue - AdjustMin, 0.0f, AdjustMax) / AdjustMax;
-		return;
-	}
-
-	// Right trigger may need range correction
-	if (axisId == AMOTION_EVENT_AXIS_RTRIGGER && DeviceMapping[deviceId].RTAnalogRangeMinimum != 0.0f)
-	{
-		const float AdjustMin = DeviceMapping[deviceId].RTAnalogRangeMinimum;
-		const float AdjustMax = 1.0f - AdjustMin;
-		NewControllerData[deviceId].RTAnalog = FMath::Clamp(axisValue - AdjustMin, 0.0f, AdjustMax) / AdjustMax;
-		return;
-	}
+		if(Minimum != 0.0f)
+		{
+			const float AdjustMin = Minimum;
+			const float AdjustMax = 1.0f - AdjustMin;
+			return FMath::Clamp(Value - AdjustMin, 0.0f, AdjustMax) / AdjustMax;
+		}
+		return Value;
+	};
 
 	// Deal with left stick and triggers (generic)
 	switch (axisId)
 	{
 		case AMOTION_EVENT_AXIS_X:			NewControllerData[deviceId].LXAnalog =  axisValue; return;
 		case AMOTION_EVENT_AXIS_Y:			NewControllerData[deviceId].LYAnalog = -axisValue; return;
-		case AMOTION_EVENT_AXIS_LTRIGGER:	NewControllerData[deviceId].LTAnalog =  axisValue; return;
-		case AMOTION_EVENT_AXIS_RTRIGGER:	NewControllerData[deviceId].RTAnalog =  axisValue; return;
+		case AMOTION_EVENT_AXIS_LTRIGGER:
+			{
+				if (!(DeviceMapping->bMapZRZToTriggers || DeviceMapping->bMapRXRYToTriggers))
+				{
+					NewControllerData[deviceId].LTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].LTAnalogRangeMinimum, axisValue);
+					return;
+				}
+			}
+		case AMOTION_EVENT_AXIS_RTRIGGER:
+			{
+				if (!(DeviceMapping->bMapZRZToTriggers || DeviceMapping->bMapRXRYToTriggers))
+				{
+					NewControllerData[deviceId].RTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].RTAnalogRangeMinimum, axisValue);
+					return;
+				}
+			}
 	}
 
 	// Deal with right stick Z/RZ events
@@ -1361,8 +1379,17 @@ void FAndroidInputInterface::JoystickAxisEvent(int32 deviceId, int32 axisId, flo
 	{
 		switch (axisId)
 		{
-			case AMOTION_EVENT_AXIS_Z:		NewControllerData[deviceId].LTAnalog =  axisValue; return;
-			case AMOTION_EVENT_AXIS_RZ:		NewControllerData[deviceId].RTAnalog =  axisValue; return;
+			case AMOTION_EVENT_AXIS_Z:		NewControllerData[deviceId].LTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].LTAnalogRangeMinimum, axisValue); return;
+			case AMOTION_EVENT_AXIS_RZ:		NewControllerData[deviceId].RTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].RTAnalogRangeMinimum, axisValue); return;
+		}
+	}
+
+	if (DeviceMapping[deviceId].bMapRXRYToTriggers)
+	{
+		switch (axisId)
+		{
+			case AMOTION_EVENT_AXIS_RX:		NewControllerData[deviceId].LTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].LTAnalogRangeMinimum, axisValue); return;
+			case AMOTION_EVENT_AXIS_RY:		NewControllerData[deviceId].RTAnalog = RemapTriggerFunction(DeviceMapping[deviceId].RTAnalogRangeMinimum, axisValue); return;
 		}
 	}
 
@@ -1604,9 +1631,9 @@ void FAndroidInputInterface::MouseButtonEvent(int32 deviceId, int32 buttonId, bo
 	FScopeLock Lock(&TouchInputCriticalSection);
 
 	MouseEventType EventType = buttonDown ? MouseEventType::MouseButtonDown : MouseEventType::MouseButtonUp;
-	EMouseButtons::Type UE4Button = (buttonId == 0) ? EMouseButtons::Left : (buttonId == 1) ? EMouseButtons::Right : EMouseButtons::Middle;
+	EMouseButtons::Type UnrealButton = (buttonId == 0) ? EMouseButtons::Left : (buttonId == 1) ? EMouseButtons::Right : EMouseButtons::Middle;
 	FAndroidInputInterface::MouseDataStack.Push(
-		MouseData{ EventType, UE4Button, 0, 0, 0, 0, 0.0f });
+		MouseData{ EventType, UnrealButton, 0, 0, 0, 0, 0.0f });
 }
 
 void FAndroidInputInterface::DeferMessage(const FDeferredAndroidMessage& DeferredMessage)
@@ -1630,20 +1657,73 @@ void FAndroidInputInterface::QueueMotionData(const FVector& Tilt, const FVector&
 	EDeviceScreenOrientation ScreenOrientation = FPlatformMisc::GetDeviceOrientation();
 	FVector TempRotationRate = RotationRate;
 
-	switch (ScreenOrientation)
+	if (AndroidUnifyMotionSpace)
 	{
-		// the x tilt is inverted in LandscapeLeft.
-	case EDeviceScreenOrientation::LandscapeLeft:
-		TempRotationRate.X *= -1.0f;
-		break;
-		// the y tilt is inverted in LandscapeRight.
-	case EDeviceScreenOrientation::LandscapeRight:
-		TempRotationRate.Y *= -1.0f;
-		break;
-	}
+		FVector TempTilt = Tilt;
+		FVector TempGravity = Gravity;
+		FVector TempAcceleration = Acceleration;
 
-	FAndroidInputInterface::MotionDataStack.Push(
-		MotionData { Tilt, TempRotationRate, Gravity, Acceleration });
+		auto ReorientLandscapeLeft = [](FVector InValue)
+		{
+			return FVector(-InValue.Z, -InValue.Y, InValue.X);
+		};
+
+		auto ReorientLandscapeRight = [](FVector InValue)
+		{
+			return FVector(-InValue.Z, InValue.Y, -InValue.X);
+		};
+
+		auto ReorientPortrait = [](FVector InValue)
+		{
+			return FVector(-InValue.Z, InValue.X, InValue.Y);
+		};
+
+		const float ToG = 1.f / 9.8f;
+
+		switch (ScreenOrientation)
+		{
+			// the x tilt is inverted in LandscapeLeft.
+		case EDeviceScreenOrientation::LandscapeLeft:
+			TempTilt = -ReorientLandscapeLeft(TempTilt);
+			TempRotationRate = -ReorientLandscapeLeft(TempRotationRate);
+			TempGravity = ReorientLandscapeLeft(TempGravity) * ToG;
+			TempAcceleration = ReorientLandscapeLeft(TempAcceleration) * ToG;
+			break;
+			// the y tilt is inverted in LandscapeRight.
+		case EDeviceScreenOrientation::LandscapeRight:
+			TempTilt = -ReorientLandscapeRight(TempTilt);
+			TempRotationRate = -ReorientLandscapeRight(TempRotationRate);
+			TempGravity = ReorientLandscapeRight(TempGravity) * ToG;
+			TempAcceleration = ReorientLandscapeRight(TempAcceleration) * ToG;
+			break;
+		case EDeviceScreenOrientation::Portrait:
+			TempTilt = -ReorientPortrait(TempTilt);
+			TempRotationRate = -ReorientPortrait(TempRotationRate);
+			TempGravity = ReorientPortrait(TempGravity) * ToG;
+			TempAcceleration = ReorientPortrait(TempAcceleration) * ToG;
+			break;
+		}
+
+		FAndroidInputInterface::MotionDataStack.Push(
+			MotionData{ TempTilt, TempRotationRate, TempGravity, TempAcceleration });
+	}
+	else
+	{
+		switch (ScreenOrientation)
+		{
+			// the x tilt is inverted in LandscapeLeft.
+		case EDeviceScreenOrientation::LandscapeLeft:
+			TempRotationRate.X *= -1.0f;
+			break;
+			// the y tilt is inverted in LandscapeRight.
+		case EDeviceScreenOrientation::LandscapeRight:
+			TempRotationRate.Y *= -1.0f;
+			break;
+		}
+
+		FAndroidInputInterface::MotionDataStack.Push(
+			MotionData{ Tilt, TempRotationRate, Gravity, Acceleration });
+	}
 }
 
 #endif

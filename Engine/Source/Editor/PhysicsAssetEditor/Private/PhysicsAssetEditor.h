@@ -5,10 +5,11 @@
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "Widgets/SWidget.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #include "UObject/GCObject.h"
 #include "Textures/SlateIcon.h"
 #include "Editor/UnrealEdTypes.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
@@ -25,7 +26,6 @@ struct FAssetData;
 class FPhysicsAssetEditorTreeInfo;
 class IDetailsView;
 class SComboButton;
-class SDockableTab;
 class SPhysicsAssetEditorPreviewViewport;
 class UAnimationAsset;
 class UAnimSequence;
@@ -89,6 +89,7 @@ public:
 	TSharedRef<ISkeletonTree> BuildMenuWidgetNewConstraintForBody(FMenuBuilder& InMenuBuilder, int32 InSourceBodyIndex, SGraphEditor::FActionMenuClosed InOnActionMenuClosed = SGraphEditor::FActionMenuClosed());
 	void BuildMenuWidgetBone(FMenuBuilder& InMenuBuilder);
 	TSharedRef<SWidget> BuildStaticMeshAssetPicker();
+	void AddAdvancedMenuWidget(FMenuBuilder& InMenuBuilder);
 
 	/** IToolkit interface */
 	virtual FName GetToolkitFName() const override;
@@ -107,6 +108,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FPhysicsAssetEditor");
+	}
 
 	//~ Begin FTickableEditorObject Interface
 	virtual void Tick(float DeltaTime) override;
@@ -198,9 +203,16 @@ private:
 	/** Toolbar/menu command methods */
 	bool HasSelectedBodyAndIsNotSimulation() const;
 	bool HasOneSelectedBodyAndIsNotSimulation() const;
+	bool HasMoreThanOneSelectedBodyAndIsNotSimulation() const;
+	bool HasSelectedBodyOrConstraintAndIsNotSimulation() const;
 	bool CanEditConstraintProperties() const;
 	bool HasSelectedConstraintAndIsNotSimulation() const;
 	void OnChangeDefaultMesh(USkeletalMesh* OldPreviewMesh, USkeletalMesh* NewPreviewMesh);
+	void OnCopyBodies();
+	bool IsCopyBodies() const;
+	bool CanCopyBodies() const;
+	void OnPasteBodies();
+	bool CanPasteBodies() const;
 	void OnCopyProperties();
 	bool IsCopyProperties() const;
 	bool CanCopyProperties() const;
@@ -254,6 +266,7 @@ private:
 	void OnDuplicatePrimitive();
 	bool CanDuplicatePrimitive() const;
 	void OnResetConstraint();
+	void OnConstrainChildBodiesToParentBody();
 	void OnSnapConstraint();
 	void OnConvertToBallAndSocket();
 	void OnConvertToHinge();
@@ -283,11 +296,12 @@ private:
 	void OnSelectSimulatedBodies();
 	void OnSelectBodies(EPhysicsType PhysicsType = EPhysicsType::PhysType_Simulated);
 	void OnSelectAllConstraints();
-	void OnToggleSelectionType();
+	void OnToggleSelectionType(bool bIgnoreUserConstraints);
 	void OnToggleShowSelected();
 	void OnShowSelected();
 	void OnHideSelected();
 	void OnToggleShowOnlyColliding();
+	void OnToggleShowOnlyConstrained();
 	void OnToggleShowOnlySelected();
 	void OnShowAll();
 	void OnHideAll();
@@ -310,12 +324,15 @@ private:
 	void HandleToggleShowSimulatedBodies();
 	void HandleToggleShowKinematicBodies();
 	void HandleToggleShowConstraints();
+	void HandleToggleShowConstraintsOnParentBodies();
 	void HandleToggleShowPrimitives();
 	ECheckBoxState GetShowBodiesChecked() const;
 	ECheckBoxState GetShowSimulatedBodiesChecked() const;
 	ECheckBoxState GetShowKinematicBodiesChecked() const;
 	ECheckBoxState GetShowConstraintsChecked() const;
+	ECheckBoxState GetShowConstraintsOnParentBodiesChecked() const;
 	ECheckBoxState GetShowPrimitivesChecked() const;
+	bool IsShowConstraintsChecked() const;
 
 	/** Customize the filter label */
 	void HandleGetFilterLabel(TArray<FText>& InOutItems) const;
@@ -325,6 +342,9 @@ private:
 
 	/** Invalidate convex meshes and recreate the physics state. Performed on property changes (etc) */
 	void RecreatePhysicsState();
+
+	/** show a notification message **/
+	void ShowNotificationMessage(const FText& Message, const SNotificationItem::ECompletionState CompletionState);
 
 private:
 	/** Physics asset properties tab */

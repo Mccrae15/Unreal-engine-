@@ -6,6 +6,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public ContentBrowserFileDataSource(ReadOnlyTargetRules Target) : base(Target)
 		{
+			ShortName = "CBFileDataSource";
+
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
@@ -17,6 +19,7 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"EditorFramework",
 					"UnrealEd",
 					"ToolMenus",
 					"Slate",

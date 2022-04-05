@@ -3,7 +3,7 @@
 #pragma once
 
 #include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "Engine/RuntimeOptionsBase.h"
 #include "Engine/DataAsset.h"
 #include "EOSSettings.generated.h"
 
@@ -61,7 +61,7 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOS Artifact Settings")
 	FString EncryptionKey;
 
-	//FEOSArtifactSettings ToNative() const; // See note #1
+	FEOSArtifactSettings ToNative() const;
 };
 
 /** Native version of the UObject based config data */
@@ -86,7 +86,7 @@ struct FEOSSettings
 
 UCLASS(Config=Engine, DefaultConfig)
 class ONLINESUBSYSTEMEOS_API UEOSSettings :
-	public UObject
+	public URuntimeOptionsBase
 {
 	GENERATED_BODY()
 
@@ -132,11 +132,11 @@ public:
 	TArray<FArtifactSettings> Artifacts;
 
 	/** Set to true to have Epic Accounts used (friends list will be unified with the default platform) */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Crossplay Settings", DisplayName="Use Epic Account Services")
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOSPlus Login Settings", DisplayName="Use Epic Account for EOS login (requires account linking)")
 	bool bUseEAS = false;
 
 	/** Set to true to have EOS Connect APIs used to link accounts for crossplay */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Crossplay Settings", DisplayName="Use Crossplatform User IDs")
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOSPlus Login Settings", DisplayName="Use Crossplatform User IDs for EOS Login (doesn't use Epic Account)")
 	bool bUseEOSConnect = false;
 
 	/** Set to true to write stats to EOS as well as the default platform */
@@ -158,21 +158,16 @@ public:
 	/** Find the Settings for an artifact by name */
 	static bool GetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
 
-	static const FEOSSettings& GetSettings();
-	//FEOSSettings ToNative() const; // See note #1
+	static FEOSSettings GetSettings();
+	FEOSSettings ToNative() const;
 
 private:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
-	//static bool AutoGetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings); // See note #1
+	static bool AutoGetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
 	static bool ManualGetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
 
-	//static FEOSSettings AutoGetSettings(); // See note #1
+	static FEOSSettings AutoGetSettings();
 	static const FEOSSettings& ManualGetSettings();
 };
-
-/* Notes
-* 
-*  #1: CDO Usage was unreliable in some platforms, so it will be deactivated for now
-*/

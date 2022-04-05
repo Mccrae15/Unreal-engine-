@@ -37,6 +37,18 @@ UDatasmithScene::~UDatasmithScene()
 #endif
 }
 
+void UDatasmithScene::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+#if WITH_EDITORONLY_DATA
+	if (AssetImportData)
+	{
+		OutTags.Add(FAssetRegistryTag(SourceFileTagName(), AssetImportData->GetSourceData().ToJson(), FAssetRegistryTag::TT_Hidden));
+
+		AssetImportData->DatasmithImportInfo.GetAssetRegistryTags(OutTags);
+	}
+#endif
+}
+
 void UDatasmithScene::RegisterPreWorldRenameCallback()
 {
 #if WITH_EDITOR
@@ -155,7 +167,7 @@ void UDatasmithScene::RemoveUserDataOfClass( TSubclassOf<UAssetUserData> InUserD
 const TArray<UAssetUserData*>* UDatasmithScene::GetAssetUserDataArray() const
 {
 #if WITH_EDITORONLY_DATA
-	return &AssetUserData;
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
 #else
 	return NULL;
 #endif // #if WITH_EDITORONLY_DATA

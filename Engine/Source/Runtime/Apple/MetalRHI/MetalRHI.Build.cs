@@ -7,12 +7,15 @@ public class MetalRHI : ModuleRules
 {	
 	public MetalRHI(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PublicIncludePaths.Add("Runtime/Apple/Common/Public");
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"ApplicationCore",
 				"Engine",
 				"RHI",
+				"RHICore",
 				"RenderCore",
 			}
 			);

@@ -26,7 +26,8 @@ public class EditorInteractiveToolsFramework : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"Core"
+				"Core",
+				"TypedElementFramework",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
@@ -37,9 +38,11 @@ public class EditorInteractiveToolsFramework : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
-                "Slate",
+				"RenderCore",
+				"Slate",
                 "SlateCore",
                 "InputCore",
+				"EditorFramework",
 				"UnrealEd",
                 "ContentBrowser",
                 "LevelEditor",
@@ -47,7 +50,10 @@ public class EditorInteractiveToolsFramework : ModuleRules
                 "EditorStyle",
                 "InteractiveToolsFramework",
 				"MeshDescription",
-				"StaticMeshDescription"
+				"StaticMeshDescription",
+                "EditorSubsystem",
+                "TypedElementFramework",
+                "TypedElementRuntime"
 
 				// ... add private dependencies that you statically link with here ...	
 			}

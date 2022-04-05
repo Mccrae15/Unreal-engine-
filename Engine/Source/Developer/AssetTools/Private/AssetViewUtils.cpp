@@ -6,7 +6,7 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/Paths.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
@@ -15,6 +15,7 @@
 #include "Modules/ModuleManager.h"
 #include "UnrealClient.h"
 #include "Engine/World.h"
+#include "Engine/Level.h"
 #include "Settings/ContentBrowserSettings.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "SourceControlOperations.h"
@@ -57,6 +58,12 @@ namespace AssetViewUtils
 
 	/** Internal function to delete a folder from disk, but only if it is empty. InPathToDelete is in FPackageName format. */
 	bool DeleteEmptyFolderFromDisk(const FString& InPathToDelete);
+
+	/** Get all the objects in a list of asset data with optional load of all external packages */
+	void GetObjectsInAssetData(const TArray<FAssetData>& AssetList, TArray<UObject*>& OutDroppedObjects, bool bLoadAllExternalObjects);
+
+	/** Makes sure the specified assets are loaded into memory. */
+	bool LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArray<UObject*>& LoadedObjects, bool bAllowedToPromptToLoadAssets, bool bLoadRedirects, bool bLoadWorldPartitionWorlds, bool bLoadAllExternalObjects);
 }
 
 bool AssetViewUtils::OpenEditorForAsset(const FString& ObjectPath)
@@ -65,7 +72,13 @@ bool AssetViewUtils::OpenEditorForAsset(const FString& ObjectPath)
 	TArray<UObject*> LoadedObjects;
 	TArray<FString> ObjectPaths;
 	ObjectPaths.Add(ObjectPath);
-	LoadAssetsIfNeeded(ObjectPaths, LoadedObjects);
+
+	// Here we want to load the asset as it will be passed to OpenEditorForAsset
+	const bool bAllowedToPromptToLoadAssets = true;
+	const bool bLoadRedirects = false;
+	const bool bLoadWorldPartitionWorlds = true;
+	const bool bLoadAllExternalObjects = false;
+	LoadAssetsIfNeeded(ObjectPaths, LoadedObjects, bAllowedToPromptToLoadAssets, bLoadRedirects, bLoadWorldPartitionWorlds, bLoadAllExternalObjects);
 
 	// Open the editor for the specified asset
 	UObject* FoundObject = FindObject<UObject>(NULL, *ObjectPath);
@@ -100,6 +113,13 @@ bool AssetViewUtils::OpenEditorForAsset(const TArray<UObject*>& Assets)
 
 bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArray<UObject*>& LoadedObjects, bool bAllowedToPromptToLoadAssets, bool bLoadRedirects)
 {
+	const bool bLoadWorldPartitionWorlds = false;
+	const bool bLoadAllExternalObjects = false;
+	return LoadAssetsIfNeeded(ObjectPaths, LoadedObjects, bAllowedToPromptToLoadAssets, bLoadRedirects, bLoadWorldPartitionWorlds, bLoadAllExternalObjects);
+}
+
+bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArray<UObject*>& LoadedObjects, bool bAllowedToPromptToLoadAssets, bool bLoadRedirects, bool bLoadWorldPartitionWorlds, bool bLoadAllExternalObjects)
+{
 	bool bAnyObjectsWereLoadedOrUpdated = false;
 
 	// Build a list of unloaded assets
@@ -116,12 +136,19 @@ bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArr
 		}
 		else
 		{
-			// Unloaded asset, we will load it later
-			UnloadedObjectPaths.Add(ObjectPath);
 			if ( FEditorFileUtils::IsMapPackageAsset(ObjectPath) )
 			{
+				FName PackageName = FName(*FEditorFileUtils::ExtractPackageName(ObjectPath));
+				if (!bLoadWorldPartitionWorlds && ULevel::GetIsLevelPartitionedFromPackage(PackageName))
+				{
+					continue;
+				}
+				
 				bAtLeastOneUnloadedMap = true;
 			}
+
+			// Unloaded asset, we will load it later
+			UnloadedObjectPaths.Add(ObjectPath);
 		}
 	}
 
@@ -150,6 +177,7 @@ bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArr
 			SlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("LoadingObjectf", "Loading {0}..."), FText::FromString(ObjectPath)));
 
 			// Load up the object
+			TUniquePtr<FScopedLoadAllExternalObjects> Scope(bLoadAllExternalObjects? new FScopedLoadAllExternalObjects(*FEditorFileUtils::ExtractPackageName(ObjectPath)) : nullptr);
 			UObject* LoadedObject = LoadObject<UObject>(NULL, *ObjectPath, NULL, LoadFlags, NULL);
 			if ( LoadedObject )
 			{
@@ -220,7 +248,7 @@ bool AssetViewUtils::PromptToLoadAssets(const TArray<FString>& UnloadedObjects)
 void AssetViewUtils::CopyAssets(const TArray<UObject*>& Assets, const FString& DestPath)
 {
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(DestPath))
+	if (!AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(DestPath))
 	{
 		AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
 		return;
@@ -253,7 +281,7 @@ void AssetViewUtils::MoveAssets(const TArray<UObject*>& Assets, const FString& D
 	check(DestPath.Len() > 0);
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(DestPath))
+	if (!AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(DestPath))
 	{
 		AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
 		return;
@@ -339,7 +367,11 @@ bool AssetViewUtils::DeleteFolders(const TArray<FString>& PathsToDelete)
 
 		// Load all the assets in the selected paths
 		TArray<UObject*> LoadedAssets;
-		if ( LoadAssetsIfNeeded(ObjectPaths, LoadedAssets) )
+		const bool bAllowedToPromptToLoadAssets = true;
+		const bool bLoadRedirects = false;
+		const bool bLoadWorldPartitionWorlds = true;
+		const bool bLoadAllExternalObjects = true;
+		if ( LoadAssetsIfNeeded(ObjectPaths, LoadedAssets, bAllowedToPromptToLoadAssets, bLoadRedirects, bLoadWorldPartitionWorlds, bLoadAllExternalObjects))
 		{
 			// Make sure we loaded all of them
 			if ( LoadedAssets.Num() == NumAssetsInPaths )
@@ -515,7 +547,8 @@ bool AssetViewUtils::RenameFolder(const FString& DestPath, const FString& Source
 	TArray<FAssetData> AssetsInFolder;
 	AssetRegistryModule.Get().GetAssetsByPath(*SourcePath, AssetsInFolder, true);
 	TArray<UObject*> ObjectsInFolder;
-	GetObjectsInAssetData(AssetsInFolder, ObjectsInFolder);
+	const bool bLoadAllExternalObjects = true;
+	GetObjectsInAssetData(AssetsInFolder, ObjectsInFolder, bLoadAllExternalObjects);
 	MoveAssets(ObjectsInFolder, DestPath, SourcePath);
 
 	// Now check to see if the original folder is empty, if so we can delete it
@@ -700,7 +733,11 @@ bool AssetViewUtils::PrepareFoldersForDragDrop(const TArray<FString>& SourcePath
 
 		// Load all assets in this path if needed
 		TArray<UObject*> AllLoadedAssets;
-		LoadAssetsIfNeeded(ObjectPaths, AllLoadedAssets, false);
+		const bool bAllowedToPromptToLoadAssets = false;
+		const bool bLoadRedirects = false;
+		const bool bLoadWorldPartitionWorlds = true;
+		const bool bLoadAllExternalObjects = true;
+		LoadAssetsIfNeeded(ObjectPaths, AllLoadedAssets, bAllowedToPromptToLoadAssets, bLoadRedirects, bLoadWorldPartitionWorlds, bLoadAllExternalObjects);
 
 		// Add a slash to the end of the path so StartsWith doesn't get a false positive on similarly named folders
 		const FString SourcePathWithSlash = *PathIt + TEXT("/");
@@ -869,7 +906,7 @@ bool AssetViewUtils::AssetHasCustomThumbnail( const FAssetData& AssetData )
 	return false;
 }
 
-bool AssetViewUtils::IsProjectFolder(const FString& InPath, const bool bIncludePlugins)
+bool AssetViewUtils::IsProjectFolder(const FStringView InPath, const bool bIncludePlugins)
 {
 	static const FString ProjectPathWithSlash = TEXT("/Game");
 	static const FString ProjectPathWithoutSlash = TEXT("Game");
@@ -891,7 +928,7 @@ bool AssetViewUtils::IsProjectFolder(const FString& InPath, const bool bIncludeP
 	return false;
 }
 
-bool AssetViewUtils::IsEngineFolder(const FString& InPath, const bool bIncludePlugins)
+bool AssetViewUtils::IsEngineFolder(const FStringView InPath, const bool bIncludePlugins)
 {
 	static const FString EnginePathWithSlash = TEXT("/Engine");
 	static const FString EnginePathWithoutSlash = TEXT("Engine");
@@ -913,68 +950,60 @@ bool AssetViewUtils::IsEngineFolder(const FString& InPath, const bool bIncludePl
 	return false;
 }
 
-bool AssetViewUtils::IsDevelopersFolder( const FString& InPath )
+bool AssetViewUtils::IsDevelopersFolder( const FStringView InPath )
 {
-	static const FString DeveloperPathWithSlash = FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir());
-	static const FString DeveloperPathWithoutSlash = DeveloperPathWithSlash.LeftChop(1);
-		
-	return InPath.StartsWith(DeveloperPathWithSlash) || InPath == DeveloperPathWithoutSlash;
+	static const FString DeveloperPathWithoutSlash = FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir()).LeftChop(1);
+	return InPath.StartsWith(DeveloperPathWithoutSlash) && (InPath.Len() == DeveloperPathWithoutSlash.Len() || InPath[DeveloperPathWithoutSlash.Len()] == TEXT('/'));
 }
 
-static bool PathStartsWithPluginAssetPath(const FString& Path, const FString& PluginName)
+bool AssetViewUtils::IsPluginFolder(const FStringView InPath, EPluginLoadedFrom* OutPluginSource)
 {
-	// accepted path examples for a plugin named "Plugin":
-	// "/Plugin"
-	// "/Plugin/"
-	// "/Plugin/More/Stuff"
-	const int32 PluginNameLength = PluginName.Len();
-	const int32 PathLength = Path.Len();
-	if (PathLength <= PluginNameLength)
+	FStringView PluginName(InPath);
+	if (PluginName.StartsWith(TEXT('/')))
 	{
-		return false;
+		PluginName.RightChopInline(1);
 	}
-	else
-	{
-		const TCHAR* PathCh = *Path;
-		return PathCh[0] == '/' && (PathCh[PluginNameLength + 1] == '/' || PathCh[PluginNameLength + 1] == 0) && FCString::Strnicmp(PathCh + 1, *PluginName, PluginNameLength) == 0;
-	}
-}
 
-bool AssetViewUtils::IsPluginFolder(const FString& InPath, const TArray<TSharedRef<IPlugin>>& InPlugins, EPluginLoadedFrom* OutPluginSource)
-{
-	for (const TSharedRef<IPlugin>& PluginRef : InPlugins)
+	int32 FoundIndex = INDEX_NONE;
+	if (PluginName.FindChar(TEXT('/'), FoundIndex))
 	{
-		const IPlugin& Plugin = *PluginRef;
-		const FString& PluginName = Plugin.GetName();
-		if (PathStartsWithPluginAssetPath(InPath, PluginName) || InPath == PluginName)
+		PluginName.LeftInline(FoundIndex);
+	}
+
+	if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+	{
+		if (Plugin->IsEnabled() && Plugin->CanContainContent())
 		{
 			if (OutPluginSource != nullptr)
 			{
-				*OutPluginSource = Plugin.GetLoadedFrom();
+				*OutPluginSource = Plugin->GetLoadedFrom();
 			}
+
 			return true;
 		}
 	}
+
 	return false;
 }
 
-bool AssetViewUtils::IsPluginFolder(const FString& InPath, EPluginLoadedFrom* OutPluginSource)
+void AssetViewUtils::GetObjectsInAssetData(const TArray<FAssetData>& AssetList, TArray<UObject*>& OutDroppedObjects, bool bLoadAllExternalObjects)
 {
-	return IsPluginFolder(InPath, IPluginManager::Get().GetEnabledPluginsWithContent(), OutPluginSource);
-}
-
-void AssetViewUtils::GetObjectsInAssetData(const TArray<FAssetData>& AssetList, TArray<UObject*>& OutDroppedObjects)
-{	
 	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
 	{
 		const FAssetData& AssetData = AssetList[AssetIdx];
-
+		TUniquePtr<FScopedLoadAllExternalObjects> LoadAllExternalObjects(bLoadAllExternalObjects ? new FScopedLoadAllExternalObjects(AssetData.PackageName) : nullptr);
 		UObject* Obj = AssetData.GetAsset();
 		if (Obj)
 		{
 			OutDroppedObjects.Add(Obj);
 		}
 	}
+}
+
+void AssetViewUtils::GetObjectsInAssetData(const TArray<FAssetData>& AssetList, TArray<UObject*>& OutDroppedObjects)
+{	
+	const bool bLoadAllExternalObjects = false;
+	GetObjectsInAssetData(AssetList, OutDroppedObjects, bLoadAllExternalObjects);
 }
 
 bool AssetViewUtils::IsValidFolderName(const FString& FolderName, FText& Reason)
@@ -1190,7 +1219,8 @@ bool AssetViewUtils::HasCustomColors( TArray< FLinearColor >* OutColors )
 FLinearColor AssetViewUtils::GetDefaultColor()
 {
 	// The default tint the folder should appear as
-	return FLinearColor::Gray;
+	static const FName FolderColorName("ContentBrowser.DefaultFolderColor");
+	return FAppStyle::Get().GetSlateColor(FolderColorName).GetSpecifiedColor();
 }
 
 static const auto CVarMaxFullPathLength = 
@@ -1235,7 +1265,13 @@ bool AssetViewUtils::IsValidObjectPathForCreate(const FString& ObjectPath, const
 	}
 
 	// Make sure we are not creating an path that is too long for the OS
-	const FString RelativePathFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());	// full relative path with name + extension
+	FString RelativePathFilename;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, RelativePathFilename, FPackageName::GetAssetPackageExtension()))	// full relative path with name + extension
+	{
+		OutErrorMessage = LOCTEXT("ConvertToFilename", "Package name could not be converted to file name.");
+		return false;
+	}
+
 	const FString FullPath = FPaths::ConvertRelativePathToFull(RelativePathFilename);	// path to file on disk
 	if (ObjectPath.Len() > (FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH))
 	{
@@ -1316,6 +1352,23 @@ bool AssetViewUtils::IsValidFolderPathForCreate(const FString& InFolderPath, con
 	return true;
 }
 
+FString AssetViewUtils::GetPackagePathWithinRoot(const FString& PackageName)
+{
+	const FString AbsoluteRootPath = FPaths::ConvertRelativePathToFull(FPaths::RootDir());
+
+	FString RelativePathToAsset;
+	if (FPackageName::TryConvertLongPackageNameToFilename(PackageName, RelativePathToAsset))
+	{
+		const FString AbsolutePathToAsset = FPaths::ConvertRelativePathToFull(RelativePathToAsset);
+
+		RelativePathToAsset = AbsolutePathToAsset;
+		FPaths::RemoveDuplicateSlashes(RelativePathToAsset);
+		RelativePathToAsset.RemoveFromStart(AbsoluteRootPath, ESearchCase::CaseSensitive);
+	}
+
+	return RelativePathToAsset;
+}
+
 int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, bool IsInternalBuild)
 {
 	// We assume the game name is 20 characters (the maximum allowed) to make sure that content can be ported between projects
@@ -1329,12 +1382,13 @@ int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, boo
 		GameNamePadded += TEXT(" ");
 	}
 
-	// We use "WindowsNoEditor" below as it's the longest platform name, so will also prove that any shorter platform names will validate correctly
+	// We use "LinuxArm64Server" below as it's probably the longest platform name, so will also prove that any shorter platform names will validate correctly
+	const TCHAR* LongPlatformName = TEXT("LinuxArm64Server");
 	const FString AbsoluteRootPath = FPaths::ConvertRelativePathToFull(FPaths::RootDir());
 	const FString AbsoluteGamePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 	const FString AbsoluteEnginePath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
-	const FString AbsoluteEngineCookPath = AbsoluteGamePath / TEXT("Saved") / TEXT("Cooked") / TEXT("WindowsNoEditor") / TEXT("Engine");
-	const FString AbsoluteGameCookPath = AbsoluteGamePath / TEXT("Saved") / TEXT("Cooked") / TEXT("WindowsNoEditor") / GameName;
+	const FString AbsoluteEngineCookPath = AbsoluteGamePath / TEXT("Saved") / TEXT("Cooked") / LongPlatformName / TEXT("Engine");
+	const FString AbsoluteGameCookPath = AbsoluteGamePath / TEXT("Saved") / TEXT("Cooked") / LongPlatformName / GameName;
 
 	EPluginLoadedFrom PluginLoadedFrom;
 	const bool bIsPluginAsset = IsPluginFolder(PackageName, &PluginLoadedFrom);
@@ -1361,7 +1415,7 @@ int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, boo
 		if (IsInternalBuild)
 		{
 			// We assume a constant size for the build machine base path, so strip either the root or game path from the start
-			// (depending on whether the project is part of the main UE4 source tree or located elsewhere)
+			// (depending on whether the project is part of the main UE source tree or located elsewhere)
 			FString CookDirWithoutBasePath = AbsoluteCookPath;
 			if (CookDirWithoutBasePath.StartsWith(AbsoluteRootPath, ESearchCase::CaseSensitive))
 			{
@@ -1372,7 +1426,7 @@ int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, boo
 				CookDirWithoutBasePath.RemoveFromStart(AbsoluteCookPath, ESearchCase::CaseSensitive);
 			}
 			
-			FString AbsoluteBuildMachineCookPathToAsset = FString(TEXT("D:/BuildFarm/buildmachine_++depot+UE4-Releases+4.10")) / CookDirWithoutBasePath / AssetPathWithinCookDir;
+			FString AbsoluteBuildMachineCookPathToAsset = FString(TEXT("D:/BuildFarm/buildmachine_++depot+UE-Releases+XX.XX")) / CookDirWithoutBasePath / AssetPathWithinCookDir;
 
 			// only add game name padding to project plugins so that they can ported to other projects
 			if (bIsPluginAsset && bIsProjectAsset)			{
@@ -1403,9 +1457,9 @@ bool AssetViewUtils::IsValidPackageForCooking(const FString& PackageName, FText&
 		// See TTP# 332328:
 		// The following checks are done mostly to prevent / alleviate the problems that "long" paths are causing with the BuildFarm and cooked builds.
 		// The BuildFarm uses a verbose path to encode extra information to provide more information when things fail, however this makes the path limitation a problem.
-		//	- We assume a base path of D:/BuildFarm/buildmachine_++depot+UE4-Releases+4.10/
+		//	- We assume a base path of length: D:/BuildFarm/buildmachine_++depot+UE-Releases+XX.XX/
 		//	- We assume the game name is 20 characters (the maximum allowed) to make sure that content can be ported between projects
-		//	- We calculate the cooked game path relative to the game root (eg, Showcases/Infiltrator/Saved/Cooked/WindowsNoEditor/Infiltrator)
+		//	- We calculate the cooked game path relative to the game root (eg, Showcases/Infiltrator/Saved/Cooked/Windows/Infiltrator)
 		//	- We calculate the asset path relative to (and including) the Content directory (eg, Content/Environment/Infil1/Infil1_Underground/Infrastructure/Model/SM_Infil1_Tunnel_Ceiling_Pipes_1xEntryCurveOuter_Double.uasset)
 		if (FEngineBuildSettings::IsInternalBuild())
 		{
@@ -1423,6 +1477,22 @@ bool AssetViewUtils::IsValidPackageForCooking(const FString& PackageName, FText&
 	}
 
 	return true;
+}
+
+int32 AssetViewUtils::GetMaxAssetPathLen()
+{
+	const int32 PathRootAffordance = 50;
+
+	if ( GetDefault<UEditorExperimentalSettings>()->bEnableLongPathsSupport )
+	{
+		// Allow the longest path allowed by the system
+		return FPlatformMisc::GetMaxPathLength() - PathRootAffordance;
+	}
+	else
+	{
+		// 260 characters is the limit on Windows, which is the shortest max path of any platforms that support cooking
+		return 260 - PathRootAffordance;
+	}
 }
 
 int32 AssetViewUtils::GetMaxCookPathLen()

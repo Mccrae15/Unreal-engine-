@@ -8,6 +8,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/InputDelegateBinding.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "UObject/UObjectHash.h"
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -29,6 +30,18 @@ ALevelScriptActor::ALevelScriptActor(const FObjectInitializer& ObjectInitializer
 	bReplicates = true;
 	bAlwaysRelevant = true;
 	bReplayRewindable = true;
+
+#if WITH_EDITOR
+	// this is intended as an early detection of cases where more than one LevelScriptActor is introduced into a single map
+	TArray<ALevelScriptActor*> Siblings = FindSiblingLevelScriptActors();
+
+	for (const ALevelScriptActor* Sibling : Siblings)
+	{
+		ensureMsgf(false,
+			TEXT("Detected the creation of more than one LevelScriptActor (%s, %s) within the same outer. This can lead to duplicate level blueprint operations during play."),
+			*GetPathName(), *Sibling->GetPathName());
+	}
+#endif // WITH_EDITOR
 }
 
 void ALevelScriptActor::PreInitializeComponents()
@@ -100,3 +113,34 @@ void ALevelScriptActor::DisableInput(class APlayerController* PlayerController)
 	}
 	bInputEnabled = false;
 }
+
+
+#if WITH_EDITOR
+
+TArray<ALevelScriptActor*> ALevelScriptActor::FindSiblingLevelScriptActors() const
+{
+	TArray<ALevelScriptActor*> SiblingLSAs;
+
+	const UObject* ThisOuter = GetOuter();
+	if (!ThisOuter->IsA<UPackage>())
+	{
+		TArray<UObject*> AllSiblingObjects;
+		GetObjectsWithOuter(ThisOuter, AllSiblingObjects, false, RF_NoFlags, EInternalObjectFlags::Garbage);
+
+		for (UObject* Sibling : AllSiblingObjects)
+		{
+			ALevelScriptActor* SiblingAsLSA = Cast<ALevelScriptActor>(Sibling);
+			const bool bIsNotAnLSA = SiblingAsLSA == nullptr;
+			const bool bIsTheSameObject = Sibling == this;
+			const bool bHasNewerClassVersion = Sibling->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists);
+
+			if (!bIsNotAnLSA && !bIsTheSameObject && !bHasNewerClassVersion)
+			{
+				SiblingLSAs.Add(SiblingAsLSA);
+			}
+		}
+	}
+
+	return SiblingLSAs;
+}
+#endif // WITH_EDITOR

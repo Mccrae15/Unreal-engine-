@@ -87,6 +87,7 @@ public:
 
 	/** Set the selection state of a constraint */
 	void SetSelectedConstraint(int32 ConstraintIndex, bool bSelected);
+	void SetSelectedConstraints(const TArray<int32> ConstraintsIndices, bool bSelected);
 
 	/** Check whether the constraint at the specified index is selected */
 	bool IsConstraintSelected(int32 ConstraintIndex) const;
@@ -140,26 +141,40 @@ public:
 	/** Collision geometry editing */
 	void ClearSelectedBody();
 	void SetSelectedBody(const FSelection& Body, bool bSelected);
+	void SetSelectedBodies(const TArray<FSelection>& Bodies, bool bSelected);
 	bool IsBodySelected(const FSelection& Body) const;
-	void ToggleSelectionType();
+	void ToggleSelectionType(bool bIgnoreUserConstraints = true);
 	void ToggleShowSelected();
 	void ShowAll();
 	void HideAll();
+	void HideAllBodies();
+	void HideAllConstraints();
 	void ToggleShowOnlyColliding();
+	void ToggleShowOnlyConstrained();
 	void ToggleShowOnlySelected();
 	void ShowSelected();
 	void HideSelected();
 	void SetSelectedBodyAnyPrim(int32 BodyIndex, bool bSelected);
+	void SetSelectedBodiesAnyPrim(const TArray<int32>& BodiesIndices, bool bSelected);
+	void SetSelectedBodiesAllPrim(const TArray<int32>& BodiesIndices, bool bSelected);
 	void DeleteCurrentPrim();
 	void DeleteBody(int32 DelBodyIndex, bool bRefreshComponent=true);
 	void RefreshPhysicsAssetChange(const UPhysicsAsset* InPhysAsset, bool bFullClothRefresh = true);
 	void MakeNewBody(int32 NewBoneIndex, bool bAutoSelect = true);
-	void MakeNewConstraint(int32 BodyIndex0, int32 BodyIndex1);
-	void CopyBody();
-	void CopyConstraint();
+	void MakeNewConstraints(int32 ParentBodyIndex, const TArray<int32>& ChildBodyIndices);
+	void MakeNewConstraint(int32 ParentBodyIndex, int32 ChildBodyIndex);
+	void CopySelectedBodiesAndConstraintsToClipboard(int32& OutNumCopiedBodies, int32& OutNumCopiedConstraints);
+	void PasteBodiesAndConstraintsFromClipboard(int32& OutNumPastedBodies, int32& OutNumPastedConstraints);
+	void CopyBodyProperties();
+	void CopyConstraintProperties();
 	void PasteBodyProperties();
 	bool WeldSelectedBodies(bool bWeld = true);
 	void Mirror();
+
+	/** auto name a primitive, if PrimitiveIndex is INDEX_NONE, then the last primitive of specified typed is renamed */
+	void AutoNamePrimitive(int32 BodyIndex, EAggCollisionShape::Type PrimitiveType, int32 PrimitiveIndex = INDEX_NONE);
+	void AutoNameAllPrimitives(int32 BodyIndex, EAggCollisionShape::Type PrimitiveType);
+	void AutoNameAllPrimitives(int32 BodyIndex, EPhysAssetFitGeomType PrimitiveType);
 
 	/** Toggle simulation on and off */
 	void ToggleSimulation();
@@ -218,6 +233,9 @@ public:
 	/** broadcast a change in the preview*/
 	void BroadcastPreviewChanged();
 
+	/** Returns true if the clipboard contains data this class can process */
+	static bool ClipboardHasCompatibleData();
+
 private:
 	/** Initializes a constraint setup */
 	void InitConstraintSetup(UPhysicsConstraintTemplate* ConstraintSetup, int32 ChildBodyIndex, int32 ParentBodyIndex);
@@ -229,7 +247,22 @@ private:
 	void UpdateNoCollisionBodies();
 
 	/** Copy the properties of the one and only selected constraint */
-	void CopyConstraintProperties(UPhysicsConstraintTemplate * FromConstraintSetup, UPhysicsConstraintTemplate * ToConstraintSetup);
+	void CopyConstraintProperties(const UPhysicsConstraintTemplate * FromConstraintSetup, UPhysicsConstraintTemplate * ToConstraintSetup, bool bKeepOldRotation = false);
+
+	/** Copies a reference to a given element to the clipboard */
+	void CopyToClipboard(const FString& ObjectType, UObject* Object);
+
+	/** Pastes data from the clipboard on a given type */
+	bool PasteFromClipboard(const FString& InObjectType, UPhysicsAsset*& OutAsset, UObject*& OutObject);
+
+	/** Clears data in clipboard if it was pointing to the given type/data */
+	void ConditionalClearClipboard(const FString& ObjectType, UObject* Object);
+
+	/** Checks and parses clipboard data */
+	static bool ParseClipboard(UPhysicsAsset*& OutAsset, FString& OutObjectType, UObject*& OutObject);
+
+	/** Gneerate a new unique name for a constraint */
+	FString MakeUniqueNewConstraintName();
 
 public:
 	/** Callback for handling selection changes */
@@ -289,9 +322,6 @@ public:
 		int32 Count = SelectedBodies.Num();
 		return Count ? &SelectedBodies[Count - 1] : NULL;
 	}
-
-	UBodySetup * CopiedBodySetup;
-	UPhysicsConstraintTemplate * CopiedConstraintTemplate;
 
 	/** Constraint editing */
 	TArray<FSelection> SelectedConstraints;

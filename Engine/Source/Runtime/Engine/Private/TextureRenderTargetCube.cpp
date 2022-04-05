@@ -56,9 +56,9 @@ void UTextureRenderTargetCube::InitAutoFormat(uint32 InSizeX)
 
 void UTextureRenderTargetCube::UpdateResourceImmediate(bool bClearRenderTarget/*=true*/)
 {
-	if (Resource)
+	if (GetResource())
 	{
-		FTextureRenderTargetCubeResource* InResource = static_cast<FTextureRenderTargetCubeResource*>(Resource);
+		FTextureRenderTargetCubeResource* InResource = static_cast<FTextureRenderTargetCubeResource*>(GetResource());
 		ENQUEUE_RENDER_COMMAND(UpdateResourceImmediate)(
 			[InResource, bClearRenderTarget](FRHICommandListImmediate& RHICmdList)
 			{
@@ -240,7 +240,7 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(Owner->ClearColor) };
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTargetCubeResource"), FClearValueBinding(Owner->ClearColor));
 			RHICreateTargetableShaderResourceCube(
 				Owner->SizeX,
 				Owner->GetFormat(), 
@@ -253,7 +253,7 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 				TextureCubeRHI );
 		}
 
-		if ((TexCreateFlags & TexCreate_UAV) != 0)
+		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
 		{
 			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTargetCubeRHI);
 		}
@@ -263,7 +263,7 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 
 		// Create the RHI target surface used for rendering to
 		{
-			FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(Owner->ClearColor) };
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTargetCubeResource"), FClearValueBinding(Owner->ClearColor));
 			CubeFaceSurfaceRHI = RHICreateTexture2D(
 				Owner->SizeX, 
 				Owner->SizeX, 

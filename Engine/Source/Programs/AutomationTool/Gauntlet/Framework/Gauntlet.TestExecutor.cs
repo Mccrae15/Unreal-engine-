@@ -12,8 +12,8 @@ namespace Gauntlet
 {
 	public class TestExecutorOptions
 	{
-		[AutoParamWithNames(1, "repeat")]
-		public int TestLoops;
+		[AutoParamWithNames(1, "iterations", "repeat")]
+		public int TestIterations;
 
 		[AutoParam(false)]
 		public bool StopOnError;
@@ -48,16 +48,31 @@ namespace Gauntlet
 
 			public ITestNode		TestNode;
 			public DateTime			FirstReadyCheckTime;
-			public DateTime			PreStartTime;
-			public DateTime			PostStartTime;
-			public DateTime			EndTime;
+			public DateTime			TimeSetupBegan;
+			public DateTime			TimeSetupEnded;
+			public DateTime			TimeTestEnded;
 			public ExecutionResult	Result;
 			public TestResult		FinalResult;
 			public string			CancellationReason;
 
+			/// <summary>
+			/// Time the test had to wait before running
+			/// </summary>
+			public TimeSpan			WaitDuration { get { return (TimeSetupBegan - FirstReadyCheckTime); } }
+
+			/// <summary>
+			/// Time the test had to wait before running
+			/// </summary>
+			public TimeSpan			SetupDuration { get { return (TimeSetupEnded - TimeSetupBegan); } }
+
+			/// <summary>
+			/// Time the test took to run
+			/// </summary>
+			public TimeSpan			TestDuration { get { return (TimeTestEnded - TimeSetupEnded); } }
+
 			public TestExecutionInfo(ITestNode InNode)
 			{
-				FirstReadyCheckTime = PreStartTime = PostStartTime = EndTime = DateTime.MinValue;
+				FirstReadyCheckTime = TimeSetupBegan = TimeSetupEnded = TimeTestEnded = DateTime.MinValue;
 				TestNode = InNode;
 				CancellationReason = "";
 			}
@@ -122,8 +137,6 @@ namespace Gauntlet
 
 			IsRunning = true;
 
-			List<int> FailedPassList = new List<int>();
-
 			int MaxParallelTasks = 0;
 			int MaxStartingTasks = 0;
 
@@ -133,9 +146,14 @@ namespace Gauntlet
 				RequiredTests = RequiredTests.OrderBy(Node => Node.Priority);
 			}
 
-			for (CurrentTestPass = 0; CurrentTestPass < Options.TestLoops; CurrentTestPass++)
+			Dictionary<string, int> TestIterationsPasssed = new Dictionary<string, int>();
+			Dictionary<string, int> TestIterationsFailed = new Dictionary<string, int>();
+			Dictionary<string, int> TestIterationsPassedWithWarnings = new Dictionary<string, int>();
+
+
+			for (CurrentTestPass = 0; CurrentTestPass < Options.TestIterations; CurrentTestPass++)
 			{
-				// do not start a pass if cancelled
+				// do not start a pass if canceled
 				if (IsCancelled)
 				{
 					break;
@@ -150,7 +168,7 @@ namespace Gauntlet
 
 				DateTime StartPassTime = DateTime.Now;
 
-				Log.Info("Starting test pass {0} of {1}", CurrentTestPass + 1, Options.TestLoops);
+				Log.Info("Starting test iteration {0} of {1}", CurrentTestPass + 1, Options.TestIterations);
 
 				// Tests that we want to run
 				List<TestExecutionInfo> PendingTests = RequiredTests.Select(N => new TestExecutionInfo(N)).ToList();
@@ -184,8 +202,8 @@ namespace Gauntlet
 					double TimeSinceLastReadyCheck = (DateTime.Now - LastReadyCheck).TotalSeconds;
 
 					// Are any tests ready to run?
-					if (InProgressCount < Options.Parallel 
-						&& PendingTests.Count() > 0 
+					if (InProgressCount < Options.Parallel
+						&& PendingTests.Count() > 0
 						&& TimeSinceLastReadyCheck >= ReadyCheckPeriod)
 					{
 						TestExecutionInfo TestToStart = null;
@@ -210,7 +228,7 @@ namespace Gauntlet
 								Log.Error("Test {0} threw an exception during ready check. Ex: {1}", Node, ex);
 
 								PendingTests[i] = null;
-								NodeInfo.PreStartTime = NodeInfo.PostStartTime = NodeInfo.EndTime = DateTime.Now;
+								NodeInfo.TimeSetupBegan = NodeInfo.TimeSetupEnded = NodeInfo.TimeTestEnded = DateTime.Now;
 								CompletedTests.Add(NodeInfo);
 							}
 
@@ -244,7 +262,7 @@ namespace Gauntlet
 									{
 										Log.Warning("Test {0} has been waiting to run resource-free for {1:00} seconds. Removing from wait list", Node, TimeWaiting);
 										PendingTests[i] = null;
-										NodeInfo.PreStartTime = NodeInfo.PostStartTime = NodeInfo.EndTime = DateTime.Now;
+										NodeInfo.TimeSetupBegan = NodeInfo.TimeSetupEnded = NodeInfo.TimeTestEnded = DateTime.Now;
 										NodeInfo.Result = TestExecutionInfo.ExecutionResult.TimedOut;
 										CompletedTests.Add(NodeInfo);
 									}
@@ -269,13 +287,13 @@ namespace Gauntlet
 								Thread.CurrentThread.IsBackground = true;
 
 								// start the test, this also fills in the pre/post start times
-								bool Started = StartTest(TestToStart, CurrentTestPass, Options.TestLoops);
+								bool Started = StartTest(TestToStart, CurrentTestPass, Options.TestIterations);
 
 								lock (Globals.MainLock)
 								{
 									if (Started == false)
 									{
-										TestToStart.PostStartTime = TestToStart.EndTime = DateTime.Now;
+										TestToStart.TimeSetupEnded = TestToStart.TimeTestEnded = DateTime.Now;
 										CompletedTests.Add(TestToStart);
 										Log.Error("Test {0} failed to start", TestToStart);
 									}
@@ -296,7 +314,7 @@ namespace Gauntlet
 
 							// track the thread and start it
 							StartingTestThreads.Add(StartThread);
-							StartThread.Start();							
+							StartThread.Start();
 						}
 						else
 						{
@@ -313,7 +331,7 @@ namespace Gauntlet
 						// invalid = no result yet
 						if (Result == TestResult.Invalid)
 						{
-							TimeSpan RunningTime = DateTime.Now - TestInfo.PostStartTime;
+							TimeSpan RunningTime = DateTime.Now - TestInfo.TimeSetupEnded;
 
 							if ((SecondsRunning % 60) == 0)
 							{
@@ -327,15 +345,15 @@ namespace Gauntlet
 						}
 						else
 						{
-							TestInfo.EndTime = DateTime.Now;
+							TestInfo.TimeTestEnded = DateTime.Now;
 							TestInfo.Result = Result == TestResult.Passed ? TestExecutionInfo.ExecutionResult.Passed : TestExecutionInfo.ExecutionResult.Failed;
 							CompletedTests.Add(TestInfo);
 						}
 					}
 
 					// remove any tests that were completed
-					RunningTests = RunningTests.Where(R => CompletedTests.Contains(R) == false).ToList();		
-					
+					RunningTests = RunningTests.Where(R => CompletedTests.Contains(R) == false).ToList();
+
 					if ((DateTime.Now - LastStatusUpdateTime).TotalSeconds >= StatusUpdatePeriod)
 					{
 						LastStatusUpdateTime = DateTime.Now;
@@ -411,18 +429,42 @@ namespace Gauntlet
 
 					CompletedTests.ForEach(T =>
 					{
-						TimeSpan TimeWaiting = T.FirstReadyCheckTime - T.PreStartTime;
-						TimeSpan SetupTime = T.PostStartTime - T.PreStartTime;
-						TimeSpan TestDuration = T.EndTime - T.PostStartTime;
+						TimeSpan TimeWaiting = T.FirstReadyCheckTime - T.TimeSetupBegan;
+						TimeSpan SetupTime = T.TimeSetupEnded - T.TimeSetupBegan;
+						TimeSpan TestDuration = T.TimeTestEnded - T.TimeSetupEnded;
 
 						// status msg, kept uniform to avoid spam on notifiers (ie. don't include timestamps, etc) 
 						string Msg = string.Format("Test {0} {1}", T.TestNode, T.Result);
 
-						if (T.Result != TestExecutionInfo.ExecutionResult.Passed)
+						bool TestHadErrors = T.Result != TestExecutionInfo.ExecutionResult.Passed;
+						bool TestHadWarnings = T.TestNode.GetWarnings().Any();
+
+						if (TestHadErrors)
 						{
 							FailedCount++;
 						}
-	
+
+						// increment counts for each test
+						if (!TestIterationsPasssed.ContainsKey(T.TestNode.Name))
+						{
+							TestIterationsPasssed[T.TestNode.Name] = 0;
+							TestIterationsFailed[T.TestNode.Name] = 0;
+							TestIterationsPassedWithWarnings[T.TestNode.Name] = 0;
+						}
+
+						if (TestHadErrors)
+						{
+							TestIterationsFailed[T.TestNode.Name]++;
+						}
+						else if (TestHadWarnings)
+						{
+							TestIterationsPassedWithWarnings[T.TestNode.Name]++;
+						}
+						else
+						{
+							TestIterationsPasssed[T.TestNode.Name]++;
+						}
+
 						Log.Info(Msg);
 
 						// log test timing to info
@@ -437,38 +479,60 @@ namespace Gauntlet
 					}
 
 					// report all tests
-					ReportMasterSummary(CurrentTestPass + 1, Options.TestLoops, PassDuration, CompletedTests);
+					ReportMasterSummary(CurrentTestPass + 1, Options.TestIterations, PassDuration, CompletedTests);
 
-					if (FailedCount > 0)
+					if (FailedCount > 0 && Options.StopOnError)
 					{
-						FailedPassList.Add(CurrentTestPass);
-
-						if (Options.StopOnError)
-						{
-							break;
-						}
+						break;
 					}
 				}
+			} // foreach pass
 
-				// show details for multi passes				
-				if (Options.TestLoops > 1)
+			int TotalTests = RequiredTests.Count() * Options.TestIterations;
+			int FailedTestCount = TestIterationsFailed.Values.Sum();
+
+			// show details for multi passes				
+			if (Options.TestIterations > 1)
+			{
+				MarkdownBuilder MB = new MarkdownBuilder();
+
+				MB.HorizontalLine();					
+
+				MB.Paragraph(string.Format("All iterations completed. {0} of {1} executed tests completed without error", TotalTests - FailedTestCount, TotalTests));
+
+				List<string> Lines = new List<string>();
+				foreach (ITestNode Test in RequiredTests)
 				{
-					Log.Info("Completed all passes. {0} of {1} completed without error", CurrentTestPass+1 - FailedPassList.Count(), Options.TestLoops);
+					int IterationsWithErrors = TestIterationsFailed[Test.Name];
+					int IterationsWithWarnings = TestIterationsPassedWithWarnings[Test.Name];
+					int IterationsWithPasses = TestIterationsPasssed[Test.Name];				
 
-					if (FailedPassList.Count > 0)
-					{
-						string FailedList = string.Join(",", FailedPassList);
-						Log.Warning("Failed passes: " + FailedList);
-					}
+					Lines.Add(string.Format("{0}: {1} Iterations, {2} Passed, {3} Passed with Warnings, {4} Failed", 
+						Test.Name, Options.TestIterations, IterationsWithPasses, IterationsWithWarnings, IterationsWithErrors));
 				}
+
+				MB.UnorderedList(Lines);
+					
+				if (FailedTestCount > 0)
+				{
+					MB.Paragraph(string.Format("Error: {0} of {1} executed tests failed.", FailedTestCount, TotalTests));
+				}
+				else
+				{
+					MB.Paragraph(string.Format("{0} total tests passed.", TotalTests));
+				}
+
+				MB.HorizontalLine();
+
+				Log.Info("{0}", MB.ToString());
 			}			
 
 			IsRunning = false;
 
 			Globals.AbortHandlers.Remove(CancelHandler);
 			Globals.PostAbortHandlers.Remove(PostCancelHandler);
-
-			return FailedPassList.Count == 0 && !IsCancelled;
+			
+			return FailedTestCount == 0 && !IsCancelled;
 		}
 		
 		/// <summary>
@@ -485,11 +549,11 @@ namespace Gauntlet
 
 			try
 			{
-				TestInfo.PreStartTime = DateTime.Now;
+				TestInfo.TimeSetupBegan = DateTime.Now;
 				if (TestInfo.TestNode.StartTest(Pass, NumPasses))
 				{
-					TestInfo.PostStartTime = DateTime.Now;
-					Log.Info("Launched test {0} at {1}", Name, TestInfo.PostStartTime.ToString("h:mm:ss"));
+					TestInfo.TimeSetupEnded = DateTime.Now;
+					Log.Info("Launched test {0} at {1}", Name, TestInfo.TimeSetupEnded.ToString("h:mm:ss"));
 					return true;
 				}
 			}
@@ -607,17 +671,18 @@ namespace Gauntlet
 			{
 				MB.H2(string.Format("{0} of {1} Tests Passed in {2:mm\\:ss}. ({3} Failed, {4} Passed with Warnings)",
 					TestCount - FailedCount, TestCount, Duration, FailedCount, WarningCount));
-			}
+			
+				List<string> TestResults = new List<string>();
+				foreach (TestExecutionInfo Info in SortedInfo)
+				{
+					string WarningString = Info.TestNode.GetWarnings().Any() ? " With Warnings" : "";
+					TestResults.Add(string.Format("\t{0} result={1}{2} (Waited={3:mm\\:ss}, Duration={4:mm\\:ss})", 
+						Info, Info.FinalResult, WarningString,
+						Info.WaitDuration, Info.TestDuration));
+				}
 
-			// write out a list of tests and results
-			List<string> TestResults = new List<string>();
-			foreach (TestExecutionInfo Info in SortedInfo)
-			{
-				string WarningString = Info.TestNode.GetWarnings().Any() ? " With Warnings" : "";
-				TestResults.Add(string.Format("\t{0} result={1}{2}", Info, Info.FinalResult, WarningString));
+				MB.UnorderedList(TestResults);
 			}
-
-			MB.UnorderedList(TestResults);
 
 			// write the markdown out with each line indented
 			MB.ToString().Split('\n').ToList().ForEach(L => Log.Info("  " + L));
@@ -639,7 +704,7 @@ namespace Gauntlet
 			// Does the test still say it's running?
 			bool TestIsRunning = TestInfo.TestNode.GetTestStatus() == TestStatus.InProgress;
 
-			TimeSpan RunningTime = DateTime.Now - TestInfo.PostStartTime;
+			TimeSpan RunningTime = DateTime.Now - TestInfo.TimeSetupEnded;
 
 			if (TestIsRunning && RunningTime.TotalSeconds > TestInfo.TestNode.MaxDuration && !Options.NoTimeout)
 			{
@@ -664,6 +729,11 @@ namespace Gauntlet
 				Log.Info("{0}", TestInfo.CancellationReason);
 			}
 
+			if (!string.IsNullOrEmpty(TestInfo.CancellationReason))
+			{
+				TestInfo.TestNode.SetCancellationReason(TestInfo.CancellationReason);
+			}
+
 			// if the test is not running. or we've determined a result for it..
 			if (TestIsRunning == false || TestInfo.FinalResult != TestResult.Invalid)
 			{
@@ -674,11 +744,11 @@ namespace Gauntlet
 					// artifcat links
 					Log.Info("*");
 					Log.Info("****************************************************************");
-					Log.Info("Finished Test: {0} in {1:mm\\:ss}", TestInfo, DateTime.Now - TestInfo.PostStartTime);
+					Log.Info("Finished Test: {0} in {1:mm\\:ss}", TestInfo, DateTime.Now - TestInfo.TimeSetupEnded);
 
 					// Tell the test it's done. If it still thinks its running it was cancelled
-					TestInfo.TestNode.StopTest(TestIsRunning);
-					TestInfo.EndTime = DateTime.Now;
+					TestInfo.TestNode.StopTest(TestIsRunning ? StopReason.MaxDuration : StopReason.Completed);
+					TestInfo.TimeTestEnded = DateTime.Now;
 
 					TestResult NodeResult = TestInfo.TestNode.GetTestResult();
 					TestInfo.FinalResult = (TestInfo.FinalResult != TestResult.Invalid) ? TestInfo.FinalResult : NodeResult;
@@ -688,7 +758,7 @@ namespace Gauntlet
 					{
 						Log.Info("{0} requested retry. Cleaning up old test and relaunching", TestInfo);
 
-						DateTime OriginalStartTime = TestInfo.PostStartTime;
+						DateTime OriginalStartTime = TestInfo.TimeSetupEnded;
 
 						bool bIsRestarted = TestInfo.TestNode.RestartTest();
 						if (bIsRestarted)
@@ -697,6 +767,12 @@ namespace Gauntlet
 							TestInfo.CancellationReason = "";
 							TestInfo.FinalResult = TestResult.Invalid;
 							bCanFinalizeTest = false;
+						}
+						else
+						{
+							TestInfo.CancellationReason = "Failed to restart during retry.";
+							Log.Error(TestInfo.CancellationReason);
+							TestInfo.FinalResult = TestResult.Failed;
 						}
 					}
 
@@ -708,7 +784,7 @@ namespace Gauntlet
 						{
 							ReportTestSummary(TestInfo);
 						}
-
+						TestInfo.TestNode.SetTestResult(TestInfo.FinalResult);
 						// now cleanup
 						try
 						{
@@ -769,7 +845,7 @@ namespace Gauntlet
 					{ 
 						RemainingTests.Add(Process);
 
-						TimeSpan RunningTime = DateTime.Now - Process.PostStartTime;
+						TimeSpan RunningTime = DateTime.Now - Process.TimeSetupEnded;
 
 						if ((DateTime.Now - LastUpdateMsg).TotalSeconds > 60.0f)
 						{
@@ -787,7 +863,6 @@ namespace Gauntlet
 						{
 							AllTestsPassed = false;
 						}
-
 						Log.Info("Test {0} Result: {1}", Process.TestNode.Name, Result);
 					}
 				}

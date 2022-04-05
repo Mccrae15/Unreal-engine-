@@ -13,10 +13,32 @@
 #include "Interfaces/ITextureFormatModule.h"
 #include "TextureCompressorModule.h"
 #include "PixelFormat.h"
+#include "Async/ParallelFor.h"
+#include "Serialization/CompactBinary.h"
+#include "Serialization/CompactBinaryWriter.h"
+#include "TextureBuildFunction.h"
+#include "DerivedDataBuildFunctionFactory.h"
+#include "DerivedDataSharedString.h"
 
 #include "ispc_texcomp.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatIntelISPCTexComp, Log, All);
+
+class FIntelISPCTexCompTextureBuildFunction final : public FTextureBuildFunction
+{
+	const UE::DerivedData::FUtf8SharedString& GetName() const final
+	{
+		static const UE::DerivedData::FUtf8SharedString Name(UTF8TEXTVIEW("IntelISPCTexCompTexture"));
+		return Name;
+	}
+
+	void GetVersion(UE::DerivedData::FBuildVersionBuilder& Builder, ITextureFormat*& OutTextureFormatVersioning) const final
+	{
+		static FGuid Version(TEXT("19d413ad-f529-4687-902a-3b71919cfd72"));
+		Builder << Version;
+		OutTextureFormatVersioning = FModuleManager::GetModuleChecked<ITextureFormatModule>(TEXT("TextureFormatIntelISPCTexComp")).GetTextureFormat();
+	}
+};
 
 // increment this if you change anything that will affect compression in this file, including FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE
 #define BASE_ISPC_DX11_FORMAT_VERSION 4
@@ -237,7 +259,7 @@ struct FMultithreadedCompression
 	{
 		if (bUseTasks)
 		{
-			class FIntelCompressWorker : public FNonAbandonableTask
+			class FIntelCompressWorker
 			{
 			public:
 				FIntelCompressWorker(EncoderSettingsType* pEncSettings, FImage* pInImage, FCompressedImage2D* pOutImage, int yStart, int yEnd, int SliceIndex, CompressFunction InFunctionCallback)
@@ -256,11 +278,6 @@ struct FMultithreadedCompression
 					mCallback(mpEncSettings, mpInImage, mpOutImage, mYStart, mYEnd, mSliceIndex);
 				}
 
-				FORCEINLINE TStatId GetStatId() const
-				{
-					RETURN_QUICK_DECLARE_CYCLE_STAT(FIntelCompressWorker, STATGROUP_ThreadPoolAsyncTasks);
-				}
-
 				EncoderSettingsType*	mpEncSettings;
 				FImage*					mpInImage;
 				FCompressedImage2D*		mpOutImage;
@@ -269,10 +286,9 @@ struct FMultithreadedCompression
 				int						mSliceIndex;
 				CompressFunction		mCallback;
 			};
-			typedef FAsyncTask<FIntelCompressWorker> FIntelCompressTask;
 
 			// One less task because we'll do the final + non multiple of 4 inside this task
-			TIndirectArray<FIntelCompressTask> CompressionTasks;
+			TArray<FIntelCompressWorker> CompressionTasks;
 			const int NumStasksPerSlice = MultithreadSettings.iNumTasks + 1;
 			CompressionTasks.Reserve(NumStasksPerSlice * Image.NumSlices - 1);
 			for (int SliceIndex = 0; SliceIndex < Image.NumSlices; ++SliceIndex)
@@ -282,19 +298,19 @@ struct FMultithreadedCompression
 					// Create a new task unless it's the last task in the last slice (that one will run on current thread, after these threads have been started)
 					if (SliceIndex < (Image.NumSlices - 1) || iTask < (NumStasksPerSlice - 1))
 					{
-						auto* AsyncTask = new FIntelCompressTask(&EncoderSettings, &Image, &OutCompressedImage, iTask * MultithreadSettings.iScansPerTask, (iTask + 1) * MultithreadSettings.iScansPerTask, SliceIndex, FunctionCallback);
-						CompressionTasks.Add(AsyncTask);
-						AsyncTask->StartBackgroundTask();
+						CompressionTasks.Emplace(&EncoderSettings, &Image, &OutCompressedImage, iTask * MultithreadSettings.iScansPerTask, (iTask + 1) * MultithreadSettings.iScansPerTask, SliceIndex, FunctionCallback);
 					}
 				}
 			}
-			FunctionCallback(&EncoderSettings, &Image, &OutCompressedImage, MultithreadSettings.iScansPerTask * MultithreadSettings.iNumTasks, Image.SizeY, Image.NumSlices - 1);
 
-			// Wait for all tasks to complete
-			for (int32 TaskIndex = 0; TaskIndex < CompressionTasks.Num(); ++TaskIndex)
+			ParallelForWithPreWork(CompressionTasks.Num(), [&CompressionTasks](int32 TaskIndex)
 			{
-				CompressionTasks[TaskIndex].EnsureCompletion();
-			}
+				CompressionTasks[TaskIndex].DoWork();
+			},
+			[&EncoderSettings, &Image, &OutCompressedImage, &MultithreadSettings, &FunctionCallback]()
+			{
+				FunctionCallback(&EncoderSettings, &Image, &OutCompressedImage, MultithreadSettings.iScansPerTask * MultithreadSettings.iNumTasks, Image.SizeY, Image.NumSlices - 1);
+			}, EParallelForFlags::Unbalanced);
 		}
 		else
 		{
@@ -381,8 +397,18 @@ static void IntelBC7CompressScans(bc7_enc_settings* pEncSettings, FImage* pInIma
 #define MAX_QUALITY_BY_SIZE 4
 #define FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE 3
 
-static uint16 GetDefaultCompressionBySizeValue()
+static uint16 GetDefaultCompressionBySizeValue(FCbObjectView InFormatConfigOverride)
 {
+	if (InFormatConfigOverride)
+	{
+		// If we have an explicit format config, then use it directly
+		FCbFieldView FieldView = InFormatConfigOverride.FindView("DefaultASTCQualityBySize");
+		checkf(FieldView.HasValue(), TEXT("Missing DefaultASTCQualityBySize key from FormatConfigOverride"));
+		int32 CompressionModeValue = FieldView.AsInt32();
+		checkf(!FieldView.HasError(), TEXT("Failed to parse DefaultASTCQualityBySize value from FormatConfigOverride"));
+		return CompressionModeValue;
+	}
+
 	// start at default quality, then lookup in .ini file
 	int32 CompressionModeValue = 0;
 	GConfig->GetInt(TEXT("/Script/UnrealEd.CookerSettings"), TEXT("DefaultASTCQualityBySize"), CompressionModeValue, GEngineIni);
@@ -393,12 +419,12 @@ static uint16 GetDefaultCompressionBySizeValue()
 	return CompressionModeValue;
 }
 
-static EPixelFormat GetQualityFormat(int& BlockWidth, int& BlockHeight, int32 OverrideSizeValue = -1)
+static EPixelFormat GetQualityFormat(int& BlockWidth, int& BlockHeight, const FCbObjectView& InFormatConfigOverride, int32 OverrideSizeValue = -1)
 {
 	// Note: ISPC only supports 8x8 and higher quality, and only one speed (fast)
 	// convert to a string
 	EPixelFormat Format = PF_Unknown;
-	switch (OverrideSizeValue >= 0 ? OverrideSizeValue : GetDefaultCompressionBySizeValue())
+	switch (OverrideSizeValue >= 0 ? OverrideSizeValue : GetDefaultCompressionBySizeValue(InFormatConfigOverride))
 	{
 		case 0:	//Format = PF_ASTC_12x12; BlockWidth = BlockHeight = 12; break;
 		case 1:	//Format = PF_ASTC_10x10; BlockWidth = BlockHeight = 10; break;
@@ -483,9 +509,9 @@ static void IntelASTCCompressScans(FASTCEncoderSettings* pEncSettings, FImage* p
 				FVector Normal = FVector(pInTexelsSwap[2] / 255.0f * 2.0f - 1.0f, pInTexelsSwap[1] / 255.0f * 2.0f - 1.0f, pInTexelsSwap[0] / 255.0f * 2.0f - 1.0f);
 				Normal = Normal.GetSafeNormal();
 				pInTexelsSwap[0] = 0;
-				pInTexelsSwap[1] = FMath::FloorToInt((Normal.Y * 0.5f + 0.5f) * 255.999f);
+				pInTexelsSwap[1] = FMath::RoundToInt((Normal.Y * 0.5f + 0.5f) * 255.f);
 				pInTexelsSwap[2] = 0;
-				pInTexelsSwap[3] = FMath::FloorToInt((Normal.X * 0.5f + 0.5f) * 255.999f);
+				pInTexelsSwap[3] = FMath::RoundToInt((Normal.X * 0.5f + 0.5f) * 255.f);
 
 				pInTexelsSwap += 4;
 			}
@@ -503,8 +529,8 @@ static void IntelASTCCompressScans(FASTCEncoderSettings* pEncSettings, FImage* p
 			{
 				FVector Normal = FVector(pInTexelsSwap[2] / 255.0f * 2.0f - 1.0f, pInTexelsSwap[1] / 255.0f * 2.0f - 1.0f, pInTexelsSwap[0] / 255.0f * 2.0f - 1.0f);
 				Normal = Normal.GetSafeNormal();
-				pInTexelsSwap[0] = FMath::FloorToInt((Normal.X * 0.5f + 0.5f) * 255.999f);
-				pInTexelsSwap[1] = FMath::FloorToInt((Normal.Y * 0.5f + 0.5f) * 255.999f);
+				pInTexelsSwap[0] = FMath::RoundToInt((Normal.X * 0.5f + 0.5f) * 255.f);
+				pInTexelsSwap[1] = FMath::RoundToInt((Normal.Y * 0.5f + 0.5f) * 255.f);
 				pInTexelsSwap[2] = 0;
 				pInTexelsSwap[3] = 255;
 
@@ -539,20 +565,28 @@ public:
 	{
 		return true;
 	}
+	virtual FName GetEncoderName(FName Format) const override
+	{
+		static const FName IntelName("IntelISPC");
+		return IntelName;
+	}
+
+	virtual FCbObject ExportGlobalFormatConfig(const FTextureBuildSettings& BuildSettings) const override
+	{
+		FCbWriter Writer;
+		Writer.BeginObject("TextureFormatIntelISPCTexCompSettings");
+		Writer.AddInteger("DefaultASTCQualityBySize", GetDefaultCompressionBySizeValue(FCbObjectView()));
+		Writer.EndObject();
+		return Writer.Save().AsObject();
+	}
 
 	// Return the version for the DX11 formats BC6H and BC7 (not ASTC)
 	virtual uint16 GetVersion(
 		FName Format,
-		const struct FTextureBuildSettings* BuildSettings = nullptr
+		const FTextureBuildSettings* BuildSettings = nullptr
 	) const override
 	{
 		return BASE_ISPC_DX11_FORMAT_VERSION;
-	}
-
-	// Since we want to have per texture [group] compression settings, we need to have the key based on the texture
-	virtual FString GetDerivedDataKeyString(const class UTexture& Texture, const FTextureBuildSettings* BuildSettings) const override
-	{
-		return TEXT("");
 	}
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
@@ -658,15 +692,15 @@ public:
 		{
 			// Flush negative values to 0, as those aren't supported by BC6H_UF16.
 			FFloat16& F16Value = Data[TexelIndex];
-			const bool bNegative = F16Value.Components.Sign == 1;
-			if (bNegative)
+
+			if ( F16Value.IsNegative() )
 			{
-				F16Value = 0;
+				F16Value.Encoded = 0;
 			}
 		}
 	}
 
-	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	virtual EPixelFormat GetPixelFormatForImage(const FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
 	{
 		if (BuildSettings.TextureFormatName == GTextureFormatNameBC6H)
 		{
@@ -686,13 +720,14 @@ public:
 			bool bIsNormalMap = (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalAG ||
 				BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG);
 
-			return GetQualityFormat(_Width, _Height, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality);
+			return GetQualityFormat(_Width, _Height, BuildSettings.FormatConfigOverride, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality);
 		}
 	}
 
 	virtual bool CompressImage(
 		const FImage& InImage,
-		const struct FTextureBuildSettings& BuildSettings,
+		const FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
@@ -765,7 +800,7 @@ public:
 			}
 			else
 			{
-				 GetQualityFormat( BlockWidth, BlockHeight, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality );
+				 GetQualityFormat( BlockWidth, BlockHeight, BuildSettings.FormatConfigOverride, bIsNormalMap ? FORCED_NORMAL_MAP_COMPRESSION_SIZE_VALUE : BuildSettings.CompressionQuality );
 			}
 			check(CompressedPixelFormat == PF_ASTC_4x4 || !BuildSettings.bVirtualStreamable);
 
@@ -915,6 +950,7 @@ public:
 		return Singleton;
 	}
 
+	static inline UE::DerivedData::TBuildFunctionFactory<FIntelISPCTexCompTextureBuildFunction> BuildFunctionFactory;
 	void* mDllHandle;
 };
 

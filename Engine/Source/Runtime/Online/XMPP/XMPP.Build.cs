@@ -6,7 +6,15 @@ public class XMPP : ModuleRules
 {
 	protected virtual bool bTargetPlatformSupportsJingle { get { return false; } }
 
-	protected virtual bool bTargetPlatformSupportsStrophe { get { return false; } }
+	protected virtual bool bTargetPlatformSupportsStrophe
+	{
+		get =>
+			Target.Platform == UnrealTargetPlatform.Win64 ||
+			Target.Platform == UnrealTargetPlatform.Android ||
+			Target.Platform == UnrealTargetPlatform.IOS ||
+			Target.Platform == UnrealTargetPlatform.Mac ||
+			Target.IsInPlatformGroup(UnrealPlatformGroup.Unix);
+	}
 
 	protected virtual bool bRequireOpenSSL { get { return false; } }
 
@@ -32,19 +40,6 @@ public class XMPP : ModuleRules
 		bool TargetPlatformSupportsJingle = bTargetPlatformSupportsJingle;
 		bool TargetPlatformSupportsStrophe = bTargetPlatformSupportsStrophe;
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 ||
-			Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.XboxOne ||
-			Target.Platform == UnrealTargetPlatform.Android ||
-			Target.Platform == UnrealTargetPlatform.IOS ||
-			Target.Platform == UnrealTargetPlatform.Switch||
-			Target.Platform == UnrealTargetPlatform.Mac ||
-			Target.Platform == UnrealTargetPlatform.PS4 ||
-			Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-		{
-			TargetPlatformSupportsStrophe = true;
-		}
-
 		if (TargetPlatformSupportsJingle)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "WebRTC");
@@ -67,9 +62,7 @@ public class XMPP : ModuleRules
 		}
 
 		if (Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.Win32 ||
 			Target.Platform == UnrealTargetPlatform.Mac ||
-			Target.Platform == UnrealTargetPlatform.PS4 ||
 			bRequireOpenSSL)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");

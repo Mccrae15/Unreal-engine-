@@ -3,16 +3,15 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Templates/EnableIf.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
-#include "Templates/AndOrNot.h"
 #include "Templates/RemoveReference.h"
 #include "Templates/TypeCompatibleBytes.h"
+#include <atomic>
+#include <type_traits>
 
 
 /** Default behavior. */
-#define	FORCE_THREADSAFE_SHAREDPTRS PLATFORM_WEAKLY_CONSISTENT_MEMORY
 #define THREAD_SANITISE_UNSAFEPTR 0
 
 #if THREAD_SANITISE_UNSAFEPTR
@@ -25,30 +24,28 @@
  * ESPMode is used select between either 'fast' or 'thread safe' shared pointer types.
  * This is only used by templates at compile time to generate one code path or another.
  */
-enum class ESPMode
+enum class ESPMode : uint8
 {
 	/** Forced to be not thread-safe. */
 	NotThreadSafe = 0,
 
-	/**
-		*	Fast, doesn't ever use atomic interlocks.
-		*	Some code requires that all shared pointers are thread-safe.
-		*	It's better to change it here, instead of replacing ESPMode::Fast to ESPMode::ThreadSafe throughout the code.
-		*/
-	Fast = FORCE_THREADSAFE_SHAREDPTRS ? 1 : 0,
+	/** Thread-safe, never spin locks, but slower */
+	ThreadSafe = 1,
 
-	/** Conditionally thread-safe, never spin locks, but slower */
-	ThreadSafe = 1
+	/**
+	 * Fast was sometimes ThreadSafe and sometimes NotThreadSafe, but Fast is a misnomer.
+	 * Deprecated since ThreadSafe became the default.
+	 */
+	Fast UE_DEPRECATED(5.0, "ESPMode::Fast has been deprecated - please use ESPMode::ThreadSafe instead") = 1
 };
 
 
-// Forward declarations.  Note that in the interest of fast performance, thread safety
-// features are mostly turned off (Mode = ESPMode::Fast).  If you need to access your
-// object on multiple threads, you should use ESPMode::ThreadSafe!
-template< class ObjectType, ESPMode Mode = ESPMode::Fast > class TSharedRef;
-template< class ObjectType, ESPMode Mode = ESPMode::Fast > class TSharedPtr;
-template< class ObjectType, ESPMode Mode = ESPMode::Fast > class TWeakPtr;
-template< class ObjectType, ESPMode Mode = ESPMode::Fast > class TSharedFromThis;
+// Forward declarations.  By default, thread safety features are turned on. (Mode = ESPMode::ThreadSafe).
+// If you need more concerned with performance of ref-counting, you should use ESPMode::NotThreadSafe.
+template< class ObjectType, ESPMode Mode = ESPMode::ThreadSafe > class TSharedRef;
+template< class ObjectType, ESPMode Mode = ESPMode::ThreadSafe > class TSharedPtr;
+template< class ObjectType, ESPMode Mode = ESPMode::ThreadSafe > class TWeakPtr;
+template< class ObjectType, ESPMode Mode = ESPMode::ThreadSafe > class TSharedFromThis;
 
 
 /**
@@ -67,53 +64,283 @@ namespace SharedPointerInternals
 	// NOTE: The following is an Unreal extension to standard shared_ptr behavior
 	struct FNullTag {};
 
-
-	class FReferenceControllerBase
+	template <ESPMode Mode>
+	class TReferenceControllerBase
 	{
+		using RefCountType = std::conditional_t<Mode == ESPMode::ThreadSafe, std::atomic<int32>, int32>;
+
 	public:
-		/** Constructor */
-		FORCEINLINE explicit FReferenceControllerBase()
-			: SharedReferenceCount(1)
-			, WeakReferenceCount(1)
-		{
-		}
+		FORCEINLINE explicit TReferenceControllerBase() = default;
 
-		// NOTE: The primary reason these reference counters are 32-bit values (and not 16-bit to save
-		//       memory), is that atomic operations require at least 32-bit objects.
+		// Number of shared references to this object.  When this count reaches zero, the associated object
+		// will be destroyed (even if there are still weak references!), but not the reference controller.
+		//
+		// This starts at 1 because we create reference controllers via the construction of a TSharedPtr,
+		// and that is the first reference.  There is no point in starting at 0 and then incrementing it.
+		RefCountType SharedReferenceCount{1};
 
-		/** Number of shared references to this object.  When this count reaches zero, the associated object
-		    will be destroyed (even if there are still weak references!) */
-		int32 SharedReferenceCount;
-
-		/** Number of weak references to this object.  If there are any shared references, that counts as one
-		   weak reference too. */
-		int32 WeakReferenceCount;
+		// Number of weak references to this object.  If there are any shared references, that counts as one
+		// weak reference too.  When this count reaches zero, the reference controller will be deleted.
+		//
+		// This starts at 1 because it represents the shared reference that we are also initializing
+		// SharedReferenceCount with.
+		RefCountType WeakReferenceCount{1};
 
 		/** Destroys the object associated with this reference counter.  */
 		virtual void DestroyObject() = 0;
 
-		virtual ~FReferenceControllerBase()
+		virtual ~TReferenceControllerBase()
 		{
 		}
 
-	private:
-		FReferenceControllerBase( FReferenceControllerBase const& );
-		FReferenceControllerBase& operator=( FReferenceControllerBase const& );
+		/** Returns the shared reference count */
+		FORCEINLINE int32 GetSharedReferenceCount() const
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// A 'live' shared reference count is unstable by nature and so there's no benefit
+				// to try and enforce memory ordering around the reading of it.
+				//
+				// This is equivalent to https://en.cppreference.com/w/cpp/memory/shared_ptr/use_count
+
+				// This reference count may be accessed by multiple threads
+				return SharedReferenceCount.load(std::memory_order_relaxed);
+			}
+			else
+			{
+				return SharedReferenceCount;
+			}
+		}
+
+		/** Adds a shared reference to this counter */
+		FORCEINLINE void AddSharedReference()
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// Incrementing a reference count with relaxed ordering is always safe because no other action is taken
+				// in response to the increment, so there's nothing to order with.
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+				// We do a regular SC increment here because it maps to an _InterlockedIncrement (lock inc).
+				// The codegen for a relaxed fetch_add is actually much worse under MSVC (lock xadd).
+				++SharedReferenceCount;
+#else
+				SharedReferenceCount.fetch_add(1, std::memory_order_relaxed);
+#endif
+			}
+			else
+			{
+				++SharedReferenceCount;
+			}
+		}
+
+		/**
+		 * Adds a shared reference to this counter ONLY if there is already at least one reference
+		 *
+		 * @return  True if the shared reference was added successfully
+		 */
+		bool ConditionallyAddSharedReference()
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// See AddSharedReference for the same reasons that std::memory_order_relaxed is used in this function.
+
+				// Peek at the current shared reference count.  Remember, this value may be updated by
+				// multiple threads.
+				int32 OriginalCount = SharedReferenceCount.load(std::memory_order_relaxed);
+
+				for ( ; ; )
+				{
+					if( OriginalCount == 0 )
+					{
+						// Never add a shared reference if the pointer has already expired
+						return false;
+					}
+
+					// Attempt to increment the reference count.
+					//
+					// We need to make sure that we never revive a counter that has already expired, so if the
+					// actual value what we expected (because it was touched by another thread), then we'll try
+					// again.  Note that only in very unusual cases will this actually have to loop.
+					//
+					// We do a weak read here because we require a loop and this is the recommendation:
+					//
+					// https://en.cppreference.com/w/cpp/atomic/atomic/compare_exchange
+					//
+					// > When a compare-and-exchange is in a loop, the weak version will yield better performance on some platforms.
+					// > When a weak compare-and-exchange would require a loop and a strong one would not, the strong one is preferable
+					if (SharedReferenceCount.compare_exchange_weak(OriginalCount, OriginalCount + 1, std::memory_order_relaxed))
+					{
+						return true;
+					}
+				}
+			}
+			else
+			{
+				if( SharedReferenceCount == 0 )
+				{
+					// Never add a shared reference if the pointer has already expired
+					return false;
+				}
+
+				++SharedReferenceCount;
+				return true;
+			}
+		}
+
+		/** Releases a shared reference to this counter */
+		FORCEINLINE void ReleaseSharedReference()
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// std::memory_order_release is used here so that, if we do end up executing the destructor, it's not possible
+				// for side effects from executing the destructor end up being visible before we've determined that the shared
+				// reference count is actually zero.
+
+				int32 OldSharedCount = SharedReferenceCount.fetch_sub(1, std::memory_order_release);
+				checkSlow(OldSharedCount > 0);
+				if (OldSharedCount == 1)
+				{
+					// Ensure that all other threads' accesses to the object are visible to this thread before we call the
+					// destructor.
+					std::atomic_thread_fence(std::memory_order_acquire);
+
+					// Last shared reference was released!  Destroy the referenced object.
+					DestroyObject();
+
+					// No more shared referencers, so decrement the weak reference count by one.  When the weak
+					// reference count reaches zero, this object will be deleted.
+					ReleaseWeakReference();
+				}
+			}
+			else
+			{
+				checkSlow( SharedReferenceCount > 0 );
+
+				if( --SharedReferenceCount == 0 )
+				{
+					// Last shared reference was released!  Destroy the referenced object.
+					DestroyObject();
+
+					// No more shared referencers, so decrement the weak reference count by one.  When the weak
+					// reference count reaches zero, this object will be deleted.
+					ReleaseWeakReference();
+				}
+			}
+		}
+
+		/** Adds a weak reference to this counter */
+		FORCEINLINE void AddWeakReference()
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// See AddSharedReference for the same reasons that std::memory_order_relaxed is used in this function.
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+				// We do a regular SC increment here because it maps to an _InterlockedIncrement (lock inc).
+				// The codegen for a relaxed fetch_add is actually much worse under MSVC (lock xadd).
+				++WeakReferenceCount;
+#else
+				WeakReferenceCount.fetch_add(1, std::memory_order_relaxed);
+#endif
+			}
+			else
+			{
+				++WeakReferenceCount;
+			}
+		}
+
+		/** Releases a weak reference to this counter */
+		void ReleaseWeakReference()
+		{
+			if constexpr (Mode == ESPMode::ThreadSafe)
+			{
+				// See ReleaseSharedReference for the same reasons that std::memory_order_release and std::memory_order_acquire are used in this function.
+
+				int32 OldWeakCount = WeakReferenceCount.fetch_sub(1, std::memory_order_release);
+				checkSlow(OldWeakCount > 0);
+				if (OldWeakCount == 1)
+				{
+					std::atomic_thread_fence(std::memory_order_acquire);
+
+					// Disable this if running clang's static analyzer. Passing shared pointers
+					// and references to functions it cannot reason about, produces false
+					// positives about use-after-free in the TSharedPtr/TSharedRef destructors.
+#if !defined(__clang_analyzer__)
+					// No more references to this reference count.  Destroy it!
+					delete this;
+#endif
+				}
+			}
+			else
+			{
+				checkSlow( WeakReferenceCount > 0 );
+
+				if( --WeakReferenceCount == 0 )
+				{
+					// No more references to this reference count.  Destroy it!
+#if !defined(__clang_analyzer__)
+					delete this;
+#endif
+				}
+			}
+		}
+
+		// Non-copyable
+		TReferenceControllerBase(const TReferenceControllerBase&) = delete;
+		TReferenceControllerBase& operator=(const TReferenceControllerBase&) = delete;
 	};
 
-	template <typename ObjectType, typename DeleterType>
-	class TReferenceControllerWithDeleter : private DeleterType, public FReferenceControllerBase
+	// A helper class that efficiently stores a custom deleter and is intended to be derived from. If the custom deleter is an empty class,
+	// TDeleterHolder derives from it exploiting empty base optimisation (https://en.cppreference.com/w/cpp/language/ebo). Otherwise
+	// it stores the custom deleter as a member to allow a function pointer to be used as a custom deleter (a function pointer can't 
+	// be a base class)
+	template <typename DeleterType, bool bIsZeroSize = std::is_empty_v<DeleterType>>
+	struct TDeleterHolder : private DeleterType
+	{
+		explicit TDeleterHolder(DeleterType&& Arg)
+			: DeleterType(MoveTemp(Arg))
+		{
+		}
+
+		template <typename ObjectType>
+		void InvokeDeleter(ObjectType * Object)
+		{
+			Invoke(*static_cast<DeleterType*>(this), Object);
+		}
+	};
+
+	template <typename DeleterType>
+	struct TDeleterHolder<DeleterType, false>
+	{
+		explicit TDeleterHolder(DeleterType&& Arg)
+			: Deleter(MoveTemp(Arg))
+		{
+		}
+
+		template <typename ObjectType>
+		void InvokeDeleter(ObjectType * Object)
+		{
+			Invoke(Deleter, Object);
+		}
+
+	private:
+		DeleterType Deleter;
+	};
+
+	template <typename ObjectType, typename DeleterType, ESPMode Mode>
+	class TReferenceControllerWithDeleter : private TDeleterHolder<DeleterType>, public TReferenceControllerBase<Mode>
 	{
 	public:
 		explicit TReferenceControllerWithDeleter(ObjectType* InObject, DeleterType&& Deleter)
-			: DeleterType(MoveTemp(Deleter))
+			: TDeleterHolder<DeleterType>(MoveTemp(Deleter))
 			, Object(InObject)
 		{
 		}
 
 		virtual void DestroyObject() override
 		{
-			(*static_cast<DeleterType*>(this))(Object);
+			this->InvokeDeleter(Object);
 		}
 
 		// Non-copyable
@@ -125,8 +352,8 @@ namespace SharedPointerInternals
 		ObjectType* Object;
 	};
 
-	template <typename ObjectType>
-	class TIntrusiveReferenceController : public FReferenceControllerBase
+	template <typename ObjectType, ESPMode Mode>
+	class TIntrusiveReferenceController : public TReferenceControllerBase<Mode>
 	{
 	public:
 		template <typename... ArgTypes>
@@ -166,212 +393,72 @@ namespace SharedPointerInternals
 	};
 
 	/** Creates a reference controller which just calls delete */
-	template <typename ObjectType>
-	inline FReferenceControllerBase* NewDefaultReferenceController(ObjectType* Object)
+	template <ESPMode Mode, typename ObjectType>
+	inline TReferenceControllerBase<Mode>* NewDefaultReferenceController(ObjectType* Object)
 	{
-		return new TReferenceControllerWithDeleter<ObjectType, DefaultDeleter<ObjectType>>(Object, DefaultDeleter<ObjectType>());
+		return new TReferenceControllerWithDeleter<ObjectType, DefaultDeleter<ObjectType>, Mode>(Object, DefaultDeleter<ObjectType>());
 	}
 
 	/** Creates a custom reference controller with a specified deleter */
-	template <typename ObjectType, typename DeleterType>
-	inline FReferenceControllerBase* NewCustomReferenceController(ObjectType* Object, DeleterType&& Deleter)
+	template <ESPMode Mode, typename ObjectType, typename DeleterType>
+	inline TReferenceControllerBase<Mode>* NewCustomReferenceController(ObjectType* Object, DeleterType&& Deleter)
 	{
-		return new TReferenceControllerWithDeleter<ObjectType, typename TRemoveReference<DeleterType>::Type>(Object, Forward<DeleterType>(Deleter));
+		return new TReferenceControllerWithDeleter<ObjectType, typename TRemoveReference<DeleterType>::Type, Mode>(Object, Forward<DeleterType>(Deleter));
 	}
 
 	/** Creates an intrusive reference controller */
-	template <typename ObjectType, typename... ArgTypes>
-	inline TIntrusiveReferenceController<ObjectType>* NewIntrusiveReferenceController(ArgTypes&&... Args)
+	template <ESPMode Mode, typename ObjectType, typename... ArgTypes>
+	inline TIntrusiveReferenceController<ObjectType, Mode>* NewIntrusiveReferenceController(ArgTypes&&... Args)
 	{
-		return new TIntrusiveReferenceController<ObjectType>(Forward<ArgTypes>(Args)...);
+		return new TIntrusiveReferenceController<ObjectType, Mode>(Forward<ArgTypes>(Args)...);
 	}
 
 
 	/** Proxy structure for implicitly converting raw pointers to shared/weak pointers */
 	// NOTE: The following is an Unreal extension to standard shared_ptr behavior
-	template< class ObjectType >
-	struct FRawPtrProxy
+	template <class ObjectType>
+	struct TRawPtrProxy
 	{
 		/** The object pointer */
 		ObjectType* Object;
 
-		/** Reference controller used to destroy the object */
-		FReferenceControllerBase* ReferenceController;
+		/** Construct implicitly from a nullptr */
+		FORCEINLINE TRawPtrProxy( TYPE_OF_NULLPTR )
+			: Object( nullptr )
+		{
+		}
 
-		/** Construct implicitly from an object */
-		FORCEINLINE FRawPtrProxy( ObjectType* InObject )
-			: Object             ( InObject )
-			, ReferenceController( NewDefaultReferenceController( InObject ) )
+		/** Construct explicitly from an object */
+		explicit FORCEINLINE TRawPtrProxy( ObjectType* InObject )
+			: Object( InObject )
+		{
+		}
+	};
+
+
+	/** Proxy structure for implicitly converting raw pointers to shared/weak pointers */
+	// NOTE: The following is an Unreal extension to standard shared_ptr behavior
+	template <class ObjectType, typename DeleterType>
+	struct TRawPtrProxyWithDeleter
+	{
+		/** The object pointer */
+		ObjectType* Object;
+
+		/** The deleter object */
+		DeleterType Deleter;
+
+		/** Construct implicitly from an object and a custom deleter */
+		FORCEINLINE TRawPtrProxyWithDeleter( ObjectType* InObject, const DeleterType& InDeleter )
+			: Object ( InObject )
+			, Deleter( InObject, InDeleter )
 		{
 		}
 
 		/** Construct implicitly from an object and a custom deleter */
-		template< class Deleter >
-		FORCEINLINE FRawPtrProxy( ObjectType* InObject, Deleter&& InDeleter )
-			: Object             ( InObject )
-			, ReferenceController( NewCustomReferenceController( InObject, Forward< Deleter >( InDeleter ) ) )
+		FORCEINLINE TRawPtrProxyWithDeleter( ObjectType* InObject, DeleterType&& InDeleter )
+			: Object ( InObject )
+			, Deleter( MoveTemp( InDeleter ) )
 		{
-		}
-	};
-
-
-	/**
-	 * FReferenceController is a standalone heap-allocated object that tracks the number of references
-	 * to an object referenced by TSharedRef, TSharedPtr or TWeakPtr objects.
-	 *
-	 * It is specialized for different threading modes.
-	 */
-	template< ESPMode Mode >
-	struct FReferenceControllerOps;
-
-	template<>
-	struct FReferenceControllerOps<ESPMode::ThreadSafe>
-	{
-		/** Returns the shared reference count */
-		static FORCEINLINE const int32 GetSharedReferenceCount(const FReferenceControllerBase* ReferenceController)
-		{
-			// This reference count may be accessed by multiple threads
-			return FPlatformAtomics::AtomicRead( (int32 volatile*)&ReferenceController->SharedReferenceCount );
-		}
-
-		/** Adds a shared reference to this counter */
-		static FORCEINLINE void AddSharedReference(FReferenceControllerBase* ReferenceController)
-		{
-			FPlatformAtomics::InterlockedIncrement( &ReferenceController->SharedReferenceCount );
-		}
-
-		/**
-		 * Adds a shared reference to this counter ONLY if there is already at least one reference
-		 *
-		 * @return  True if the shared reference was added successfully
-		 */
-		static bool ConditionallyAddSharedReference(FReferenceControllerBase* ReferenceController)
-		{
-			for( ; ; )
-			{
-				// Peek at the current shared reference count.  Remember, this value may be updated by
-				// multiple threads.
-				const int32 OriginalCount = FPlatformAtomics::AtomicRead( (int32 volatile*)&ReferenceController->SharedReferenceCount );
-				if( OriginalCount == 0 )
-				{
-					// Never add a shared reference if the pointer has already expired
-					return false;
-				}
-
-				// Attempt to increment the reference count.
-				const int32 ActualOriginalCount = FPlatformAtomics::InterlockedCompareExchange( &ReferenceController->SharedReferenceCount, OriginalCount + 1, OriginalCount );
-
-				// We need to make sure that we never revive a counter that has already expired, so if the
-				// actual value what we expected (because it was touched by another thread), then we'll try
-				// again.  Note that only in very unusual cases will this actually have to loop.
-				if( ActualOriginalCount == OriginalCount )
-				{
-					return true;
-				}
-			}
-		}
-
-		/** Releases a shared reference to this counter */
-		static FORCEINLINE void ReleaseSharedReference(FReferenceControllerBase* ReferenceController)
-		{
-			checkSlow( ReferenceController->SharedReferenceCount > 0 );
-
-			if( FPlatformAtomics::InterlockedDecrement( &ReferenceController->SharedReferenceCount ) == 0 )
-			{
-				// Last shared reference was released!  Destroy the referenced object.
-				ReferenceController->DestroyObject();
-
-				// No more shared referencers, so decrement the weak reference count by one.  When the weak
-				// reference count reaches zero, this object will be deleted.
-				ReleaseWeakReference(ReferenceController);
-			}
-		}
-
-
-		/** Adds a weak reference to this counter */
-		static FORCEINLINE void AddWeakReference(FReferenceControllerBase* ReferenceController)
-		{
-			FPlatformAtomics::InterlockedIncrement( &ReferenceController->WeakReferenceCount );
-		}
-
-		/** Releases a weak reference to this counter */
-		static void ReleaseWeakReference(FReferenceControllerBase* ReferenceController)
-		{
-			checkSlow( ReferenceController->WeakReferenceCount > 0 );
-
-			if( FPlatformAtomics::InterlockedDecrement( &ReferenceController->WeakReferenceCount ) == 0 )
-			{
-				// No more references to this reference count.  Destroy it!
-				delete ReferenceController;
-			}
-		}
-	};
-
-
-	template<>
-	struct FReferenceControllerOps<ESPMode::NotThreadSafe>
-	{
-		/** Returns the shared reference count */
-		static FORCEINLINE const int32 GetSharedReferenceCount(const FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			return ReferenceController->SharedReferenceCount;
-		}
-
-		/** Adds a shared reference to this counter */
-		static FORCEINLINE void AddSharedReference(FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			++ReferenceController->SharedReferenceCount;
-		}
-
-		/**
-		 * Adds a shared reference to this counter ONLY if there is already at least one reference
-		 *
-		 * @return  True if the shared reference was added successfully
-		 */
-		static bool ConditionallyAddSharedReference(FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			if( ReferenceController->SharedReferenceCount == 0 )
-			{
-				// Never add a shared reference if the pointer has already expired
-				return false;
-			}
-
-			++ReferenceController->SharedReferenceCount;
-			return true;
-		}
-
-		/** Releases a shared reference to this counter */
-		static FORCEINLINE void ReleaseSharedReference(FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			checkSlow( ReferenceController->SharedReferenceCount > 0 );
-
-			if( --ReferenceController->SharedReferenceCount == 0 )
-			{
-				// Last shared reference was released!  Destroy the referenced object.
-				ReferenceController->DestroyObject();
-
-				// No more shared referencers, so decrement the weak reference count by one.  When the weak
-				// reference count reaches zero, this object will be deleted.
-				ReleaseWeakReference(ReferenceController);
-			}
-		}
-
-		/** Adds a weak reference to this counter */
-		static FORCEINLINE void AddWeakReference(FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			++ReferenceController->WeakReferenceCount;
-		}
-
-		/** Releases a weak reference to this counter */
-		static void ReleaseWeakReference(FReferenceControllerBase* ReferenceController) TSAN_SAFE_UNSAFEPTR
-		{
-			checkSlow( ReferenceController->WeakReferenceCount > 0 );
-
-			if( --ReferenceController->WeakReferenceCount == 0 )
-			{
-				// No more references to this reference count.  Destroy it!
-				delete ReferenceController;
-			}
 		}
 	};
 
@@ -383,8 +470,6 @@ namespace SharedPointerInternals
 	template< ESPMode Mode >
 	class FSharedReferencer
 	{
-		typedef FReferenceControllerOps<Mode> TOps;
-
 	public:
 
 		/** Constructor for an empty shared referencer object */
@@ -393,7 +478,7 @@ namespace SharedPointerInternals
 		{ }
 
 		/** Constructor that counts a single reference to the specified object */
-		inline explicit FSharedReferencer( FReferenceControllerBase* InReferenceController )
+		inline explicit FSharedReferencer( TReferenceControllerBase<Mode>* InReferenceController )
 			: ReferenceController( InReferenceController )
 		{ }
 		
@@ -405,7 +490,7 @@ namespace SharedPointerInternals
 			// shared reference count
 			if( ReferenceController != nullptr )
 			{
-				TOps::AddSharedReference(ReferenceController);
+				ReferenceController->AddSharedReference();
 			}
 		}
 
@@ -428,7 +513,7 @@ namespace SharedPointerInternals
 				// Attempt to elevate a weak reference to a shared one.  For this to work, the object this
 				// weak counter is associated with must already have at least one shared reference.  We'll
 				// never revive a pointer that has already expired!
-				if( !TOps::ConditionallyAddSharedReference(ReferenceController) )
+				if( !ReferenceController->ConditionallyAddSharedReference() )
 				{
 					ReferenceController = nullptr;
 				}
@@ -447,14 +532,14 @@ namespace SharedPointerInternals
 				// Attempt to elevate a weak reference to a shared one.  For this to work, the object this
 				// weak counter is associated with must already have at least one shared reference.  We'll
 				// never revive a pointer that has already expired!
-				if( !TOps::ConditionallyAddSharedReference(ReferenceController) )
+				if( !ReferenceController->ConditionallyAddSharedReference() )
 				{
 					ReferenceController = nullptr;
 				}
 
 				// Tell the reference counter object that we're no longer referencing the object with
 				// this weak pointer
-				TOps::ReleaseWeakReference(InWeakReference.ReferenceController);
+				InWeakReference.ReferenceController->ReleaseWeakReference();
 				InWeakReference.ReferenceController = nullptr;
 			}
 		}
@@ -466,7 +551,7 @@ namespace SharedPointerInternals
 			{
 				// Tell the reference counter object that we're no longer referencing the object with
 				// this shared pointer
-				TOps::ReleaseSharedReference(ReferenceController);
+				ReferenceController->ReleaseSharedReference();
 			}
 		}
 
@@ -481,13 +566,13 @@ namespace SharedPointerInternals
 				// First, add a shared reference to the new object
 				if( NewReferenceController != nullptr )
 				{
-					TOps::AddSharedReference(NewReferenceController);
+					NewReferenceController->AddSharedReference();
 				}
 
 				// Release shared reference to the old object
 				if( ReferenceController != nullptr )
 				{
-					TOps::ReleaseSharedReference(ReferenceController);
+					ReferenceController->ReleaseSharedReference();
 				}
 
 				// Assume ownership of the assigned reference counter
@@ -513,7 +598,7 @@ namespace SharedPointerInternals
 				// Release shared reference to the old object
 				if( OldReferenceController != nullptr )
 				{
-					TOps::ReleaseSharedReference(OldReferenceController);
+					OldReferenceController->ReleaseSharedReference();
 				}
 			}
 
@@ -537,7 +622,7 @@ namespace SharedPointerInternals
 		 */
 		FORCEINLINE const int32 GetSharedReferenceCount() const
 		{
-			return ReferenceController != nullptr ? TOps::GetSharedReferenceCount(ReferenceController) : 0;
+			return ReferenceController != nullptr ? ReferenceController->GetSharedReferenceCount() : 0;
 		}
 
 		/**
@@ -559,7 +644,7 @@ namespace SharedPointerInternals
 	private:
 
 		/** Pointer to the reference controller for the object a shared reference/pointer is referencing */
-		FReferenceControllerBase* ReferenceController;
+		TReferenceControllerBase<Mode>* ReferenceController;
 	};
 
 
@@ -570,8 +655,6 @@ namespace SharedPointerInternals
 	template< ESPMode Mode >
 	class FWeakReferencer
 	{
-		typedef FReferenceControllerOps<Mode> TOps;
-
 	public:
 
 		/** Default constructor with empty counter */
@@ -586,7 +669,7 @@ namespace SharedPointerInternals
 			// If the weak referencer has a valid controller, then go ahead and add a weak reference to it!
 			if( ReferenceController != nullptr )
 			{
-				TOps::AddWeakReference(ReferenceController);
+				ReferenceController->AddWeakReference();
 			}
 		}
 
@@ -604,7 +687,7 @@ namespace SharedPointerInternals
 			// If the shared referencer had a valid controller, then go ahead and add a weak reference to it!
 			if( ReferenceController != nullptr )
 			{
-				TOps::AddWeakReference(ReferenceController);
+				ReferenceController->AddWeakReference();
 			}
 		}
 
@@ -615,7 +698,7 @@ namespace SharedPointerInternals
 			{
 				// Tell the reference counter object that we're no longer referencing the object with
 				// this weak pointer
-				TOps::ReleaseWeakReference(ReferenceController);
+				ReferenceController->ReleaseWeakReference();
 			}
 		}
 		
@@ -637,7 +720,7 @@ namespace SharedPointerInternals
 			InWeakReference.ReferenceController = nullptr;
 			if( OldReferenceController != nullptr )
 			{
-				TOps::ReleaseWeakReference(OldReferenceController);
+				OldReferenceController->ReleaseWeakReference();
 			}
 
 			return *this;
@@ -659,14 +742,14 @@ namespace SharedPointerInternals
 		 */
 		FORCEINLINE const bool IsValid() const
 		{
-			return ReferenceController != nullptr && TOps::GetSharedReferenceCount(ReferenceController) > 0;
+			return ReferenceController != nullptr && ReferenceController->GetSharedReferenceCount() > 0;
 		}
 
 	private:
 
 		/** Assigns a new reference controller to this counter object, first adding a reference to it, then
 		    releasing the previous object. */
-		inline void AssignReferenceController( FReferenceControllerBase* NewReferenceController )
+		inline void AssignReferenceController( TReferenceControllerBase<Mode>* NewReferenceController )
 		{
 			// Only proceed if the new reference counter is different than our current
 			if( NewReferenceController != ReferenceController )
@@ -674,13 +757,13 @@ namespace SharedPointerInternals
 				// First, add a weak reference to the new object
 				if( NewReferenceController != nullptr )
 				{
-					TOps::AddWeakReference(NewReferenceController);
+					NewReferenceController->AddWeakReference();
 				}
 
 				// Release weak reference to the old object
 				if( ReferenceController != nullptr )
 				{
-					TOps::ReleaseWeakReference(ReferenceController);
+					ReferenceController->ReleaseWeakReference();
 				}
 
 				// Assume ownership of the assigned reference counter
@@ -696,7 +779,7 @@ namespace SharedPointerInternals
 	private:
 
 		/** Pointer to the reference controller for the object a TWeakPtr is referencing */
-		FReferenceControllerBase* ReferenceController;
+		TReferenceControllerBase<Mode>* ReferenceController;
 	};
 
 

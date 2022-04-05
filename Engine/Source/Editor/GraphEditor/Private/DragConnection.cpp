@@ -141,6 +141,10 @@ void FDragConnection::HoverTargetChanged()
 				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
 				break;
 
+			case CONNECT_RESPONSE_MAKE_WITH_PROMOTION:
+				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
+				break;
+
 			case CONNECT_RESPONSE_DISALLOW:
 			default:
 				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
@@ -257,9 +261,13 @@ FReply FDragConnection::DroppedOnNode(FVector2D ScreenPosition, FVector2D GraphP
 		{
 			for (UEdGraphPin* SourcePin : ValidSourcePins)
 			{
+				// copy it here since the pin might no longer be valid
+				const UEdGraphSchema* SourcePinSchema = SourcePin->GetSchema();
+				SourcePinSchema->SetPinBeingDroppedOnNode(SourcePin);
+
 				// Check for pin drop support
 				FText ResponseText;
-				if (SourcePin->GetOwningNode() != NodeOver && SourcePin->GetSchema()->SupportsDropPinOnNode(NodeOver, SourcePin->PinType, SourcePin->Direction, ResponseText))
+				if (SourcePin->GetOwningNode() != NodeOver && SourcePinSchema->SupportsDropPinOnNode(NodeOver, SourcePin->PinType, SourcePin->Direction, ResponseText))
 				{
 					bHandledPinDropOnNode = true;
 
@@ -275,7 +283,7 @@ FReply FDragConnection::DroppedOnNode(FVector2D ScreenPosition, FVector2D GraphP
 					{
 						SourcePin->Modify();
 						EdGraphPin->Modify();
-						SourcePin->GetSchema()->TryCreateConnection(SourcePin, EdGraphPin);
+						SourcePinSchema->TryCreateConnection(SourcePin, EdGraphPin);
 					}
 				}
 
@@ -284,6 +292,8 @@ FReply FDragConnection::DroppedOnNode(FVector2D ScreenPosition, FVector2D GraphP
 				{
 					bHandledPinDropOnNode = true;
 				}
+
+				SourcePinSchema->SetPinBeingDroppedOnNode(nullptr);
 			}
 		}
 	}

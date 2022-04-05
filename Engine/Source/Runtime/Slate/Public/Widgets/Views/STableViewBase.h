@@ -13,6 +13,7 @@
 #include "Framework/Views/ITypedTableView.h"
 #include "Framework/Layout/InertialScrollManager.h"
 #include "Framework/Layout/Overscroll.h"
+#include "Styling/SlateTypes.h"
 
 #include "STableViewBase.generated.h"
 
@@ -24,6 +25,7 @@ class SListPanel;
 class SScrollBar;
 enum class EConsumeMouseWheel : uint8;
 enum class ESlateVisibility : uint8;
+struct FScrollBarStyle;
 
 /** If the list panel is arranging items as tiles, this enum dictates how the items should be aligned (basically, where any extra space is placed) */
 UENUM(BlueprintType)
@@ -91,7 +93,7 @@ class SLATE_API STableViewBase
 public:
 
 	/** Create the child widgets that comprise the list */
-	void ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled );
+	void ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled, const FScrollBarStyle* InScrollBarStyle = nullptr );
 
 	/** Sets the item height */
 	void SetItemHeight(TAttribute<float> Height);
@@ -140,6 +142,9 @@ public:
 	/** Scrolls the view to the bottom */
 	void ScrollToBottom();
 
+	/** Returns whether the attached scrollbar is scrolling */
+	bool IsScrolling() const;
+
 	/** Gets the scroll offset of this view (in items) */
 	float GetScrollOffset() const;
 
@@ -152,7 +157,12 @@ public:
 	/** Add the scroll offset of this view (in items) */
 	void AddScrollOffset(const float InScrollOffsetDelta, bool RefreshList = false);
 
+	EVisibility GetScrollbarVisibility() const;
+
 	void SetScrollbarVisibility(const EVisibility InVisibility);
+
+	/** Returns true if scrolling is possible; false if the view is big enough to fit all the content. */
+	bool IsScrollbarNeeded() const;
 
 	/** Sets the fixed offset in items to always apply to the top/left (depending on orientation) of the list. */
 	void SetFixedLineScrollOffset(TOptional<double> InFixedLineScrollOffset);
@@ -160,8 +170,17 @@ public:
 	/** Sets whether the list should lerp between scroll offsets or jump instantly between them. */
 	void SetIsScrollAnimationEnabled(bool bInEnableScrollAnimation);
 
+	/** Sets whether to permit overscroll on this list view */
+	void SetAllowOverscroll(EAllowOverscroll InAllowOverscroll);
+
+	/** Enables/disables being able to scroll with the right mouse button. */
+	void SetIsRightClickScrollingEnabled(const bool bInEnableRightClickScrolling);
+
 	/** Sets the multiplier applied when wheel scrolling. Higher numbers will cover more distance per click of the wheel. */
 	void SetWheelScrollMultiplier(float NewWheelScrollMultiplier);
+
+	/** Sets the Background Brush */
+	void SetBackgroundBrush(const TAttribute<const FSlateBrush*>& InBackgroundBrush);
 
 public:
 
@@ -182,6 +201,7 @@ public:
 	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
 	virtual FCursorReply OnCursorQuery( const FGeometry& MyGeometry, const FPointerEvent& CursorEvent ) const override;
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+	virtual bool ComputeVolatility() const override;
 	virtual FReply OnTouchStarted( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchMoved( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
 	virtual FReply OnTouchEnded( const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent ) override;
@@ -255,6 +275,11 @@ protected:
 	 * Default is 1, but may be more in subclasses (like STileView)
 	 */
 	virtual int32 GetNumItemsPerLine() const;
+
+	/**
+	 * Get the offset of the first list item.
+	 */
+	virtual float GetFirstLineScrollOffset() const;
 
 	/*
 	 * Right click down
@@ -354,6 +379,9 @@ protected:
 	/** True to lerp smoothly between offsets when the desired scroll offset changes. */
 	bool bEnableAnimatedScrolling = false;
 
+	/** True to allow right click drag scrolling. */
+	bool bEnableRightClickScrolling = true;
+
 	/** The currently displayed scroll offset from the beginning of the list in items. */
 	double CurrentScrollOffset = 0.;
 
@@ -411,6 +439,9 @@ protected:
 
 	/** Passing over the clipping to SListPanel */
 	virtual void OnClippingChanged() override;
+
+	/** Brush resource representing the background area of the view */
+	FInvalidatableBrushAttribute BackgroundBrush;
 
 protected:
 

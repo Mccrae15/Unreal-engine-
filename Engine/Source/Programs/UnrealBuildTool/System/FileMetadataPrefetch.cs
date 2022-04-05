@@ -6,7 +6,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -42,7 +43,7 @@ namespace UnrealBuildTool
 		{
 			lock(QueuedDirectories)
 			{
-				if(QueuedDirectories.Add(UnrealBuildTool.EngineDirectory))
+				if(QueuedDirectories.Add(Unreal.EngineDirectory))
 				{
 					Enqueue(() => ScanEngineDirectory());
 				}
@@ -110,7 +111,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		static void ScanEngineDirectory()
 		{
-			foreach (DirectoryReference ExtensionDir in UnrealBuildTool.GetExtensionDirs(UnrealBuildTool.EngineDirectory))
+			foreach (DirectoryReference ExtensionDir in Unreal.GetExtensionDirs(Unreal.EngineDirectory))
 			{
 				DirectoryItem BaseDirectory = DirectoryItem.GetItemByDirectoryReference(ExtensionDir);
 				BaseDirectory.CacheDirectories();
@@ -138,7 +139,7 @@ namespace UnrealBuildTool
 		/// <param name="ProjectDirectory">The project directory to search</param>
 		static void ScanProjectDirectory(DirectoryItem ProjectDirectory)
 		{
-			foreach (DirectoryReference ExtensionDir in UnrealBuildTool.GetExtensionDirs(UnrealBuildTool.EngineDirectory))
+			foreach (DirectoryReference ExtensionDir in Unreal.GetExtensionDirs(Unreal.EngineDirectory))
 			{
 				DirectoryItem BaseDirectory = DirectoryItem.GetItemByDirectoryReference(ExtensionDir);
 				BaseDirectory.CacheDirectories();

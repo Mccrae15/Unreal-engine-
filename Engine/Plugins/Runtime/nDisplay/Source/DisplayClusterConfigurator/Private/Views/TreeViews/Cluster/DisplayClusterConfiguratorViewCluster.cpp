@@ -19,6 +19,7 @@
 #include "UnrealExporter.h"
 #include "Exporters/Exporter.h"
 #include "ScopedTransaction.h"
+#include "Widgets/Images/SImage.h"
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterConfiguratorViewCluster"
 
@@ -47,18 +48,44 @@ TSharedRef<SWidget> FDisplayClusterConfiguratorViewCluster::CreateWidget()
 
 void FDisplayClusterConfiguratorViewCluster::ConstructColumns(TArray<SHeaderRow::FColumn::FArguments>& OutColumnArgs) const
 {
-	OutColumnArgs.Add(SHeaderRow::Column(FDisplayClusterConfiguratorViewCluster::Columns::Visible)
-		.DefaultLabel(LOCTEXT("VisibleColumn_Label", "Visible"))
-		.FixedWidth(18));
-
-	OutColumnArgs.Add(SHeaderRow::Column(FDisplayClusterConfiguratorViewCluster::Columns::Enabled)
-		.DefaultLabel(LOCTEXT("EnabledColumn_Label", "Enabled"))
-		.FixedWidth(18));
-
 	// For the cluster view, use the group column to indicate which host the cluster nodes belong to with a colored band
 	OutColumnArgs.Add(SHeaderRow::Column(FDisplayClusterConfiguratorViewCluster::Columns::Host)
-		.DefaultLabel(LOCTEXT("HiostColumn_Label", "Host"))
-		.FixedWidth(8));
+		.DefaultLabel(FText::GetEmpty())
+		.DefaultTooltip(LOCTEXT("HostColumn_ToolTip", "Host"))
+		.FixedWidth(12)
+	);
+
+	OutColumnArgs.Add(SHeaderRow::Column(FDisplayClusterConfiguratorViewCluster::Columns::Visible)
+		.DefaultLabel(LOCTEXT("VisibleColumn_Label", "Visible"))
+		.FixedWidth(24)
+		.HAlignHeader(HAlign_Left)
+		.VAlignHeader(VAlign_Center)
+		.HAlignCell(HAlign_Center)
+		.VAlignCell(VAlign_Center)
+		.DefaultTooltip(LOCTEXT("VisibleColumn_ToolTip", "Visible"))
+		.HeaderContentPadding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
+		[
+			SNew(SImage)
+			.ColorAndOpacity(FSlateColor::UseForeground())
+			.Image(FAppStyle::Get().GetBrush("Level.VisibleIcon16x"))
+		]
+	);
+
+	OutColumnArgs.Add(SHeaderRow::Column(FDisplayClusterConfiguratorViewCluster::Columns::Enabled)
+		.DefaultLabel(LOCTEXT("EnabledColumn_Label", "Locked"))
+		.FixedWidth(24)
+		.HAlignHeader(HAlign_Left)
+		.VAlignHeader(VAlign_Center)
+		.HAlignCell(HAlign_Center)
+		.VAlignCell(VAlign_Center)
+		.DefaultTooltip(LOCTEXT("EnabledColumn_ToolTip", "Locked"))
+		.HeaderContentPadding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
+		[
+			SNew(SImage)
+			.ColorAndOpacity(FSlateColor::UseForeground())
+			.Image(FAppStyle::Get().GetBrush("PropertyWindow.Locked"))
+		]
+	);
 
 	FDisplayClusterConfiguratorViewTree::ConstructColumns(OutColumnArgs);
 }
@@ -112,7 +139,7 @@ void FDisplayClusterConfiguratorViewCluster::FillContextMenu(FMenuBuilder& MenuB
 		if (SelectedObject->IsA<UDisplayClusterConfigurationClusterNode>())
 		{
 			MenuBuilder.AddSeparator();
-			MenuBuilder.AddMenuEntry(TreeViewCommands.SetAsMaster);
+			MenuBuilder.AddMenuEntry(TreeViewCommands.SetAsPrimary);
 		}
 	}
 }
@@ -196,9 +223,9 @@ void FDisplayClusterConfiguratorViewCluster::BindPinnableCommands(FUICommandList
 	);
 
 	CommandList.MapAction(
-		TreeViewCommands.SetAsMaster,
-		FExecuteAction::CreateSP(this, &FDisplayClusterConfiguratorViewCluster::SetAsMaster),
-		FCanExecuteAction::CreateSP(this, &FDisplayClusterConfiguratorViewCluster::CanSetAsMaster)
+		TreeViewCommands.SetAsPrimary,
+		FExecuteAction::CreateSP(this, &FDisplayClusterConfiguratorViewCluster::SetAsPrimary),
+		FCanExecuteAction::CreateSP(this, &FDisplayClusterConfiguratorViewCluster::CanSetAsPrimary)
 	);
 }
 
@@ -406,7 +433,7 @@ bool FDisplayClusterConfiguratorViewCluster::CanRenameSelectedNode() const
 	return false;
 }
 
-void FDisplayClusterConfiguratorViewCluster::SetAsMaster()
+void FDisplayClusterConfiguratorViewCluster::SetAsPrimary()
 {
 	TArray<TSharedPtr<IDisplayClusterConfiguratorTreeItem>> SelectedTreeItems = ViewTree->GetSelectedItems();
 
@@ -414,9 +441,9 @@ void FDisplayClusterConfiguratorViewCluster::SetAsMaster()
 	{
 		if (UDisplayClusterConfigurationClusterNode* ClusterNode = Cast<UDisplayClusterConfigurationClusterNode>(SelectedTreeItems[0]->GetObject()))
 		{
-			FScopedTransaction Transaction(LOCTEXT("SetMasterNode", "Set Master Node"));
+			FScopedTransaction Transaction(LOCTEXT("SetPrimaryNode", "Set Primary Node"));
 
-			if (!FDisplayClusterConfiguratorClusterUtils::SetClusterNodeAsMaster(ClusterNode))
+			if (!FDisplayClusterConfiguratorClusterUtils::SetClusterNodeAsPrimary(ClusterNode))
 			{
 				Transaction.Cancel();
 			}
@@ -510,7 +537,7 @@ void FDisplayClusterConfiguratorViewCluster::ShowAll()
 	}
 }
 
-bool FDisplayClusterConfiguratorViewCluster::CanSetAsMaster() const
+bool FDisplayClusterConfiguratorViewCluster::CanSetAsPrimary() const
 {
 	TArray<TSharedPtr<IDisplayClusterConfiguratorTreeItem>> SelectedTreeItems = ViewTree->GetSelectedItems();
 
@@ -519,9 +546,9 @@ bool FDisplayClusterConfiguratorViewCluster::CanSetAsMaster() const
 		if (const UDisplayClusterConfigurationClusterNode* ClusterNode = Cast<UDisplayClusterConfigurationClusterNode>(SelectedTreeItems[0]->GetObject()))
 		{
 			UDisplayClusterConfigurationCluster* Cluster = ToolkitPtr.Pin()->GetEditorData()->Cluster;
-			const FString MasterNodeId = Cluster->MasterNode.Id;
+			const FString PrimaryNodeId = Cluster->PrimaryNode.Id;
 
-			if (!Cluster->Nodes.Contains(MasterNodeId) || Cluster->Nodes[MasterNodeId] != ClusterNode)
+			if (!Cluster->Nodes.Contains(PrimaryNodeId) || Cluster->Nodes[PrimaryNodeId] != ClusterNode)
 			{
 				return true;
 			}
@@ -539,7 +566,7 @@ void FDisplayClusterConfiguratorViewCluster::AddNewClusterNode(FVector2D PresetS
 	UDisplayClusterConfigurationCluster* Cluster = Toolkit->GetEditorData()->Cluster;
 	FDisplayClusterConfigurationRectangle PresetRect = FDisplayClusterConfigurationRectangle(0, 0, PresetSize.X, PresetSize.Y);
 	
-	FString HostAddress;
+	FString HostAddress = NDISPLAY_DEFAULT_CLUSTER_HOST;
 	TArray<TSharedPtr<IDisplayClusterConfiguratorTreeItem>> SelectedTreeItems = ViewTree->GetSelectedItems();
 	if (SelectedTreeItems.Num() == 1)
 	{

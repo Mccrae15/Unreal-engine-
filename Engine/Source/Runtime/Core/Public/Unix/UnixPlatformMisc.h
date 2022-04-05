@@ -21,6 +21,7 @@ struct FGenericCrashContext;
  */
 struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 {
+	static void PlatformPreInit();
 	static void PlatformInit();
 	static void PlatformTearDown();
 	static void SetGracefulTerminationHandler();
@@ -46,6 +47,7 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 	static const TCHAR* GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error);
 
 	static void NormalizePath(FString& InPath);
+	static void NormalizePath(FStringBuilderBase& InPath);
 
 	static const TCHAR* GetPathVarDelimiter()
 	{
@@ -81,6 +83,9 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 	static int32 NumberOfCoresIncludingHyperthreads();
 	static FString GetOperatingSystemId();
 	static bool GetDiskTotalAndFreeSpace(const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes);
+	static bool GetPageFaultStats(FPageFaultStats& OutStats, EPageFaultFlags Flags=EPageFaultFlags::All);
+	static bool GetBlockingIOStats(FProcessIOStats& OutStats, EInputOutputFlags Flags=EInputOutputFlags::All);
+	static bool GetContextSwitchStats(FContextSwitchStats& OutStats, EContextSwitchFlags Flags=EContextSwitchFlags::All);
 
 	/**
 	 * Determines the shader format for the platform
@@ -130,6 +135,7 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 	 * @return true if the error code has been overriden, false if not
 	 */
 	static bool HasOverriddenReturnCode(uint8 * OverriddenReturnCodeToUsePtr);
+	static void GetOSVersions(FString& out_OSVersionLabel, FString& out_OSSubVersionLabel);
 	static FString GetOSVersion();
 	static FString GetLoginId();
 
@@ -138,6 +144,8 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 	static IPlatformChunkInstall* GetPlatformChunkInstall();
 
 	static bool SetStoredValues(const FString& InStoreId, const FString& InSectionName, const TMap<FString, FString>& InKeyValues);
+
+	static int32 NumberOfWorkerThreadsToSpawn();
 
 #if STATS || ENABLE_STATNAMEDEVENTS
 	static void BeginNamedEventFrame();

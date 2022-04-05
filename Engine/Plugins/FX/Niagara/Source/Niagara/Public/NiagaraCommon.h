@@ -5,12 +5,14 @@
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "UObject/ObjectMacros.h"
-#include "NiagaraTypes.h"
 #include "Engine/BlueprintGeneratedClass.h"
-#include "NiagaraCore.h"
+#include "Particles/ParticlePerfStats.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/WeakFieldPtr.h"
+
+#include "NiagaraTypes.h"
+#include "NiagaraCore.h"
 #include "NiagaraCommon.generated.h"
 
 class UNiagaraComponent;
@@ -31,6 +33,12 @@ struct FNiagaraParameterStore;
 #ifndef NIAGARA_COMPUTEDEBUG_ENABLED
 	#define NIAGARA_COMPUTEDEBUG_ENABLED WITH_EDITOR
 #endif
+
+#define WITH_NIAGARA_GPU_PROFILER_EDITOR (WITH_EDITOR && STATS)
+#define WITH_NIAGARA_GPU_PROFILER ((WITH_PARTICLE_PERF_STATS && !UE_BUILD_SHIPPING) || WITH_NIAGARA_GPU_PROFILER_EDITOR)
+
+/** When enabled allows builds to warn about system / emitter information such as hitting buffer caps.  Small performance overhead for copying the name around so RT has access. */
+#define WITH_NIAGARA_DEBUG_EMITTER_NAME	1//!UE_BUILD_SHIPPING
 
 #define INTERPOLATED_PARAMETER_PREFIX TEXT("PREV_")
 
@@ -83,6 +91,19 @@ enum class ENiagaraGpuBufferFormat : uint8
 	UnsignedNormalizedByte,
 
 	Max UMETA(Hidden),
+};
+
+UENUM()
+enum class ENiagaraGpuSyncMode
+{
+	/** Data will not be automatically pushed and could diverge between Cpu & Gpu. */
+	None,
+	/** Cpu modifications will be pushed to the Gpu. */
+	SyncCpuToGpu,
+	/** Gpu will continuously push back to the Cpu, this will incur a performance penalty. */
+	SyncGpuToCpu,
+	/** Gpu will continuously push back to the Cpu and Cpu modifications will be pushed to the Gpu. */
+	SyncBoth,
 };
 
 UENUM()
@@ -383,10 +404,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 
 	/** When using simulation stages and bRequiresContext is true this will be the index of the stage that is associated with the function. */
 	UPROPERTY()
-	int32 ContextStageMinIndex;
-
-	UPROPERTY()
-	int32 ContextStageMaxIndex;
+	int32 ContextStageIndex;
 
 	/** Function specifiers verified at bind time. */
 	UPROPERTY()
@@ -416,8 +434,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bIsCompileTagGenerator(false)
 		, bHidden(false)
 		, ModuleUsageBitmask(0)
-		, ContextStageMinIndex(INDEX_NONE)
-		, ContextStageMaxIndex(INDEX_NONE)
+		, ContextStageIndex(INDEX_NONE)
 	{
 	}
 
@@ -434,8 +451,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bIsCompileTagGenerator(false)
 		, bHidden(false)
 		, ModuleUsageBitmask(0)
-		, ContextStageMinIndex(INDEX_NONE)
-		, ContextStageMaxIndex(INDEX_NONE)
+		, ContextStageIndex(INDEX_NONE)
 	{
 		Inputs.Reserve(InInputs.Num());
 		for (FNiagaraVariable& Var : InInputs)
@@ -479,13 +495,12 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		bMatches &= bRequiresExecPin == Other.bRequiresExecPin;
 		bMatches &= bMemberFunction == Other.bMemberFunction;
 		bMatches &= OwnerName == Other.OwnerName;
-		bMatches &= ContextStageMinIndex == Other.ContextStageMinIndex;
-		bMatches &= ContextStageMaxIndex == Other.ContextStageMaxIndex;
+		bMatches &= ContextStageIndex == Other.ContextStageIndex;
 		bMatches &= bIsCompileTagGenerator == Other.bIsCompileTagGenerator;
 		return bMatches;
 	}
 
-	FString GetName()const { return Name.ToString(); }
+	FString GetNameString() const { return Name.ToString(); }
 
 	void AddInput(FNiagaraVariable InputVar, FText Tooltip = FText())
 	{
@@ -506,6 +521,13 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		{
 			OutputDescriptions.Add(OutputVar, Tooltip);
 		}
+	#endif
+	}
+
+	void SetFunctionVersion(uint32 Version)
+	{
+	#if WITH_EDITORONLY_DATA
+		FunctionVersion = Version;
 	#endif
 	}
 
@@ -542,7 +564,7 @@ public:
 	}
 
 	UPROPERTY()
-	class UNiagaraDataInterface* DataInterface;
+	TObjectPtr<class UNiagaraDataInterface> DataInterface;
 	
 	UPROPERTY()
 	FName Name;
@@ -560,8 +582,7 @@ public:
 	UPROPERTY()
 	FName RegisteredParameterMapWrite;
 
-	//TODO: Allow data interfaces to own datasets
-	void CopyTo(FNiagaraScriptDataInterfaceInfo* Destination, UObject* Outer) const;
+	bool IsUserDataInterface() const;
 };
 
 USTRUCT()
@@ -740,13 +761,13 @@ private:
 	void AddInternal(class UNiagaraComponent* Comp, bool bReInit);
 
 	UPROPERTY(transient)
-	TArray<UNiagaraComponent*> ComponentsToReset;
+	TArray<TObjectPtr<UNiagaraComponent>> ComponentsToReset;
 	UPROPERTY(transient)
-	TArray<UNiagaraComponent*> ComponentsToReInit;
+	TArray<TObjectPtr<UNiagaraComponent>> ComponentsToReInit;
 	UPROPERTY(transient)
-	TArray<UNiagaraComponent*> ComponentsToNotifySimDestroy;
+	TArray<TObjectPtr<UNiagaraComponent>> ComponentsToNotifySimDestroy;
 	UPROPERTY(transient)
-	TArray<UNiagaraSystem*> SystemSimsToDestroy;
+	TArray<TObjectPtr<UNiagaraSystem>> SystemSimsToDestroy;
 
 	bool bDestroyOnAdd;
 	bool bOnlyActive;
@@ -929,7 +950,7 @@ struct FNiagaraVariableInfo
 	FText Definition;
 
 	UPROPERTY()
-	UNiagaraDataInterface* DataInterface;
+	TObjectPtr<UNiagaraDataInterface> DataInterface;
 };
 
 /** This enum decides how a renderer will attempt to process the incoming data from the stack.*/
@@ -966,6 +987,7 @@ struct FNiagaraVariableAttributeBinding
 	NIAGARA_API const FNiagaraVariableBase& GetParamMapBindableVariable() const { return ParamMapVariable; }
 	NIAGARA_API const FNiagaraVariableBase& GetDataSetBindableVariable() const { return DataSetVariable; }
 	NIAGARA_API const FNiagaraTypeDefinition& GetType() const { return DataSetVariable.GetType(); }
+	NIAGARA_API ENiagaraBindingSource GetBindingSourceMode() const { return BindingSourceMode; }
 
 	NIAGARA_API bool IsValid() const {	return DataSetVariable.IsValid();}
 	
@@ -1139,13 +1161,6 @@ struct NIAGARA_API FNiagaraAliasContext
 	const TOptional<FString>& GetStackContextName() const { return StackContextName; }
 	const TOptional<TPair<FString, FString>>& GetStackContextMapping() const { return StackContextMapping; }
 
-	static const FString EmitterNamespaceString;
-	static const FString ModuleNamespaceString;
-	static const FString StackContextNamespaceString;
-	static const FString RapidIterationParametersNamespaceString;
-	static const FString EngineNamespaceString;
-	static const FString AssignmentNodePrefix;
-
 private:
 	ERapidIterationParameterMode RapidIterationParameterMode;
 
@@ -1172,7 +1187,7 @@ namespace FNiagaraUtilities
 
 	inline bool SupportsNiagaraRendering(ERHIFeatureLevel::Type FeatureLevel)
 	{
-		return FeatureLevel == ERHIFeatureLevel::SM5 || FeatureLevel == ERHIFeatureLevel::ES3_1;
+		return FeatureLevel >= ERHIFeatureLevel::SM5 || FeatureLevel == ERHIFeatureLevel::ES3_1;
 	}
 
 	inline bool SupportsNiagaraRendering(EShaderPlatform ShaderPlatform)
@@ -1212,6 +1227,21 @@ namespace FNiagaraUtilities
 
 	// Are we able to use the GPU for sorting?
 	bool AllowGPUSorting(EShaderPlatform ShaderPlatform);
+
+	// Helper function to detect if SRVs are always created for buffers or not
+	bool AreBufferSRVsAlwaysCreated(EShaderPlatform ShaderPlatform);
+
+	// Helper function to determine if we should sync data from CPU to GPU
+	FORCEINLINE bool ShouldSyncCpuToGpu(ENiagaraGpuSyncMode SyncMode)
+	{
+		return SyncMode == ENiagaraGpuSyncMode::SyncBoth || SyncMode == ENiagaraGpuSyncMode::SyncCpuToGpu;
+	}
+
+	// Helper function to determine if we should sync data from GPU to CPU
+	FORCEINLINE bool ShouldSyncGpuToCpu(ENiagaraGpuSyncMode SyncMode)
+	{
+		return SyncMode == ENiagaraGpuSyncMode::SyncBoth || SyncMode == ENiagaraGpuSyncMode::SyncGpuToCpu;
+	}
 
 	ENiagaraCompileUsageStaticSwitch NIAGARA_API ConvertScriptUsageToStaticSwitchUsage(ENiagaraScriptUsage ScriptUsage);
 	ENiagaraScriptContextStaticSwitch NIAGARA_API ConvertScriptUsageToStaticSwitchContext(ENiagaraScriptUsage ScriptUsage);
@@ -1270,22 +1300,6 @@ struct TStructOpsTypeTraits<FNiagaraUserParameterBinding> : public TStructOpsTyp
 		WithIdenticalViaEquality = true
 	};
 };
-
-USTRUCT()
-struct FNiagaraRandInfo
-{
-	GENERATED_USTRUCT_BODY()
-
-	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed1 = 0;
-	
-	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed2 = 0;
-
-	UPROPERTY(EditAnywhere, Category = "Random")
-	int32 Seed3 = 0;
-};
-
 
 //////////////////////////////////////////////////////////////////////////
 // Legacy Anim Trail Support
@@ -1373,10 +1387,24 @@ public:
 		NodeGuid = FGuid();
 		PinGuid = FGuid();
 		StackGuids.Empty();
-	}
+		bDependentVariableFromCustomIterationNamespace = false;
+	};
 
-	FNiagaraCompileDependency(const FNiagaraVariableBase& InVar, const FString& InLinkerErrorMessage, FGuid InNodeGuid = FGuid(), FGuid InPinGuid = FGuid(), const TArray<FGuid>& InCallstackGuids = TArray<FGuid>())
-		: LinkerErrorMessage(InLinkerErrorMessage), NodeGuid(InNodeGuid), PinGuid(InPinGuid), StackGuids(InCallstackGuids), DependentVariable(InVar) {}
+	FNiagaraCompileDependency(
+		const FNiagaraVariableBase& InVar
+		, const FString& InLinkerErrorMessage
+		, FGuid InNodeGuid = FGuid()
+		, FGuid InPinGuid = FGuid()
+		, const TArray<FGuid>& InCallstackGuids = TArray<FGuid>()
+		, bool bInDependentVariableFromCustomIterationNamespace = false
+	)
+		: LinkerErrorMessage(InLinkerErrorMessage)
+		, NodeGuid(InNodeGuid)
+		, PinGuid(InPinGuid)
+		, StackGuids(InCallstackGuids)
+		, DependentVariable(InVar)
+		, bDependentVariableFromCustomIterationNamespace(bInDependentVariableFromCustomIterationNamespace)
+	{};
 
 	/* The message itself*/
 	UPROPERTY()
@@ -1398,6 +1426,9 @@ public:
 	UPROPERTY()
 	FNiagaraVariableBase DependentVariable;
 
+	UPROPERTY()
+	bool bDependentVariableFromCustomIterationNamespace;
+
 	FORCEINLINE bool operator==(const FNiagaraCompileDependency& Other)const
 	{
 		return DependentVariable == Other.DependentVariable && NodeGuid == Other.NodeGuid && PinGuid == Other.PinGuid && StackGuids == Other.StackGuids;
@@ -1417,6 +1448,7 @@ struct FNiagaraScalabilityState
 
 	FNiagaraScalabilityState()
 		: Significance(1.0f)
+		, SystemDataIndex(INDEX_NONE)
 		, bCulled(0)
 		, bPreviousCulled(0)
 		, bCulledByDistance(0)
@@ -1428,6 +1460,7 @@ struct FNiagaraScalabilityState
 
 	FNiagaraScalabilityState(float InSignificance, bool InCulled, bool InPreviousCulled)
 		: Significance(InSignificance)
+		, SystemDataIndex(INDEX_NONE)
 		, bCulled(InCulled)
 		, bPreviousCulled(InPreviousCulled)
 		, bCulledByDistance(0)
@@ -1442,6 +1475,8 @@ struct FNiagaraScalabilityState
 
 	UPROPERTY(VisibleAnywhere, Category="Scalability")
 	float Significance;
+
+	int16 SystemDataIndex;
 
 	UPROPERTY(VisibleAnywhere, Category = "Scalability")
 	uint8 bCulled : 1;
@@ -1495,6 +1530,9 @@ enum class ENCPoolMethod : uint8
 	*/
 	FreeInPool UMETA(Hidden),
 };
+
+extern NIAGARA_API ENCPoolMethod ToNiagaraPooling(EPSCPoolMethod PoolingMethod);
+extern NIAGARA_API EPSCPoolMethod ToPSCPoolMethod(ENCPoolMethod PoolingMethod);
 
 UENUM()
 enum class ENiagaraSystemInstanceState : uint8
@@ -1551,3 +1589,16 @@ struct NIAGARA_API FSynchronizeWithParameterDefinitionsArgs
 	TArray<TTuple<FName, FName>> AdditionalOldToNewNames;
 };
 
+/** Enum used to track stage that GPU compute proxies will execute in. */
+namespace ENiagaraGpuComputeTickStage
+{
+	enum Type
+	{
+		PreInitViews,
+		PostInitViews,
+		PostOpaqueRender,
+		Max,
+		First = PreInitViews,
+		Last = PostOpaqueRender,
+	};
+};

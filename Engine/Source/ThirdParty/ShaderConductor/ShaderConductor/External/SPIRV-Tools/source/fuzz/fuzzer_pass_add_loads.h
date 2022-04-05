@@ -23,11 +23,11 @@ namespace fuzz {
 // Fuzzer pass that adds stores, at random, from pointers in the module.
 class FuzzerPassAddLoads : public FuzzerPass {
  public:
-  FuzzerPassAddLoads(opt::IRContext* ir_context, FactManager* fact_manager,
+  FuzzerPassAddLoads(opt::IRContext* ir_context,
+                     TransformationContext* transformation_context,
                      FuzzerContext* fuzzer_context,
-                     protobufs::TransformationSequence* transformations);
-
-  ~FuzzerPassAddLoads();
+                     protobufs::TransformationSequence* transformations,
+                     bool ignore_inapplicable_transformations);
 
   void Apply() override;
 };

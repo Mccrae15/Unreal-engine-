@@ -8,7 +8,7 @@
 #include "Templates/SubclassOf.h"
 #include "Components/ActorComponent.h"
 #include "ViewportInteractionTypes.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "ViewportDragOperation.generated.h"
 
 /**
@@ -74,7 +74,7 @@ private:
 
 	/** The actual dragging implementation */
 	UPROPERTY()
-	UViewportDragOperation* DragOperation;
+	TObjectPtr<UViewportDragOperation> DragOperation;
 
 	/** The next class that will be used as drag operation */
 	UPROPERTY()

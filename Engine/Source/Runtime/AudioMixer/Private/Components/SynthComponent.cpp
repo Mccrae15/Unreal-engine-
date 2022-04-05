@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/SynthComponent.h"
+
 #include "AudioDevice.h"
 #include "AudioMixerLog.h"
 #include "Sound/AudioSettings.h"
+
 
 USynthSound::USynthSound(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -107,11 +109,11 @@ void USynthSound::OnEndGenerate()
 	}
 }
 
-ISoundGeneratorPtr USynthSound::CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels)
+ISoundGeneratorPtr USynthSound::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams)
 {
 	if (OwningSynthComponent)
 	{
-		return OwningSynthComponent->CreateSoundGeneratorInternal(SampleRate, NumChannels);
+		return OwningSynthComponent->CreateSoundGeneratorInternal(InParams);
 	}
 	return nullptr;
 }
@@ -221,12 +223,12 @@ void USynthComponent::Initialize(int32 SampleRateOverride)
 		// Initialize the synth component
 		Init(SampleRate);
 
-		if (NumChannels < 0 || NumChannels > 2)
+		if (NumChannels < 0 || NumChannels > 8)
 		{
-			UE_LOG(LogAudioMixer, Error, TEXT("Synthesis component '%s' has set an invalid channel count '%d' (only mono and stereo currently supported)."), *GetName(), NumChannels);
+			UE_LOG(LogAudioMixer, Error, TEXT("Synthesis component '%s' has set an invalid channel count '%d'."), *GetName(), NumChannels);
 		}
 
-		NumChannels = FMath::Clamp(NumChannels, 1, 2);
+		NumChannels = FMath::Clamp(NumChannels, 1, 8);
 #endif
 
 		if (!Synth)
@@ -415,6 +417,7 @@ void USynthComponent::Serialize(FArchive& Ar)
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
+
 }
 
 void USynthComponent::PumpPendingMessages()
@@ -585,9 +588,8 @@ void USynthComponent::SynthCommand(TFunction<void()> Command)
 	}
 }
 
-ISoundGeneratorPtr USynthComponent::CreateSoundGeneratorInternal(int32 InSampleRate, int32 InNumChannels)
-{	
-	LLM_SCOPE(ELLMTag::AudioSynthesis);
-
-	return SoundGenerator = CreateSoundGenerator(InSampleRate, InNumChannels);
+ISoundGeneratorPtr USynthComponent::CreateSoundGeneratorInternal(const FSoundGeneratorInitParams& InParams)
+{
+	LLM_SCOPE(ELLMTag::AudioSynthesis);	
+	return SoundGenerator = CreateSoundGenerator(InParams);
 }

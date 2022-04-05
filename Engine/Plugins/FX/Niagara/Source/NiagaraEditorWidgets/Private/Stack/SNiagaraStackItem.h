@@ -25,17 +25,21 @@ protected:
 	virtual TSharedRef<SWidget> AddContainerForRowWidgets(TSharedRef<SWidget> RowWidgets);
 
 private:
+	FText GetEditModeButtonToolTipText() const;
+
+	FReply EditModeButtonClicked();
+
+	FSlateColor GetEditModeButtonIconColor() const;
+
 	EVisibility GetResetToBaseButtonVisibility() const;
 
 	FText GetResetToBaseButtonToolTipText() const;
 
 	FReply ResetToBaseButtonClicked();
 
-	EVisibility GetDeleteButtonVisibility() const;
-
 	FText GetDeleteButtonToolTipText() const;
 
-	bool GetDeleteButtonEnabled() const;
+	EVisibility GetDeleteButtonVisibility() const;
 
 	FReply DeleteClicked();
 

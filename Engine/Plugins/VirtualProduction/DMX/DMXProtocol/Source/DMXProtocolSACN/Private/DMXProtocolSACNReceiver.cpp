@@ -5,6 +5,8 @@
 #include "DMXProtocolLog.h"
 #include "DMXProtocolSACN.h"
 #include "DMXProtocolSACNConstants.h"
+#include "DMXProtocolSACNUtils.h"
+#include "DMXProtocolUtils.h"
 #include "DMXStats.h"
 #include "IO/DMXInputPort.h"
 #include "Packets/DMXProtocolE131PDUPacket.h"
@@ -18,26 +20,6 @@
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("sACN Packages Recieved Total"), STAT_SACNPackagesReceived, STATGROUP_DMX);
 
 
-namespace
-{
-	static TSharedPtr<FInternetAddr> CreateEndpointInternetAddr(const FString& IPAddress)
-	{
-		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-
-		TSharedPtr<FInternetAddr> InternetAddr = SocketSubsystem->CreateInternetAddr();
-
-		bool bIsValidIP = false;
-		InternetAddr->SetIp(*IPAddress, bIsValidIP);
-		if (!bIsValidIP)
-		{
-			return nullptr;
-		}
-
-		InternetAddr->SetPort(ACN_PORT);
-		return InternetAddr;
-	}
-}
-
 FDMXProtocolSACNReceiver::FDMXProtocolSACNReceiver(const TSharedPtr<FDMXProtocolSACN, ESPMode::ThreadSafe>& InSACNProtocol, FSocket& InSocket, TSharedRef<FInternetAddr> InEndpointInternetAddr)
 	: Protocol(InSACNProtocol)
 	, Socket(&InSocket)
@@ -46,6 +28,10 @@ FDMXProtocolSACNReceiver::FDMXProtocolSACNReceiver(const TSharedPtr<FDMXProtocol
 	, Thread(nullptr)
 {
 	check(Socket->GetSocketType() == SOCKTYPE_Datagram);
+
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	ReceivedSenderInternetAddr = SocketSubsystem->CreateInternetAddr();
+	ReceivedDestinationInternetAddr = SocketSubsystem->CreateInternetAddr();
 
 	FString ReceiverThreadName = FString(TEXT("SACNReceiver_")) + InEndpointInternetAddr->ToString(true);
 	Thread = FRunnableThread::Create(this, *ReceiverThreadName, 0, TPri_TimeCritical, FPlatformAffinity::GetPoolThreadMask());
@@ -72,7 +58,7 @@ FDMXProtocolSACNReceiver::~FDMXProtocolSACNReceiver()
 
 TSharedPtr<FDMXProtocolSACNReceiver> FDMXProtocolSACNReceiver::TryCreate(const TSharedPtr<FDMXProtocolSACN, ESPMode::ThreadSafe>& SACNProtocol, const FString& IPAddress)
 {
-	TSharedPtr<FInternetAddr> EndpointInternetAddr = CreateEndpointInternetAddr(IPAddress);
+	TSharedPtr<FInternetAddr> EndpointInternetAddr = FDMXProtocolUtils::CreateInternetAddr(IPAddress, ACN_PORT);
 	if (!EndpointInternetAddr.IsValid())
 	{
 		UE_LOG(LogDMXProtocol, Error, TEXT("Cannot create sACN receiver: Invalid IP address: %s"), *IPAddress);
@@ -111,7 +97,7 @@ TSharedPtr<FDMXProtocolSACNReceiver> FDMXProtocolSACNReceiver::TryCreate(const T
 
 bool FDMXProtocolSACNReceiver::EqualsEndpoint(const FString& IPAddress) const
 {
-	TSharedPtr<FInternetAddr> OtherEndpointInternetAddr = CreateEndpointInternetAddr(IPAddress);
+	TSharedPtr<FInternetAddr> OtherEndpointInternetAddr = FDMXProtocolUtils::CreateInternetAddr(IPAddress, ACN_PORT);
 	if (OtherEndpointInternetAddr.IsValid() && OtherEndpointInternetAddr->CompareEndpoints(*EndpointInternetAddr))
 	{
 		return true;
@@ -123,6 +109,8 @@ bool FDMXProtocolSACNReceiver::EqualsEndpoint(const FString& IPAddress) const
 void FDMXProtocolSACNReceiver::AssignInputPort(const TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>& InputPort)
 {
 	check(!AssignedInputPorts.Contains(InputPort));
+
+	const FScopeLock ChangeAssignedInputPortsLock(&ChangeAssignedInputPortsCriticalSection);
 	AssignedInputPorts.Add(InputPort);
 
 	// Join the multicast groups for the ports where needed
@@ -140,7 +128,7 @@ void FDMXProtocolSACNReceiver::AssignInputPort(const TSharedPtr<FDMXInputPort, E
 			ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 			TSharedRef<FInternetAddr> NewMulticastGroupAddr = SocketSubsystem->CreateInternetAddr();
 
-			uint32 MulticastIp = GetIpForUniverseID(UniverseID);
+			uint32 MulticastIp = FDMXProtocolSACNUtils::GetIpForUniverseID(UniverseID);
 			NewMulticastGroupAddr->SetIp(MulticastIp);
 			NewMulticastGroupAddr->SetPort(ACN_PORT);
 
@@ -154,34 +142,30 @@ void FDMXProtocolSACNReceiver::AssignInputPort(const TSharedPtr<FDMXInputPort, E
 void FDMXProtocolSACNReceiver::UnassignInputPort(const TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>& InputPort)
 {
 	check(AssignedInputPorts.Contains(InputPort));
+
+	const FScopeLock ChangeAssignedInputPortsLock(&ChangeAssignedInputPortsCriticalSection);
 	AssignedInputPorts.Remove(InputPort);
 
-	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	TSharedRef<FInternetAddr> MulticastGroupAddrToLeave = SocketSubsystem->CreateInternetAddr();
-
 	// Leave multicast groups outside of remaining port's universe ranges
-	for (const TTuple<uint32, uint16>& MulticastGroupAddrToUniverseIDKvp : MulticastGroupAddrToUniverseIDMap)
+	for (const TTuple<uint32, uint16>& MulticastGroupAddrToUniverseIDKvp : TMap<uint32, uint16>(MulticastGroupAddrToUniverseIDMap))
 	{
-		MulticastGroupAddrToLeave->SetIp(MulticastGroupAddrToUniverseIDKvp.Key);
-		MulticastGroupAddrToLeave->SetPort(ACN_PORT);
-		uint16 UniverseID = MulticastGroupAddrToUniverseIDKvp.Value;
-
-		bool bGroupInUse = true;
-		for (const FDMXInputPortSharedPtr& Port : AssignedInputPorts)
-		{
-			if (Port->GetExternUniverseStart() >= UniverseID &&
-				Port->GetExternUniverseEnd() <= UniverseID)
+		const uint32 MulticastGroupAddr = MulticastGroupAddrToUniverseIDKvp.Key;
+		const uint16 UniverseID = MulticastGroupAddrToUniverseIDKvp.Value;
+		const bool bUniverseStillInUse = AssignedInputPorts.Array().ContainsByPredicate([UniverseID](const FDMXInputPortSharedPtr& OtherInputPort)
 			{
-				continue;
-			}
+				return OtherInputPort->IsExternUniverseInPortRange(UniverseID);
+			});
 
-			bGroupInUse = false;
-			break;
-		}
-
-		if (!bGroupInUse)
+		if (!bUniverseStillInUse)
 		{
+			ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+			TSharedRef<FInternetAddr> MulticastGroupAddrToLeave = SocketSubsystem->CreateInternetAddr();
+			MulticastGroupAddrToLeave->SetIp(MulticastGroupAddr);
+			MulticastGroupAddrToLeave->SetPort(ACN_PORT);
+
 			Socket->LeaveMulticastGroup(*MulticastGroupAddrToLeave);
+
+			MulticastGroupAddrToUniverseIDMap.Remove(MulticastGroupAddr);
 		}
 	}
 }
@@ -229,9 +213,7 @@ void FDMXProtocolSACNReceiver::Update(const FTimespan& SocketWaitTime)
 		return;
 	}
 
-	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-	TSharedPtr<FInternetAddr> Sender = SocketSubsystem->CreateInternetAddr();
-	TSharedPtr<FInternetAddr> Destination = SocketSubsystem->CreateInternetAddr();
+	const FScopeLock ChangeAssignedInputPortsLock(&ChangeAssignedInputPortsCriticalSection);
 
 	uint32 Size = 0;
 	int32 NumBytesRead = 0;
@@ -243,11 +225,11 @@ void FDMXProtocolSACNReceiver::Update(const FTimespan& SocketWaitTime)
 		constexpr uint32 SACNMaxReaderSize = 1024u;
 		Reader->SetNumUninitialized(FMath::Min(Size, SACNMaxReaderSize));
 
-		if (Socket->RecvFromWithPktInfo(Reader->GetData(), Reader->Num(), NumBytesRead, *Sender, *Destination))
+		if (Socket->RecvFromWithPktInfo(Reader->GetData(), Reader->Num(), NumBytesRead, *ReceivedSenderInternetAddr, *ReceivedDestinationInternetAddr))
 		{
 			Reader->RemoveAt(NumBytesRead, Reader->Num() - NumBytesRead, false);
 			uint32 MulticastIp = 0;
-			Destination->GetIp(MulticastIp);
+			ReceivedDestinationInternetAddr->GetIp(MulticastIp);
 
 			if (const uint16* UniverseIDPtr = MulticastGroupAddrToUniverseIDMap.Find(MulticastIp))
 			{
@@ -270,7 +252,7 @@ void FDMXProtocolSACNReceiver::Update(const FTimespan& SocketWaitTime)
 					Reader->Seek(0);
 
 					// validate Universe
-					const uint32 FakeMulticastIp = GetIpForUniverseID(UniverseID);
+					const uint32 FakeMulticastIp = FDMXProtocolSACNUtils::GetIpForUniverseID(UniverseID);
 					if (MulticastGroupAddrToUniverseIDMap.Contains(FakeMulticastIp))
 					{
 						DistributeReceivedData(UniverseID, Reader);
@@ -364,7 +346,7 @@ void FDMXProtocolSACNReceiver::HandleDataPacket(uint16 UniverseID, const TShared
 		{
 			continue;
 		}
-		InputPort->SingleProducerInputDMXSignal(DMXSignal);
+		InputPort->InputDMXSignal(DMXSignal);
 	}
 
 	INC_DWORD_STAT(STAT_SACNPackagesReceived);

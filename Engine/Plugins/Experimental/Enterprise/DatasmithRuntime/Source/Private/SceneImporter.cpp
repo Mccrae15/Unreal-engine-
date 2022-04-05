@@ -552,18 +552,11 @@ namespace DatasmithRuntime
 				}
 
 				const FSceneGraphId ElementId = ActionTask.GetElementId();
-				if (DirectLink::InvalidId == ElementId)
+				FBaseData& ElementData = DirectLink::InvalidId == ElementId ? FAssetData::EmptyAsset : (AssetDataList.Contains(ElementId) ? (FBaseData&)AssetDataList[ElementId] : (FBaseData&)ActorDataList[ElementId]);
+				if (ActionTask.Execute(ElementData) == EActionResult::Retry)
 				{
-					ActionTask.Execute(FAssetData::EmptyAsset);
-				}
-				else
-				{
-					FBaseData& ElementData = AssetDataList.Contains(ElementId) ? (FBaseData&)AssetDataList[ElementId] : (FBaseData&)ActorDataList[ElementId];
-					if (ActionTask.Execute(ElementData) == EActionResult::Retry)
-					{
-						ActionQueues[EQueueTask::NonAsyncQueue].Enqueue(MoveTemp(ActionTask));
-						continue;
-					}
+					ActionQueues[EQueueTask::NonAsyncQueue].Enqueue(MoveTemp(ActionTask));
+					continue;
 				}
 			}
 		}
@@ -1134,13 +1127,13 @@ namespace DatasmithRuntime
 		// Mark assets which are about to be deleted with 'PendingDelete'
 		for (DirectLink::FSceneGraphId& ElementId : UpdateContext.Deletions)
 		{
-			if (AssetDataList.Contains(ElementId))
+			if (FAssetData* AssetData = AssetDataList.Find(ElementId))
 			{
-				AssetDataList[ElementId].SetState(EAssetState::PendingDelete);
+				AssetData->AddState(EAssetState::PendingDelete);
 			}
-			else if (ActorDataList.Contains(ElementId))
+			else if (FActorData* ActorData = ActorDataList.Find(ElementId))
 			{
-				ActorDataList[ElementId].SetState(EAssetState::PendingDelete);
+				ActorData->AddState(EAssetState::PendingDelete);
 			}
 		}
 
@@ -1191,31 +1184,23 @@ namespace DatasmithRuntime
 	EActionResult::Type FSceneImporter::DeleteElement(FSceneGraphId ElementId)
 	{
 		bool bDeletionSuccessful = false;
+		bool bHasSomethingToDelete = false;
 
-		if (AssetDataList.Contains(ElementId))
+		FAssetData AssetData(DirectLink::InvalidId);
+		if (AssetDataList.RemoveAndCopyValue(ElementId, AssetData))
 		{
-			FAssetData AssetData(DirectLink::InvalidId);
-			if (!AssetDataList.RemoveAndCopyValue(ElementId, AssetData))
-			{
-				ensure(false);
-				return EActionResult::Failed;
-			}
-
+			bHasSomethingToDelete = AssetData.HasState(EAssetState::Completed) && !AssetData.HasState(EAssetState::Skipped);
 			bDeletionSuccessful = DeleteAsset(AssetData);
 		}
 
-		if (ActorDataList.Contains(ElementId))
+		FActorData ActorData(DirectLink::InvalidId);
+		if (ActorDataList.RemoveAndCopyValue(ElementId, ActorData))
 		{
-			FActorData ActorData(DirectLink::InvalidId);
-			if (!ActorDataList.RemoveAndCopyValue(ElementId, ActorData))
-			{
-				return EActionResult::Failed;
-			}
-
+			bHasSomethingToDelete = ActorData.HasState(EAssetState::Completed) && !ActorData.HasState(EAssetState::Skipped);
 			bDeletionSuccessful = DeleteComponent(ActorData);
 		}
 
-		ensure(bDeletionSuccessful);
+		ensure(bDeletionSuccessful || !bHasSomethingToDelete);
 
 		TSharedPtr<IDatasmithElement> ElementPtr;
 
@@ -1232,7 +1217,6 @@ namespace DatasmithRuntime
 		if (DataType == EDataType::Texture)
 		{
 			AssetPrefixedName = TexturePrefix + Elements[ElementId]->GetName();
-			ensure(AssetData.Object.IsValid() || TextureDataList.Remove(ElementId) > 0);
 		}
 		else if (DataType == EDataType::Material || DataType == EDataType::PbrMaterial)
 		{

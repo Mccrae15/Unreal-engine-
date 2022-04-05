@@ -60,7 +60,7 @@ struct FMovieSceneSequenceActorPointers
 	GENERATED_BODY()
 
 	UPROPERTY()
-	AActor* SequenceActor = nullptr;
+	TObjectPtr<AActor> SequenceActor = nullptr;
 
 	UPROPERTY()
 	TScriptInterface<IMovieSceneSequenceActor> SequenceActorInterface;
@@ -81,7 +81,9 @@ public:
 	FMovieSceneEntitySystemRunner& GetRunner() { return Runner; }
 
 	void RegisterSequenceActor(AActor* InActor);
+	void RegisterSequenceActor(AActor* InActor, TScriptInterface<IMovieSceneSequenceActor> InActorInterface);
 	void UnregisterSequenceActor(AActor* InActor);
+	void UnregisterSequenceActor(AActor* InActor, TScriptInterface<IMovieSceneSequenceActor> InActorInterface);
 
 	void AddLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate);
 	void RunLatentActions();
@@ -101,7 +103,7 @@ private:
 	TArray<FMovieSceneSequenceActorPointers> SequenceActors;
 
 	UPROPERTY(transient)
-	UMovieSceneEntitySystemLinker* Linker;
+	TObjectPtr<UMovieSceneEntitySystemLinker> Linker;
 
 	FMovieSceneEntitySystemRunner Runner;
 

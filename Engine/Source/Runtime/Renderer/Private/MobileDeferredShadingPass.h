@@ -3,16 +3,22 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RenderGraphDefinitions.h"
 
+class FMobileSceneTextureUniformParameters;
+class FRDGBuilder;
 class FRHICommandListImmediate;
 class FScene;
 class FViewInfo;
+struct FRenderTargetBindingSlots;
 struct FSortedLightSetSceneInfo;
 
 extern int32 GMobileUseClusteredDeferredShading;
 
 void MobileDeferredShadingPass(
-	FRHICommandListImmediate& RHICmdList, 
+	FRHICommandListImmediate& RHICmdList,
+	int32 ViewIndex,
+	int32 NumViews,
+	const FViewInfo& View,
 	const FScene& Scene, 
-	const TArrayView<const FViewInfo*> PassViews, 
 	const FSortedLightSetSceneInfo &SortedLightSet);

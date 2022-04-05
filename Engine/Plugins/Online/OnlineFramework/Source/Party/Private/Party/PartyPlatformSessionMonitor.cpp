@@ -7,6 +7,7 @@
 #include "SocialToolkit.h"
 #include "SocialManager.h"
 #include "SocialSettings.h"
+#include "Containers/Ticker.h"
 #include "User/SocialUser.h"
 
 #include "HAL/IConsoleManager.h"
@@ -166,7 +167,11 @@ bool FPartyPlatformSessionManager::FindSession(const USocialUser& User, const FO
 	FUniqueNetIdRepl UserPlatformId;
 	if (const FOnlineUserPresence* PlatformPresence = User.GetFriendPresenceInfo(ESocialSubsystem::Platform))
 	{
-		SessionId = PlatformPresence->SessionId ? PlatformPresence->SessionId->ToString() : FSessionId();
+		if (PlatformPresence->SessionId)
+		{
+			SessionId = PlatformPresence->SessionId->ToString();
+		}
+
 		UserPlatformId = User.GetUserId(ESocialSubsystem::Platform);
 	}
 	return FindSessionInternal(SessionId, UserPlatformId, OnAttemptComplete);
@@ -216,7 +221,7 @@ bool FPartyPlatformSessionManager::FindSessionInternal(const FSessionId& Session
 					UE_LOG(LogParty, Warning, TEXT("PartyPlatformSessionMonitor adding artificial delay of %0.2fs to session find attempt"), DelaySeconds);
 
 					TWeakPtr<FPartyPlatformSessionManager> AsWeakPtr = SharedThis(this);
-					FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+					FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
 						[AsWeakPtr, SessionId, SessionIdString, SessionOwnerId, LocalUserPlatformId, OnAttemptComplete, this](float)
 						{
 							QUICK_SCOPE_CYCLE_COUNTER(STAT_FPartyPlatformSessionManager_FindSessionAttempt);
@@ -415,7 +420,7 @@ const FOnlinePartyTypeId& FPartyPlatformSessionMonitor::GetMonitoredPartyTypeId(
 
 EOnlineSessionState::Type FPartyPlatformSessionMonitor::GetOssSessionState() const
 {
-	FNamedOnlineSession* PlatformSession = SessionManager->GetSessionInterface()->GetNamedSession(PartySessionName);
+	FNamedOnlineSession* PlatformSession = SessionManager->GetSessionInterface()->GetNamedSession(NAME_PartySession);
 	return PlatformSession ? PlatformSession->SessionState : EOnlineSessionState::NoSession;
 }
 
@@ -428,17 +433,17 @@ void FPartyPlatformSessionMonitor::EvaluateCurrentSession()
 	}
 
 	const IOnlineSessionPtr& SessionInterface = SessionManager->GetSessionInterface();
-	if (const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(PartySessionName))
+	if (const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(NAME_PartySession))
 	{
 		// TODO: We need to check which of the local players are in the session and process them accordingly 
 		// We already have a platform session session, so we should be all set. Just check the session ids to make sure we have the correct session.
 		UPartyMember& LocalUserMember = MonitoredParty->GetOwningLocalMember();
-		const FSessionId& ReplicatedSessionId = LocalUserMember.GetRepData().GetPlatformSessionId();
+		const FSessionId& ReplicatedSessionId = LocalUserMember.GetRepData().GetPlatformDataSessionId();
 		const FSessionId TrueSessionId = Session->GetSessionIdStr();
 		if (ReplicatedSessionId != TrueSessionId && ensure(DoesLocalUserOwnPlatformSession()))
 		{
 			UE_CLOG(!ReplicatedSessionId.IsEmpty(), LogParty, Warning, TEXT("PartyPlatformSessionMonitor: Local player's session [%s] does not match replicated session [%s]"), *TrueSessionId, *ReplicatedSessionId);
-			LocalUserMember.GetMutableRepData().SetPlatformSessionId(TrueSessionId);
+			LocalUserMember.GetMutableRepData().SetPlatformDataSessionId(TrueSessionId);
 		}
 	}
 	else if (const FPartyPlatformSessionInfo* ExistingSessionInfo = FindLocalPlatformSessionInfo())
@@ -447,18 +452,23 @@ void FPartyPlatformSessionMonitor::EvaluateCurrentSession()
 		{
 			// Verify that there's actually someone in the party in this session
 			// Potentially saves a bit on traffic in edge cases where we're joining just after the former sole session owner has left
-			for (UPartyMember* Member : MonitoredParty->GetPartyMembers())
+			bool bAnyMemberInParty = MonitoredParty->GetPartyMembers().ContainsByPredicate([this, ExistingSessionInfo](const UPartyMember* Member)
 			{
-				if (Member->GetRepData().GetPlatformSessionId() == ExistingSessionInfo->SessionId)
+				if (Member->GetRepData().GetPlatformDataSessionId() == ExistingSessionInfo->SessionId)
 				{
 					if (LastAttemptedFindSessionId.IsSet() && LastAttemptedFindSessionId.GetValue() == ExistingSessionInfo->SessionId)
 					{
-						continue;
+						return false;
 					}
 					// Someone else is claiming to be in the session already, so go find it now
-					FindSession(*ExistingSessionInfo);
-					break;
+					return true;
 				}
+				return false;
+			});
+
+			if (bAnyMemberInParty || MonitoredParty->ShouldAlwaysJoinPlatformSession(ExistingSessionInfo->SessionId))
+			{
+				FindSession(*ExistingSessionInfo);
 			}
 		}
 		else
@@ -470,7 +480,7 @@ void FPartyPlatformSessionMonitor::EvaluateCurrentSession()
 					if (ExistingSessionInfo->IsSessionOwner(*Member))
 					{
 						// There is no session ID yet, but the session owner is a local player, so it's on us to create it now
-						CreateSession(Member->GetRepData().GetPlatformUniqueId());
+						CreateSession(Member->GetRepData().GetPlatformDataUniqueId());
 						break;
 					}
 				}
@@ -506,7 +516,7 @@ void FPartyPlatformSessionMonitor::ShutdownInternal()
 
 	if (RetryTickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(RetryTickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(RetryTickerHandle);
 		RetryTickerHandle.Reset();
 	}
 
@@ -536,7 +546,7 @@ void FPartyPlatformSessionMonitor::CreateSession(const FUniqueNetIdRepl& LocalUs
 			UE_LOG(LogParty, Warning, TEXT("PartyPlatformSessionMonitor adding artificial delay of %0.2fs to session creation attempt"), DelaySeconds);
 
 			TWeakPtr<FPartyPlatformSessionMonitor> AsWeakPtr = SharedThis(this);
-			FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
 				[AsWeakPtr, SessionSettings, LocalUserPlatformId, this] (float)
 				{
 					QUICK_SCOPE_CYCLE_COUNTER(STAT_FPartyPlatformSessionManager_CreateSessionAttempt);
@@ -545,11 +555,11 @@ void FPartyPlatformSessionMonitor::CreateSession(const FUniqueNetIdRepl& LocalUs
 						if (ForcePlatformSessionCreationFailure != 0)
 						{
 							UE_LOG(LogParty, Warning, TEXT("Forcing session creation failure"));
-							HandleCreateSessionComplete(PartySessionName, false);
+							HandleCreateSessionComplete(NAME_PartySession, false);
 						}
 						else
 						{
-							SessionManager->GetSessionInterface()->CreateSession(*LocalUserPlatformId, PartySessionName, SessionSettings);
+							SessionManager->GetSessionInterface()->CreateSession(*LocalUserPlatformId, NAME_PartySession, SessionSettings);
 						}
 					}
 					return false; // Don't retick
@@ -557,7 +567,7 @@ void FPartyPlatformSessionMonitor::CreateSession(const FUniqueNetIdRepl& LocalUs
 			return;
 		}
 #endif
-		SessionInterface->CreateSession(*LocalUserPlatformId, PartySessionName, SessionSettings);
+		SessionInterface->CreateSession(*LocalUserPlatformId, NAME_PartySession, SessionSettings);
 		UE_LOG(LogParty, Verbose, TEXT("PartyPlatformSessionMonitor creating session with the following parameters: "));
 		DumpSessionSettings(&SessionSettings);
 	}
@@ -569,15 +579,15 @@ void FPartyPlatformSessionMonitor::AddLocalPlayerToSession(UPartyMember* PartyMe
 		!MonitoredParty->IsMissingPlatformSession())
 	{
 		const IOnlineSessionPtr& SessionInterface = SessionManager->GetSessionInterface();
-		const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(PartySessionName);
+		const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(NAME_PartySession);
 		if (ensure(Session && Session->SessionInfo.IsValid()))
 		{
 			const FSessionId SessionId = Session->GetSessionIdStr();
 
 			// TODO: Move SetPlatformSessionId to after AddLocalPlayerToSession completes
-			PartyMember->GetMutableRepData().SetPlatformSessionId(SessionId);
+			PartyMember->GetMutableRepData().SetPlatformDataSessionId(SessionId);
 
-			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = PartyMember->GetRepData().GetPlatformUniqueId();
+			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = PartyMember->GetRepData().GetPlatformDataUniqueId();
 			if (PartyMemberPlatformUniqueId.IsValid())
 			{
 				UE_LOG(LogParty, Verbose, TEXT("AddLocalPlayerToSession: Registering player, PartyMember=%s PPUID=%s"), *PartyMember->ToDebugString(true), *PartyMemberPlatformUniqueId->ToDebugString());
@@ -599,11 +609,11 @@ void FPartyPlatformSessionMonitor::RemoveLocalPlayerFromSession(UPartyMember* Pa
 		!MonitoredParty->IsMissingPlatformSession())
 	{
 		const IOnlineSessionPtr& SessionInterface = SessionManager->GetSessionInterface();
-		const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(PartySessionName);
+		const FNamedOnlineSession* Session = SessionInterface->GetNamedSession(NAME_PartySession);
 
 		if (ensure(Session))
 		{
-			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = PartyMember->GetRepData().GetPlatformUniqueId();
+			const FUniqueNetIdRepl PartyMemberPlatformUniqueId = PartyMember->GetRepData().GetPlatformDataUniqueId();
 			if (PartyMemberPlatformUniqueId.IsValid())
 			{
 				UE_LOG(LogParty, Verbose, TEXT("RemoveLocalPlayerFromSession: Unregistering player, PartyMember=%s PPUID=%s"), *PartyMember->ToDebugString(true), *PartyMemberPlatformUniqueId->ToDebugString());
@@ -659,7 +669,7 @@ void FPartyPlatformSessionMonitor::JoinSession(const FOnlineSessionSearchResult&
 		UE_LOG(LogParty, Warning, TEXT("Adding artificial delay of %0.2fs to session join attempt"), DelaySeconds);
 
 		TWeakPtr<FPartyPlatformSessionMonitor> AsWeakPtr = SharedThis(this);
-		FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
 			[AsWeakPtr, SearchResultCopy, LocalUserPlatformId, this] (float)
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_FPartyPlatformSessionManager_JoinSessionAttempt);
@@ -668,11 +678,11 @@ void FPartyPlatformSessionMonitor::JoinSession(const FOnlineSessionSearchResult&
 					if (ForcePlatformSessionCreationFailure != 0)
 					{
 						UE_LOG(LogParty, Warning, TEXT("Forcing session join failure"));
-						HandleJoinSessionComplete(PartySessionName, EOnJoinSessionCompleteResult::UnknownError);
+						HandleJoinSessionComplete(NAME_PartySession, EOnJoinSessionCompleteResult::UnknownError);
 					}
 					else
 					{
-						SessionManager->GetSessionInterface()->JoinSession(*LocalUserPlatformId, PartySessionName, SearchResultCopy);
+						SessionManager->GetSessionInterface()->JoinSession(*LocalUserPlatformId, NAME_PartySession, SearchResultCopy);
 					}
 				}
 				return false; // Don't retick
@@ -681,7 +691,7 @@ void FPartyPlatformSessionMonitor::JoinSession(const FOnlineSessionSearchResult&
 	}
 #endif
 		
-	if (!SessionInterface->JoinSession(*LocalUserPlatformId, PartySessionName, SearchResultCopy))
+	if (!SessionInterface->JoinSession(*LocalUserPlatformId, NAME_PartySession, SearchResultCopy))
 	{
 		UE_LOG(LogParty, Warning, TEXT("JoinSession call failed for session [%s]."), *SessionSearchResult.GetSessionIdStr());
 		TargetSessionId = FSessionId();
@@ -701,7 +711,7 @@ void FPartyPlatformSessionMonitor::LeaveSession()
 	const IOnlineSessionPtr& SessionInterface = SessionManager->GetSessionInterface();
 
 	SessionInterface->ClearOnSessionFailureDelegates(this);
-	SessionInterface->DestroySession(PartySessionName, FOnDestroySessionCompleteDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleDestroySessionComplete));
+	SessionInterface->DestroySession(NAME_PartySession, FOnDestroySessionCompleteDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleDestroySessionComplete));
 }
 
 void FPartyPlatformSessionMonitor::QueuePlatformSessionUpdate()
@@ -710,7 +720,7 @@ void FPartyPlatformSessionMonitor::QueuePlatformSessionUpdate()
 	{
 		UE_LOG(LogParty, Verbose, TEXT("PartyPlatformSessionMonitor queuing session update for party [%s]"), *MonitoredParty->ToDebugString())
 		bHasQueuedSessionUpdate = true;
-		FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleQueuedSessionUpdate));
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleQueuedSessionUpdate));
 	}
 }
 
@@ -811,7 +821,7 @@ void FPartyPlatformSessionMonitor::HandlePartyMemberInitialized(UPartyMember* In
 {
 	if (IsTencentPlatform() && InitializedMember->GetPlatformOssName() == TENCENT_SUBSYSTEM)
 	{
-		SessionManager->GetSessionInterface()->RegisterPlayer(PartySessionName, *InitializedMember->GetRepData().GetPlatformUniqueId(), false);
+		SessionManager->GetSessionInterface()->RegisterPlayer(NAME_PartySession, *InitializedMember->GetRepData().GetPlatformDataUniqueId(), false);
 	}
 
 	// If a local player joined the party (split screen) we add them to the platform session
@@ -824,11 +834,11 @@ void FPartyPlatformSessionMonitor::HandlePartyMemberInitialized(UPartyMember* In
 void FPartyPlatformSessionMonitor::HandlePartyMemberLeft(UPartyMember* OldMember, const EMemberExitedReason ExitReason)
 {
 	UE_LOG(LogParty, Verbose, TEXT("HandlePartyMemberLeft: PartyMember=%s User=%s ExitReason=%s"),
-		*OldMember->ToDebugString(true), *OldMember->GetRepData().GetPlatformUniqueId().ToDebugString(), ToString(ExitReason));
+		*OldMember->ToDebugString(true), *OldMember->GetRepData().GetPlatformDataUniqueId().ToDebugString(), ToString(ExitReason));
 
 	if (IsTencentPlatform() && OldMember->GetPlatformOssName() == TENCENT_SUBSYSTEM)
 	{
-		SessionManager->GetSessionInterface()->UnregisterPlayer(PartySessionName, *OldMember->GetRepData().GetPlatformUniqueId());
+		SessionManager->GetSessionInterface()->UnregisterPlayer(NAME_PartySession, *OldMember->GetRepData().GetPlatformDataUniqueId());
 	}
 
 	if (OldMember->IsLocalPlayer())
@@ -894,7 +904,7 @@ void FPartyPlatformSessionMonitor::HandleCreateSessionComplete(FName SessionName
 		if (AllowCreateSessionFailure == 0 && ensure(!RetryTickerHandle.IsValid()))
 		{
 			// Unsuccessful and we aren't trying to leave, so we'll try again here in a moment
-			RetryTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
+			RetryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
 		}
 	}
 }
@@ -959,6 +969,10 @@ void FPartyPlatformSessionMonitor::HandleJoinSessionComplete(FName SessionName, 
 				AddLocalPlayerToSession(PartyMember);
 			}
 		}
+		if (DoesLocalUserOwnPlatformSession())
+		{
+			QueuePlatformSessionUpdate();
+		}
 
 		// For all players only for Tencent
 		if (IsTencentPlatform())
@@ -968,15 +982,20 @@ void FPartyPlatformSessionMonitor::HandleJoinSessionComplete(FName SessionName, 
 			{
 				if (PartyMember->GetPlatformOssName() == TENCENT_SUBSYSTEM)
 				{
-					MemberIdsOnPlatform.Add(PartyMember->GetRepData().GetPlatformUniqueId().GetUniqueNetId().ToSharedRef());
+					MemberIdsOnPlatform.Add(PartyMember->GetRepData().GetPlatformDataUniqueId().GetUniqueNetId().ToSharedRef());
 				}
 			}
-			SessionInterface->RegisterPlayers(PartySessionName, MemberIdsOnPlatform);
+			SessionInterface->RegisterPlayers(NAME_PartySession, MemberIdsOnPlatform);
 		}
 	}
 	else
 	{
 		ProcessJoinFailure();
+	}
+
+	if (MonitoredParty.IsValid())
+	{
+		MonitoredParty->JoinSessionCompleteAnalytics(*TargetSessionId, LexToString(JoinSessionResult));
 	}
 }
 
@@ -1028,16 +1047,16 @@ bool FPartyPlatformSessionMonitor::ConfigurePlatformSessionSettings(FOnlineSessi
 		for (const UPartyMember* PartyMember : MonitoredParty->GetPartyMembers())
 		{
 			const FPartyMemberRepData& MemberData = PartyMember->GetRepData();
-			if (MemberData.GetPlatform() == PlatformName)
+			if (MemberData.GetPlatformDataPlatform() == PlatformName)
 			{
 				// Even if they end up joining a different session than ours, keep our session open so they could join ours if they have issues with the session they are in
 				++NumMembersOnPlatform;
-				if (!MemberData.GetPlatformSessionId().IsEmpty())
+				if (!MemberData.GetPlatformDataSessionId().IsEmpty())
 				{
 					++NumMembersInSession;
 				}
 			}
-			else if (!MemberData.GetPlatform().IsValid())
+			else if (!MemberData.GetPlatformDataPlatform().IsValid())
 			{
 				// We don't yet know what platform this player is on, so assume that they are the local platform to keep session open.
 				++NumMembersOnPlatform;
@@ -1119,7 +1138,7 @@ void FPartyPlatformSessionMonitor::ProcessJoinFailure()
 	else
 	{
 		TargetSessionId = FSessionId();
-		RetryTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
+		RetryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
 	}
 }
 
@@ -1133,14 +1152,14 @@ bool FPartyPlatformSessionMonitor::HandleQueuedSessionUpdate(float)
 		const IOnlineSessionPtr& SessionInterface = SessionManager->GetSessionInterface();
 
 		// Make sure the party session is in a fully created state and is not destroying
-		FNamedOnlineSession* PlatformSession = SessionInterface->GetNamedSession(PartySessionName);
+		FNamedOnlineSession* PlatformSession = SessionInterface->GetNamedSession(NAME_PartySession);
 		if (PlatformSession)
 		{
 			if (PlatformSession->SessionState >= EOnlineSessionState::Pending && PlatformSession->SessionState <= EOnlineSessionState::Ended)
 			{
 				if (ConfigurePlatformSessionSettings(PlatformSession->SessionSettings))
 				{
-					if (!SessionInterface->UpdateSession(PartySessionName, PlatformSession->SessionSettings, true))
+					if (!SessionInterface->UpdateSession(NAME_PartySession, PlatformSession->SessionSettings, true))
 					{
 						UE_LOG(LogParty, Warning, TEXT("PartyPlatformSessionMonitor call to UpdateSession failed"));
 					}
@@ -1166,6 +1185,6 @@ void FPartyPlatformSessionMonitor::HandleSessionFailure(const FUniqueNetId& Loca
 	{
 		MonitoredParty->SetIsMissingPlatformSession(true);
 
-		RetryTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
+		RetryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FPartyPlatformSessionMonitor::HandleRetryEstablishingSession), EstablishSessionRetryDelay);
 	}
 }

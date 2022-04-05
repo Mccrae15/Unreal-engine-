@@ -383,7 +383,7 @@ void UViewportWorldInteraction::Shutdown()
 	for ( UViewportInteractor* Interactor : Interactors )
 	{
 		Interactor->Shutdown();
-		Interactor->MarkPendingKill();
+		Interactor->MarkAsGarbage();
 	}
 
 	Interactors.Empty();
@@ -525,7 +525,7 @@ void UViewportWorldInteraction::SetTransformer( UViewportTransformer* NewTransfo
 		ViewportTransformer = nullptr;
 	}
 
-	this->ViewportTransformer = NewTransformer;
+	ViewportTransformer = NewTransformer;
 
 	if( ViewportTransformer == nullptr )
 	{
@@ -830,8 +830,8 @@ void UViewportWorldInteraction::HoverTick( const float DeltaTime )
 		FHitResult HitHoverResult = Interactor->GetHitResultFromLaserPointer();
 
 		const bool bIsHoveringOverTransformGizmo =
-			HitHoverResult.Actor.IsValid() &&
-			HitHoverResult.Actor == TransformGizmoActor;
+			HitHoverResult.HitObjectHandle.IsValid() &&
+			HitHoverResult.HitObjectHandle == TransformGizmoActor;
 
 		// Prefer transform gizmo hover over everything else
 		if( !bIsHoveringOverTransformGizmo )
@@ -848,13 +848,13 @@ void UViewportWorldInteraction::HoverTick( const float DeltaTime )
 		{
 			UActorComponent* NewHoveredActorComponent = nullptr;
 
-			if ( HitHoverResult.Actor.IsValid() )
+			if ( HitHoverResult.HitObjectHandle.IsValid() )
 			{
-				USceneComponent* HoveredActorComponent = HitHoverResult.GetComponent();
-				AActor* Actor = HitHoverResult.Actor.Get();
+				USceneComponent* HoveredActorComponent = HitHoverResult.GetComponent();	
 
 				if ( HoveredActorComponent && IsInteractableComponent( HoveredActorComponent ) )
 				{
+					AActor* Actor = HitHoverResult.HitObjectHandle.FetchActor();
 					HoveredObjects.Add( FViewportHoverTarget( Actor ) );
 
 					Interactor->SetHoverLocation(HitHoverResult.ImpactPoint);
@@ -2540,7 +2540,7 @@ bool UViewportWorldInteraction::FindPlacementPointUnderLaser( UViewportInteracto
 	const EHitResultGizmoFilterMode GizmoFilterMode = EHitResultGizmoFilterMode::NoGizmos; // Never place on top of gizmos, just ignore them
 	const bool bEvenIfUIIsInFront = true;	// Don't let the UI block placement
 	FHitResult HitResult = Interactor->GetHitResultFromLaserPointer( &IgnoredActors, GizmoFilterMode, nullptr, bEvenIfUIIsInFront );
-	if( HitResult.Actor.IsValid() )
+	if( HitResult.HitObjectHandle.IsValid() )
 	{
 		bHitSomething = true;
 		HitLocation = HitResult.ImpactPoint;
@@ -2981,14 +2981,28 @@ void UViewportWorldInteraction::CycleTransformGizmoCoordinateSpace()
 
 void UViewportWorldInteraction::SetTransformGizmoCoordinateSpace( const ECoordSystem NewCoordSystem )
 {
+	// If we are trying to enter world space but are aligning to actors, turn off aligning to actors
+	if (NewCoordSystem == COORD_World && AreAligningToActors())
+	{
+		if (HasCandidatesSelected())
+		{
+			SetSelectionAsCandidates();
+		}
+		GUnrealEd->Exec(GetWorld(), TEXT("VI.EnableGuides 0"));
+	}
+
 	GetModeTools().SetCoordSystem( NewCoordSystem );
 }
 
 ECoordSystem UViewportWorldInteraction::GetTransformGizmoCoordinateSpace() const
 {
+	if (AreAligningToActors())
+	{
+		return COORD_Local;
+	}
+
 	const bool bGetRawValue = false;
-	const ECoordSystem CurrentCoordSystem = GetModeTools().GetCoordSystem( bGetRawValue );
-	return CurrentCoordSystem;
+	return GetModeTools().GetCoordSystem(bGetRawValue);
 }
 
 float UViewportWorldInteraction::GetMaxScale()
@@ -3062,12 +3076,12 @@ void UViewportWorldInteraction::DestroyActors()
 
 	if(SnapGridMID != nullptr)
 	{
-		SnapGridMID->MarkPendingKill();
+		SnapGridMID->MarkAsGarbage();
 		SnapGridMID = nullptr;
 	}
 }
 
-bool UViewportWorldInteraction::AreAligningToActors()
+bool UViewportWorldInteraction::AreAligningToActors() const
 {
 	return (VI::ActorSnap->GetInt() == 1) ? true : false;
 }
@@ -3176,16 +3190,16 @@ EGizmoHandleTypes UViewportWorldInteraction::GetCurrentGizmoType() const
 	{
 		switch( GetModeTools().GetWidgetMode() )
 		{
-			case FWidget::WM_TranslateRotateZ:
+			case UE::Widget::WM_TranslateRotateZ:
 				return EGizmoHandleTypes::All;
 
-			case FWidget::WM_Translate:
+			case UE::Widget::WM_Translate:
 				return EGizmoHandleTypes::Translate;
 
-			case FWidget::WM_Rotate:
+			case UE::Widget::WM_Rotate:
 				return EGizmoHandleTypes::Rotate;
 
-			case FWidget::WM_Scale:
+			case UE::Widget::WM_Scale:
 				return EGizmoHandleTypes::Scale;
 		}
 	}
@@ -3201,19 +3215,19 @@ void UViewportWorldInteraction::SetGizmoHandleType( const EGizmoHandleTypes InGi
 	{
 		case EGizmoHandleTypes::All:
 			GizmoType = InGizmoHandleType;
-			GetModeTools().SetWidgetMode( FWidget::WM_Translate );
+			GetModeTools().SetWidgetMode( UE::Widget::WM_Translate );
 			break;
 
 		case EGizmoHandleTypes::Translate:
-			GetModeTools().SetWidgetMode( FWidget::WM_Translate );
+			GetModeTools().SetWidgetMode( UE::Widget::WM_Translate );
 			break;
 
 		case EGizmoHandleTypes::Rotate:
-			GetModeTools().SetWidgetMode( FWidget::WM_Rotate );
+			GetModeTools().SetWidgetMode( UE::Widget::WM_Rotate );
 			break;
 
 		case EGizmoHandleTypes::Scale:
-			GetModeTools().SetWidgetMode( FWidget::WM_Scale );
+			GetModeTools().SetWidgetMode( UE::Widget::WM_Scale );
 			break;
 
 		check(0);
@@ -3394,7 +3408,7 @@ FVector UViewportWorldInteraction::FindTransformGizmoAlignPoint(const FTransform
 	{
 		for (int32 PointAxis = 0; PointAxis < 3; ++PointAxis)
 		{
-			if (!FMath::IsNearlyZero(ConstraintAxes[PointAxis], 0.0001f))
+			if (!FMath::IsNearlyZero(ConstraintAxes[PointAxis], FVector::FReal(0.0001)))
 			{
 				NumberOfMatchesNeeded++;
 			}
@@ -3440,7 +3454,7 @@ FVector UViewportWorldInteraction::FindTransformGizmoAlignPoint(const FTransform
 		{
 			for (FOverlapResult OverlapResult : OutOverlaps)
 			{
-				const AActor* PossibleCandidateActor = OverlapResult.GetActor();
+				const AActor* PossibleCandidateActor = OverlapResult.OverlapObjectHandle.FetchActor();
 
 				// Don't align to yourself, the entire world, or any actors hidden in the editor
 				if (PossibleCandidateActor != nullptr
@@ -3492,7 +3506,7 @@ FVector UViewportWorldInteraction::FindTransformGizmoAlignPoint(const FTransform
 				{
 					// If we are within the snap distance and can snap along that axis
 					if (FMath::Abs(DesiredGizmoLocalCandidateSnapPoint[PointAxis] - DesiredGizmoLocalGizmoSnapPoint[PointAxis]) <= AdjustedSnapDistance &&
-						(!FMath::IsNearlyZero(ConstraintAxes[PointAxis], 0.0001f) ||
+						(!FMath::IsNearlyZero(ConstraintAxes[PointAxis], (FVector::FReal)0.0001) ||
 							!bShouldConstrainMovement ))
 					{
 						NumberOfMatchingAxes++;
@@ -3727,7 +3741,7 @@ void UViewportWorldInteraction::UseLegacyInteractions()
 	for (UViewportInteractor* Interactor : Interactors)
 	{
 		Interactor->Shutdown();
-		Interactor->MarkPendingKill();
+		Interactor->MarkAsGarbage();
 	}
 
 	Interactors.Empty();

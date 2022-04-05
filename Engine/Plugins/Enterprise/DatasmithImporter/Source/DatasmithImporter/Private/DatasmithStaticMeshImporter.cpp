@@ -98,11 +98,11 @@ void FDatasmithStaticMeshImporter::CleanupMeshDescriptions(TArray<FMeshDescripti
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithStaticMeshImporter::CleanupMeshDescriptions)
 
-	TSet<FPolygonID> PolygonsToDelete;
 	for (FMeshDescription& MeshDescription : MeshDescriptions)
 	{
+		TSet<FPolygonID> PolygonsToDelete;
 		FStaticMeshAttributes Attributes(MeshDescription);
-		const TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+		const TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 		if (VertexPositions.IsValid())
 		{
 			for (const FVertexID VertexID : MeshDescription.Vertices().GetElementIDs())
@@ -118,24 +118,30 @@ void FDatasmithStaticMeshImporter::CleanupMeshDescriptions(TArray<FMeshDescripti
 			}
 		}
 
+		if (MeshDescription.Polygons().Num() == PolygonsToDelete.Num())
+		{
+			MeshDescription.Empty();
+			continue;
+		}
+
 		// Remove UV channels containing UV coordinates with Nan.
 		// This crashes the editor on Mac, see UE-106145.
-		TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
-		for ( int32 Index = VertexInstanceUVs.GetNumIndices() - 1; Index >= 0 ; --Index)
+		TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+		for ( int32 Index = VertexInstanceUVs.GetNumChannels() - 1; Index >= 0 ; --Index)
 		{
 			for (FVertexInstanceID InstanceID : MeshDescription.VertexInstances().GetElementIDs())
 			{
-				FVector2D UVCoords = VertexInstanceUVs.Get(InstanceID, Index);
+				FVector2f UVCoords = VertexInstanceUVs.Get(InstanceID, Index);
 				if (UVCoords.ContainsNaN())
 				{
-					VertexInstanceUVs.RemoveIndex(Index);
+					VertexInstanceUVs.RemoveChannel(Index);
 					break;
 				}
 			}
 		}
 
 		// Add at least one UV channel if all incoming ones contained coordinates with NaN
-		if (VertexInstanceUVs.GetNumIndices() == 0)
+		if (VertexInstanceUVs.GetNumChannels() == 0)
 		{
 			DatasmithMeshHelper::CreateDefaultUVs(MeshDescription);
 		}
@@ -171,10 +177,20 @@ void FDatasmithStaticMeshImporter::CleanupMeshDescriptions(TArray<FMeshDescripti
 			MeshDescription.Compact(Remappings);
 		}
 
+		if (PolygonsToDelete.Num() > 0 || MeshDescription.Triangles().Num() == 0)
+		{
+			MeshDescription.TriangulateMesh();
+			if (MeshDescription.Triangles().Num() == 0)
+			{
+				MeshDescription.Empty();
+				continue;
+			}
+		}
+
 		// Fix invalid vertex normals and tangents
 		// We need polygon info because ComputeTangentsAndNormals uses it to repair the invalid vertex normals/tangents
 		// Can't calculate just the required polygons as ComputeTangentsAndNormals is parallel and we can't guarantee thread-safe access patterns
-		FStaticMeshOperations::ComputePolygonTangentsAndNormals(MeshDescription);
+		FStaticMeshOperations::ComputeTriangleTangentsAndNormals(MeshDescription);
 		FStaticMeshOperations::ComputeTangentsAndNormals(MeshDescription, EComputeNTBsFlags::UseMikkTSpace);
 	}
 }
@@ -257,14 +273,14 @@ UStaticMesh* FDatasmithStaticMeshImporter::ImportStaticMesh(const TSharedRef< ID
 
 bool FDatasmithStaticMeshImporter::ShouldRecomputeNormals(const FMeshDescription& MeshDescription, int32 BuildRequirements)
 {
-	const TVertexInstanceAttributesConstRef<FVector> Normals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
+	TVertexInstanceAttributesConstRef<FVector3f> Normals = FStaticMeshConstAttributes(MeshDescription).GetVertexInstanceNormals();
 	check(Normals.IsValid());
 	return Algo::AnyOf(MeshDescription.VertexInstances().GetElementIDs(), [&](const FVertexInstanceID& InstanceID) { return !Normals[InstanceID].IsNormalized(); }, Algo::NoRef);
 }
 
 bool FDatasmithStaticMeshImporter::ShouldRecomputeTangents(const FMeshDescription& MeshDescription, int32 BuildRequirements)
 {
-	const TVertexInstanceAttributesConstRef<FVector> Tangents = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
+	TVertexInstanceAttributesConstRef<FVector3f> Tangents = FStaticMeshConstAttributes(MeshDescription).GetVertexInstanceTangents();
 	check(Tangents.IsValid());
 	return Algo::AnyOf(MeshDescription.VertexInstances().GetElementIDs(), [&](const FVertexInstanceID& InstanceID) { return !Tangents[InstanceID].IsNormalized(); }, Algo::NoRef);
 }
@@ -338,30 +354,11 @@ void FDatasmithStaticMeshImporter::BuildStaticMesh( UStaticMesh* StaticMesh )
 	BuildStaticMeshes({ StaticMesh });
 }
 
-void FDatasmithStaticMeshImporter::PostMeshBuild(UStaticMesh* StaticMesh)
-{
-	StaticMesh->ClearMeshDescriptions();
-}
-
 void FDatasmithStaticMeshImporter::BuildStaticMeshes(const TArray< UStaticMesh* >& StaticMeshes, TFunction<bool(UStaticMesh*)> ProgressCallback)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithStaticMeshImporter::BuildStaticMeshes);
 
-	TArray<FDelegateHandle> PostMeshBuildDelegateHandles;
-	PostMeshBuildDelegateHandles.SetNum(StaticMeshes.Num());
-
-	for (int32 StaticMeshIndex = 0; StaticMeshIndex < StaticMeshes.Num(); ++StaticMeshIndex)
-	{
-		// Release mesh descriptions as soon as they've been serialized and built to reduce memory footprint during import
-		PostMeshBuildDelegateHandles[StaticMeshIndex] = StaticMeshes[StaticMeshIndex]->OnPostMeshBuild().AddStatic(&FDatasmithStaticMeshImporter::PostMeshBuild);
-	}
-
 	UStaticMesh::BatchBuild(StaticMeshes, true, ProgressCallback);
-
-	for (int32 StaticMeshIndex = 0; StaticMeshIndex < StaticMeshes.Num(); ++StaticMeshIndex)
-	{
-		StaticMeshes[StaticMeshIndex]->OnPostMeshBuild().Remove(PostMeshBuildDelegateHandles[StaticMeshIndex]);
-	}
 }
 
 void FDatasmithStaticMeshImporter::ProcessCollision(UStaticMesh* StaticMesh, const TArray< FVector >& VertexPositions)
@@ -511,7 +508,7 @@ public:
 					ThisSection.SectionIndex = SectionIndex++;
 					ThisSection.SectionId = PolygonGroupID;
 					ThisSection.MaterialSlotName = MaterialSlotNameAttribute[PolygonGroupID];
-					ThisSection.PolyCount = MeshDescription->GetPolygonGroupPolygons(PolygonGroupID).Num();
+					ThisSection.PolyCount = MeshDescription->GetPolygonGroupPolygonIDs(PolygonGroupID).Num();
 				}
 			}
 		}
@@ -639,12 +636,12 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 
 		if (bGenerateLightmapUVs)
 		{
-			if (!FMath::IsWithin<int32>(SourceIndex, 0, MAX_MESH_TEXTURE_COORDS_MD))
+			if (!FMath::IsWithin(SourceIndex, 0, (int32)MAX_MESH_TEXTURE_COORDS_MD))
 			{
 				AssetsContext.GetParentContext().LogError(FText::Format(LOCTEXT("InvalidLightmapSourceIndexError", "Lightmap generation error for mesh {0}: Specified source is invalid {1}. Cannot find an available fallback source channel."), FText::FromName(StaticMesh->GetFName()), MeshElement->GetLightmapSourceUV()));
 				bGenerateLightmapUVs = false;
 			}
-			else if (!FMath::IsWithin<int32>(DestinationIndex, 0, MAX_MESH_TEXTURE_COORDS_MD))
+			else if (!FMath::IsWithin(DestinationIndex, 0, (int32)MAX_MESH_TEXTURE_COORDS_MD))
 			{
 				AssetsContext.GetParentContext().LogError(FText::Format(LOCTEXT("InvalidLightmapDestinationIndexError", "Lightmap generation error for mesh {0}: Cannot find an available destination channel."), FText::FromName(StaticMesh->GetFName())));
 				bGenerateLightmapUVs = false;
@@ -669,9 +666,6 @@ void FDatasmithStaticMeshImporter::SetupStaticMesh( FDatasmithAssetsImportContex
 		BuildSettingsTemplate.SrcLightmapIndex = SourceIndex;
 		BuildSettingsTemplate.DstLightmapIndex = DestinationIndex;
 		BuildSettingsTemplate.MinLightmapResolution = MinLightmapSize;
-
-		// Don't build adjacency buffer for meshes with over 500 000 triangles because it's too slow
-		BuildSettingsTemplate.bBuildAdjacencyBuffer = ((BuildRequirements & EMaterialRequirements::RequiresAdjacency) != 0) && DatasmithMeshHelper::GetPolygonCount(MeshDescription) < 500000;
 
 		StaticMeshTemplate->BuildSettings.Add( MoveTemp( BuildSettingsTemplate ) );
 

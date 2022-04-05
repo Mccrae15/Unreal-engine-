@@ -1072,6 +1072,15 @@ struct GAMEPLAYABILITIES_API FGameplayEffectSpec
 	/** Helper function that returns the duration after applying relevant modifiers from the source and target ability system components */
 	float CalculateModifiedDuration() const;
 
+	/** Dynamically add an asset tag not originally from the source GE definition; Added to DynamicAssetTags as well as injected into the captured source spec tags */
+	void AddDynamicAssetTag(const FGameplayTag& TagToAdd);
+
+	/** Dynamically append asset tags not originally from the source GE definition; Added to DynamicAssetTags as well as injected into the captured source spec tags */
+	void AppendDynamicAssetTags(const FGameplayTagContainer& TagsToAppend);
+
+	/** Simple const accessor to the dynamic asset tags */
+	const FGameplayTagContainer& GetDynamicAssetTags() const;
+
 private:
 
 	void CaptureDataFromSource(bool bSkipRecaptureSourceActorTags = false);
@@ -1122,6 +1131,7 @@ public:
 	FGameplayTagContainer DynamicGrantedTags;
 
 	/** Tags that are on this effect spec and that did not come from the UGameplayEffect def. These are replicated. */
+	UE_DEPRECATED(5.0, "This member will be made private. Please use AddDynamicAssetTag, AppendDynamicAssetTags, or GetDynamicAssetTags as appropriate. Note that dynamic asset tag removal will no longer be supported.")
 	UPROPERTY()
 	FGameplayTagContainer DynamicAssetTags;
 
@@ -1577,6 +1587,23 @@ struct GAMEPLAYABILITIES_API FActiveGameplayEffectsContainer : public FFastArray
 
 	void SetActiveGameplayEffectLevel(FActiveGameplayEffectHandle ActiveHandle, int32 NewLevel);
 
+	/**
+	 * Update a set-by-caller magnitude for the active effect to match the new value, if possible
+	 * 
+	 * @param ActiveHandle		Handle of the active effect to update
+	 * @param SetByCallerTag	Set-by-caller tag to update
+	 * @param NewValue			New value of the set-by-caller magnitude
+	 */
+	void UpdateActiveGameplayEffectSetByCallerMagnitude(FActiveGameplayEffectHandle ActiveHandle, const FGameplayTag& SetByCallerTag, float NewValue);
+
+	/**
+	 * Update set-by-caller magnitudes for the active effect to match the new values, if possible; Replaces existing values
+	 *
+	 * @param ActiveHandle			Handle of the active effect to update
+	 * @param NewSetByCallerValues	Map of set-by-caller tag to new magnitude
+	 */
+	void UpdateActiveGameplayEffectSetByCallerMagnitudes(FActiveGameplayEffectHandle ActiveHandle, const TMap<FGameplayTag, float>& NewSetByCallerValues);
+
 	void SetAttributeBaseValue(FGameplayAttribute Attribute, float NewBaseValue);
 
 	float GetAttributeBaseValue(FGameplayAttribute Attribute) const;
@@ -1912,7 +1939,11 @@ public:
 	virtual void GetOwnedGameplayTags(FGameplayTagContainer& TagContainer) const override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #if WITH_EDITOR
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif

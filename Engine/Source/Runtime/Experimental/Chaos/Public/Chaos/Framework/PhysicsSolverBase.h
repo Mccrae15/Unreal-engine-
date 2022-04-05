@@ -6,25 +6,29 @@
 #include "Misc/ScopeLock.h"
 #include "ChaosLog.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
+#include "Framework/Threading.h"
 #include "Chaos/ParticleDirtyFlags.h"
 #include "Async/ParallelFor.h"
 #include "Containers/Queue.h"
 #include "Chaos/ChaosMarshallingManager.h"
+#include "Stats/Stats2.h"
 
 class FChaosSolversModule;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPreAdvance, Chaos::FReal);
 DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPreBuffer, Chaos::FReal);
 DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPostAdvance, Chaos::FReal);
+DECLARE_MULTICAST_DELEGATE(FSolverTeardown);
 
 namespace Chaos
 {
 	class FPhysicsSolverBase;
 	struct FPendingSpatialDataQueue;
-	class FPhysicsSceneGuard;
 	class FChaosResultsManager;
 	class FRewindData;
 	class IRewindCallback;
+
+	extern CHAOS_API int32 GSingleThreadedPhysics;
 
 	extern CHAOS_API int32 UseAsyncInterpolation;
 	extern CHAOS_API int32 ForceDisableAsyncPhysics;
@@ -36,6 +40,7 @@ namespace Chaos
 			: PseudoFraction(1.0)
 			, Step(1)
 			, NumSteps(1)
+			, bSolverSubstepped(false)
 		{
 		}
 
@@ -43,6 +48,16 @@ namespace Chaos
 			: PseudoFraction(InPseudoFraction)
 			, Step(InStep)
 			, NumSteps(InNumSteps)
+			, bSolverSubstepped(false)
+		{
+
+		}
+
+		FSubStepInfo(const FReal InPseudoFraction, const int32 InStep, const int32 InNumSteps, bool bInSolverSubstepped)
+			: PseudoFraction(InPseudoFraction)
+			, Step(InStep)
+			, NumSteps(InNumSteps)
+			, bSolverSubstepped(bInSolverSubstepped)
 		{
 
 		}
@@ -51,6 +66,7 @@ namespace Chaos
 		FReal PseudoFraction;
 		int32 Step;
 		int32 NumSteps;
+		bool bSolverSubstepped;
 	};
 
 	/**
@@ -114,6 +130,11 @@ namespace Chaos
 			MarshallingManager.GetProducerData_External()->DirtyProxiesDataBuffer.Remove(ProxyBaseIn);
 		}
 
+		const FDirtyProxiesBucketInfo& GetDirtyProxyBucketInfo_External()
+		{
+			return MarshallingManager.GetProducerData_External()->DirtyProxiesDataBuffer.GetDirtyProxyBucketInfo();
+		}
+
 		// Batch dirty proxies without checking DirtyIdx.
 		template <typename TProxiesArray>
 		void AddDirtyProxiesUnsafe(TProxiesArray& ProxiesArray)
@@ -133,12 +154,18 @@ namespace Chaos
 
 		/** Creates a new sim callback object of the type given. Caller expected to free using FreeSimCallbackObject_External*/
 		template <typename TSimCallbackObjectType>
-		TSimCallbackObjectType* CreateAndRegisterSimCallbackObject_External(bool bContactModification = false)
+		inline TSimCallbackObjectType* CreateAndRegisterSimCallbackObject_External(bool bContactModification = false, bool bRegisterRewindCallback = false)
 		{
 			auto NewCallbackObject = new TSimCallbackObjectType();
 			RegisterSimCallbackObject_External(NewCallbackObject, bContactModification);
+			if (bRegisterRewindCallback)
+			{
+				EnqueueSimcallbackRewindRegisteration(NewCallbackObject);
+			}
 			return NewCallbackObject;
 		}
+
+		void EnqueueSimcallbackRewindRegisteration(ISimCallbackObject* Callback);
 
 		void UnregisterAndFreeSimCallbackObject_External(ISimCallbackObject* SimCallbackObject)
 		{
@@ -161,7 +188,6 @@ namespace Chaos
 			RegisterSimOneShotCallback(MoveTemp(Func));
 		}
 
-		void EnableRewindCapture(int32 NumFrames, bool InUseCollisionResimCache, TUniquePtr<IRewindCallback>&& RewindCallback = TUniquePtr<IRewindCallback>());
 		void SetRewindCallback(TUniquePtr<IRewindCallback>&& RewindCallback);
 
 		FRewindData* GetRewindData()
@@ -228,6 +254,8 @@ namespace Chaos
 
 		void SetThreadingMode_External(EThreadingModeTemp InThreadingMode)
 		{
+			if (!!GSingleThreadedPhysics) { InThreadingMode = EThreadingModeTemp::SingleThread; }
+
 			if(InThreadingMode != ThreadingMode)
 			{
 				if(InThreadingMode == EThreadingModeTemp::SingleThread)
@@ -245,20 +273,14 @@ namespace Chaos
 
 		bool IsShuttingDown() const { return bIsShuttingDown; }
 
-		void EnableAsyncMode(FReal FixedDt)
-		{
-			AsyncDt = FixedDt;
-			AccumulatedTime = 0;
-		}
-
-		void DisableAsyncMode()
-		{
-			AsyncDt = -1;
-		}
-
+		void EnableAsyncMode(FReal FixedDt);
+		
+		void DisableAsyncMode();
+		
 		virtual void ConditionalApplyRewind_Internal(){}
 
 		FChaosMarshallingManager& GetMarshallingManager() { return MarshallingManager; }
+		FChaosResultsManager& GetResultsManager() { return *PullResultsManager; }
 
 		EThreadingModeTemp GetThreadingMode() const
 		{
@@ -267,7 +289,7 @@ namespace Chaos
 
 		FGraphEventRef AdvanceAndDispatch_External(FReal InDt);
 
-#if CHAOS_CHECKED
+#if CHAOS_DEBUG_NAME
 		void SetDebugName(const FName& Name)
 		{
 			DebugName = Name;
@@ -281,6 +303,7 @@ namespace Chaos
 
 		void ApplyCallbacks_Internal(const FReal SimTime, const FReal Dt)
 		{
+			QUICK_SCOPE_CYCLE_COUNTER(ApplySimCallbacks);
 			for (ISimCallbackObject* Callback : SimCallbackObjects)
 			{
 				Callback->SetSimAndDeltaTime_Internal(SimTime, Dt);
@@ -310,8 +333,8 @@ namespace Chaos
 		}
 
 		/** Used to update external thread data structures. RigidFunc allows per dirty rigid code to execute. Include PhysicsSolverBaseImpl.h to call this function*/
-		template <typename RigidLambda>
-		void PullPhysicsStateForEachDirtyProxy_External(const RigidLambda& RigidFunc);
+		template <typename RigidLambda, typename ConstraintLambda>
+		void PullPhysicsStateForEachDirtyProxy_External(const RigidLambda& RigidFunc, const ConstraintLambda& ConstraintFunc);
 
 		bool IsUsingAsyncResults() const
 		{
@@ -321,6 +344,47 @@ namespace Chaos
 		bool IsUsingFixedDt() const
 		{
 			return IsUsingAsyncResults() && UseAsyncInterpolation;
+		}
+
+		void SetMaxDeltaTime_External(float InMaxDeltaTime)
+		{
+			MMaxDeltaTime = InMaxDeltaTime;
+		}
+
+		void SetMinDeltaTime_External(float InMinDeltaTime)
+		{
+			// a value approaching zero is not valid/desired
+			MMinDeltaTime = FMath::Max(InMinDeltaTime, SMALL_NUMBER);
+		}
+
+		float GetMaxDeltaTime_External() const
+		{
+			return MMaxDeltaTime;
+		}
+
+		float GetMinDeltaTime_External() const
+		{
+			return MMinDeltaTime;
+		}
+
+		void SetMaxSubSteps_External(const int32 InMaxSubSteps)
+		{
+			MMaxSubSteps = InMaxSubSteps;
+		}
+
+		int32 GetMaxSubSteps_External() const
+		{
+			return MMaxSubSteps;
+		}
+
+		void SetSolverSubstep_External(bool bInSubstepExternal)
+		{
+			bSolverSubstep_External = bInSubstepExternal;
+		}
+
+		bool GetSolverSubstep_External() const
+		{
+			return bSolverSubstep_External;
 		}
 
 		/** Returns the time used by physics results. If fixed dt is used this will be the interpolated time */
@@ -345,7 +409,7 @@ namespace Chaos
 		EThreadingModeTemp ThreadingMode;
 
 		/** Protected construction so callers still have to go through the module to create new instances */
-		FPhysicsSolverBase(const EMultiBufferMode BufferingModeIn,const EThreadingModeTemp InThreadingMode,UObject* InOwner);
+		FPhysicsSolverBase(const EMultiBufferMode BufferingModeIn,const EThreadingModeTemp InThreadingMode,UObject* InOwner, FReal AsyncDt);
 
 		/** Only allow construction with valid parameters as well as restricting to module construction */
 		virtual ~FPhysicsSolverBase();
@@ -363,12 +427,12 @@ namespace Chaos
 		virtual void ProcessPushedData_Internal(FPushPhysicsData& PushDataArray) = 0;
 		virtual void SetExternalTimestampConsumed_Internal(const int32 Timestamp) = 0;
 
-#if CHAOS_CHECKED
+#if CHAOS_DEBUG_NAME
 		FName DebugName;
 #endif
 
 	FChaosMarshallingManager MarshallingManager;
-	TUniquePtr<FChaosResultsManager> PullResultsManager;
+	TUniquePtr<FChaosResultsManager> PullResultsManager;	//must come after MarshallingManager since it knows about MarshallingManager
 
 	// The spatial operations not yet consumed by the internal sim. Use this to ensure any GT operations are seen immediately
 	TUniquePtr<FPendingSpatialDataQueue> PendingSpatialOperations_External;
@@ -413,7 +477,7 @@ namespace Chaos
 		FRWLock SimMaterialLock;
 		
 		/** Scene lock object for external threads (non-physics) */
-		TUniquePtr<FPhysicsSceneGuard> ExternalDataLock_External;
+		TUniquePtr<FPhysSceneLock> ExternalDataLock_External;
 
 		friend FChaosSolversModule;
 		friend FPhysicsSolverAdvanceTask;
@@ -422,8 +486,12 @@ namespace Chaos
 		friend struct TSolverSimMaterialScope;
 
 		bool bIsShuttingDown;
+		bool bSolverSubstep_External;
 		FReal AsyncDt;
 		FReal AccumulatedTime;
+		float MMaxDeltaTime;
+		float MMinDeltaTime;
+		int32 MMaxSubSteps;
 		int32 ExternalSteps;
 		TArray<FGeometryParticle*> UniqueIdxToGTParticles;
 
@@ -441,15 +509,20 @@ namespace Chaos
 		FDelegateHandle AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate);
 		bool            RemovePostAdvanceCallback(FDelegateHandle InHandle);
 
+		/** Teardown happens as the solver is destroyed or streamed out */
+		FDelegateHandle AddTeardownCallback(FSolverTeardown::FDelegate InDelegate);
+		bool            RemoveTeardownCallback(FDelegateHandle InHandle);
+
 		/** Get the lock used for external data manipulation. A better API would be to use scoped locks so that getting a write lock is non-const */
 		//NOTE: this is a const operation so that you can acquire a read lock on a const solver. The assumption is that non-const write operations are already marked non-const
-		FPhysicsSceneGuard& GetExternalDataLock_External() const { return *ExternalDataLock_External; }
+		FPhysSceneLock& GetExternalDataLock_External() const { return *ExternalDataLock_External; }
 
 	protected:
 		/** Storage for events, see the Add/Remove pairs above for event timings */
 		FSolverPreAdvance EventPreSolve;
 		FSolverPreBuffer EventPreBuffer;
 		FSolverPostAdvance EventPostSolve;
+		FSolverTeardown EventTeardown;
 
 		void TrackGTParticle_External(FGeometryParticle& Particle);
 		void ClearGTParticle_External(FGeometryParticle& Particle);

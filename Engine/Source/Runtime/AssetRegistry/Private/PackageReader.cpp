@@ -1,19 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PackageReader.h"
+
+#include "AssetRegistry.h"
+#include "AssetRegistryPrivate.h"
+#include "AssetRegistry/AssetData.h"
 #include "HAL/FileManager.h"
 #include "Internationalization/Internationalization.h"
 #include "Logging/MessageLog.h"
+#include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "UObject/Class.h"
-#include "AssetRegistryPrivate.h"
-#include "AssetRegistry/AssetData.h"
-#include "AssetRegistry.h"
 
 FPackageReader::FPackageReader()
 	: Loader(nullptr)
 	, PackageFileSize(0)
 	, AssetRegistryDependencyDataOffset(INDEX_NONE)
+	, bLoaderOwner(false)
 {
 	this->SetIsLoading(true);
 	this->SetIsPersistent(true);
@@ -21,22 +24,33 @@ FPackageReader::FPackageReader()
 
 FPackageReader::~FPackageReader()
 {
-	if (Loader)
+	if (Loader && bLoaderOwner)
 	{
 		delete Loader;
 	}
 }
 
-bool FPackageReader::OpenPackageFile(const FString& InPackageFilename, EOpenPackageResult* OutErrorCode)
+bool FPackageReader::OpenPackageFile(FStringView InPackageFilename, EOpenPackageResult* OutErrorCode)
 {
+	return OpenPackageFile(FStringView(), InPackageFilename, OutErrorCode);
+}
+
+bool FPackageReader::OpenPackageFile(FStringView InLongPackageName, FStringView InPackageFilename, EOpenPackageResult* OutErrorCode)
+{
+	check(!Loader);
+	LongPackageName = InLongPackageName;
 	PackageFilename = InPackageFilename;
 	Loader = IFileManager::Get().CreateFileReader(*PackageFilename);
+	bLoaderOwner = true;
 	return OpenPackageFile(OutErrorCode);
 }
 
 bool FPackageReader::OpenPackageFile(FArchive* InLoader, EOpenPackageResult* OutErrorCode)
 {
+	check(!Loader);
 	Loader = InLoader;
+	bLoaderOwner = false;
+	LongPackageName.Empty();
 	PackageFilename = Loader->GetArchiveName();
 	return OpenPackageFile(OutErrorCode);
 }
@@ -72,18 +86,38 @@ bool FPackageReader::OpenPackageFile(EOpenPackageResult* OutErrorCode)
 		return false;
 	}
 
-	// Don't read packages that are too old
-	if( PackageFileSummary.GetFileVersionUE4() < VER_UE4_OLDEST_LOADABLE_PACKAGE )
+	if (!PackageFileSummary.IsFileVersionValid())
 	{
-		UE_LOG(LogAssetRegistry, Error, TEXT("Package %s is too old"), *PackageFilename);
-		SetPackageErrorCode(EOpenPackageResult::VersionTooOld);
+		UE_LOG(LogAssetRegistry, Error, TEXT("Package %s is unversioned which cannot be opened by the current process"), *PackageFilename);
+		SetPackageErrorCode(EOpenPackageResult::Unversioned);
+		return false;
+	}
+
+	// Don't read packages that are too old
+	if (PackageFileSummary.IsFileVersionTooOld())
+	{
+		UE_LOG(	LogAssetRegistry, Error, TEXT("Package %s is too old. Min Version: %i  Package Version: %i"), 
+				*PackageFilename, (int32)VER_UE4_OLDEST_LOADABLE_PACKAGE, PackageFileSummary.GetFileVersionUE().FileVersionUE4);
+
+		SetPackageErrorCode(EOpenPackageResult::Unversioned);
 		return false;
 	}
 
 	// Don't read packages that were saved with an package version newer than the current one.
-	if( (PackageFileSummary.GetFileVersionUE4() > GPackageFileUE4Version) || (PackageFileSummary.GetFileVersionLicenseeUE4() > GPackageFileLicenseeUE4Version) )
+	if (PackageFileSummary.IsFileVersionTooNew())
 	{
-		UE_LOG(LogAssetRegistry, Error, TEXT("Package %s is too new"), *PackageFilename);
+		UE_LOG(	LogAssetRegistry, Error, TEXT("Package %s is too new. Engine Version: %i  Package Version: %i"), 
+				*PackageFilename, GPackageFileUEVersion.ToValue(), PackageFileSummary.GetFileVersionUE().ToValue());
+
+		SetPackageErrorCode(EOpenPackageResult::VersionTooNew);
+		return false;
+	}
+
+	if (PackageFileSummary.GetFileVersionLicenseeUE() > GPackageFileLicenseeUEVersion)
+	{
+		UE_LOG(	LogAssetRegistry, Error, TEXT("Package %s is too new. Licensee Version: %i Package Licensee Version: %i"), 
+				*PackageFilename, GPackageFileLicenseeUEVersion, PackageFileSummary.GetFileVersionLicenseeUE());
+
 		SetPackageErrorCode(EOpenPackageResult::VersionTooNew);
 		return false;
 	}
@@ -112,8 +146,8 @@ bool FPackageReader::OpenPackageFile(EOpenPackageResult* OutErrorCode)
 	}
 
 	//make sure the filereader gets the correct version number (it defaults to latest version)
-	SetUE4Ver(PackageFileSummary.GetFileVersionUE4());
-	SetLicenseeUE4Ver(PackageFileSummary.GetFileVersionLicenseeUE4());
+	SetUEVer(PackageFileSummary.GetFileVersionUE());
+	SetLicenseeUEVer(PackageFileSummary.GetFileVersionLicenseeUE());
 	SetEngineVer(PackageFileSummary.SavedByEngineVersion);
 
 	const FCustomVersionContainer& PackageFileSummaryVersions = PackageFileSummary.GetCustomVersionContainer();
@@ -124,6 +158,20 @@ bool FPackageReader::OpenPackageFile(EOpenPackageResult* OutErrorCode)
 	SetPackageErrorCode(EOpenPackageResult::Success);
 	return true;
 }
+
+bool FPackageReader::TryGetLongPackageName(FString& OutLongPackageName) const
+{
+	if (!LongPackageName.IsEmpty())
+	{
+		OutLongPackageName = LongPackageName;
+		return true;
+	}
+	else
+	{
+		return FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, OutLongPackageName);
+	}
+}
+
 bool FPackageReader::StartSerializeSection(int64 Offset)
 {
 	check(Loader);
@@ -154,7 +202,7 @@ bool FPackageReader::ReadAssetRegistryData(TArray<FAssetData*>& AssetDataList)
 
 	// Determine the package name and path
 	FString PackageName;
-	if (!FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, PackageName))
+	if (!TryGetLongPackageName(PackageName))
 	{
 		// Path was possibly unmounted
 		return false;
@@ -218,7 +266,11 @@ bool FPackageReader::ReadAssetDataFromThumbnailCache(TArray<FAssetData*>& AssetD
 	}
 
 	// Determine the package name and path
-	FString PackageName = FPackageName::FilenameToLongPackageName(PackageFilename);
+	FString PackageName;
+	if (!TryGetLongPackageName(PackageName))
+	{
+		return false;
+	}
 	FString PackagePath = FPackageName::GetLongPackagePath(PackageName);
 
 	// Load the thumbnail count
@@ -261,7 +313,7 @@ bool FPackageReader::ReadAssetDataFromThumbnailCache(TArray<FAssetData*>& AssetD
 		}
 
 		// Create a new FAssetData for this asset and update it with the gathered data
-		AssetDataList.Add(new FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectPathWithoutPackageName), FName(*AssetClassName), FAssetDataTagMap(), PackageFileSummary.ChunkIDs, PackageFileSummary.PackageFlags));
+		AssetDataList.Add(new FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectPathWithoutPackageName), FName(*AssetClassName), FAssetDataTagMap(), PackageFileSummary.ChunkIDs, PackageFileSummary.GetPackageFlags()));
 	}
 
 	return true;
@@ -271,15 +323,19 @@ bool FPackageReader::ReadAssetRegistryDataIfCookedPackage(TArray<FAssetData*>& A
 {
 	if (!!(GetPackageFlags() & PKG_FilterEditorOnly))
 	{
-		const FString PackageName = FPackageName::FilenameToLongPackageName(PackageFilename);
-		
+		FString PackageName;
+		if (!TryGetLongPackageName(PackageName))
+		{
+			return false;
+		}
+
 		bool bFoundAtLeastOneAsset = false;
 
 		// If the packaged is saved with the right version we have the information
 		// which of the objects in the export map as the asset.
 		// Otherwise we need to store a temp minimal data and then force load the asset
 		// to re-generate its registry data
-		if (UE4Ver() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
+		if (UEVer() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
 		{
 			const FString PackagePath = FPackageName::GetLongPackagePath(PackageName);
 
@@ -336,23 +392,32 @@ bool FPackageReader::ReadAssetRegistryDataIfCookedPackage(TArray<FAssetData*>& A
 bool FPackageReader::ReadDependencyData(FPackageDependencyData& OutDependencyData)
 {
 	FString PackageNameString;
-	if (!FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, PackageNameString))
+	if (!TryGetLongPackageName(PackageNameString))
 	{
 		// Path was possibly unmounted
 		return false;
 	}
 
 	OutDependencyData.PackageName = FName(*PackageNameString);
-	OutDependencyData.PackageData.DiskSize = PackageFileSize;
+	FAssetPackageData& PackageData = OutDependencyData.PackageData;
+	PackageData.DiskSize = PackageFileSize;
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	OutDependencyData.PackageData.PackageGuid = PackageFileSummary.Guid;
+	PackageData.PackageGuid = PackageFileSummary.Guid;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	PackageData.SetCustomVersions(PackageFileSummary.GetCustomVersionContainer().GetAllVersions());
+	PackageData.FileVersionUE = PackageFileSummary.GetFileVersionUE();
+	PackageData.FileVersionLicenseeUE = PackageFileSummary.GetFileVersionLicenseeUE();
+	PackageData.SetIsLicenseeVersion(PackageFileSummary.SavedByEngineVersion.IsLicenseeVersion());
 
 	if (!SerializeNameMap())
 	{
 		return false;
 	}
 	if (!SerializeImportMap(OutDependencyData.ImportMap))
+	{
+		return false;
+	}
+	if (!SerializeImportedClasses(OutDependencyData.ImportMap, PackageData.ImportedClasses))
 	{
 		return false;
 	}
@@ -425,8 +490,8 @@ bool FPackageReader::SerializeImportMap(TArray<FObjectImport>& OutImportMap)
 		}
 		for ( int32 ImportMapIdx = 0; ImportMapIdx < PackageFileSummary.ImportCount; ++ImportMapIdx )
 		{
-			FObjectImport* Import = new(OutImportMap)FObjectImport;
-			*this << *Import;
+			FObjectImport& Import = OutImportMap.Emplace_GetRef();
+			*this << Import;
 			if (IsError())
 			{
 				UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeImportMapInvalidImport", PackageFilename);
@@ -435,6 +500,104 @@ bool FPackageReader::SerializeImportMap(TArray<FObjectImport>& OutImportMap)
 		}
 	}
 
+	return true;
+}
+
+bool FPackageReader::SerializeImportedClasses(const TArray<FObjectImport>& ImportMap, TArray<FName>& OutClassNames)
+{
+	OutClassNames.Reset();
+
+	TSet<int32> ClassImportIndices;
+	if (PackageFileSummary.ExportCount > 0)
+	{
+		if (!StartSerializeSection(PackageFileSummary.ExportOffset))
+		{
+			UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeExportMapInvalidExportOffset", PackageFilename);
+			return false;
+		}
+
+		const int MinSizePerExport = 1;
+		if (PackageFileSize < Tell() + PackageFileSummary.ExportCount * MinSizePerExport)
+		{
+			UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeExportMapInvalidExportCount", PackageFilename);
+			return false;
+		}
+		FObjectExport ExportBuffer;
+		for (int32 ExportMapIdx = 0; ExportMapIdx < PackageFileSummary.ExportCount; ++ExportMapIdx)
+		{
+			*this << ExportBuffer;
+			if (IsError())
+			{
+				UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeExportMapInvalidExport", PackageFilename);
+				return false;
+			}
+			if (ExportBuffer.ClassIndex.IsImport())
+			{
+				ClassImportIndices.Add(ExportBuffer.ClassIndex.ToImport());
+			}
+		}
+	}
+
+	TArray<FName, TInlineAllocator<5>>  ParentChain;
+	FNameBuilder ClassObjectPath;
+	for (int32 ClassImportIndex : ClassImportIndices)
+	{
+		ParentChain.Reset();
+		ClassObjectPath.Reset();
+		if (!ImportMap.IsValidIndex(ClassImportIndex))
+		{
+			UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeImportedClassesInvalidClassIndex", PackageFilename);
+			return false;
+		}
+		bool bParentChainComplete = false;
+		int32 CurrentParentIndex = ClassImportIndex;
+		for (;;)
+		{
+			const FObjectImport& ObjectImport = ImportMap[CurrentParentIndex];
+			ParentChain.Add(ObjectImport.ObjectName);
+			if (ObjectImport.OuterIndex.IsImport())
+			{
+				CurrentParentIndex = ObjectImport.OuterIndex.ToImport();
+				if (!ImportMap.IsValidIndex(CurrentParentIndex))
+				{
+					UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeImportedClassesInvalidImportInParentChain",
+						PackageFilename);
+					return false;
+				}
+			}
+			else if (ObjectImport.OuterIndex.IsNull())
+			{
+				bParentChainComplete = true;
+				break;
+			}
+			else
+			{
+				check(ObjectImport.OuterIndex.IsExport());
+				// Ignore classes in an external package but with an object in this package as one of their outers;
+				// We do not need to handle that case yet for Import Classes, and we would have to make this
+				// loop more complex (searching in both ExportMap and ImportMap) to do so
+				break;
+			}
+		}
+
+		if (bParentChainComplete)
+		{
+			int32 NumTokens = ParentChain.Num();
+			check(NumTokens >= 1);
+			const TCHAR Delimiters[] = {'.', SUBOBJECT_DELIMITER_CHAR, '.' };
+			int32 DelimiterIndex = 0;
+			ParentChain[NumTokens - 1].AppendString(ClassObjectPath);
+			for (int32 TokenIndex = NumTokens - 2; TokenIndex >= 0; --TokenIndex)
+			{
+				ClassObjectPath << Delimiters[DelimiterIndex];
+				DelimiterIndex = FMath::Min(DelimiterIndex+1, static_cast<int32>(UE_ARRAY_COUNT(Delimiters))-1);
+				ParentChain[TokenIndex].AppendString(ClassObjectPath);
+			}
+			OutClassNames.Emplace(ClassObjectPath);
+		}
+	}
+
+	OutClassNames.Sort(FNameLexicalLess());
 	return true;
 }
 
@@ -471,7 +634,7 @@ bool FPackageReader::SerializeExportMap(TArray<FObjectExport>& OutExportMap)
 
 bool FPackageReader::SerializeSoftPackageReferenceList(TArray<FName>& OutSoftPackageReferenceList)
 {
-	if (UE4Ver() >= VER_UE4_ADD_STRING_ASSET_REFERENCES_MAP && PackageFileSummary.SoftPackageReferencesOffset > 0 && PackageFileSummary.SoftPackageReferencesCount > 0)
+	if (UEVer() >= VER_UE4_ADD_STRING_ASSET_REFERENCES_MAP && PackageFileSummary.SoftPackageReferencesOffset > 0 && PackageFileSummary.SoftPackageReferencesCount > 0)
 	{
 		if (!StartSerializeSection(PackageFileSummary.SoftPackageReferencesOffset))
 		{
@@ -485,7 +648,7 @@ bool FPackageReader::SerializeSoftPackageReferenceList(TArray<FName>& OutSoftPac
 			UE_PACKAGEREADER_CORRUPTPACKAGE_WARNING("SerializeSoftPackageReferenceListInvalidReferencesCount", PackageFilename);
 			return false;
 		}
-		if (UE4Ver() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
+		if (UEVer() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
 		{
 			for (int32 ReferenceIdx = 0; ReferenceIdx < PackageFileSummary.SoftPackageReferencesCount; ++ReferenceIdx)
 			{
@@ -497,7 +660,7 @@ bool FPackageReader::SerializeSoftPackageReferenceList(TArray<FName>& OutSoftPac
 					return false;
 				}
 
-				if (UE4Ver() < VER_UE4_KEEP_ONLY_PACKAGE_NAMES_IN_STRING_ASSET_REFERENCES_MAP)
+				if (UEVer() < VER_UE4_KEEP_ONLY_PACKAGE_NAMES_IN_STRING_ASSET_REFERENCES_MAP)
 				{
 					PackageName = FPackageName::GetNormalizedObjectPath(PackageName);
 					if (!PackageName.IsEmpty())
@@ -531,7 +694,7 @@ bool FPackageReader::SerializeSoftPackageReferenceList(TArray<FName>& OutSoftPac
 
 bool FPackageReader::SerializeSearchableNamesMap(FPackageDependencyData& OutDependencyData)
 {
-	if (UE4Ver() >= VER_UE4_ADDED_SEARCHABLE_NAMES && PackageFileSummary.SearchableNamesOffset > 0)
+	if (UEVer() >= VER_UE4_ADDED_SEARCHABLE_NAMES && PackageFileSummary.SearchableNamesOffset > 0)
 	{
 		if (!StartSerializeSection(PackageFileSummary.SearchableNamesOffset))
 		{
@@ -590,7 +753,7 @@ int64 FPackageReader::TotalSize()
 
 uint32 FPackageReader::GetPackageFlags() const
 {
-	return PackageFileSummary.PackageFlags;
+	return PackageFileSummary.GetPackageFlags();
 }
 
 FArchive& FPackageReader::operator<<( FName& Name )
@@ -624,9 +787,7 @@ FArchive& FPackageReader::operator<<( FName& Name )
 	return *this;
 }
 
-namespace UE
-{
-namespace AssetRegistry
+namespace UE::AssetRegistry
 {
 	// See the corresponding WritePackageData defined in SavePackageUtilities.cpp in CoreUObject module
 	bool ReadPackageDataMain(FArchive& BinaryArchive, const FString& PackageName, const FPackageFileSummary& PackageFileSummary, int64& OutDependencyDataOffset, TArray<FAssetData*>& OutAssetDataList, EReadPackageDataMainErrorCode& OutError)
@@ -635,10 +796,10 @@ namespace AssetRegistry
 
 		const FString PackagePath = FPackageName::GetLongPackagePath(PackageName);
 		const int64 PackageFileSize = BinaryArchive.TotalSize();
-		const bool bIsMapPackage = (PackageFileSummary.PackageFlags & PKG_ContainsMap) != 0;
+		const bool bIsMapPackage = (PackageFileSummary.GetPackageFlags() & PKG_ContainsMap) != 0;
 
 		// To avoid large patch sizes, we have frozen cooked package format at the format before VER_UE4_ASSETREGISTRY_DEPENDENCYFLAGS
-		bool bPreDependencyFormat = PackageFileSummary.GetFileVersionUE4() < VER_UE4_ASSETREGISTRY_DEPENDENCYFLAGS || !!(PackageFileSummary.PackageFlags & PKG_FilterEditorOnly);
+		bool bPreDependencyFormat = PackageFileSummary.GetFileVersionUE() < VER_UE4_ASSETREGISTRY_DEPENDENCYFLAGS || !!(PackageFileSummary.GetPackageFlags() & PKG_FilterEditorOnly);
 
 		// Load offsets to optionally-read data
 		if (bPreDependencyFormat)
@@ -664,12 +825,12 @@ namespace AssetRegistry
 		// We will also do this for maps saved after they were marked public but no asset data was saved for some reason. A bug caused this to happen for some maps.
 		if (bIsMapPackage)
 		{
-			const bool bLegacyPackage = PackageFileSummary.GetFileVersionUE4() < VER_UE4_PUBLIC_WORLDS;
+			const bool bLegacyPackage = PackageFileSummary.GetFileVersionUE() < VER_UE4_PUBLIC_WORLDS;
 			const bool bNoMapAsset = (ObjectCount == 0);
 			if (bLegacyPackage || bNoMapAsset)
 			{
 				FString AssetName = FPackageName::GetLongPackageAssetName(PackageName);
-				OutAssetDataList.Add(new FAssetData(FName(*PackageName), FName(*PackagePath), FName(*AssetName), FName(TEXT("World")), FAssetDataTagMap(), PackageFileSummary.ChunkIDs, PackageFileSummary.PackageFlags));
+				OutAssetDataList.Add(new FAssetData(FName(*PackageName), FName(*PackagePath), FName(*AssetName), FName(TEXT("World")), FAssetDataTagMap(), PackageFileSummary.ChunkIDs, PackageFileSummary.GetPackageFlags()));
 			}
 		}
 
@@ -712,7 +873,7 @@ namespace AssetRegistry
 
 			// Before worlds were RF_Public, other non-public assets were added to the asset data table in map packages.
 			// Here we simply skip over them
-			if (bIsMapPackage && PackageFileSummary.GetFileVersionUE4() < VER_UE4_PUBLIC_WORLDS)
+			if (bIsMapPackage && PackageFileSummary.GetFileVersionUE() < VER_UE4_PUBLIC_WORLDS)
 			{
 				if (ObjectPath != FPackageName::GetLongPackageAssetName(PackageName))
 				{
@@ -735,14 +896,14 @@ namespace AssetRegistry
 				ObjectPath = PackageName + TEXT(".") + ObjectPath;
 			}
 			// Previously export couldn't have its outer as an import
-			else if (PackageFileSummary.GetFileVersionUE4() < VER_UE4_NON_OUTER_PACKAGE_IMPORT)
+			else if (PackageFileSummary.GetFileVersionUE() < VER_UE4_NON_OUTER_PACKAGE_IMPORT)
 			{
 				UE_ASSET_LOG(LogAssetRegistry, Warning, *PackageName, TEXT("Package has invalid export %s, resave source package!"), *ObjectPath);
 				continue;
 			}
 
 			// Create a new FAssetData for this asset and update it with the gathered data
-			OutAssetDataList.Add(new FAssetData(PackageName, ObjectPath, FName(*ObjectClassName), MoveTemp(TagsAndValues), PackageFileSummary.ChunkIDs, PackageFileSummary.PackageFlags));
+			OutAssetDataList.Add(new FAssetData(PackageName, ObjectPath, FName(*ObjectClassName), MoveTemp(TagsAndValues), PackageFileSummary.ChunkIDs, PackageFileSummary.GetPackageFlags()));
 		}
 
 		return true;
@@ -755,5 +916,4 @@ namespace AssetRegistry
 		BinaryArchive << OutSoftPackageUsedInGame;
 		return !BinaryArchive.IsError();
 	}
-}
 }

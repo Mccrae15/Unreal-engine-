@@ -141,7 +141,7 @@ void UXRVisualizationFunctionLibrary::RenderGenericMesh(const FName& ActorName, 
 
 	AActor* FoundActor = FindObjectFast<AActor>(CurrentLevel, ActorName, true);
 	UStaticMeshComponent* StaticMeshComponent = nullptr;
-	if ((FoundActor == nullptr) || (FoundActor->IsPendingKill()))
+	if (!IsValid(FoundActor))
 	{
 		//create actor
 		FoundActor = NewObject<AActor>(CurrentLevel, ActorName);
@@ -198,7 +198,7 @@ void UXRVisualizationFunctionLibrary::RenderHandMesh(const FXRMotionControllerDa
 				return;
 			}
 
-			TArray<struct FVector> Vertices, Normals;
+			TArray<FVector> Vertices, Normals;
 			TArray<int32> Indices;
 			FTransform HandMeshTransform;
 
@@ -213,7 +213,7 @@ void UXRVisualizationFunctionLibrary::RenderHandMesh(const FXRMotionControllerDa
 				UProceduralMeshComponent* ProceduralMeshComponent = nullptr;
 				TArray<FLinearColor> Colors(&FLinearColor::White, Vertices.Num());
 				
-				if ((FoundActor == nullptr) || (FoundActor->IsPendingKill()))
+				if (!IsValid(FoundActor))
 				{
 					//create actor
 					FoundActor = NewObject<AActor>(CurrentLevel, ActorName);

@@ -103,16 +103,24 @@ class ENGINE_API ABrush
 	uint32 bNotForClientOrServer:1;
 
 	UPROPERTY(Instanced)
-	class UModel* Brush;
+	TObjectPtr<class UModel> Brush;
 
 private:
 	UPROPERTY(Category = Collision, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	class UBrushComponent* BrushComponent;
+	TObjectPtr<class UBrushComponent> BrushComponent;
 public:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(VisibleAnywhere, Instanced, Category=BrushBuilder)
-	class UBrushBuilder* BrushBuilder;
+	TObjectPtr<class UBrushBuilder> BrushBuilder;
+	
+	/** If true, display the brush with a shaded volume */
+	UPROPERTY(Transient, EditAnywhere, Category=BrushSettings)
+	uint32 bDisplayShadedVolume:1;
+
+	/** Value used to set the opacity for the shaded volume, between 0-1 */
+	UPROPERTY(Transient, EditAnywhere, Category=BrushSettings, meta=(ClampMin=0.0, ClampMax=1.0))
+	float ShadedVolumeOpacityValue = 0.25f;
 #endif
 
 	/** Flag set when we are in a manipulation (scaling, translation, brush builder param change etc.) */
@@ -169,7 +177,9 @@ public:
 	virtual void PostRegisterAllComponents() override;
 	virtual void CheckForErrors() override;
 	virtual void SetIsTemporarilyHiddenInEditor( bool bIsHidden ) override;
-
+	virtual bool SetIsHiddenEdLayer(bool bIsHiddenEdLayer) override;
+	virtual bool SupportsLayers() const override;
+	virtual bool SupportsExternalPackaging() const override;
 public:
 
 	virtual void InitPosRotScale();

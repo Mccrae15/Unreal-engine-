@@ -2,8 +2,8 @@
 #pragma once
 
 #include "Chaos/Core.h"
+#include "Chaos/PBDSoftsEvolutionFwd.h"
 #include "Containers/ContainersFwd.h"
-#include "Chaos/Transform.h"
 
 class USkeletalMeshComponent;
 class UClothingAssetCommon;
@@ -36,38 +36,52 @@ namespace Chaos
 		int32 GetLODIndex() const;
 		int32 GetNumLODs() const;
 		int32 GetNumPoints(int32 LODIndex) const;
-		TConstArrayView<const uint32> GetIndices(int32 LODIndex) const;
-		TArray<TConstArrayView<const FRealSingle>> GetWeightMaps(int32 LODIndex) const;
+		TConstArrayView<uint32> GetIndices(int32 LODIndex) const;
+		TArray<TConstArrayView<FRealSingle>> GetWeightMaps(int32 LODIndex) const;
+		TArray<TConstArrayView<TTuple<int32, int32, float>>> GetTethers(int32 LODIndex, bool bUseGeodesicTethers) const;
 		int32 GetReferenceBoneIndex() const;
 		FRigidTransform3 GetReferenceBoneTransform() const;
 
-		bool WrapDeformLOD(
-			int32 PrevLODIndex,
-			int32 LODIndex,
-			const FVec3* Normals,
-			const FVec3* Positions,
-			FVec3* OutPositions) const;
+		// Return this mesh component's scale (the max of the three axis scale values)
+		Softs::FSolverReal GetScale() const;
 
 		bool WrapDeformLOD(
 			int32 PrevLODIndex,
 			int32 LODIndex,
-			const FVec3* Normals,
-			const FVec3* Positions,
-			const FVec3* Velocities,
-			FVec3* OutPositions0,
-			FVec3* OutPositions1,
-			FVec3* OutVelocities) const;
+			const Softs::FSolverVec3* Normals,
+			const Softs::FSolverVec3* Positions,
+			Softs::FSolverVec3* OutPositions) const;
+
+		bool WrapDeformLOD(
+			int32 PrevLODIndex,
+			int32 LODIndex,
+			const Softs::FSolverVec3* Normals,
+			const Softs::FPAndInvM* PositionAndInvMs,
+			const Softs::FSolverVec3* Velocities,
+			Softs::FPAndInvM* OutPositionAndInvMs0,
+			Softs::FSolverVec3* OutPositions1,
+			Softs::FSolverVec3* OutVelocities) const;
 		// ---- End of the Cloth interface ----
 
 	private:
 		void SkinPhysicsMesh(
 			int32 LODIndex,
 			const FVec3& LocalSpaceLocation,
-			FVec3* OutPositions,
-			FVec3* OutNormals) const;
+			Softs::FSolverVec3* OutPositions,
+			Softs::FSolverVec3* OutNormals) const;
 
 	private:
 		const UClothingAssetCommon* Asset;
 		const USkeletalMeshComponent* SkeletalMeshComponent;
 	};
 } // namespace Chaos
+
+// Support ISPC enable/disable in non-shipping builds
+constexpr bool bChaos_SkinPhysicsMesh_ISPC_Enable = true;
+#if !INTEL_ISPC
+const bool bChaos_SkinPhysicsMesh_ISPC_Enabled = false;
+#elif UE_BUILD_SHIPPING
+const bool bChaos_SkinPhysicsMesh_ISPC_Enabled = true;
+#else
+extern bool bChaos_SkinPhysicsMesh_ISPC_Enabled;
+#endif

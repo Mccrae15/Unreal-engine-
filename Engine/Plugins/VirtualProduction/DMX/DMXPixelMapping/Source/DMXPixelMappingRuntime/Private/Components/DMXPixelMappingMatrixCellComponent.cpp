@@ -70,24 +70,6 @@ void UDMXPixelMappingMatrixCellComponent::PostEditChangeProperty(FPropertyChange
 #endif // WITH_EDITOR
 
 #if WITH_EDITOR
-void UDMXPixelMappingMatrixCellComponent::PreEditUndo()
-{
-	// Use default engine instead of parent class.
-	// Let the prent matrix component handle it instead.
-	UObject::PreEditUndo();
-}
-#endif // WITH_EDITOR
-
-#if WITH_EDITOR
-void UDMXPixelMappingMatrixCellComponent::PostEditUndo()
-{
-	// Use default engine instead of parent class.
-	// Let the prent matrix component handle it instead.	
-	UObject::PostEditUndo();
-}
-#endif // WITH_EDITOR
-
-#if WITH_EDITOR
 TSharedRef<FDMXPixelMappingComponentWidget> UDMXPixelMappingMatrixCellComponent::BuildSlot(TSharedRef<SConstraintCanvas> InCanvas)
 {
 	ComponentWidget = Super::BuildSlot(InCanvas);
@@ -246,8 +228,8 @@ void UDMXPixelMappingMatrixCellComponent::QueueDownsample()
 	// Store downsample index
 	DownsamplePixelIndex = RendererComponent->GetDownsamplePixelNum();
 
-	const uint32 TextureSizeX = InputTexture->Resource->GetSizeX();
-	const uint32 TextureSizeY = InputTexture->Resource->GetSizeY();
+	const uint32 TextureSizeX = InputTexture->GetResource()->GetSizeX();
+	const uint32 TextureSizeY = InputTexture->GetResource()->GetSizeY();
 	check(TextureSizeX > 0 && TextureSizeY > 0);
 	const FIntPoint PixelPosition = RendererComponent->GetPixelPosition(DownsamplePixelIndex);
 	const FVector2D UV = FVector2D(PositionX / TextureSizeX, PositionY / TextureSizeY);

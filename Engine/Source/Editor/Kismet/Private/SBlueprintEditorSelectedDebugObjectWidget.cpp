@@ -35,7 +35,6 @@ void SBlueprintEditorSelectedDebugObjectWidget::Construct(const FArguments& InAr
 	LastObjectObserved = nullptr;
 
 	DebugWorldsComboBox = SNew(STextComboBox)
-		.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
 		.ToolTip(IDocumentation::Get()->CreateToolTip(
 		LOCTEXT("BlueprintDebugWorldTooltip", "Select a world to debug, will filter what to debug if no specific object selected"),
 		nullptr,
@@ -48,7 +47,6 @@ void SBlueprintEditorSelectedDebugObjectWidget::Construct(const FArguments& InAr
 		.OnSelectionChanged(this, &SBlueprintEditorSelectedDebugObjectWidget::DebugWorldSelectionChanged);
 
 	DebugObjectsComboBox = SNew(SComboBox<TSharedPtr<FBlueprintDebugObjectInstance>>)
-		.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
 		.ToolTip(IDocumentation::Get()->CreateToolTip(
 		LOCTEXT("BlueprintDebugObjectTooltip", "Select an object to debug, if set to none will debug any object"),
 		nullptr,
@@ -116,7 +114,6 @@ const FString& SBlueprintEditorSelectedDebugObjectWidget::GetDebugAllWorldsStrin
 
 TSharedRef<SWidget> SBlueprintEditorSelectedDebugObjectWidget::OnGetActiveDetailSlotContent(bool bChangedToHighDetail)
 {
-
 	const TSharedRef<SWidget> BrowseButton = PropertyCustomizationHelpers::MakeBrowseButton(FSimpleDelegate::CreateSP(this, &SBlueprintEditorSelectedDebugObjectWidget::SelectedDebugObject_OnClicked));
 	BrowseButton->SetVisibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &SBlueprintEditorSelectedDebugObjectWidget::IsSelectDebugObjectButtonVisible)));
 	BrowseButton->SetToolTipText(LOCTEXT("DebugSelectActor", "Select this Actor in level"));
@@ -125,6 +122,7 @@ TSharedRef<SWidget> SBlueprintEditorSelectedDebugObjectWidget::OnGetActiveDetail
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
+		.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
 		[
 			DebugObjectsComboBox.ToSharedRef()
 		]
@@ -132,56 +130,28 @@ TSharedRef<SWidget> SBlueprintEditorSelectedDebugObjectWidget::OnGetActiveDetail
 		.AutoWidth()
 		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Center)
-		.Padding(2.0f)
+		.Padding(4.0f)
 		[
 			BrowseButton
 		];
 
-	if (!bChangedToHighDetail)
-	{
+
 		return
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f)
 			.AutoWidth()
 			[
 				DebugWorldsComboBox.ToSharedRef()
 			]
 			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f)
 			.AutoWidth()
 			[
 				DebugObjectSelectionWidget
 			];
-	}
-	else
-	{
-		return
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.VAlign(VAlign_Bottom)
-			[
-				// Vertical Layout when using normal size icons
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					DebugWorldsComboBox.ToSharedRef()
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					DebugObjectSelectionWidget
-				]
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Center)
-			.Padding(2.0f)
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("DebugSelectTitle", "Debug Filter"))
-			];
-	}
 }
 
 void SBlueprintEditorSelectedDebugObjectWidget::OnRefresh()
@@ -365,7 +335,7 @@ void SBlueprintEditorSelectedDebugObjectWidget::GenerateDebugObjectInstances(boo
 				UObject* ObjOuter = TestObject;
 				do
 				{
-					bPendingKill = ObjOuter->IsPendingKill();
+					bPendingKill = !IsValid(ObjOuter);
 					ObjOuter = ObjOuter->GetOuter();
 				} while (!bPendingKill && ObjOuter != nullptr);
 
@@ -420,7 +390,7 @@ void SBlueprintEditorSelectedDebugObjectWidget::GenerateDebugObjectInstances(boo
 					continue;
 				}
 
-				const bool bPassesFlags = !TestObject->HasAnyFlags(RF_ClassDefaultObject) && !TestObject->IsPendingKill();
+				const bool bPassesFlags = !TestObject->HasAnyFlags(RF_ClassDefaultObject) && IsValid(TestObject);
 				const bool bGeneratedByAnyBlueprint = TestObject->GetClass()->ClassGeneratedBy != nullptr;
 				const bool bGeneratedByThisBlueprint = bGeneratedByAnyBlueprint && GetBlueprintObj()->GeneratedClass && TestObject->IsA(GetBlueprintObj()->GeneratedClass);
 

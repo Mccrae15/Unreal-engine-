@@ -21,9 +21,39 @@ bool UNiagaraStackEditorData::GetStackEntryIsExpanded(const FString& StackEntryK
 
 void UNiagaraStackEditorData::SetStackEntryIsExpanded(const FString& StackEntryKey, bool bIsExpanded)
 {
+	bool bBroadcast = false;
 	if (ensureMsgf(StackEntryKey.IsEmpty() == false, TEXT("Can not set the expanded state with an empty key")))
 	{
+		// we assume elements are expanded by default, so collapsing (bIsExpanded = false) will cause a broadcast
+		bBroadcast = GetStackEntryIsExpanded(StackEntryKey, true) != bIsExpanded;
 		StackEntryKeyToExpandedMap.FindOrAdd(StackEntryKey) = bIsExpanded;
+	}
+
+	if (bBroadcast)
+	{
+		OnPersistentDataChanged().Broadcast();
+	}
+}
+
+bool UNiagaraStackEditorData::GetStackEntryIsExpandedInOverview(const FString& StackEntryKey, bool bIsExpandedDefault) const
+{
+	const bool* bIsExpandedPtr = StackEntryKeyToExpandedOverviewMap.Find(StackEntryKey);
+	return bIsExpandedPtr != nullptr ? *bIsExpandedPtr : bIsExpandedDefault;
+}
+
+void UNiagaraStackEditorData::SetStackEntryIsExpandedInOverview(const FString& StackEntryKey, bool bIsExpanded)
+{
+	bool bBroadcast = false;
+	if (ensureMsgf(StackEntryKey.IsEmpty() == false, TEXT("Can not set the expanded state with an empty key")))
+	{
+		// we assume elements are expanded by default, so collapsing (bIsExpanded = false) will cause a broadcast
+		bBroadcast = GetStackEntryIsExpandedInOverview(StackEntryKey, true) != bIsExpanded;
+		StackEntryKeyToExpandedOverviewMap.FindOrAdd(StackEntryKey) = bIsExpanded;
+	}
+
+	if (bBroadcast)
+	{
+		OnPersistentDataChanged().Broadcast();
 	}
 }
 
@@ -52,6 +82,20 @@ void UNiagaraStackEditorData::SetStackItemShowAdvanced(const FString& StackEntry
 	if (ensureMsgf(StackEntryKey.IsEmpty() == false, TEXT("Can not set the show advanced state with an empty key")))
 	{
 		StackItemKeyToShowAdvancedMap.FindOrAdd(StackEntryKey) = bShowAdvanced;
+	}
+}
+
+FText UNiagaraStackEditorData::GetStackEntryActiveSection(const FString& StackEntryKey, FText ActiveSectionDefault) const
+{
+	const FText* ActiveSectionPtr = StackEntryKeyToActiveSectionMap.Find(StackEntryKey);
+	return ActiveSectionPtr != nullptr ? *ActiveSectionPtr : ActiveSectionDefault;
+}
+
+void UNiagaraStackEditorData::SetStackEntryActiveSection(const FString& StackEntryKey, FText ActiveSection)
+{
+	if (ensureMsgf(StackEntryKey.IsEmpty() == false, TEXT("Can not set the active section with an empty key")))
+	{
+		StackEntryKeyToActiveSectionMap.FindOrAdd(StackEntryKey) = ActiveSection;
 	}
 }
 

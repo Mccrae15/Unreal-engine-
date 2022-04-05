@@ -16,7 +16,7 @@ using System.Security.Cryptography;
 
 namespace CSVStats
 {
-	enum CsvBinVersion
+	public enum CsvBinVersion
 	{
 		PreRelease = 1,
 		InitialRelease,
@@ -40,6 +40,14 @@ namespace CSVStats
 		None,
 		Min,
 		Max
+	};
+
+
+	public class CsvFileInfo
+	{
+		public bool bIsCsvBin;
+		public CsvBinVersion BinVersion = CsvBinVersion.COUNT;
+		public CsvBinCompressionLevel BinCompressionLevel = CsvBinCompressionLevel.None;
 	};
 
 
@@ -180,7 +188,6 @@ namespace CSVStats
 			}
 		}
 
-
 		public void CombineAndValidate(CsvMetadata comparisonMetadata)
         {
             List<string> valuesDontMatchKeys = new List<string>();
@@ -314,6 +321,19 @@ namespace CSVStats
             for (int i = IgnoreFirstFrame ? 1 : 0; i < samples.Count - (IgnoreLastFrame ? 1 : 0); i++)
             {
                 if (samples[i] > budget)
+                {
+                    countOverBudget++;
+                }
+            }
+            return countOverBudget;
+        }
+
+        public int GetCountOfFramesAtOrOverBudget(float budget, bool IgnoreFirstFrame = true, bool IgnoreLastFrame = true)
+        {
+            int countOverBudget = 0;
+            for (int i = IgnoreFirstFrame ? 1 : 0; i < samples.Count - (IgnoreLastFrame ? 1 : 0); i++)
+            {
+                if (samples[i] >= budget)
                 {
                     countOverBudget++;
                 }
@@ -580,7 +600,7 @@ namespace CSVStats
 			if (searchStringLower.Contains("*"))
 			{
 				// Break the search string into substrings and check each of the substrings appears in order
-				string [] subSearchStrings = searchStringLower.Split('*');
+				string[] subSearchStrings = searchStringLower.Split('*');
 				return WildcardSubstringMatch(str.ToLower(), subSearchStrings);
 			}
 			else
@@ -779,9 +799,9 @@ namespace CSVStats
 		}
 
 
-		public static CsvStats ReadBinFile(string filename, string[] statNamesToRead=null, int numRowsToSkip=0, bool justHeader=false)
+		public static CsvStats ReadBinFile(string filename, string[] statNamesToRead=null, int numRowsToSkip=0, bool justHeader=false, CsvFileInfo FileInfoOut=null)
 		{
-			System.IO.FileStream fileStream = new FileStream(filename, FileMode.Open);
+			System.IO.FileStream fileStream = new FileStream(filename, FileMode.Open, FileAccess.Read);
 			System.IO.BinaryReader fileReader = new System.IO.BinaryReader(fileStream);
 
 			// Read the header
@@ -843,6 +863,14 @@ namespace CSVStats
 			if (statNamesToRead != null)
 			{
 				statNamesToReadDict = csvStatsOut.GetStatNamesMatchingStringList_Dict(statNamesToRead);
+			}
+
+			// Fill in the file info
+			if (FileInfoOut != null)
+			{
+				FileInfoOut.bIsCsvBin = true;
+				FileInfoOut.BinVersion = (CsvBinVersion)version;
+				FileInfoOut.BinCompressionLevel = compressionLevel;
 			}
 
 			if (justHeader)
@@ -1049,7 +1077,10 @@ namespace CSVStats
             if (metaData != null && bWriteMetadataRow )
             {
                 int index = 0;
-                foreach (System.Collections.Generic.KeyValuePair<string, string> pair in metaData.Values)
+				bool bFoundCommandline = false;
+				KeyValuePair<string, string> commandlinePair = new KeyValuePair<string,string>();
+
+				foreach (KeyValuePair<string, string> pair in metaData.Values)
                 {
                     if (index > 0)
                     {
@@ -1064,12 +1095,26 @@ namespace CSVStats
 					}
 					if (pair.Key.ToLower() == "commandline")
 					{
-						value = "\"" + value + "\"";
+						// Defer commandline to last
+						bFoundCommandline = true;
+						commandlinePair = pair;
+						continue;
 					}
 					sb.Append("["+pair.Key + "]," + value);
                     index++;
                 }
-            }
+
+				// Force the commandline to be output last
+				if (bFoundCommandline)
+				{
+					if (index > 0)
+					{
+						sb.Append(",");
+					}
+					string value = "\"" + commandlinePair.Value + "\"";
+					sb.Append("[" + commandlinePair.Key + "]," + value);
+				}
+			}
             csvOutFile.WriteLine(sb);
             csvOutFile.Close();
 
@@ -1483,40 +1528,26 @@ namespace CSVStats
 
 		public static bool DoesMetadataMatchFilter(CsvMetadata metadata, string metadataFilterString)
 		{
-			string[] keyValuePairStrs = metadataFilterString.Split(',');
-			foreach (string keyValuePairStr in keyValuePairStrs)
-			{
-				string[] keyValue = keyValuePairStr.Split('=');
-				if (keyValue.Length != 2)
-				{
-					return false;
-				}
-				string key = keyValue[0].ToLower();
-				if (!metadata.Values.ContainsKey(key))
-				{
-					return false;
-				}
-				// Check if the value actually matches (allow wildcards)
-				if ( !DoesSearchStringMatch(metadata.Values[key].ToLower(), keyValue[1].ToLower()))
-				{
-					return false;
-				}
-			}
-			return true;
+			QueryExpression expressionTree = MetadataQueryBuilder.BuildQueryExpressionTree(metadataFilterString);
+			return expressionTree.Evaluate(metadata);
 		}
 
 
-		public static CsvStats ReadCSVFile(string csvFilename, string[] statNames, int numRowsToSkip = 0, bool bGenerateCsvIdIfMissing=false)
+		public static CsvStats ReadCSVFile(string csvFilename, string[] statNames, int numRowsToSkip = 0, bool bGenerateCsvIdIfMissing=false, CsvFileInfo FileInfoOut=null)
         {
 			CsvStats statsOut;
 			if (csvFilename.EndsWith(".csv.bin"))
 			{
-				statsOut = ReadBinFile(csvFilename, statNames, numRowsToSkip);
+				statsOut = ReadBinFile(csvFilename, statNames, numRowsToSkip, false, FileInfoOut);
 			}
 			else
 			{
 				string[] lines = ReadLinesFromFile(csvFilename);
 				statsOut = ReadCSVFromLines(lines, statNames, numRowsToSkip);
+				if ( FileInfoOut != null )
+				{
+					FileInfoOut.bIsCsvBin = false;
+				}
 			}
 			if (bGenerateCsvIdIfMissing)
 			{

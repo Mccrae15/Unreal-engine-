@@ -7,13 +7,13 @@
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/EngineTypes.h"
-#include "HAL/IConsoleManager.h"
 #include "IAssetRegistry.h"
 #include "ISequencer.h"
 #include "LevelSequence.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "MovieSceneTimeHelpers.h"
+#include "ObjectTools.h"
 #include "Recorder/TakeRecorderBlueprintLibrary.h"
 #include "TakeMetaData.h"
 #include "TakePreset.h"
@@ -78,9 +78,8 @@ public:
 
 		ChildSlot
 		[
-			SNew(SBorder)
+			SNew(SBox)
 			.Padding(FMargin(15.0f))
-			.BorderImage(FCoreStyle::Get().GetBrush("NotificationList.ItemBackground"))
 			[
 				SNew(SVerticalBox)
 
@@ -935,43 +934,6 @@ void UTakeRecorder::PreRecord()
 	}
 }
 
-// Temporary CVar-based switching mechanism for UE 4.27 only.
-// In UE 5.0, this is a Take Recorder project setting instead.
-static int32 RecordingClockSourceCVarValue = static_cast<int32>(EUpdateClockSource::RelativeTimecode);
-static FAutoConsoleVariableRef CVarRecordingClockSource(
-	TEXT("TakeRecorder.RecordingClockSource"),
-	RecordingClockSourceCVarValue,
-	TEXT("Select the clock source used for recording: "
-		"0 = Tick, "
-		"1 = Platform, "
-		"2 = Audio, "
-		"3 = RelativeTimecode, "
-		"4 = Timecode, "
-		"5 = Custom "));
-
-static EUpdateClockSource GetRecordingClockSource()
-{
-	static EUpdateClockSource RecordingClockSource = EUpdateClockSource::RelativeTimecode;
-
-	static constexpr int32 EnumRangeBegin = static_cast<int32>(EUpdateClockSource::Tick);
-	static constexpr int32 EnumRangeEnd = static_cast<int32>(EUpdateClockSource::Custom);
-
-	if (RecordingClockSourceCVarValue >= EnumRangeBegin && RecordingClockSourceCVarValue <= EnumRangeEnd)
-	{
-		RecordingClockSource = static_cast<EUpdateClockSource>(RecordingClockSourceCVarValue);
-	}
-	else
-	{
-		UE_LOG(LogTakesCore, Warning,
-			TEXT("Invalid value %d for CVar 'TakeRecorder.RecordingClockSource' is not in the range [%d -> %d]. "
-				"Using RelativeTimecode clock source instead."),
-			RecordingClockSourceCVarValue, EnumRangeBegin, EnumRangeEnd);
-		RecordingClockSource = EUpdateClockSource::RelativeTimecode;
-	}
-
-	return RecordingClockSource;
-}
-
 void UTakeRecorder::Start()
 {
 	FTimecode Timecode = FApp::GetTimecode();
@@ -994,7 +956,7 @@ void UTakeRecorder::Start()
 	{
 		CachedPlaybackRange = MovieScene->GetPlaybackRange();
 		CachedClockSource = MovieScene->GetClockSource();
-		MovieScene->SetClockSource(GetRecordingClockSource());
+		MovieScene->SetClockSource(Parameters.Project.RecordingClockSource);
 		if (Sequencer.IsValid())
 		{
 			Sequencer->ResetTimeController();
@@ -1013,6 +975,8 @@ void UTakeRecorder::Start()
 				Section->MoveSection(DeltaFrame);
 			}
 		}
+
+		OnFrameModifiedEvent.Broadcast(this, PlaybackStartFrame);
 
 		if (StopRecordingFrame.IsSet())
 		{
@@ -1058,6 +1022,18 @@ void UTakeRecorder::Start()
 
 void UTakeRecorder::Stop()
 {
+	const bool bCancelled = false;
+	StopInternal(bCancelled);
+}
+
+void UTakeRecorder::Cancel()
+{
+	const bool bCancelled = true;
+	StopInternal(bCancelled);
+}
+
+void UTakeRecorder::StopInternal(const bool bCancelled)
+{
 	static bool bStoppedRecording = false;
 
 	if (bStoppedRecording)
@@ -1079,12 +1055,12 @@ void UTakeRecorder::Stop()
 
 	ManifestSerializer.Close();
 
-	const bool bDidEverStartRecording = State == ETakeRecorderState::Started;
-
 	FEditorDelegates::EndPIE.RemoveAll(this);
 	FEditorDelegates::BeginPIE.RemoveAll(this);
-
-	State = bDidEverStartRecording ? ETakeRecorderState::Stopped : ETakeRecorderState::Cancelled;
+	
+	const bool bDidEverStartRecording = State == ETakeRecorderState::Started;
+	const bool bRecordingFinished = !bCancelled && bDidEverStartRecording;
+	State = bRecordingFinished ? ETakeRecorderState::Stopped : ETakeRecorderState::Cancelled;
 
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (Sequencer.IsValid())
@@ -1108,9 +1084,17 @@ void UTakeRecorder::Stop()
 		if (!ShouldShowNotifications())
 		{
 			// Log in lieu of the notification widget
-			UE_LOG(LogTakesCore, Log, TEXT("Stopped recording"));
+			if (bRecordingFinished)
+			{
+				UE_LOG(LogTakesCore, Log, TEXT("Stopped recording"));
+			}
+			else
+			{
+				UE_LOG(LogTakesCore, Log, TEXT("Recording cancelled"));
+			}
 		}
 
+		OnRecordingStoppedEvent.Broadcast(this);
 		UTakeRecorderBlueprintLibrary::OnTakeRecorderStopped();
 
 		if (MovieScene)
@@ -1137,7 +1121,7 @@ void UTakeRecorder::Stop()
 		{
 			UTakeRecorderSources* Sources = SequenceAsset->FindMetaData<UTakeRecorderSources>();
 			check(Sources);
-			Sources->StopRecording(SequenceAsset);
+			Sources->StopRecording(SequenceAsset, bCancelled);
 		}
 
 		// Restore the playback range to what it was before recording.
@@ -1154,47 +1138,57 @@ void UTakeRecorder::Stop()
 			TakesUtils::ClampPlaybackRangeToEncompassAllSections(SequenceAsset->GetMovieScene(), bUpperBoundOnly);
 		}
 
-		// Lock the sequence so that it can't be changed without implicitly unlocking it now
-		if (Parameters.User.bAutoLock)
+		if (bRecordingFinished)
 		{
-			SequenceAsset->GetMovieScene()->SetReadOnly(true);
-		}
+			// Lock the sequence so that it can't be changed without implicitly unlocking it now
+			if (Parameters.User.bAutoLock)
+			{
+				SequenceAsset->GetMovieScene()->SetReadOnly(true);
+			}
 
-		UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
-		check(AssetMetaData);
+			UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
+			check(AssetMetaData);
 
-		if (MovieScene)
-		{
-			FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-			FFrameRate TickResolution = MovieScene->GetTickResolution();
-			FTimecode Timecode = FTimecode::FromFrameNumber(FFrameRate::TransformTime(CurrentFrameTime, TickResolution, DisplayRate).FloorToFrame(), DisplayRate);
+			if (MovieScene)
+			{
+				FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+				FFrameRate TickResolution = MovieScene->GetTickResolution();
+				FTimecode Timecode = FTimecode::FromFrameNumber(FFrameRate::TransformTime(CurrentFrameTime, TickResolution, DisplayRate).FloorToFrame(), DisplayRate);
 
-			AssetMetaData->SetTimecodeOut(Timecode);
-		}
+				AssetMetaData->SetTimecodeOut(Timecode);
+			}
 
-		if (GEditor && GEditor->GetEditorWorldContext().World())
-		{
-			AssetMetaData->SetLevelOrigin(GEditor->GetEditorWorldContext().World()->PersistentLevel);
-		}
+			if (GEditor && GEditor->GetEditorWorldContext().World())
+			{
+				AssetMetaData->SetLevelOrigin(GEditor->GetEditorWorldContext().World()->PersistentLevel);
+			}
 
-		// Lock the meta data so it can't be changed without implicitly unlocking it now
-		AssetMetaData->Lock();
+			// Lock the meta data so it can't be changed without implicitly unlocking it now
+			AssetMetaData->Lock();
 
-		if (Parameters.User.bSaveRecordedAssets)
-		{
-			TakesUtils::SaveAsset(SequenceAsset);
-		}
-		
-		// Rebuild sequencer because subsequences could have been added or bindings removed
-		if (Sequencer)
-		{
-			Sequencer->RefreshTree();
+			if (Parameters.User.bSaveRecordedAssets)
+			{
+				TakesUtils::SaveAsset(SequenceAsset);
+			}
+
+			// Rebuild sequencer because subsequences could have been added or bindings removed
+			if (Sequencer)
+			{
+				Sequencer->RefreshTree();
+			}
 		}
 	}
-	else if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
+
+	if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence && !bRecordingFinished)
 	{
-		// Recording was canceled before it started, so delete the asset
-		FAssetRegistryModule::AssetDeleted(SequenceAsset);
+		if (GIsEditor)
+		{
+			// Recording was canceled before it started, so delete the asset. Note we can only do this on editor
+			// nodes. On -game nodes, this cannot be performed. This can only happen with Mult-user and -game node
+			// recording.
+			//
+			FAssetRegistryModule::AssetDeleted(SequenceAsset);
+		}
 
 		// Move the asset to the transient package so that new takes with the same number can be created in its place
 		FName DeletedPackageName = MakeUniqueObjectName(nullptr, UPackage::StaticClass(), *(FString(TEXT("/Temp/") + SequenceAsset->GetName() + TEXT("_Cancelled"))));
@@ -1202,7 +1196,7 @@ void UTakeRecorder::Stop()
 
 		SequenceAsset->ClearFlags(RF_Standalone | RF_Public);
 		SequenceAsset->RemoveFromRoot();
-		SequenceAsset->MarkPendingKill();
+		SequenceAsset->MarkAsGarbage();
 		SequenceAsset = nullptr;
 	}
 
@@ -1219,7 +1213,7 @@ void UTakeRecorder::Stop()
 		GetCurrentRecorder().Reset();
 		TickableTakeRecorder.WeakRecorder = nullptr;
 
-		if (bDidEverStartRecording)
+		if (bRecordingFinished)
 		{
 			OnRecordingFinishedEvent.Broadcast(this);
 			UTakeRecorderBlueprintLibrary::OnTakeRecorderFinished(SequenceAsset);
@@ -1253,6 +1247,11 @@ FOnTakeRecordingStarted& UTakeRecorder::OnRecordingStarted()
 	return OnRecordingStartedEvent;
 }
 
+FOnTakeRecordingStopped& UTakeRecorder::OnRecordingStopped()
+{
+	return OnRecordingStoppedEvent;
+}
+
 FOnTakeRecordingFinished& UTakeRecorder::OnRecordingFinished()
 {
 	return OnRecordingFinishedEvent;
@@ -1261,6 +1260,11 @@ FOnTakeRecordingFinished& UTakeRecorder::OnRecordingFinished()
 FOnTakeRecordingCancelled& UTakeRecorder::OnRecordingCancelled()
 {
 	return OnRecordingCancelledEvent;
+}
+
+FOnStartPlayFrameModified& UTakeRecorder::OnStartPlayFrameModified()
+{
+	return OnFrameModifiedEvent;
 }
 
 void UTakeRecorder::HandlePIE(bool bIsSimulating)

@@ -34,8 +34,10 @@ enum class ETakeRecorderState : uint8
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingPreInitialize, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingInitialized, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingStarted, UTakeRecorder*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingStopped, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingFinished, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingCancelled, UTakeRecorder*);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnStartPlayFrameModified, UTakeRecorder*, const FFrameNumber& StartFrame);
 
 DECLARE_DELEGATE_RetVal_OneParam(FTakeRecorderParameters, FTakeRecorderParameterDelegate,const FTakeRecorderParameters&);
 
@@ -130,6 +132,11 @@ public:
 	void Stop();
 
 	/**
+	 * Called to cancel the recording
+	 */
+	void Cancel();
+
+	/**
 	 * Retrieve a multi-cast delegate that is triggered before initialization occurs (ie. when the recording button is pressed and before the countdown starts)
 	 */
 	FOnTakeRecordingPreInitialize& OnRecordingPreInitialize();
@@ -140,6 +147,11 @@ public:
 	FOnTakeRecordingStarted& OnRecordingStarted();
 
 	/**
+	 * Retrieve a multi-cast delegate that is triggered when this recording is stopped
+	 */
+	FOnTakeRecordingStopped& OnRecordingStopped();
+
+	/**
 	 * Retrieve a multi-cast delegate that is triggered when this recording finishes
 	 */
 	FOnTakeRecordingFinished& OnRecordingFinished();
@@ -148,6 +160,11 @@ public:
 	 * Retrieve a multi-cast delegate that is triggered when this recording is cancelled
 	 */
 	FOnTakeRecordingCancelled& OnRecordingCancelled();
+
+	/**
+	 * Retrieve a multi-cast delegate that is triggered when a delta time has been applied to the Movie Scene
+	 */
+	FOnStartPlayFrameModified& OnStartPlayFrameModified();
 
 private:
 
@@ -160,6 +177,11 @@ private:
 	 * Called after PreRecord To Start
 	 */
 	void Start();
+
+	/*
+	 * Stop or cancel
+	 */
+	void StopInternal(const bool bCancelled);
 
 	/**
 	 * Ticked by a tickable game object to performe any necessary time-sliced logic
@@ -231,11 +253,11 @@ private:
 
 	/** The asset that we should output recorded data into */
 	UPROPERTY(transient)
-	ULevelSequence* SequenceAsset;
+	TObjectPtr<ULevelSequence> SequenceAsset;
 
 	/** The overlay widget for this recording */
 	UPROPERTY(transient)
-	UTakeRecorderOverlayWidget* OverlayWidget;
+	TObjectPtr<UTakeRecorderOverlayWidget> OverlayWidget;
 
 	/** The world that we are recording within */
 	UPROPERTY(transient)
@@ -254,11 +276,17 @@ private:
 	/** Triggered when this recorder starts */
 	FOnTakeRecordingStarted OnRecordingStartedEvent;
 
+	/** Triggered when this recorder is stopped */
+	FOnTakeRecordingStopped OnRecordingStoppedEvent;
+
 	/** Triggered when this recorder finishes */
 	FOnTakeRecordingFinished OnRecordingFinishedEvent;
 
 	/** Triggered when this recorder is cancelled */
-	FOnTakeRecordingFinished OnRecordingCancelledEvent;
+	FOnTakeRecordingCancelled OnRecordingCancelledEvent;
+
+	/** Triggered when the movie scene is adjusted. */
+	FOnStartPlayFrameModified OnFrameModifiedEvent;
 
 	/** Sequencer ptr that controls playback of the desination asset during the recording */
 	TWeakPtr<ISequencer> WeakSequencer;

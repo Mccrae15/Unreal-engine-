@@ -20,7 +20,7 @@ public:
 	TEnumAsByte<enum TextureAddress> MipsAddressV = TA_Clamp;
 
 	// Positive values used as max NumMips value
-	int MaxNumMipsLimit = -1;
+	int32 MaxNumMipsLimit = -1;
 
 public:
 	inline void Reset()
@@ -33,16 +33,18 @@ public:
 		return bAutoGenerateMips && (MaxNumMipsLimit < 0 || MaxNumMipsLimit > 1);
 	}
 
-	inline int GetRequiredNumMips(const FIntPoint& InDim) const
+	inline int32 GetRequiredNumMips(const FIntPoint& InDim) const
 	{
-		int CurrentNumMips = 0;
+		int32 CurrentNumMips = 0;
 
 		if (IsEnabled())
 		{
 			// Make sure we only set a number of mips that actually makes sense, given the sample size
-			CurrentNumMips = FGenericPlatformMath::FloorToInt(FGenericPlatformMath::Log2(FGenericPlatformMath::Min(InDim.X, InDim.Y)));
+			CurrentNumMips = FGenericPlatformMath::FloorToInt(
+				FGenericPlatformMath::Log2(float(FGenericPlatformMath::Min(InDim.X, InDim.Y)))
+			);
 
-			int MipsLimit = MaxNumMipsLimit;
+			const int32 MipsLimit = MaxNumMipsLimit;
 			if (MipsLimit >= 0)
 			{
 				CurrentNumMips = FMath::Min(CurrentNumMips, MipsLimit);

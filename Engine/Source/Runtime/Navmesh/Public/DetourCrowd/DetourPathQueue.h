@@ -24,6 +24,7 @@
 
 #include "CoreMinimal.h"
 #include "Detour/DetourNavMeshQuery.h"
+#include "Detour/DetourLargeWorldCoordinates.h"
 
 static const unsigned int DT_PATHQ_INVALID = 0;
 
@@ -35,26 +36,25 @@ class dtPathQueue
 	{
 		dtPathQueueRef ref;
 		/// Path find start and end location.
-		float startPos[3], endPos[3];
+		dtReal startPos[3], endPos[3];
 		dtPolyRef startRef, endRef;
-		float costLimit;
+		dtReal costLimit;
 		/// Result.
 		dtPolyRef* path;
+		const dtQueryFilter* filter;
+		TSharedPtr<dtQuerySpecialLinkFilter> linkFilter;
 		int npath;
 		/// State.
 		dtStatus status;
 		int keepAlive;
-
-		const dtQueryFilter* filter;
-		TSharedPtr<dtQuerySpecialLinkFilter> linkFilter;
 	};
 	
 	static const int MAX_QUEUE = 8;
 	PathQuery m_queue[MAX_QUEUE];
+	dtNavMeshQuery* m_navquery;
 	dtPathQueueRef m_nextHandle;
 	int m_maxPathSize;
 	int m_queueHead;
-	dtNavMeshQuery* m_navquery;
 	
 	void purge();
 	
@@ -67,7 +67,7 @@ public:
 	void update(const int maxIters);
 	
 	dtPathQueueRef request(dtPolyRef startRef, dtPolyRef endRef,
-						   const float* startPos, const float* endPos, const float costLimit,
+						   const dtReal* startPos, const dtReal* endPos, const dtReal costLimit,
 						   const dtQueryFilter* filter,
 						   TSharedPtr<dtQuerySpecialLinkFilter> linkFilter);
 	

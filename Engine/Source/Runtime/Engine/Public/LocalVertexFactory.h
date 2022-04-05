@@ -44,7 +44,7 @@ public:
 
 	FLocalVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName)
 		: FVertexFactory(InFeatureLevel)
-		, ColorStreamIndex(-1)
+		, ColorStreamIndex(INDEX_NONE)
 		, DebugName(InDebugName)
 	{
 		bSupportsManualVertexFetch = true;
@@ -52,7 +52,12 @@ public:
 
 	struct FDataType : public FStaticMeshDataType
 	{
+		FVertexStreamComponent PreSkinPositionComponent;
 		FRHIShaderResourceView* PreSkinPositionComponentSRV = nullptr;
+	#if WITH_EDITORONLY_DATA
+		const class UStaticMesh* StaticMesh = nullptr;
+		bool bIsCoarseProxy = false;
+	#endif
 	};
 
 	/**
@@ -82,8 +87,6 @@ public:
 		UniformBuffer.SafeRelease();
 		FVertexFactory::ReleaseRHI();
 	}
-
-	static bool SupportsTessellationShaders() { return true; }
 
 	FORCEINLINE_DEBUGGABLE void SetColorOverrideStream(FRHICommandList& RHICmdList, const FVertexBuffer* ColorVertexBuffer) const
 	{
@@ -144,6 +147,12 @@ public:
 	{
 		return UniformBuffer.GetReference();
 	}
+
+#if WITH_EDITORONLY_DATA
+	virtual bool IsCoarseProxyMesh() const override { return Data.bIsCoarseProxy; }
+
+	inline const class UStaticMesh* GetStaticMesh() const { return Data.StaticMesh; }
+#endif
 
 protected:
 	const FDataType& GetData() const { return Data; }

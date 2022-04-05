@@ -11,6 +11,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Docking/LayoutService.h"
 #include "EngineGlobals.h"
+#include "InterchangeManager.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EditorModeManager.h"
@@ -99,6 +100,8 @@ public:
 		{
 			// NORMAL EXIT PATH
 
+			if (UInterchangeManager::GetInterchangeManager().WarnIfInterchangeIsActive()) { return false; }
+
 			// Unattented mode can always exit.
 			if (FApp::IsUnattended())
 			{
@@ -136,8 +139,8 @@ public:
 			IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
 			bOkToExit = bOkToExit && MainFrameModule.ExecuteCanCloseEditorDelegates();
 
-			// Prompt for save and quit only if we did not launch a gameless rocket exe or are in demo mode
-			if ( FApp::HasProjectName() && !GIsDemoMode )
+			// Prompt for save and quit only if we did not launch a gameless rocket exe or are in demo mode or we are asking for a close to recreate the Default Main Frame
+			if ( FApp::HasProjectName() && !GIsDemoMode && !MainFrameModule.IsRecreatingDefaultMainFrame())
 			{
 				// Prompt the user to save packages/maps.
 				bool bHadPackagesToSave = false;

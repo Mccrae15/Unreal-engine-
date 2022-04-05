@@ -3,13 +3,71 @@
 #pragma once
 
 #include "UnrealUSDWrapper.h"
-
+#include "USDAssetOptions.h"
 #include "USDStageOptions.h"
 
 #include "AssetExportTask.h"
 #include "Engine/EngineTypes.h"
+#include "RHIDefinitions.h"
 
 #include "LevelExporterUSDOptions.generated.h"
+
+USTRUCT( BlueprintType )
+struct USDEXPORTER_API FLevelExporterUSDOptionsInner
+{
+	GENERATED_BODY()
+
+	/** Whether to export only the selected actors, and assets used by them */
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export options" )
+    bool bSelectionOnly = false;
+
+	/** Whether to use UE actor folders as empty prims */
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export options" )
+    bool bExportActorFolders = false;
+
+	/** If true, and if we have a level sequence animating the level during export, it will revert any actor or component to its unanimated state before writing to USD */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export options" )
+	bool bIgnoreSequencerAnimations = false;
+
+	/**
+	 * By default foliage instances will be exported to the same layer as the component they were placed on in the editor.
+	 * Enable this to instead export the foliage instances to the same layer as the foliage actor they belong to.
+	 * This is useful if those foliage instances were placed with the "Place In Current Level" option.
+	 */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export options" )
+	bool bExportFoliageOnActorsLayer = false;
+
+	/** Where to place all the generated asset files */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Asset options" )
+	FDirectoryPath AssetFolder;
+
+	/** Options to use for all exported assets when appropriate (e.g. static and skeletal meshes, materials, etc.) */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Asset options", meta = ( ShowOnlyInnerProperties ) )
+	FUsdMeshAssetOptions AssetOptions;
+
+	/** Lowest of the LOD indices to export landscapes with (use 0 for full resolution) */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Landscape options", meta = ( ClampMin = "0" ) )
+	int32 LowestLandscapeLOD = 0;
+
+	/**
+	 * Highest of the LOD indices to export landscapes with. Each value above 0 halves resolution.
+	 * The max value depends on the number of components and sections per component of each landscape, and may be clamped.
+	 */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Landscape options", meta = ( ClampMin = "0" ) )
+	int32 HighestLandscapeLOD = 0;
+
+	/** Resolution to use when baking landscape materials into textures  */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Landscape options", meta = ( ClampMin = "1" ) )
+	FIntPoint LandscapeBakeResolution = FIntPoint( 1024, 1024 );
+
+	/** If true, will export sub-levels as separate layers (referenced as sublayers). If false, will collapse all sub-levels in a single exported root layer */
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers" )
+    bool bExportSublayers = false;
+
+	/** Names of levels that should be ignored when collecting actors to export (e.g. "Persistent Level", "Level1", "MySubLevel", etc.) */
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers" )
+    TSet<FString> LevelsToIgnore;
+};
 
 /**
  * Options for exporting levels to USD format.
@@ -26,68 +84,23 @@ public:
 
 	/** StartTimeCode to be used for all exported layers */
     UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Stage options" )
-    float StartTimeCode;
+    float StartTimeCode = 0.0f;
 
 	/** EndTimeCode to be used for all exported layers */
     UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Stage options" )
-    float EndTimeCode;
+    float EndTimeCode = 0.0f;
 
-	/** Whether to export only the selected actors, and assets used by them */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings" )
-    bool bSelectionOnly;
-
-	/** Whether to bake UE materials and add material bindings to the baked assets */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings" )
-    bool bBakeMaterials;
-
-	/** Resolution to use when baking materials into textures */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( EditCondition = "bBakeMaterials", ClampMin = "1" ) )
-	FIntPoint BakeResolution = FIntPoint( 512, 512 );
-
-	/** Whether to remove the 'unrealMaterial' attribute after binding the corresponding baked material */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( EditCondition = "bBakeMaterials" ) )
-	bool bRemoveUnrealMaterials;
-
-	/** If true, the actual static/skeletal mesh data is exported in "payload" files, and referenced via the payload composition arc */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings" )
-	bool bUsePayload;
-
-	/** USD format to use for exported payload files */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( EditCondition = "bUsePayload", GetOptions = GetUsdExtensions ) )
-	FString PayloadFormat;
-
-	/** Whether to use UE actor folders as empty prims */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings" )
-    bool bExportActorFolders;
-
-	/** Lowest of the LOD indices to export landscapes with (use 0 for full resolution) */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( ClampMin = "0" ) )
-	int32 LowestLandscapeLOD;
-
-	/**
-	 * Highest of the LOD indices to export landscapes with. Each value above 0 halves resolution.
-	 * The max value depends on the number of components and sections per component of each landscape, and may be clamped.
-	 */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( ClampMin = "0" ) )
-	int32 HighestLandscapeLOD;
-
-	/** Resolution to use when baking landscape materials into textures  */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( ClampMin = "1" ) )
-	FIntPoint LandscapeBakeResolution = FIntPoint( 1024, 1024 );
-
-	/** If true, will export sub-levels as separate layers (referenced as sublayers). If false, will collapse all sub-levels in a single exported root layer */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers" )
-    bool bExportSublayers;
-
-	/** Names of levels that should be ignored when collecting actors to export (e.g. "Persistent Level", "Level1", "MySubLevel", etc.) */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers" )
-    TSet<FString> LevelsToIgnore;
+	/** Inner struct that actually contains most of the export options */
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( ShowOnlyInnerProperties ) )
+    FLevelExporterUSDOptionsInner Inner;
 
 public:
 	// We temporarily stash our export task here as a way of passing our options down to
-	// the Python exporter, that does the actual level exporting
+	// the Python exporter, that does the actual level exporting.
+	// This is weak because we often use the CDO of this class directly, and we never want to
+	// permanently hold on to a particular export task
 	UPROPERTY( VisibleAnywhere, BlueprintReadOnly, Category = Hidden )
-	UAssetExportTask* CurrentTask;
+	TWeakObjectPtr<UAssetExportTask> CurrentTask;
 
 private:
 	UFUNCTION()

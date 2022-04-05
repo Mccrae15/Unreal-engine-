@@ -70,15 +70,15 @@ private:
 	float ScopeInMilliseconds;
 
 	// The buffer we downsample PoppedBuffer to based on the Resolution property.
-	Audio::AlignedFloatBuffer PopBuffer;
-	Audio::AlignedFloatBuffer DownsampledBuffer;
+	Audio::FAlignedFloatBuffer PopBuffer;
+	Audio::FAlignedFloatBuffer DownsampledBuffer;
 
 	// Handle for the SRV used by the generated HLSL.
 	FReadBuffer GPUDownsampledBuffer;
 	FThreadSafeCounter NumChannelsInDownsampledBuffer;
 	
 	// Buffer read by VectorVM worker threads. This vector is guaranteed to not be mutated during the VectorVM tasks.
-	Audio::AlignedFloatBuffer VectorVMReadBuffer;
+	Audio::FAlignedFloatBuffer VectorVMReadBuffer;
 
 	FDelegateHandle DeviceCreatedHandle;
 	FDelegateHandle DeviceDestroyedHandle;
@@ -96,7 +96,7 @@ public:
 	DECLARE_NIAGARA_DI_PARAMETER();
 	
 	UPROPERTY(EditAnywhere, Category = "Oscilloscope")
-	USoundSubmix* Submix;
+	TObjectPtr<USoundSubmix> Submix;
 
 	static const int32 MaxBufferResolution = 8192;
 
@@ -111,8 +111,8 @@ public:
 	float ScopeInMilliseconds;
 
 	//VM function overrides:
-	void SampleAudio(FVectorVMContext& Context);
-	void GetNumChannels(FVectorVMContext& Context);
+	void SampleAudio(FVectorVMExternalFunctionContext& Context);
+	void GetNumChannels(FVectorVMExternalFunctionContext& Context);
 
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)override;
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;

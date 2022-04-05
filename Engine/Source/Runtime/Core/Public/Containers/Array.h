@@ -10,6 +10,7 @@
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/UnrealTemplate.h"
 #include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainerElementTypeCompatibility.h"
 #include "Serialization/Archive.h"
 #include "Serialization/MemoryImageWriter.h"
 
@@ -19,6 +20,7 @@
 #include "Algo/Impl/BinaryHeap.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IdentityFunctor.h"
+#include "Templates/Invoke.h"
 #include "Templates/Less.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/Sorting.h"
@@ -26,7 +28,6 @@
 #include "Templates/IsConstructible.h"
 
 #include <type_traits>
-
 
 #if UE_BUILD_SHIPPING || UE_BUILD_TEST
 	#define TARRAY_RANGED_FOR_CHECKS 0
@@ -39,6 +40,10 @@ template<> struct TCanBulkSerialize<unsigned int> { enum { Value = true }; };
 template<> struct TCanBulkSerialize<unsigned short> { enum { Value = true }; };
 template<> struct TCanBulkSerialize<int> { enum { Value = true }; };
 
+// Forward declarations
+
+template <typename T, typename AllocatorType> inline void* operator new(size_t Size, TArray<T, AllocatorType>& Array);
+template <typename T, typename AllocatorType> inline void* operator new(size_t Size, TArray<T, AllocatorType>& Array, typename TArray<T, AllocatorType>::SizeType Index);
 
 /**
  * Generic iterator which can operate on types that expose the following:
@@ -136,7 +141,7 @@ public:
 		Index = 0;
 	}
 
-	/** Sets iterator to the last element. */
+	/** Sets the iterator to one past the last element. */
 	void SetToEnd()
 	{
 		Index = Container.Num();
@@ -256,10 +261,10 @@ namespace UE4Array_Private
 	template <typename FromArrayType, typename ToArrayType>
 	struct TCanMoveTArrayPointersBetweenArrayTypes
 	{
-		typedef typename FromArrayType::Allocator   FromAllocatorType;
-		typedef typename ToArrayType  ::Allocator   ToAllocatorType;
-		typedef typename FromArrayType::ElementType FromElementType;
-		typedef typename ToArrayType  ::ElementType ToElementType;
+		typedef typename FromArrayType::AllocatorType FromAllocatorType;
+		typedef typename ToArrayType  ::AllocatorType ToAllocatorType;
+		typedef typename FromArrayType::ElementType   FromElementType;
+		typedef typename ToArrayType  ::ElementType   ToElementType;
 
 		enum
 		{
@@ -301,21 +306,24 @@ namespace UE4Array_Private
  * Caution: as noted below some methods are not safe for element types that require constructors.
  *
  **/
-template<typename InElementType, typename InAllocator>
+template<typename InElementType, typename InAllocatorType>
 class TArray
 {
 	template <typename OtherInElementType, typename OtherAllocator>
 	friend class TArray;
 
 public:
-	typedef typename InAllocator::SizeType SizeType;
+	typedef typename InAllocatorType::SizeType SizeType;
 	typedef InElementType ElementType;
-	typedef InAllocator   Allocator;
+	typedef InAllocatorType AllocatorType;
+
+	UE_DEPRECATED(5.0, "TArray::Allocator type is deprecated, please use TArray::AllocatorType instead.")
+	typedef InAllocatorType Allocator;
 
 	typedef typename TChooseClass<
-		Allocator::NeedsElementType,
-		typename Allocator::template ForElementType<ElementType>,
-		typename Allocator::ForAnyElementType
+		AllocatorType::NeedsElementType,
+		typename AllocatorType::template ForElementType<ElementType>,
+		typename AllocatorType::ForAnyElementType
 	>::Result ElementAllocatorType;
 
 	static_assert(TIsSigned<SizeType>::Value, "TArray only supports signed index types");
@@ -413,12 +421,12 @@ public:
 	 * Assignment operator. First deletes all currently contained elements
 	 * and then copies from other array.
 	 *
-	 * Allocator changing version.
+	 * AllocatorType changing version.
 	 *
 	 * @param Other The source array to assign from.
 	 */
-	template<typename OtherAllocator>
-	TArray& operator=(const TArray<ElementType, OtherAllocator>& Other)
+	template<typename OtherAllocatorType>
+	TArray& operator=(const TArray<ElementType, OtherAllocatorType>& Other)
 	{
 		DestructItems(GetData(), ArrayNum);
 		CopyToEmpty(Other.GetData(), Other.Num(), ArrayMax, 0);
@@ -445,28 +453,6 @@ public:
 	TArray& operator=(const TArrayView<OtherElementType, OtherSizeType>& Other);
 
 private:
-#if !PLATFORM_COMPILER_HAS_IF_CONSTEXPR
-	template <
-		typename FromArrayType,
-		typename ToArrayType,
-		typename TEnableIf<TCanMoveBetweenAllocators<typename FromArrayType::Allocator, typename ToArrayType::Allocator>::Value>::Type* = nullptr
-	>
-	static FORCEINLINE void MoveAllocatorToEmpty(FromArrayType& FromArray, ToArrayType& ToArray)
-	{
-		ToArray.AllocatorInstance.template MoveToEmptyFromOtherAllocator<typename FromArrayType::Allocator>(FromArray.AllocatorInstance);
-	}
-
-	template <
-		typename FromArrayType,
-		typename ToArrayType,
-		typename TEnableIf<!TCanMoveBetweenAllocators<typename FromArrayType::Allocator, typename ToArrayType::Allocator>::Value>::Type* = nullptr
-	>
-	static FORCEINLINE void MoveAllocatorToEmpty(FromArrayType& FromArray, ToArrayType& ToArray)
-	{
-		ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
-	}
-#endif
-
 	/**
 	 * Moves or copies array. Depends on the array type traits.
 	 *
@@ -476,12 +462,11 @@ private:
 	 * @param FromArray Array to move from.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
+	static FORCEINLINE std::enable_if_t<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value> MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
 	{
-		using FromAllocatorType = typename FromArrayType::Allocator;
-		using ToAllocatorType   = typename ToArrayType::Allocator;
+		using FromAllocatorType = typename FromArrayType::AllocatorType;
+		using ToAllocatorType   = typename ToArrayType::AllocatorType;
 
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 		if constexpr (TCanMoveBetweenAllocators<FromAllocatorType, ToAllocatorType>::Value)
 		{
 			ToArray.AllocatorInstance.template MoveToEmptyFromOtherAllocator<FromAllocatorType>(FromArray.AllocatorInstance);
@@ -490,9 +475,6 @@ private:
 		{
 			ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
 		}
-#else
-		MoveAllocatorToEmpty(FromArray, ToArray);
-#endif
 
 		ToArray  .ArrayNum = FromArray.ArrayNum;
 		ToArray  .ArrayMax = FromArray.ArrayMax;
@@ -515,7 +497,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
+	static FORCEINLINE std::enable_if_t<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value> MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
 	{
 		ToArray.CopyToEmpty(FromArray.GetData(), FromArray.Num(), PrevMax, 0);
 	}
@@ -531,7 +513,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
+	static FORCEINLINE std::enable_if_t<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value> MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
 	{
 		MoveOrCopy(ToArray, FromArray, PrevMax);
 
@@ -549,7 +531,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
+	static FORCEINLINE std::enable_if_t<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value> MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
 	{
 		ToArray.CopyToEmpty(FromArray.GetData(), FromArray.Num(), PrevMax, ExtraSlack);
 	}
@@ -591,7 +573,7 @@ public:
 		typename OtherElementType,
 		std::enable_if_t<UE4Array_Private::TArrayElementsAreCompatible<ElementType, OtherElementType&&>::Value>* = nullptr
 	>
-	TArray(TArray<OtherElementType, Allocator>&& Other, SizeType ExtraSlack)
+	TArray(TArray<OtherElementType, AllocatorType>&& Other, SizeType ExtraSlack)
 	{
 		// We don't implement move semantics for general OtherAllocators, as there's no way
 		// to tell if they're compatible with the current one.  Probably going to be a pretty
@@ -618,13 +600,19 @@ public:
 	/** Destructor. */
 	~TArray()
 	{
-		DestructItems(GetData(), ArrayNum);
-
+		#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 		#if defined(_MSC_VER) && !defined(__clang__)	// Relies on MSVC-specific lazy template instantiation to support arrays of incomplete types
 			// ensure that DebugGet gets instantiated.
+			// this is done to ensure DebugGet is available for the debugger watch window
 			//@todo it would be nice if we had a cleaner solution for DebugGet
 			volatile const ElementType* Dummy = &DebugGet(0);
 		#endif
+		#endif
+		
+		DestructItems(GetData(), ArrayNum);
+
+		// note ArrayNum, ArrayMax and data pointer are not invalidated
+		// they are left unchanged and use-after-destruct will see them the same as before destruct
 	}
 
 	/**
@@ -698,7 +686,7 @@ public:
 		CheckInvariants();
 
 		// Template property, branch will be optimized out
-		if (Allocator::RequireRangeCheck)
+		if (AllocatorType::RequireRangeCheck)
 		{
 			checkf((Index >= 0) & (Index < ArrayNum),TEXT("Array index out of bounds: %i from an array of size %i"),Index,ArrayNum); // & for one branch
 		}
@@ -713,6 +701,17 @@ public:
 	FORCEINLINE bool IsValidIndex(SizeType Index) const
 	{
 		return Index >= 0 && Index < ArrayNum;
+	}
+
+	/**
+	 * Returns true if the array is empty and contains no elements. 
+	 *
+	 * @returns True if the array is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return ArrayNum == 0;
 	}
 
 	/**
@@ -944,7 +943,7 @@ public:
 		for (const ElementType* RESTRICT Start = GetData(), *RESTRICT Data = Start + Count; Data != Start; )
 		{
 			--Data;
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return static_cast<SizeType>(Data - Start);
 			}
@@ -997,7 +996,7 @@ public:
 		const ElementType* RESTRICT Start = GetData();
 		for (const ElementType* RESTRICT Data = Start, *RESTRICT DataEnd = Start + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return static_cast<SizeType>(Data - Start);
 			}
@@ -1065,7 +1064,7 @@ public:
 	{
 		for (ElementType* RESTRICT Data = GetData(), *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return Data;
 			}
@@ -1088,7 +1087,7 @@ public:
 		TArray<ElementType> FilterResults;
 		for (const ElementType* RESTRICT Data = GetData(), *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				FilterResults.Add(*Data);
 			}
@@ -1184,7 +1183,7 @@ public:
 		if (!Ar.IsError() && SerializeNum > 0 && ensure(!Ar.IsNetArchive() || SerializeNum <= MaxNetArraySerialize))
 		{
 			// if we don't need to perform per-item serialization, just read it in bulk
-			if (sizeof(ElementType) == 1 || TCanBulkSerialize<ElementType>::Value)
+			if constexpr (sizeof(ElementType) == 1 || TCanBulkSerialize<ElementType>::Value)
 			{
 				A.ArrayNum = SerializeNum;
 
@@ -1194,7 +1193,19 @@ public:
 					A.ResizeForCopy(A.ArrayNum, A.ArrayMax);
 				}
 
-				Ar.Serialize(A.GetData(), A.Num() * sizeof(ElementType));
+				if(TIsUECoreVariant<ElementType, double>::Value && Ar.IsLoading() && Ar.UEVer() < EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+				{
+					// Per item serialization is required for core variant types loaded from pre LWC archives, to enable conversion from float to double.
+					A.Empty(SerializeNum);
+					for (SizeType i=0; i<SerializeNum; i++)
+					{
+						Ar << *::new(A) ElementType;
+					}		
+				}
+				else
+				{
+					Ar.Serialize(A.GetData(), A.Num() * sizeof(ElementType));
+				}
 			}
 			else if (Ar.IsLoading())
 			{
@@ -1254,7 +1265,7 @@ public:
 		// Serialize element size to detect mismatch across platforms.
 		int32 SerializedElementSize = ElementSize;
 		Ar << SerializedElementSize;
-
+	
 		if (bForcePerElementSerialization
 			|| (Ar.IsSaving()			// if we are saving, we always do the ordinary serialize as a way to make sure it matches up with bulk serialization
 			&& !Ar.IsCooking()			// but cooking and transacting is performance critical, so we skip that
@@ -1828,13 +1839,13 @@ public:
 	/**
 	 * Appends the specified array to this array.
 	 *
-	 * Allocator changing version.
+	 * AllocatorType changing version.
 	 *
 	 * @param Source The array to append.
 	 * @see Add, Insert
 	 */
-	template <typename OtherElementType, typename OtherAllocator>
-	void Append(const TArray<OtherElementType, OtherAllocator>& Source)
+	template <typename OtherElementType, typename OtherAllocatorType>
+	void Append(const TArray<OtherElementType, OtherAllocatorType>& Source)
 	{
 		check((void*)this != (void*)&Source);
 
@@ -2128,6 +2139,141 @@ public:
 		return *Ptr;
 	}
 
+	/** Implicit conversion operator to container of compatible element type. */
+	template <
+		typename AliasElementType = ElementType,
+		std::enable_if_t<TIsContainerElementTypeReinterpretable<AliasElementType>::Value>* = nullptr
+		>
+	operator TArray<typename TContainerElementTypeCompatibility<AliasElementType>::ReinterpretType, AllocatorType>& ()
+	{
+		using ElementCompat = TContainerElementTypeCompatibility<ElementType>;
+		ElementCompat::ReinterpretRange(begin(), end());
+		return *reinterpret_cast<TArray<typename ElementCompat::ReinterpretType>*>(this);
+	}
+
+	/** Implicit conversion operator to constant container of compatible element type. */
+	template <
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeReinterpretable<AliasElementType>::Value>* = nullptr
+		>
+	operator const TArray<typename TContainerElementTypeCompatibility<AliasElementType>::ReinterpretType, AllocatorType>& () const
+	{
+		using ElementCompat = TContainerElementTypeCompatibility<ElementType>;
+		ElementCompat::ReinterpretRange(begin(), end());
+		return *reinterpret_cast<const TArray<typename ElementCompat::ReinterpretType>*>(this);
+	}
+
+	/**
+	 * Move assignment operator.
+	 * Compatible element type version.
+	 *
+	 * @param Other Array to assign and move from.
+	 */
+	template <
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	TArray& operator=(TArray<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, AllocatorType>&& Other)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		DestructItems(GetData(), ArrayNum);
+		MoveOrCopy(*this, Other, ArrayMax);
+		return *this; 
+	}
+
+	/**
+	 * Assignment operator. First deletes all currently contained elements
+	 * and then copies from other array.
+	 * Compatible element type version.
+	 *
+	 * @param Other The source array to assign from.
+	 */
+	template <
+		typename OtherAllocator,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	TArray& operator=(const TArray<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherAllocator>& Other)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		DestructItems(GetData(), ArrayNum);
+		CopyToEmpty(Other.GetData(), Other.Num(), ArrayMax, 0);
+		return *this;
+	}
+
+	/**
+	 * Inserts given elements into the array at given location.
+	 * Compatible element type version.
+	 *
+	 * @param Items Array of elements to insert.
+	 * @param InIndex Tells where to insert the new elements.
+	 * @returns Location at which the item was inserted.
+	 */
+	template <
+		typename OtherAllocator,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	SizeType Insert(const TArray<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherAllocator>& Items, const SizeType InIndex)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+
+		auto NumNewElements = Items.Num();
+
+		InsertUninitializedImpl(InIndex, NumNewElements);
+		ConstructItems<ElementType>(GetData() + InIndex, Items.GetData(), NumNewElements);
+
+		return InIndex;
+	}
+
+	/**
+	 * Inserts given elements into the array at given location.
+	 * Compatible element type version.
+	 *
+	 * @param Items Array of elements to insert.
+	 * @param InIndex Tells where to insert the new elements.
+	 * @returns Location at which the item was inserted.
+	 */
+	template <
+		typename OtherAllocator,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	SizeType Insert(TArray<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherAllocator>&& Items, const SizeType InIndex)
+	{
+		check((const void*)this != (const void*)&Items);
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+
+		auto NumNewElements = Items.Num();
+
+		InsertUninitializedImpl(InIndex, NumNewElements);
+		RelocateConstructItems<ElementType>(GetData() + InIndex, Items.GetData(), NumNewElements);
+		Items.ArrayNum = 0;
+
+		return InIndex;
+	}
+
+	/**
+	 * Adds a raw array of elements to the end of the TArray.
+	 * Compatible element type version.
+	 *
+	 * @param Ptr   A pointer to an array of elements to add.
+	 * @param Count The number of elements to insert from Ptr.
+	 * @see Add, Insert
+	 */
+	template <
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	void Append(const typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType* Ptr, SizeType Count)
+	{
+		check(Ptr != nullptr || Count == 0);
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+
+		SizeType Pos = AddUninitialized(Count);
+		ConstructItems<ElementType>(GetData() + Pos, Ptr, Count);
+	}
+
 private:
 
 	/**
@@ -2265,11 +2411,11 @@ public:
 
 		SizeType WriteIndex = 0;
 		SizeType ReadIndex = 0;
-		bool NotMatch = !Predicate(GetData()[ReadIndex]); // use a ! to guarantee it can't be anything other than zero or one
+		bool NotMatch = !::Invoke(Predicate, GetData()[ReadIndex]); // use a ! to guarantee it can't be anything other than zero or one
 		do
 		{
 			SizeType RunStartIndex = ReadIndex++;
-			while (ReadIndex < OriginalNum && NotMatch == !Predicate(GetData()[ReadIndex]))
+			while (ReadIndex < OriginalNum && NotMatch == !::Invoke(Predicate, GetData()[ReadIndex]))
 			{
 				ReadIndex++;
 			}
@@ -2310,7 +2456,7 @@ public:
 		const SizeType OriginalNum = ArrayNum;
 		for (SizeType ItemIndex = 0; ItemIndex < Num();)
 		{
-			if (Predicate((*this)[ItemIndex]))
+			if (::Invoke(Predicate, (*this)[ItemIndex]))
 			{
 				bRemoved = true;
 				RemoveAtSwap(ItemIndex, 1, false);
@@ -2582,43 +2728,90 @@ private:
 #endif
 
 private:
+	void AllocatorResizeAllocation(SizeType CurrentArrayNum, SizeType NewArrayMax)
+	{
+		if constexpr (TAllocatorTraits<AllocatorType>::SupportsElementAlignment)
+		{
+			AllocatorInstance.ResizeAllocation(CurrentArrayNum, NewArrayMax, sizeof(ElementType), alignof(ElementType));
+		}
+		else
+		{
+			AllocatorInstance.ResizeAllocation(CurrentArrayNum, NewArrayMax, sizeof(ElementType));
+		}
+	}
+
+	SizeType AllocatorCalculateSlackShrink(SizeType CurrentArrayNum, SizeType NewArrayMax)
+	{
+		if constexpr (TAllocatorTraits<AllocatorType>::SupportsElementAlignment)
+		{
+			return AllocatorInstance.CalculateSlackShrink(CurrentArrayNum, NewArrayMax, sizeof(ElementType), alignof(ElementType));
+		}
+		else
+		{
+			return AllocatorInstance.CalculateSlackShrink(CurrentArrayNum, NewArrayMax, sizeof(ElementType));
+		}
+	}
+
+	SizeType AllocatorCalculateSlackGrow(SizeType CurrentArrayNum, SizeType NewArrayMax)
+	{
+		if constexpr (TAllocatorTraits<AllocatorType>::SupportsElementAlignment)
+		{
+			return AllocatorInstance.CalculateSlackGrow(CurrentArrayNum, NewArrayMax, sizeof(ElementType), alignof(ElementType));
+		}
+		else
+		{
+			return AllocatorInstance.CalculateSlackGrow(CurrentArrayNum, NewArrayMax, sizeof(ElementType));
+		}
+	}
+
+	SizeType AllocatorCalculateSlackReserve(SizeType NewArrayMax)
+	{
+		if constexpr (TAllocatorTraits<AllocatorType>::SupportsElementAlignment)
+		{
+			return AllocatorInstance.CalculateSlackReserve(NewArrayMax, sizeof(ElementType), alignof(ElementType));
+		}
+		else
+		{
+			return AllocatorInstance.CalculateSlackReserve(NewArrayMax, sizeof(ElementType));
+		}
+	}
 
 	FORCENOINLINE void ResizeGrow(SizeType OldNum)
 	{
-		ArrayMax = AllocatorInstance.CalculateSlackGrow(ArrayNum, ArrayMax, sizeof(ElementType));
-		AllocatorInstance.ResizeAllocation(OldNum, ArrayMax, sizeof(ElementType));
+		ArrayMax = AllocatorCalculateSlackGrow(ArrayNum, ArrayMax);
+		AllocatorResizeAllocation(OldNum, ArrayMax);
 	}
 	FORCENOINLINE void ResizeShrink()
 	{
-		const SizeType NewArrayMax = AllocatorInstance.CalculateSlackShrink(ArrayNum, ArrayMax, sizeof(ElementType));
+		const SizeType NewArrayMax = AllocatorCalculateSlackShrink(ArrayNum, ArrayMax);
 		if (NewArrayMax != ArrayMax)
 		{
 			ArrayMax = NewArrayMax;
 			check(ArrayMax >= ArrayNum);
-			AllocatorInstance.ResizeAllocation(ArrayNum, ArrayMax, sizeof(ElementType));
+			AllocatorResizeAllocation(ArrayNum, ArrayMax);
 		}
 	}
 	FORCENOINLINE void ResizeTo(SizeType NewMax)
 	{
 		if (NewMax)
 		{
-			NewMax = AllocatorInstance.CalculateSlackReserve(NewMax, sizeof(ElementType));
+			NewMax = AllocatorCalculateSlackReserve(NewMax);
 		}
 		if (NewMax != ArrayMax)
 		{
 			ArrayMax = NewMax;
-			AllocatorInstance.ResizeAllocation(ArrayNum, ArrayMax, sizeof(ElementType));
+			AllocatorResizeAllocation(ArrayNum, ArrayMax);
 		}
 	}
 	FORCENOINLINE void ResizeForCopy(SizeType NewMax, SizeType PrevMax)
 	{
 		if (NewMax)
 		{
-			NewMax = AllocatorInstance.CalculateSlackReserve(NewMax, sizeof(ElementType));
+			NewMax = AllocatorCalculateSlackReserve(NewMax);
 		}
 		if (NewMax > PrevMax)
 		{
-			AllocatorInstance.ResizeAllocation(0, NewMax, sizeof(ElementType));
+			AllocatorResizeAllocation(0, NewMax);
 			ArrayMax = NewMax;
 		}
 		else
@@ -2659,7 +2852,7 @@ private:
 
 protected:
 
-	template<typename ElementType, typename Allocator>
+	template<typename ElementType, typename AllocatorType>
 	friend class TIndirectArray;
 
 	ElementAllocatorType AllocatorInstance;
@@ -2704,32 +2897,32 @@ private:
 		}
 		static void ToString(const FPlatformTypeLayoutParameters& LayoutParams, FMemoryToStringContext& OutContext, const TArray& Object)
 		{
-			Object.AllocatorInstance.ToString(StaticGetTypeLayoutDesc<ElementType>(), Object.ArrayNum, LayoutParams, OutContext);
+			Object.AllocatorInstance.ToString(StaticGetTypeLayoutDesc<ElementType>(), Object.ArrayNum, Object.ArrayMax, LayoutParams, OutContext);
 		}
 	};
 
 public:
 	void WriteMemoryImage(FMemoryImageWriter& Writer) const
 	{
-		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		static constexpr bool bSupportsFreezeMemoryImage = TAllocatorTraits<AllocatorType>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
 		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::WriteMemoryImage(Writer, *this);
 	}
 
 	void CopyUnfrozen(const FMemoryUnfreezeContent& Context, void* Dst) const
 	{
-		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		static constexpr bool bSupportsFreezeMemoryImage = TAllocatorTraits<AllocatorType>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
 		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::CopyUnfrozen(Context, *this, Dst);
 	}
 
 	static void AppendHash(const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher)
 	{
-		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		static constexpr bool bSupportsFreezeMemoryImage = TAllocatorTraits<AllocatorType>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
 		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::AppendHash(LayoutParams, Hasher);
 	}
 
 	void ToString(const FPlatformTypeLayoutParameters& LayoutParams, FMemoryToStringContext& OutContext) const
 	{
-		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		static constexpr bool bSupportsFreezeMemoryImage = TAllocatorTraits<AllocatorType>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
 		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::ToString(LayoutParams, OutContext, *this);
 	}
 
@@ -3025,26 +3218,23 @@ namespace Freeze
 	}
 
 	template<typename T, typename AllocatorType>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TArray<T, AllocatorType>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TArray<T, AllocatorType>& Object, void* OutDst)
 	{
 		Object.CopyUnfrozen(Context, OutDst);
+		return sizeof(Object);
 	}
 
 	template<typename T, typename AllocatorType>
 	uint32 IntrinsicAppendHash(const TArray<T, AllocatorType>* DummyObject, const FTypeLayoutDesc& TypeDesc, const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher)
 	{
-		// sizeof(TArray) changes depending on target platform 32bit vs 64bit
-		// For now, calculate the size manually
-		static_assert(sizeof(TArray<T, AllocatorType>) == sizeof(FMemoryImageUPtrInt) + sizeof(int32) + sizeof(int32), "Unexpected TArray size");
-		const uint32 SizeFromFields = LayoutParams.GetMemoryImagePointerSize() + sizeof(int32) + sizeof(int32);
-		return AppendHashForNameAndSize(TypeDesc.Name, SizeFromFields, Hasher);;
+		return AppendHashForNameAndSize(TypeDesc.Name, sizeof(TArray<T, AllocatorType>), Hasher);
 	}
 
 	template<typename T, typename AllocatorType>
 	uint32 IntrinsicGetTargetAlignment(const TArray<T, AllocatorType>* DummyObject, const FTypeLayoutDesc& TypeDesc, const FPlatformTypeLayoutParameters& LayoutParams)
 	{
 		// Assume alignment of array is drive by pointer
-		return FMath::Min(LayoutParams.GetMemoryImagePointerSize(), LayoutParams.MaxFieldAlignment);
+		return FMath::Min(8u, LayoutParams.MaxFieldAlignment);
 	}
 
 	template<typename T, typename AllocatorType>
@@ -3056,21 +3246,21 @@ namespace Freeze
 
 DECLARE_TEMPLATE_INTRINSIC_TYPE_LAYOUT((template <typename T, typename AllocatorType>), (TArray<T, AllocatorType>));
 
-template <typename InElementType, typename Allocator>
-struct TIsZeroConstructType<TArray<InElementType, Allocator>>
+template <typename InElementType, typename AllocatorType>
+struct TIsZeroConstructType<TArray<InElementType, AllocatorType>>
 {
-	enum { Value = TAllocatorTraits<Allocator>::IsZeroConstruct };
+	enum { Value = TAllocatorTraits<AllocatorType>::IsZeroConstruct };
 };
 
-template <typename InElementType, typename Allocator>
-struct TContainerTraits<TArray<InElementType, Allocator> > : public TContainerTraitsBase<TArray<InElementType, Allocator> >
+template <typename InElementType, typename AllocatorType>
+struct TContainerTraits<TArray<InElementType, AllocatorType> > : public TContainerTraitsBase<TArray<InElementType, AllocatorType> >
 {
-	static_assert(TAllocatorTraits<Allocator>::SupportsMove, "TArray no longer supports move-unaware allocators");
-	enum { MoveWillEmptyContainer = TAllocatorTraits<Allocator>::SupportsMove };
+	static_assert(TAllocatorTraits<AllocatorType>::SupportsMove, "TArray no longer supports move-unaware allocators");
+	enum { MoveWillEmptyContainer = TAllocatorTraits<AllocatorType>::SupportsMove };
 };
 
-template <typename T, typename Allocator>
-struct TIsContiguousContainer<TArray<T, Allocator>>
+template <typename T, typename AllocatorType>
+struct TIsContiguousContainer<TArray<T, AllocatorType>>
 {
 	enum { Value = true };
 };
@@ -3080,22 +3270,22 @@ struct TIsContiguousContainer<TArray<T, Allocator>>
  */
 template <typename T> struct TIsTArray { enum { Value = false }; };
 
-template <typename InElementType, typename Allocator> struct TIsTArray<               TArray<InElementType, Allocator>> { enum { Value = true }; };
-template <typename InElementType, typename Allocator> struct TIsTArray<const          TArray<InElementType, Allocator>> { enum { Value = true }; };
-template <typename InElementType, typename Allocator> struct TIsTArray<      volatile TArray<InElementType, Allocator>> { enum { Value = true }; };
-template <typename InElementType, typename Allocator> struct TIsTArray<const volatile TArray<InElementType, Allocator>> { enum { Value = true }; };
+template <typename InElementType, typename InAllocatorType> struct TIsTArray<               TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
+template <typename InElementType, typename InAllocatorType> struct TIsTArray<const          TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
+template <typename InElementType, typename InAllocatorType> struct TIsTArray<      volatile TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
+template <typename InElementType, typename InAllocatorType> struct TIsTArray<const volatile TArray<InElementType, InAllocatorType>> { enum { Value = true }; };
 
 
 //
 // Array operator news.
 //
-template <typename T,typename Allocator> void* operator new( size_t Size, TArray<T,Allocator>& Array )
+template <typename T,typename AllocatorType> void* operator new( size_t Size, TArray<T,AllocatorType>& Array )
 {
 	check(Size == sizeof(T));
 	const auto Index = Array.AddUninitialized(1);
 	return &Array[Index];
 }
-template <typename T,typename Allocator> void* operator new( size_t Size, TArray<T,Allocator>& Array, typename TArray<T, Allocator>::SizeType Index )
+template <typename T,typename AllocatorType> void* operator new( size_t Size, TArray<T,AllocatorType>& Array, typename TArray<T, AllocatorType>::SizeType Index )
 {
 	check(Size == sizeof(T));
 	Array.InsertUninitialized(Index);

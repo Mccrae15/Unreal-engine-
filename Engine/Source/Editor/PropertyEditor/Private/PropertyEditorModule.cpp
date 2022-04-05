@@ -2,36 +2,35 @@
 
 
 #include "PropertyEditorModule.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Application/SlateApplication.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "IDetailsView.h"
+#include "IPropertyChangeListener.h"
+#include "IPropertyTable.h"
+#include "IPropertyTableCellPresenter.h"
+#include "IPropertyTableWidgetHandle.h"
+#include "PropertyChangeListener.h"
+#include "PropertyEditorToolkit.h"
+#include "PropertyRowGenerator.h"
+#include "SDetailsView.h"
+#include "SPropertyTreeViewImpl.h"
+#include "SSingleProperty.h"
+#include "SStructureDetailsView.h"
+
 #include "Engine/UserDefinedEnum.h"
 #include "Engine/UserDefinedStruct.h"
-#include "Presentation/PropertyEditor/PropertyEditor.h"
-#include "SSingleProperty.h"
-#include "IDetailsView.h"
-#include "SDetailsView.h"
-#include "IPropertyTableWidgetHandle.h"
-#include "IPropertyTable.h"
-#include "UserInterface/PropertyTable/SPropertyTable.h"
-#include "UserInterface/PropertyTable/PropertyTableWidgetHandle.h"
-#include "IAssetTools.h"
-#include "AssetToolsModule.h"
-#include "SPropertyTreeViewImpl.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IMainFrameModule.h"
-#include "IPropertyChangeListener.h"
-#include "PropertyChangeListener.h"
-#include "Toolkits/AssetEditorToolkit.h"
-#include "PropertyEditorToolkit.h"
-
+#include "Modules/ModuleManager.h"
+#include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "Presentation/PropertyTable/PropertyTable.h"
-#include "IPropertyTableCellPresenter.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "UObject/UnrealType.h"
+#include "UserInterface/PropertyTable/PropertyTableWidgetHandle.h"
+#include "UserInterface/PropertyTable/SPropertyTable.h"
 #include "UserInterface/PropertyTable/TextPropertyTableCellPresenter.h"
-
-#include "SStructureDetailsView.h"
 #include "Widgets/Colors/SColorPicker.h"
-#include "PropertyRowGenerator.h"
+#include "Widgets/Layout/SBorder.h"
 
 
 IMPLEMENT_MODULE( FPropertyEditorModule, PropertyEditor );
@@ -90,6 +89,8 @@ const FPropertyTypeLayoutCallback& FPropertyTypeLayoutCallbackList::Find( const 
 void FPropertyEditorModule::StartupModule()
 {
 	StructOnScopePropertyOwner = nullptr;
+
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FPropertyEditorModule::ReplaceViewedObjects);
 }
 
 void FPropertyEditorModule::ShutdownModule()
@@ -102,6 +103,8 @@ void FPropertyEditorModule::ShutdownModule()
 	//       literally be unloaded from memory after this function exits.  This even includes instantiated
 	//       templates, such as delegate wrapper objects that are allocated by the module!
 	DestroyColorPicker();
+
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 
 	AllDetailViews.Empty();
 	AllSinglePropertyViews.Empty();
@@ -306,7 +309,8 @@ TSharedPtr<ISinglePropertyView> FPropertyEditorModule::CreateSingleProperty( UOb
 		.NamePlacement( InitParams.NamePlacement )
 		.NameOverride( InitParams.NameOverride )
 		.NotifyHook( InitParams.NotifyHook )
-		.PropertyFont( InitParams.Font );
+		.PropertyFont( InitParams.Font )
+		.bShouldHideAssetThumbnail( InitParams.bHideAssetThumbnail);
 
 	if( Property->HasValidProperty() )
 	{
@@ -398,18 +402,18 @@ FStructProperty* FPropertyEditorModule::RegisterStructOnScopeProperty(TSharedRef
 	return StructProperty;
 }
 
-TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit )
+TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit(const TSharedPtr< class IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit )
 {
-	return FPropertyEditorToolkit::CreateEditor( Mode, InitToolkitHost, ObjectToEdit );
+	return FPropertyEditorToolkit::CreateEditor(EToolkitMode::Standalone, InitToolkitHost, ObjectToEdit);
 }
 
 
-TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< UObject* >& ObjectsToEdit )
+TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit( const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< UObject* >& ObjectsToEdit )
 {
-	return FPropertyEditorToolkit::CreateEditor( Mode, InitToolkitHost, ObjectsToEdit );
+	return FPropertyEditorToolkit::CreateEditor(EToolkitMode::Standalone, InitToolkitHost, ObjectsToEdit);
 }
 
-TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< TWeakObjectPtr< UObject > >& ObjectsToEdit )
+TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToolkit(const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< TWeakObjectPtr< UObject > >& ObjectsToEdit )
 {
 	TArray< UObject* > RawObjectsToEdit;
 	for( auto ObjectIter = ObjectsToEdit.CreateConstIterator(); ObjectIter; ++ObjectIter )
@@ -417,7 +421,7 @@ TSharedRef< FAssetEditorToolkit > FPropertyEditorModule::CreatePropertyEditorToo
 		RawObjectsToEdit.Add( ObjectIter->Get() );
 	}
 
-	return FPropertyEditorToolkit::CreateEditor( Mode, InitToolkitHost, RawObjectsToEdit );
+	return FPropertyEditorToolkit::CreateEditor(EToolkitMode::Standalone, InitToolkitHost, RawObjectsToEdit );
 }
 
 TSharedRef<IPropertyChangeListener> FPropertyEditorModule::CreatePropertyChangeListener()
@@ -470,31 +474,6 @@ void FPropertyEditorModule::RegisterCustomPropertyTypeLayout( FName PropertyType
 	}
 }
 
-void FPropertyEditorModule::RegisterCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier, TSharedPtr<IDetailsView> ForSpecificInstance)
-{
-	if (ForSpecificInstance.IsValid())
-	{
-		ForSpecificInstance->RegisterInstancedCustomPropertyTypeLayout(PropertyTypeName, PropertyTypeLayoutDelegate, Identifier);
-	}
-	else
-	{
-		RegisterCustomPropertyTypeLayout(PropertyTypeName, PropertyTypeLayoutDelegate, Identifier);
-	}
-}
-
-void FPropertyEditorModule::UnregisterCustomPropertyTypeLayout(FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> InIdentifier, TSharedPtr<IDetailsView> ForSpecificInstance)
-{
-	if (ForSpecificInstance.IsValid())
-	{
-		ForSpecificInstance->UnregisterInstancedCustomPropertyTypeLayout(PropertyTypeName, InIdentifier);
-	}
-	else
-	{
-		UnregisterCustomPropertyTypeLayout(PropertyTypeName, InIdentifier);
-	}
-}
-
-
 void FPropertyEditorModule::UnregisterCustomPropertyTypeLayout( FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> Identifier)
 {
 	if (!PropertyTypeName.IsValid() || (PropertyTypeName == NAME_None))
@@ -510,7 +489,255 @@ void FPropertyEditorModule::UnregisterCustomPropertyTypeLayout( FName PropertyTy
 	}
 }
 
+void FPropertySection::AddCategory(FName CategoryName)
+{
+	checkf(!CategoryName.ToString().Contains(TEXT("|")), TEXT("Cannnot register a section mapping for a subcategory. Section: '%s', Category: '%s'"), *Name.ToString(), *CategoryName.ToString());
 
+	// Remove all spaces - customization authors will probably write "Static Mesh", but internally it's stored as "StaticMesh"
+	FString CategoryString = CategoryName.ToString();
+	CategoryString.RemoveSpacesInline();
+	CategoryName = FName(*CategoryString);
+
+	AddedCategories.Add(CategoryName);
+	RemovedCategories.Remove(CategoryName);
+}
+
+void FPropertySection::RemoveCategory(FName CategoryName)
+{
+	checkf(!CategoryName.ToString().Contains(TEXT("|")), TEXT("Cannnot register a section mapping for a subcategory. Section: '%s', Category: '%s'"), *Name.ToString(), *CategoryName.ToString());
+
+	// Remove all spaces - customization authors will probably write "Static Mesh", but internally it's stored as "StaticMesh"
+	FString CategoryString = CategoryName.ToString();
+	CategoryString.RemoveSpacesInline();
+	CategoryName = FName(*CategoryString);
+
+	RemovedCategories.Add(CategoryName);
+	AddedCategories.Remove(CategoryName);
+}
+
+bool FPropertySection::HasAddedCategory(FName CategoryName) const
+{
+	FString CategoryString = CategoryName.ToString();
+	CategoryString.RemoveSpacesInline();
+
+	return AddedCategories.Contains(*CategoryString);
+}
+
+bool FPropertySection::HasRemovedCategory(FName CategoryName) const
+{
+	FString CategoryString = CategoryName.ToString();
+	CategoryString.RemoveSpacesInline();
+
+	return RemovedCategories.Contains(*CategoryString);
+}
+
+FClassSectionMapping::FClassSectionMapping(FName InClassName) :
+	ClassName(InClassName)
+{
+
+}
+
+TSharedPtr<FPropertySection> FClassSectionMapping::FindSection(FName SectionName) const
+{
+	const TSharedPtr<FPropertySection>* Section = DefinedSections.Find(SectionName);
+	if (Section == nullptr)
+	{
+		return TSharedPtr<FPropertySection>();
+	}
+
+	return *Section;
+}
+
+TSharedRef<FPropertySection> FClassSectionMapping::FindOrAddSection(FName SectionName, FText DisplayName)
+{
+	TSharedPtr<FPropertySection> Section = FindSection(SectionName);
+	if (!Section.IsValid())
+	{
+		Section = MakeShared<FPropertySection>(SectionName, DisplayName);
+		DefinedSections.Add(SectionName, Section);
+	}
+
+	return Section.ToSharedRef();
+}
+
+void FClassSectionMapping::RemoveSection(FName SectionName)
+{
+	DefinedSections.Remove(SectionName);
+}
+
+bool FClassSectionMapping::GetSectionsForCategory(FName CategoryName, TArray<TSharedPtr<FPropertySection>>& OutSections) const 
+{
+	bool bModified = false;
+
+	for (const TPair<FName, TSharedPtr<FPropertySection>>& Pair : DefinedSections)
+	{
+		if (Pair.Value->HasAddedCategory(CategoryName))
+		{
+			OutSections.Add(Pair.Value);
+			bModified = true;
+		}
+
+		if (Pair.Value->HasRemovedCategory(CategoryName))
+		{
+			// if this class removes a category, then we need to remove all previously-added sections of the same name
+			// this is because superstructs are added before inherited structs, and you can remove categories from sections in more-derived classes
+			for (int32 Idx = 0; Idx < OutSections.Num(); ++Idx)
+			{
+				if (OutSections[Idx]->GetName() == Pair.Key)
+				{
+					OutSections.RemoveAt(Idx);
+					--Idx;
+				}
+			}
+
+			bModified = true;
+		}
+	}
+
+	return bModified;
+}
+
+
+void FPropertyEditorModule::RemoveSection(FName ClassName, FName SectionName)
+{
+	TSharedPtr<FClassSectionMapping>* ClassMapping = ClassSectionMappings.Find(ClassName);
+	if (ClassMapping != nullptr)
+	{
+		(*ClassMapping)->RemoveSection(SectionName);
+	}
+}
+
+
+TSharedRef<FPropertySection> FPropertyEditorModule::FindOrCreateSection(FName ClassName, FName SectionName, FText DisplayName)
+{
+	checkf(!ClassName.IsNone(), TEXT("Invalid class name given."));
+	checkf(!SectionName.IsNone(), TEXT("Invalid section name given."));
+
+	TSharedPtr<FClassSectionMapping> ClassMapping;
+
+	TSharedPtr<FClassSectionMapping>* ExistingMapping = ClassSectionMappings.Find(ClassName);
+	if (ExistingMapping == nullptr)
+	{
+		ClassMapping = ClassSectionMappings.Add(ClassName, MakeShared<FClassSectionMapping>(ClassName));
+	}
+	else
+	{
+		ClassMapping = *ExistingMapping;
+	}
+
+	return ClassMapping->FindOrAddSection(SectionName, DisplayName);
+}
+
+TArray<TSharedPtr<FPropertySection>> FPropertyEditorModule::FindSectionsForCategory(const UStruct* Struct, FName CategoryName) const
+{
+	TArray<TSharedPtr<FPropertySection>> Sections;
+	
+	// remove all spaces - customization authors will probably write "Static Mesh", but internally it's stored as "StaticMesh"
+	FString CategoryString = CategoryName.ToString();
+	CategoryString.RemoveSpacesInline();
+	CategoryName = FName(*CategoryString);
+
+	if (Struct != nullptr)
+	{
+		TSet<const UStruct*> SearchedStructs;
+		FindSectionsForCategoryHelper(Struct, CategoryName, Sections, SearchedStructs);
+	}
+
+	return MoveTemp(Sections);
+}
+
+void FPropertyEditorModule::FindSectionsForCategoryHelper(const UStruct* Struct, FName CategoryName, TArray<TSharedPtr<FPropertySection>>& OutSections, TSet<const UStruct*>& SearchedStructs) const
+{
+	if (Struct == nullptr)
+	{
+		return;
+	}
+
+	bool bAlreadySearched = false;
+	SearchedStructs.Add(Struct, &bAlreadySearched);
+
+	if (bAlreadySearched)
+	{
+		return;
+	}
+
+	// check this struct's super
+	FindSectionsForCategoryHelper(Struct->GetSuperStruct(), CategoryName, OutSections, SearchedStructs);
+
+	// check all inline object properties' sections
+	for (TFieldIterator<FObjectPropertyBase> It(Struct); It; ++It)
+	{
+		const FObjectPropertyBase* Property = *It;
+		if (Property->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference))
+		{
+			FindSectionsForCategoryHelper(Property->PropertyClass, CategoryName, OutSections, SearchedStructs);
+		}
+	}
+
+	// check this class' sections
+	const TSharedPtr<FClassSectionMapping>* SectionMapping = ClassSectionMappings.Find(Struct->GetFName());
+	if (SectionMapping != nullptr)
+	{
+		(*SectionMapping)->GetSectionsForCategory(CategoryName, OutSections);
+	}
+}
+
+void FPropertyEditorModule::GetAllSections(const UStruct* Struct, TArray<TSharedPtr<FPropertySection>>& OutSections) const
+{
+	if (Struct == nullptr)
+	{
+		return;
+	}
+
+	TSet<const UStruct*> ProcessedStructs;
+	GetAllSectionsHelper(Struct, OutSections, ProcessedStructs);
+}
+
+void FPropertyEditorModule::GetAllSectionsHelper(const UStruct* Struct, TArray<TSharedPtr<FPropertySection>>& OutSections, TSet<const UStruct*>& ProcessedStructs) const
+{
+	if (Struct == nullptr)
+	{
+		return;
+	}
+
+	bool bAlreadyProcessed = false;
+	ProcessedStructs.Add(Struct, &bAlreadyProcessed);
+
+	if (bAlreadyProcessed)
+	{
+		return;
+	}
+
+	// add all sections for this class' super-struct
+	GetAllSectionsHelper(Struct->GetSuperStruct(), OutSections, ProcessedStructs);
+
+	// add all sections from struct properties
+	for (TFieldIterator<FStructProperty> It(Struct); It; ++It)
+	{
+		const FStructProperty* Property = *It;
+		GetAllSectionsHelper(Property->Struct, OutSections, ProcessedStructs);
+	}
+
+	// add all sections from inline object properties
+	for (TFieldIterator<FObjectPropertyBase> It(Struct); It; ++It)
+	{
+		const FObjectPropertyBase* Property = *It;
+		if (Property->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference))
+		{
+			GetAllSectionsHelper(Property->PropertyClass, OutSections, ProcessedStructs);
+		}
+	}
+
+	// add all sections defined for this class
+	const TSharedPtr<FClassSectionMapping>* SectionMapping = ClassSectionMappings.Find(Struct->GetFName());
+	if (SectionMapping != nullptr)
+	{
+		for (const TPair<FName, TSharedPtr<FPropertySection>>& Pair : (*SectionMapping)->DefinedSections)
+		{
+			OutSections.Add(Pair.Value);
+		}
+	}
+}
 
 bool FPropertyEditorModule::HasUnlockedDetailViews() const
 {
@@ -800,5 +1027,5 @@ TSharedRef<class IStructureDetailsView> FPropertyEditorModule::CreateStructureDe
 
 TSharedRef<class IPropertyRowGenerator> FPropertyEditorModule::CreatePropertyRowGenerator(const struct FPropertyRowGeneratorArgs& InArgs)
 {
-	return MakeShared<FPropertyRowGenerator>(InArgs, GetThumbnailPool());
+	return MakeShared<FPropertyRowGenerator>(InArgs);
 }

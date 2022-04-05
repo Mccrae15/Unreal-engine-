@@ -90,11 +90,7 @@ class SLATE_API SSafeZone : public SBox
 
 public:
 
-	SSafeZone()
-	{
-		SetCanTick(false);
-		bCanSupportFocus = false;
-	}
+	SSafeZone();
 	virtual ~SSafeZone();
 
 	void Construct( const FArguments& InArgs );
@@ -119,11 +115,11 @@ public:
 
 private:
 
-	void UpdateSafeMargin() const;
+	void UpdateSafeMargin();
 	FMargin ComputeScaledSafeMargin(float Scale) const;
 
 	/** Cached values from the args */
-	TAttribute<FMargin> Padding;
+	TSlateAttribute<FMargin, EInvalidateWidgetReason::Layout> Padding;
 	FMargin SafeAreaScale;
 	bool bIsTitleSafe;
 	bool bPadLeft;

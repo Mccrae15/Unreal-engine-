@@ -133,18 +133,15 @@ protected:
 	/** Returns the color of the main bubble */
 	FSlateColor GetBubbleColor() const;
 
-	/** Returns the current background color for the textbox */
-	FSlateColor GetTextBackgroundColor() const;
-	
-	/** Returns the current foreground color for the textbox */
-	FSlateColor GetTextForegroundColor() const;
-
 	/** Returns the foreground color for the text and buttons, taking into account the bubble color */
-	FSlateColor GetForegroundColor() const override { return ForegroundColor; }
+	FSlateColor GetForegroundColor() const override { return CalculatedForegroundColor; }
 
 	/** Called when the comment text is committed */
 	void OnCommentTextCommitted( const FText& NewText, ETextCommit::Type CommitInfo );
 
+	FSlateColor GetTextBackgroundColor() const;
+	FSlateColor GetTextForegroundColor() const;
+	FSlateColor GetReadOnlyTextForegroundColor() const;
 	/** Returns bubble toggle check state */
 	ECheckBoxState GetToggleButtonCheck() const;
 
@@ -180,7 +177,9 @@ protected:
 	FIsGraphNodeHovered IsGraphNodeHovered;
 
 	/** Current Foreground Color */
-	FLinearColor ForegroundColor;
+	FSlateColor CalculatedForegroundColor;
+	/** The luminance (R + G + B) of the bubble's color, used to control text foreground color */
+	float BubbleLuminance;
 	/** Allow pin behaviour */
 	bool bAllowPinning;
 	/** Allow in bubble controls */

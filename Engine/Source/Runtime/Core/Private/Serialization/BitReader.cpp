@@ -181,8 +181,7 @@ void FBitReader::SetData( FBitReader& Src, int64 CountBits )
 	ClearError();
 
 	// Setup network version
-	this->SetEngineNetVer(Src.EngineNetVer());
-	this->SetGameNetVer(Src.GameNetVer());
+	SetNetVersionsFromArchive(Src);
 
 	Buffer.Empty();
 	Buffer.AddUninitialized( (CountBits+7)>>3 );
@@ -294,6 +293,15 @@ void FBitReader::SerializeIntPacked(uint32& OutValue)
 	OutValue = Value;
 }
 
+void FBitReader::SetNetVersionsFromArchive(FArchive& Source)
+{
+	SetEngineNetVer(Source.EngineNetVer());
+	SetGameNetVer(Source.GameNetVer());
+	SetUEVer(Source.UEVer());
+	SetLicenseeUEVer(Source.LicenseeUEVer());
+	SetEngineVer(Source.EngineVer());
+}
+
 /*-----------------------------------------------------------------------------
 	FBitReader.
 -----------------------------------------------------------------------------*/
@@ -311,4 +319,4 @@ void FBitReaderMark::Copy( FBitReader& Reader, TArray<uint8> &Buffer )
 	}
 }
 
-PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS

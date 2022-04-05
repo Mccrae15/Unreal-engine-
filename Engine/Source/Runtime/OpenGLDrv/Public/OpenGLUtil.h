@@ -21,7 +21,7 @@
 #define ENABLE_UNIFORM_BUFFER_LAYOUT_DUMP 0
 
 /** Set to 1 to enable shader debugging which e.g. keeps the GLSL source as members of TOpenGLShader*/
-#define DEBUG_GL_SHADERS (UE_BUILD_DEBUG)
+#define DEBUG_GL_SHADERS (UE_BUILD_DEBUG || UE_EDITOR)
 
 /** Set to 1 to enable calls to place event markers into the OpenGL stream
     this is purposefully not considered for OPENGL_PERFORMANCE_DATA_INVALID, 
@@ -132,13 +132,22 @@ struct FRHICommandGLCommandString
 	static const TCHAR* TStr() { return TEXT("FRHICommandGLCommand"); }
 };
 
+#define GL_CAPTURE_CALLSTACK 0 // Capture the callstack at the point of enqueuing the command. 
+
 struct FRHICommandGLCommand final : public FRHICommand<FRHICommandGLCommand, FRHICommandGLCommandString>
 {
+#if GL_CAPTURE_CALLSTACK
+	uint64 CallStack[16];
+#endif
 	TUniqueFunction<void()> GLFunction;
 
 	FORCEINLINE_DEBUGGABLE FRHICommandGLCommand(TUniqueFunction<void()> InGLFunction)
 		: GLFunction(MoveTemp(InGLFunction))
-	{}
+	{
+#if GL_CAPTURE_CALLSTACK
+		FPlatformStackWalk::CaptureStackBackTrace(CallStack, UE_ARRAY_COUNT(CallStack), nullptr);
+#endif
+	}
 
 	void Execute(FRHICommandListBase& CmdList)
 	{

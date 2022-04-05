@@ -19,6 +19,7 @@
 #include "ActorEditorUtils.h"
 #include "SceneOutlinerPublicTypes.h"
 #include "SceneOutlinerModule.h"
+#include "ActorTreeItem.h"
 #include "TrackEditorThumbnail/TrackEditorThumbnailPool.h"
 #include "MovieSceneObjectBindingIDPicker.h"
 #include "MovieSceneToolHelpers.h"
@@ -185,6 +186,7 @@ void FCameraCutTrackEditor::HandleToggleCanBlendExecute(UMovieSceneCameraCutTrac
 
 TSharedPtr<SWidget> FCameraCutTrackEditor::BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params)
 {
+	const FCameraCutTrackCommands& Commands = FCameraCutTrackCommands::Get();
 	// Create a container edit box
 	return SNew(SHorizontalBox)
 
@@ -203,11 +205,13 @@ TSharedPtr<SWidget> FCameraCutTrackEditor::BuildOutlinerEditWidget(const FGuid& 
 	.Padding(4, 0, 0, 0)
 	[
 		SNew(SCheckBox)
+        .Style( &FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckBoxAlt"))
+		.Type(ESlateCheckBoxType::CheckBox)
+		.Padding(FMargin(0.f))
 		.IsFocusable(false)
 		.IsChecked(this, &FCameraCutTrackEditor::IsCameraLocked)
 		.OnCheckStateChanged(this, &FCameraCutTrackEditor::OnLockCameraClicked)
 		.ToolTipText(this, &FCameraCutTrackEditor::GetLockCameraToolTip)
-		.ForegroundColor(FLinearColor::White)
 		.CheckedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
 		.CheckedHoveredImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
 		.CheckedPressedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
@@ -273,7 +277,7 @@ const FSlateBrush* FCameraCutTrackEditor::GetIconBrush() const
 
 bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneCameraCutTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneCameraCutTrack::StaticClass()))
 	{
 		return false;
 	}
@@ -285,7 +289,7 @@ bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSe
 		return false;
 	}
 	
-	UMovieSceneCameraCutTrack* CameraCutTrack = Cast<UMovieSceneCameraCutTrack>(DragDropParams.Track);
+	UMovieSceneCameraCutTrack* CameraCutTrack = Cast<UMovieSceneCameraCutTrack>(DragDropParams.Track.Get());
 
 	TSharedPtr<FActorDragDropGraphEdOp> DragDropOp = StaticCastSharedPtr<FActorDragDropGraphEdOp>( Operation );
 
@@ -311,7 +315,7 @@ bool FCameraCutTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSe
 
 FReply FCameraCutTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneCameraCutTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneCameraCutTrack::StaticClass()))
 	{
 		return FReply::Unhandled();
 	}
@@ -424,7 +428,7 @@ bool FCameraCutTrackEditor::IsCameraPickable(const AActor* const PickableActor)
 	if (PickableActor->IsListedInSceneOutliner() &&
 		!FActorEditorUtils::IsABuilderBrush(PickableActor) &&
 		!PickableActor->IsA( AWorldSettings::StaticClass() ) &&
-		!PickableActor->IsPendingKill())
+		IsValid(PickableActor))
 	{	
 		UCameraComponent* CameraComponent = MovieSceneHelpers::CameraComponentFromActor(PickableActor);
 		if (CameraComponent)	
@@ -442,20 +446,17 @@ TSharedRef<SWidget> FCameraCutTrackEditor::HandleAddCameraCutComboButtonGetMenuC
 	auto CreateNewCamera =
 		[this](FMenuBuilder& SubMenuBuilder)
 		{
-			using namespace SceneOutliner;
-
-			SceneOutliner::FInitializationOptions InitOptions;
+			FSceneOutlinerInitializationOptions InitOptions;
 			{
-				InitOptions.Mode = ESceneOutlinerMode::ActorPicker;
 				InitOptions.bShowHeaderRow = false;
 				InitOptions.bFocusSearchBoxWhenOpened = true;
 				InitOptions.bShowTransient = true;
 				InitOptions.bShowCreateNewFolder = false;
 				// Only want the actor label column
-				InitOptions.ColumnMap.Add(FBuiltInColumnTypes::Label(), FColumnInfo(EColumnVisibility::Visible, 0));
+				InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0));
 
 				// Only display Actors that we can attach too
-				InitOptions.Filters->AddFilterPredicate( SceneOutliner::FActorFilterPredicate::CreateRaw(this, &FCameraCutTrackEditor::IsCameraPickable) );
+				InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateRaw(this, &FCameraCutTrackEditor::IsCameraPickable));
 			}		
 
 			// Actor selector to allow the user to choose a parent actor
@@ -471,7 +472,7 @@ TSharedRef<SWidget> FCameraCutTrackEditor::HandleAddCameraCutComboButtonGetMenuC
 					.MaxDesiredHeight(400.0f)
 					.WidthOverride(300.0f)
 					[
-						SceneOutlinerModule.CreateSceneOutliner(
+						SceneOutlinerModule.CreateActorPicker(
 							InitOptions,
 							FOnActorPicked::CreateSP(this, &FCameraCutTrackEditor::HandleAddCameraCutComboButtonMenuEntryExecute )
 							)
@@ -593,9 +594,17 @@ void FCameraCutTrackEditor::ToggleLockCamera()
 
 FText FCameraCutTrackEditor::GetLockCameraToolTip() const
 {
-	return IsCameraLocked() == ECheckBoxState::Checked ?
+	const TSharedRef<const FInputChord> FirstActiveChord = FCameraCutTrackCommands::Get().ToggleLockCamera->GetFirstValidChord();
+
+	FText Tooltip = IsCameraLocked() == ECheckBoxState::Checked ?
 		LOCTEXT("UnlockCamera", "Unlock Viewport from Camera Cuts") :
 		LOCTEXT("LockCamera", "Lock Viewport to Camera Cuts");
+	
+	if (FirstActiveChord->IsValidChord())
+	{
+		return FText::Join(FText::FromString(TEXT(" ")), Tooltip, FirstActiveChord->GetInputText());
+	}
+	return Tooltip;
 }
 
 #undef LOCTEXT_NAMESPACE

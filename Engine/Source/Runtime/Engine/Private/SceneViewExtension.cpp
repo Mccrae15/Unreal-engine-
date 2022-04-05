@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneViewExtension.h"
-#include "Engine/Engine.h"
+#include "RenderGraphUtils.h"
 
 //
 // FSceneViewExtensionBase
@@ -39,6 +39,37 @@ bool FSceneViewExtensionBase::IsActiveThisFrame(const FSceneViewExtensionContext
 	return IsActiveThisFrame_Internal(Context);
 }
 
+void ISceneViewExtension::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
+{
+	AddPass(GraphBuilder, RDG_EVENT_NAME("PreRenderViewFamily_RenderThread"), [this, &InViewFamily](FRHICommandListImmediate& RHICmdList)
+	{
+		PreRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
+	});
+}
+
+void ISceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
+{
+	AddPass(GraphBuilder, RDG_EVENT_NAME("PreRenderView_RenderThread"), [this, &InView](FRHICommandListImmediate& RHICmdList)
+	{
+		PreRenderView_RenderThread(RHICmdList, InView);
+	});
+}
+
+void ISceneViewExtension::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
+{
+	AddPass(GraphBuilder, RDG_EVENT_NAME("PostRenderViewFamily_RenderThread"), [this, &InViewFamily](FRHICommandListImmediate& RHICmdList)
+	{
+		PostRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
+	});
+}
+
+void ISceneViewExtension::PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
+{
+	AddPass(GraphBuilder, RDG_EVENT_NAME("PostRenderView_RenderThread"), [this, &InView](FRHICommandListImmediate& RHICmdList)
+	{
+		PostRenderView_RenderThread(RHICmdList, InView);
+	});
+}
 
 //
 // FWorldSceneViewExtension
@@ -56,6 +87,14 @@ bool FWorldSceneViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtens
 	return World == Context.GetWorld();
 }
 
+//
+// FHMDSceneViewExtension
+//
+
+bool FHMDSceneViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
+{
+	return Context.IsHMDSupported() && Context.IsStereoSupported();
+}
 
 //
 // FSceneViewExtensions

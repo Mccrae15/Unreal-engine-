@@ -21,7 +21,7 @@ public:
 private:
 	TResourceArray<uint8> FrozenQuadTree;
 
-	FVertexBufferRHIRef UvMappingBuffer;
+	FBufferRHIRef UvMappingBuffer;
 	FShaderResourceViewRHIRef UvMappingSrv;
 
 #if STATS
@@ -34,13 +34,14 @@ struct FSkeletalMeshUvMapping
 	FSkeletalMeshUvMapping() = delete;
 	FSkeletalMeshUvMapping(const FSkeletalMeshUvMapping&) = delete;
 	FSkeletalMeshUvMapping(TWeakObjectPtr<USkeletalMesh> InMeshObject, int32 InLodIndex, int32 InUvSetIndex);
+	~FSkeletalMeshUvMapping();
 
 	bool IsUsed() const;
 	bool CanBeDestroyed() const;
 	void RegisterUser(FSkeletalMeshUvMappingUsage Usage, bool bNeedsDataImmediately);
 	void UnregisterUser(FSkeletalMeshUvMappingUsage Usage);
 
-	static bool IsValidMeshObject(TWeakObjectPtr<USkeletalMesh>& MeshObject, int32 InLodIndex, int32 InUvSetIndex);
+	static bool IsValidMeshObject(const TWeakObjectPtr<USkeletalMesh>& MeshObject, int32 InLodIndex, int32 InUvSetIndex);
 
 	bool Matches(const TWeakObjectPtr<USkeletalMesh>& InMeshObject, int32 InLodIndex, int32 InUvSetIndex) const;
 
@@ -66,11 +67,8 @@ private:
 	TWeakObjectPtr<USkeletalMesh> MeshObject;
 
 	FNiagaraUvQuadTree TriangleIndexQuadTree;
-	FSkeletalMeshUvMappingBufferProxy FrozenQuadTreeProxy;
+	TUniquePtr<FSkeletalMeshUvMappingBufferProxy> FrozenQuadTreeProxy;
 
 	std::atomic<int32> CpuQuadTreeUserCount;
 	std::atomic<int32> GpuQuadTreeUserCount;
-
-	FThreadSafeBool ReleasedByRT;
-	bool QueuedForRelease;
 };

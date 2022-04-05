@@ -3,7 +3,8 @@
 #include "UObject/NameTypes.h"
 #include "Misc/DateTime.h"
 
-namespace Trace {
+namespace TraceServices
+{
 
 const FName FChannelProvider::ProviderName("ChannelProvider");
 
@@ -17,7 +18,12 @@ FChannelProvider::FChannelProvider()
 void FChannelProvider::AnnounceChannel(const TCHAR* InChannelName, uint32 Id, bool bReadOnly)
 {
 	FString ChannelName(InChannelName);
-	ChannelName.GetCharArray()[0] = TChar<TCHAR>::ToUpper(ChannelName.GetCharArray()[0]);
+
+	if (*InChannelName)
+	{
+		ChannelName.GetCharArray()[0] = TChar<TCHAR>::ToUpper(ChannelName.GetCharArray()[0]);
+	}
+
 	Channels.Add(FChannelEntry{
 		Id,
 		ChannelName,
@@ -60,4 +66,4 @@ FDateTime FChannelProvider::GetTimeStamp() const
 	return TimeStamp;
 }
 
-}
+} // namespace TraceServices

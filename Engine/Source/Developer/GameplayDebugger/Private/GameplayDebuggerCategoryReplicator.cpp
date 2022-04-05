@@ -408,6 +408,9 @@ AGameplayDebuggerCategoryReplicator::AGameplayDebuggerCategoryReplicator(const F
 
 	bIsEnabled = false;
 	bIsEnabledLocal = false;
+	bHasAuthority = false;
+	bIsLocal = false;
+	bIsEditorWorldReplicator = false;
 	bReplicates = true;
 
 	ReplicatedData.Owner = this;
@@ -423,15 +426,30 @@ void AGameplayDebuggerCategoryReplicator::BeginPlay()
 	bHasAuthority = FGameplayDebuggerUtils::IsAuthority(World);
 	bIsLocal = (NetMode != NM_DedicatedServer);
 
+	Init();
+}
+
+#if WITH_EDITOR
+void AGameplayDebuggerCategoryReplicator::InitForEditor()
+{
+	bHasAuthority = true;
+	bIsLocal = true;
+	bIsEditorWorldReplicator = true;
+	Init();
+}
+#endif // WITH_EDITOR
+
+void AGameplayDebuggerCategoryReplicator::Init()
+{
+	UWorld* World = GetWorld();
+	check(World);
+
 	FGameplayDebuggerAddonManager& AddonManager = FGameplayDebuggerAddonManager::GetCurrent();
 	AddonManager.OnCategoriesChanged.AddUObject(this, &AGameplayDebuggerCategoryReplicator::OnCategoriesChanged);
 	AddonManager.OnExtensionsChanged.AddUObject(this, &AGameplayDebuggerCategoryReplicator::OnExtensionsChanged);
 
 	OnCategoriesChanged();
 	OnExtensionsChanged();
-
-	AGameplayDebuggerPlayerManager& PlayerManager = AGameplayDebuggerPlayerManager::GetCurrent(GetWorld());
-	PlayerManager.RegisterReplicator(*this);
 
 	SetActorHiddenInGame(!bIsLocal);
 	if (bIsLocal)
@@ -445,6 +463,9 @@ void AGameplayDebuggerCategoryReplicator::BeginPlay()
 	{
 		SetEnabled(FGameplayDebuggerAddonBase::IsSimulateInEditor());
 	}
+
+	AGameplayDebuggerPlayerManager& PlayerManager = AGameplayDebuggerPlayerManager::GetCurrent(World);
+	PlayerManager.RegisterReplicator(*this);
 }
 
 void AGameplayDebuggerCategoryReplicator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -527,6 +548,16 @@ bool AGameplayDebuggerCategoryReplicator::ServerSetDebugActor_Validate(AActor* A
 void AGameplayDebuggerCategoryReplicator::ServerSetDebugActor_Implementation(AActor* Actor, bool bSelectInEditor)
 {
 	SetDebugActor(Actor, bSelectInEditor);
+}
+
+bool AGameplayDebuggerCategoryReplicator::ServerSetViewPoint_Validate(const FVector& InViewLocation, const FVector& InViewDirection)
+{
+	return true;
+}
+
+void AGameplayDebuggerCategoryReplicator::ServerSetViewPoint_Implementation(const FVector& InViewLocation, const FVector& InViewDirection)
+{
+	SetViewPoint(InViewLocation, InViewDirection);
 }
 
 bool AGameplayDebuggerCategoryReplicator::ServerSetCategoryEnabled_Validate(int32 CategoryId, bool bEnable)
@@ -626,7 +657,7 @@ void AGameplayDebuggerCategoryReplicator::OnReceivedDataPackPacket(int32 Categor
 void AGameplayDebuggerCategoryReplicator::TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction)
 {
 	Super::TickActor(DeltaTime, TickType, ThisTickFunction);
-	if (OwnerPC)
+	if (OwnerPC || bIsEditorWorldReplicator)
 	{
 		CollectCategoryData();
 	}
@@ -682,7 +713,7 @@ void AGameplayDebuggerCategoryReplicator::CollectCategoryData(bool bForce)
 			CategoryOb.ReplicatedLines.Reset();
 			CategoryOb.ReplicatedShapes.Reset();
 
-			CategoryOb.CollectData(OwnerPC, DebugActor.Actor);
+			CategoryOb.CollectData(OwnerPC, DebugActor.Actor.Get());
 			CategoryOb.LastCollectDataTime = GameTime;
 
 			// update dirty data packs
@@ -715,6 +746,18 @@ void AGameplayDebuggerCategoryReplicator::CollectCategoryData(bool bForce)
 			}
 		}
 	}
+}
+
+bool AGameplayDebuggerCategoryReplicator::GetViewPoint(FVector& OutViewLocation, FVector& OutViewDirection) const
+{
+	if (ViewLocation.IsSet() && ViewDirection.IsSet())
+	{
+		OutViewLocation = ViewLocation.GetValue();
+		OutViewDirection = ViewDirection.GetValue();
+		return true;
+	}
+
+	return false;
 }
 
 void AGameplayDebuggerCategoryReplicator::SetReplicatorOwner(APlayerController* InOwnerPC)
@@ -786,6 +829,19 @@ void AGameplayDebuggerCategoryReplicator::SetDebugActor(AActor* Actor, bool bSel
 	else
 	{
 		ServerSetDebugActor(Actor, bSelectInEditor);
+	}
+}
+
+void AGameplayDebuggerCategoryReplicator::SetViewPoint(const FVector& InViewLocation, const FVector& InViewDirection)
+{
+	if (bHasAuthority)
+	{
+		ViewLocation = InViewLocation;
+		ViewDirection = InViewDirection;
+	}
+	else
+	{
+		ServerSetViewPoint(InViewLocation, InViewDirection);
 	}
 }
 

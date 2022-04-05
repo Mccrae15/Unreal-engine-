@@ -9,8 +9,27 @@
 #include "TextureCompressorModule.h"
 #include "PixelFormat.h"
 #include "ImageCore.h"
+#include "TextureBuildFunction.h"
+#include "DerivedDataBuildFunctionFactory.h"
+#include "DerivedDataSharedString.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatUncompressed, Log, All);
+
+class FUncompressedTextureBuildFunction final : public FTextureBuildFunction
+{
+	const UE::DerivedData::FUtf8SharedString& GetName() const final
+	{
+		static const UE::DerivedData::FUtf8SharedString Name(UTF8TEXTVIEW("UncompressedTexture"));
+		return Name;
+	}
+
+	void GetVersion(UE::DerivedData::FBuildVersionBuilder& Builder, ITextureFormat*& OutTextureFormatVersioning) const final
+	{
+		static FGuid Version(TEXT("c04fe27a-53f6-402e-85b3-648ac6b1ad87"));
+		Builder << Version;
+		OutTextureFormatVersioning = FModuleManager::GetModuleChecked<ITextureFormatModule>(TEXT("TextureFormatUncompressed")).GetTextureFormat();
+	}
+};
 
 /**
  * Macro trickery for supported format names.
@@ -24,8 +43,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatUncompressed, Log, All);
 	op(XGXR8) \
 	op(RGBA8) \
 	op(POTERROR) \
-	op(R16F)
-
+	op(R16F) \
+	op(R5G6B5) \
+	op(A1RGB555) \
+	op(RGB555A1)
 #define DECL_FORMAT_NAME(FormatName) static FName GTextureFormatName##FormatName = FName(TEXT(#FormatName));
 ENUM_SUPPORTED_FORMATS(DECL_FORMAT_NAME);
 #undef DECL_FORMAT_NAME
@@ -49,12 +70,37 @@ class FTextureFormatUncompressed : public ITextureFormat
 		return true;
 	}
 
+	virtual FName GetEncoderName(FName Format) const override
+	{
+		static const FName UncomName("Uncompressed");
+		return UncomName;
+	}
+
 	virtual uint16 GetVersion(
 		FName Format,
-		const struct FTextureBuildSettings* BuildSettings = nullptr
+		const FTextureBuildSettings* BuildSettings
 	) const override
 	{
 		return 0;
+	}
+	
+	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings) const override
+	{
+		if (InBuildSettings.TextureFormatName == GTextureFormatNameRGBA16F)
+		{
+			return TEXT("RGBA16F");
+		}
+		else if (InBuildSettings.TextureFormatName == GTextureFormatNameR16F)
+		{
+			return TEXT("R16F");
+		}
+		else
+		{
+			// default implementation of GetDerivedDataKeyString returns empty string
+			// match that so we don't change the DDC key
+
+			return TEXT("");
+		}
 	}
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
@@ -70,7 +116,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		return FTextureFormatCompressorCaps(); // Default capabilities.
 	}
 
-	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	virtual EPixelFormat GetPixelFormatForImage(const FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
 	{
 		if (BuildSettings.TextureFormatName == GTextureFormatNameG8)
 		{
@@ -101,6 +147,14 @@ class FTextureFormatUncompressed : public ITextureFormat
 		{
 			return PF_B8G8R8A8;
 		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameR5G6B5)
+		{
+			return PF_R5G6B5_UNORM;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameA1RGB555 || BuildSettings.TextureFormatName == GTextureFormatNameRGB555A1)
+		{
+			return PF_B5G5R5A1_UNORM;
+		}
 
 		UE_LOG(LogTextureFormatUncompressed, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatUncompressed::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
 		return PF_Unknown;
@@ -108,7 +162,8 @@ class FTextureFormatUncompressed : public ITextureFormat
 
 	virtual bool CompressImage(
 		const FImage& InImage,
-		const struct FTextureBuildSettings& BuildSettings,
+		const FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
@@ -190,14 +245,14 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.RawData.AddUninitialized(NumTexels * 4);
 			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
 			const FColor* LastColor = FirstColor + NumTexels;
-			int8* Dest = (int8*)OutCompressedImage.RawData.GetData();
+			uint8* Dest = OutCompressedImage.RawData.GetData();
 
 			for (const FColor* Color = FirstColor; Color < LastColor; ++Color)
 			{
-				*Dest++ = (int32)Color->R;
-				*Dest++ = (int32)Color->G;
-				*Dest++ = (int32)Color->B;
-				*Dest++ = (int32)Color->A;
+				*Dest++ = Color->R;
+				*Dest++ = Color->G;
+				*Dest++ = Color->B;
+				*Dest++ = Color->A;
 			}
 
 			return true;
@@ -217,14 +272,14 @@ class FTextureFormatUncompressed : public ITextureFormat
 			OutCompressedImage.RawData.AddUninitialized(NumTexels * 4);
 			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
 			const FColor* LastColor = FirstColor + NumTexels;
-			int8* Dest = (int8*)OutCompressedImage.RawData.GetData();
+			uint8* Dest = OutCompressedImage.RawData.GetData();
 
 			for (const FColor* Color = FirstColor; Color < LastColor; ++Color)
 			{
-				*Dest++ = (int32)Color->B;
-				*Dest++ = (int32)Color->G;
-				*Dest++ = (int32)Color->A;
-				*Dest++ = (int32)Color->R;
+				*Dest++ = Color->B;
+				*Dest++ = Color->G;
+				*Dest++ = Color->A;
+				*Dest++ = Color->R;
 			}
 
 			return true;
@@ -273,7 +328,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 
 			// write out texels
 			uint8* Src = ErrorData.GetData();
-			uint8* Dest = (uint8*)OutCompressedImage.RawData.GetData();
+			uint8* Dest = OutCompressedImage.RawData.GetData();
 			for (int32 Y = 0; Y < InImage.SizeY; Y++)
 			{
 				for (int32 X = 0; X < InImage.SizeX * 4; X++)
@@ -285,6 +340,51 @@ class FTextureFormatUncompressed : public ITextureFormat
 			}
 
 			
+			return true;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameR5G6B5 || BuildSettings.TextureFormatName == GTextureFormatNameRGB555A1 || BuildSettings.TextureFormatName == GTextureFormatNameA1RGB555)
+		{
+			FImage Image;
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+
+			OutCompressedImage.SizeX = Image.SizeX;
+			OutCompressedImage.SizeY = Image.SizeY;
+			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
+
+			// swizzle each texel
+			uint64 NumTexels = (uint64)Image.SizeX * Image.SizeY * Image.NumSlices;
+			OutCompressedImage.RawData.Empty(NumTexels * 2);
+			OutCompressedImage.RawData.AddUninitialized(NumTexels * 2);
+			const FColor* FirstColor = (&Image.AsBGRA8()[0]);
+			const FColor* LastColor = FirstColor + NumTexels;
+			uint16* Dest = (uint16*)OutCompressedImage.RawData.GetData();
+
+			if(BuildSettings.TextureFormatName == GTextureFormatNameR5G6B5)
+			{
+				for (const FColor* Color = FirstColor; Color < LastColor; ++Color)
+				{
+					uint16 BGR565 = (uint16(Color->R >> 3) << 11) | (uint16(Color->G >> 2) << 5) | uint16(Color->B >> 3);
+					*Dest++ = BGR565;
+				}
+			}
+			else if(BuildSettings.TextureFormatName == GTextureFormatNameA1RGB555)
+			{
+				for (const FColor* Color = FirstColor; Color < LastColor; ++Color)
+				{
+					//most rhi supports alpha on the highest bit
+					uint16 BGR555A1 = (uint16(Color->A >> 7) << 15) | (uint16(Color->R >> 3) << 10) | (uint16(Color->G >> 3) << 5) | uint16(Color->B >> 3);
+					*Dest++ = BGR555A1;
+				}
+			}
+			else
+			{
+				for (const FColor* Color = FirstColor; Color < LastColor; ++Color)
+				{
+					//OpenGL GL_RGB5_A1 only supports alpha on the lowest bit
+					uint16 BGR555A1 = (uint16(Color->R >> 3) << 11) | (uint16(Color->G >> 3) << 6) | (uint16(Color->B >> 3) << 1) | uint16(Color->A >> 7);
+					*Dest++ = BGR555A1;
+				}
+			}
 			return true;
 		}
 
@@ -318,6 +418,8 @@ public:
 		}
 		return Singleton;
 	}
+
+	static inline UE::DerivedData::TBuildFunctionFactory<FUncompressedTextureBuildFunction> BuildFunctionFactory;
 };
 
 IMPLEMENT_MODULE(FTextureFormatUncompressedModule, TextureFormatUncompressed);

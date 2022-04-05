@@ -82,6 +82,8 @@ void SGraphNodeAnimTransition::PerformSecondPassLayout(const TMap< UObject*, TSh
 
 			TransIndex = Transitions.IndexOfByKey(TransNode);
 			NumOfTrans = Transitions.Num();
+
+			PrevStateNodeWidgetPtr = PrevNodeWidget;
 		}
 	}
 
@@ -257,7 +259,6 @@ FLinearColor SGraphNodeAnimTransition::StaticGetTransitionColor(UAnimStateTransi
 	check(AnimBlueprint);
 	UAnimInstance* ActiveObject = Cast<UAnimInstance>(AnimBlueprint->GetObjectBeingDebugged());
 	UAnimBlueprintGeneratedClass* Class = AnimBlueprint->GetAnimBlueprintGeneratedClass();
-	UEdGraph* StateMachineGraph = TransNode->GetGraph();
 
 	//@TODO: WIP fast path / slow path coloring
 	if (AnimBlueprint->bWarnAboutBlueprintUsage || ((ActiveObject != nullptr) && (ActiveObject->PCV_ShouldNotifyAboutNodesNotUsingFastPath() || ActiveObject->PCV_ShouldWarnAboutNodesNotUsingFastPath())))
@@ -276,24 +277,19 @@ FLinearColor SGraphNodeAnimTransition::StaticGetTransitionColor(UAnimStateTransi
 
 	if ((ActiveObject != NULL) && (Class != NULL))
 	{
+		UAnimationStateMachineGraph* StateMachineGraph = CastChecked<UAnimationStateMachineGraph>(TransNode->GetGraph());
 		if (FStateMachineDebugData* DebugInfo = Class->GetAnimBlueprintDebugData().StateMachineDebugData.Find(StateMachineGraph))
 		{
-			if (int32* pTransIndex = DebugInfo->NodeToTransitionIndex.Find(TransNode))
+			// A transition node could be associated with multiple transitions indicies when coming from an alias. Check all of them
+			TArray<int32> TransitionIndices;
+			DebugInfo->NodeToTransitionIndex.MultiFind(TransNode, TransitionIndices);
+			const int32 TransNum = TransitionIndices.Num();
+			for (int32 Index = 0; Index < TransNum; ++Index)
 			{
-				const int32 TransIndex = *pTransIndex;
-
-				if (Class->GetAnimNodeProperties().Num())
-				{
-					UAnimationStateMachineGraph* TypedGraph = CastChecked<UAnimationStateMachineGraph>(StateMachineGraph);
-
-					if (FAnimNode_StateMachine* CurrentInstance = Class->GetPropertyInstance<FAnimNode_StateMachine>(ActiveObject, TypedGraph->OwnerAnimGraphNode))
-					{
-						if (CurrentInstance->IsTransitionActive(TransIndex))
-						{
-							// We're active!
-							return ActiveColor;
-						}
-					}
+				if(IsTransitionActive(TransitionIndices[Index], *Class, *StateMachineGraph, *ActiveObject))
+				{	
+					// We're active!
+					return ActiveColor;
 				}
 			}
 		}
@@ -317,10 +313,26 @@ FLinearColor SGraphNodeAnimTransition::StaticGetTransitionColor(UAnimStateTransi
 	return bIsHovered ? HoverColor : BaseColor;
 }
 
-FSlateColor SGraphNodeAnimTransition::GetTransitionColor() const
+bool SGraphNodeAnimTransition::IsTransitionActive(int32 TransitionIndex, UAnimBlueprintGeneratedClass& AnimClass, UAnimationStateMachineGraph& StateMachineGraph, UAnimInstance& AnimInstance)
 {
+	if (AnimClass.GetAnimNodeProperties().Num())
+	{
+		if (FAnimNode_StateMachine* CurrentInstance = AnimClass.GetPropertyInstance<FAnimNode_StateMachine>(&AnimInstance, StateMachineGraph.OwnerAnimGraphNode))
+		{
+			if (CurrentInstance->IsTransitionActive(TransitionIndex))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+FSlateColor SGraphNodeAnimTransition::GetTransitionColor() const
+{	
+	// Highlight the transition node when the node is hovered or when the previous state is hovered
 	UAnimStateTransitionNode* TransNode = CastChecked<UAnimStateTransitionNode>(GraphNode);
-	return StaticGetTransitionColor(TransNode, IsHovered());
+	return StaticGetTransitionColor(TransNode, (IsHovered() || (PrevStateNodeWidgetPtr.IsValid() && PrevStateNodeWidgetPtr.Pin()->IsHovered())));
 }
 
 const FSlateBrush* SGraphNodeAnimTransition::GetTransitionIconImage() const

@@ -9,6 +9,7 @@
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Containers/UnrealString.h"
 #include "Animation/DebugSkelMeshComponent.h"
+#include "Animation/BlendProfile.h"
 #include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "FSkeletonTreeVirtualBoneItem"
@@ -36,16 +37,16 @@ EVisibility FSkeletonTreeVirtualBoneItem::GetLODIconVisibility() const
 
 void FSkeletonTreeVirtualBoneItem::GenerateWidgetForNameColumn(TSharedPtr< SHorizontalBox > Box, const TAttribute<FText>& FilterText, FIsSelected InIsSelected)
 {
-	const FSlateBrush* LODIcon = FEditorStyle::GetBrush("SkeletonTree.LODBone");
+	const FSlateBrush* LODIcon = FAppStyle::Get().GetBrush("SkeletonTree.Bone");
 
 	Box->AddSlot()
 		.AutoWidth()
-		.Padding(FMargin(0.0f, 1.0f))
+		.Padding(FMargin(0.0f, 2.0f))
 		.VAlign(VAlign_Center)
 		.HAlign(HAlign_Center)
 		[
 			SNew(SImage)
-			.ColorAndOpacity(FSlateColor::UseForeground())
+			.ColorAndOpacity(this, &FSkeletonTreeVirtualBoneItem::GetBoneTextColor, InIsSelected)
 			.Image(LODIcon)
 			.Visibility(this, &FSkeletonTreeVirtualBoneItem::GetLODIconVisibility)
 		];
@@ -69,7 +70,7 @@ void FSkeletonTreeVirtualBoneItem::GenerateWidgetForNameColumn(TSharedPtr< SHori
 
 	Box->AddSlot()
 		.AutoWidth()
-		.Padding(2, 2, 1, 0)
+		.Padding(4, 0, 0, 0)
 		[
 			SNew(STextBlock)
 			.ColorAndOpacity(this, &FSkeletonTreeVirtualBoneItem::GetBoneTextColor, InIsSelected)
@@ -79,20 +80,89 @@ void FSkeletonTreeVirtualBoneItem::GenerateWidgetForNameColumn(TSharedPtr< SHori
 		];
 
 	Box->AddSlot()
+		.Padding(4, 0, 0, 0)
 		.AutoWidth()
 		[
 			InlineWidget.ToSharedRef()
 		];
 }
 
-TSharedRef< SWidget > FSkeletonTreeVirtualBoneItem::GenerateWidgetForDataColumn(const FName& DataColumnName)
+TSharedRef< SWidget > FSkeletonTreeVirtualBoneItem::GenerateWidgetForDataColumn(const FName& DataColumnName, FIsSelected InIsSelected)
 {
+	if (DataColumnName == ISkeletonTree::Columns::BlendProfile)
+	{
+		return SNew(SBox)
+			.Padding(0.0f)
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SSpinBox<float>)
+				.Visibility(this, &FSkeletonTreeVirtualBoneItem::GetBoneBlendProfileVisibility)
+			.Style(&FAppStyle::Get(), "SkeletonTree.HyperlinkSpinBox")
+			.Font(FAppStyle::Get().GetFontStyle("SmallFont"))
+			.ContentPadding(0.0f)
+			.Delta(0.01f)
+			.MinValue(0.0f)
+			.MinSliderValue(this, &FSkeletonTreeVirtualBoneItem::GetBlendProfileMinSliderValue)
+			.MaxSliderValue(this, &FSkeletonTreeVirtualBoneItem::GetBlendProfileMaxSliderValue)
+			.Value(this, &FSkeletonTreeVirtualBoneItem::GetBoneBlendProfileScale)
+			.OnValueCommitted(this, &FSkeletonTreeVirtualBoneItem::OnBlendSliderCommitted)
+			.OnValueChanged(this, &FSkeletonTreeVirtualBoneItem::OnBlendSliderCommitted, ETextCommit::OnEnter)
+			];
+	}
+
 	return SNullWidget::NullWidget;
+}
+
+EVisibility FSkeletonTreeVirtualBoneItem::GetBoneBlendProfileVisibility() const
+{
+	return GetSkeletonTree()->GetSelectedBlendProfile() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+float FSkeletonTreeVirtualBoneItem::GetBoneBlendProfileScale()	const
+{
+	if (UBlendProfile* CurrentProfile = GetSkeletonTree()->GetSelectedBlendProfile())
+	{
+		return CurrentProfile->GetBoneBlendScale(BoneName);
+	}
+
+	return 0.0;
+}
+
+TOptional<float> FSkeletonTreeVirtualBoneItem::GetBlendProfileMaxSliderValue() const
+{
+	if (UBlendProfile* CurrentProfile = GetSkeletonTree()->GetSelectedBlendProfile())
+	{
+		return (CurrentProfile->GetMode() == EBlendProfileMode::WeightFactor) ? 10.0f : 1.0f;
+	}
+
+	return 1.0f;
+}
+
+TOptional<float> FSkeletonTreeVirtualBoneItem::GetBlendProfileMinSliderValue() const
+{
+	if (UBlendProfile* CurrentProfile = GetSkeletonTree()->GetSelectedBlendProfile())
+	{
+		return (CurrentProfile->GetMode() == EBlendProfileMode::WeightFactor) ? 1.0f : 0.0f;
+	}
+
+	return 0.0f;
+}
+
+void FSkeletonTreeVirtualBoneItem::OnBlendSliderCommitted(float NewValue, ETextCommit::Type CommitType)
+{
+	SetBoneBlendProfileScale(NewValue, false);
+}
+
+void FSkeletonTreeVirtualBoneItem::SetBoneBlendProfileScale(float NewScale, bool bRecurse)
+{
+	FName BlendProfileName = GetSkeletonTree()->GetSelectedBlendProfile()->GetFName();
+	GetEditableSkeleton()->SetBlendProfileScale(BlendProfileName, BoneName, NewScale, bRecurse);
 }
 
 FSlateFontInfo FSkeletonTreeVirtualBoneItem::GetBoneTextFont() const
 {
-	return FEditorStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.BoldFont").Font;
+	return FEditorStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.NormalFont").Font;
 }
 
 FSlateColor FSkeletonTreeVirtualBoneItem::GetBoneTextColor(FIsSelected InIsSelected) const

@@ -2,7 +2,7 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
 
 echo
-echo Setting up Unreal Engine 4 project files...
+echo Setting up Unreal Engine 5 project files...
 echo
 
 # If ran from somewhere other then the script location we'll have the full base path
@@ -20,11 +20,15 @@ if [ ! -d "$BASE_PATH/../../../Source" ]; then
  exit 1
 fi
 
-source "$BASE_PATH/SetupEnvironment.sh" -mono "$BASE_PATH"
+source "$BASE_PATH/SetupEnvironment.sh" -dotnet "$BASE_PATH"
 
 if [ -f "$BASE_PATH/../../../Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj" ]; then
-	xbuild "$BASE_PATH/../../../Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj" /property:Configuration="Development" /verbosity:quiet /nologo /p:NoWarn=1591
+  dotnet msbuild /restore /target:build /property:Configuration=Development /nologo $BASE_PATH/../../../Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj /verbosity:quiet
+  if [ $? -ne 0 ]; then
+    echo GenerateProjectFiles ERROR: Failed to build UnrealBuildTool
+    exit 1
+  fi
 fi
 
 # pass all parameters to UBT
-mono "$BASE_PATH/../../../Binaries/DotNET/UnrealBuildTool.exe" -projectfiles "$@"
+dotnet "$BASE_PATH/../../../Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll" -projectfiles "$@"

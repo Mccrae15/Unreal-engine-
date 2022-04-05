@@ -345,9 +345,9 @@ void FDatasmithFBXFileImporter::TraverseHierarchyNodeRecursively(FbxNode* Parent
 
 		FVector RotEuler = Rotation.Euler();
 
-		// Avoid singularity around 90 degree pitch, as UE4 doesn't seem to support it very well
+		// Avoid singularity around 90 degree pitch, as UnrealEditor doesn't seem to support it very well
 		// See UE-75467 and UE-83049
-		if (FMath::IsNearlyEqual(abs(RotEuler.Y), 90.0f))
+		if (FMath::IsNearlyEqual(abs(RotEuler.Y), (FVector::FReal)90.0f))
 		{
 			Rotation.W += 1e-3;
 			Rotation.Normalize();
@@ -827,7 +827,7 @@ void FDatasmithFBXFileImporter::AddCurvesForProperty(FbxProperty InProperty, Fbx
 {
 	if (InProperty.IsValid())
 	{
-		auto PropertyName = ANSI_TO_TCHAR(InProperty.GetNameAsCStr());
+		auto PropertyName = StringCast<ANSICHAR>(InProperty.GetNameAsCStr());
 
 		FbxAnimCurveNode* CurveNode = InProperty.GetCurveNode(InLayer);
 
@@ -837,7 +837,7 @@ void FDatasmithFBXFileImporter::AddCurvesForProperty(FbxProperty InProperty, Fbx
 			for (uint8 Channel = 0; Channel < CurveNode->GetChannelsCount(); Channel++)
 			{
 				uint32 CurveCount = CurveNode->GetCurveCount(Channel);
-				UE_LOG(LogDatasmithFBXImport, Verbose, TEXT("\tFound %d curves for property %s, channel %d"), CurveCount, PropertyName, Channel);
+				UE_LOG(LogDatasmithFBXImport, Verbose, TEXT("\tFound %d curves for property %s, channel %d"), CurveCount, PropertyName.Get(), Channel);
 
 				for (uint32 CurveIndex = 0; CurveIndex < CurveCount; CurveIndex++)
 				{
@@ -1136,17 +1136,15 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 
 	FStaticMeshAttributes StaticMeshAttributes{ MeshDescription };
 	StaticMeshAttributes.Register();
-	StaticMeshAttributes.RegisterPolygonNormalAndTangentAttributes();
 
-	TVertexAttributesRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-	TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = MeshDescription.VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-	TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
-	TEdgeAttributesRef<bool> EdgeHardnesses = MeshDescription.EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
-	TEdgeAttributesRef<float> EdgeCreaseSharpnesses = MeshDescription.EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
-	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription.PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
+	TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = StaticMeshAttributes.GetVertexInstanceTangents();
+	TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = StaticMeshAttributes.GetVertexInstanceBinormalSigns();
+	TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = StaticMeshAttributes.GetVertexInstanceColors();
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+	TEdgeAttributesRef<bool> EdgeHardnesses = StaticMeshAttributes.GetEdgeHardnesses();
+	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
 
 	// Reserve space for attributes.
 	MeshDescription.ReserveNewVertices(VertexCount);
@@ -1161,7 +1159,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 
 	// At least one UV set must exist.
 	int32 MeshDescUVCount = FMath::Max(1, FbxUVCount);
-	VertexInstanceUVs.SetNumIndices(MeshDescUVCount);
+	VertexInstanceUVs.SetNumChannels(MeshDescUVCount);
 
 	//Fill the vertex array
 	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
@@ -1171,7 +1169,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 
 		FbxVector4 FbxPosition = InMesh->GetControlPoints()[VertexIndex];
 		const FVector VertexPosition = FBXFileImporterImpl::ConvertPos(FbxPosition);
-		VertexPositions[AddedVertexId] = VertexPosition;
+		VertexPositions[AddedVertexId] = (FVector3f)VertexPosition;
 	}
 
 	TArray<int32> ValidFbxUVLayerIndices;
@@ -1188,7 +1186,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 	auto GetOrCreatePolygonGroupId = [&](int32 MaterialIndex)
 	{
 		FPolygonGroupID& PolyGroupId = PolygonGroupMapping.FindOrAdd(MaterialIndex);
-		if (PolyGroupId == FPolygonGroupID::Invalid)
+		if (PolyGroupId == INDEX_NONE)
 		{
 			PolyGroupId = MeshDescription.CreatePolygonGroup();
 			FName ImportedSlotName = DatasmithMeshHelper::DefaultSlotName(MaterialIndex);
@@ -1220,7 +1218,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 		{
 			const int32 ControlPointIndex = InMesh->GetPolygonVertex(PolygonIndex, CornerIndex);
 			CornerVertexIDs[CornerIndex] = FVertexID(ControlPointIndex);
-			CornerPositions[CornerIndex] = VertexPositions[CornerVertexIDs[CornerIndex]];
+			CornerPositions[CornerIndex] = (FVector)VertexPositions[CornerVertexIDs[CornerIndex]];
 		}
 
 		// Skip degenerated polygons
@@ -1245,7 +1243,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 				int32 UVMapIndex = (FBXUVs[UVLayerIndex].UVMappingMode == FbxLayerElement::eByControlPoint) ? CornerVertexIDs[CornerIndex].GetValue() : FirstFbxInstanceIndexForPoly + CornerIndex;
 				int32 UVIndex = (FBXUVs[UVLayerIndex].UVReferenceMode == FbxLayerElement::eDirect) ? UVMapIndex : FBXUVs[UVLayerIndex].LayerElementUV->GetIndexArray().GetAt(UVMapIndex);
 				FbxVector2 UVVector = FBXUVs[UVLayerIndex].LayerElementUV->GetDirectArray().GetAt(UVIndex);
-				FVector2D FinalUVVector(static_cast<float>(UVVector[0]), 1.f - static_cast<float>(UVVector[1])); // flip the Y of UVs for DirectX
+				FVector2f FinalUVVector(static_cast<float>(UVVector[0]), 1.f - static_cast<float>(UVVector[1])); // flip the Y of UVs for DirectX
 				if (!FinalUVVector.ContainsNaN())
 				{
 					VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], UVLayerIndex, FinalUVVector);
@@ -1263,7 +1261,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 				int32 VectorColorIndex = (VertexColorReferenceMode == FbxLayerElement::eDirect) ? VertexColorMappingIndex : LayerElementVertexColor->GetIndexArray().GetAt(VertexColorMappingIndex);
 				FbxColor VertexColor = LayerElementVertexColor->GetDirectArray().GetAt(VectorColorIndex);
 				// (no reason to convert to linear color as source is not sRGB)
-				FVector4 RawColor(float(VertexColor.mRed), float(VertexColor.mGreen), float(VertexColor.mBlue), float(VertexColor.mAlpha));
+				FVector4f RawColor(float(VertexColor.mRed), float(VertexColor.mGreen), float(VertexColor.mBlue), float(VertexColor.mAlpha));
 				VertexInstanceColors[CornerVertexInstanceIDs[CornerIndex]] = RawColor;
 			}
 		}
@@ -1282,7 +1280,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 				int NormalValueIndex = (NormalReferenceMode == FbxLayerElement::eDirect) ? NormalMapIndex : LayerElementNormal->GetIndexArray().GetAt(NormalMapIndex);
 				FbxVector4 FbxTangentZ = LayerElementNormal->GetDirectArray().GetAt(NormalValueIndex);
 				const FVector TangentZ = FBXFileImporterImpl::ConvertDir(FbxTangentZ);
-				VertexInstanceNormals[InstanceID] = TangentZ.GetSafeNormal();
+				VertexInstanceNormals[InstanceID] = (FVector3f)TangentZ.GetSafeNormal();
 
 				//tangents and binormals share the same reference, mapping mode and index array
 				if (bHasNTBInformation)
@@ -1291,7 +1289,7 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 					int TangentValueIndex = (TangentReferenceMode == FbxLayerElement::eDirect) ? TangentMapIndex : LayerElementTangent->GetIndexArray().GetAt(TangentMapIndex);
 					FbxVector4 FbxTangentX = LayerElementTangent->GetDirectArray().GetAt(TangentValueIndex);
 					FVector TangentX = FBXFileImporterImpl::ConvertDir(FbxTangentX);
-					VertexInstanceTangents[InstanceID] = TangentX.GetSafeNormal();
+					VertexInstanceTangents[InstanceID] = (FVector3f)TangentX.GetSafeNormal();
 
 					int BinormalMapIndex = (BinormalMappingMode == FbxLayerElement::eByControlPoint) ? VertexIndex : FbxInstanceIndex;
 					int BinormalValueIndex = (BinormalReferenceMode == FbxLayerElement::eDirect) ? BinormalMapIndex : LayerElementBinormal->GetIndexArray().GetAt(BinormalMapIndex);
@@ -1332,13 +1330,12 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 
 			// Get or create edge
 			FEdgeID EdgeId = MeshDescription.GetVertexPairEdge(CornerVertexIDs[CornerIndex], CornerVertexIDs[NextCornerIndex]);
-			if (EdgeId == FEdgeID::Invalid)
+			if (EdgeId == INDEX_NONE)
 			{
 				EdgeId = MeshDescription.CreateEdge(CornerVertexIDs[CornerIndex], CornerVertexIDs[NextCornerIndex]);
 
 				// Crease sharpness
 				int32 FbxEdgeIndex = InMesh->GetMeshEdgeIndexForPolygon(PolygonIndex, CornerIndex);
-				EdgeCreaseSharpnesses[EdgeId] = (float)InMesh->GetEdgeCreaseInfo(FbxEdgeIndex);
 
 				// Smoothing
 				bool Hardness = true;

@@ -85,13 +85,21 @@ private:
 
 	void AddTransformCategory( IDetailLayoutBuilder& DetailBuilder );
 
+	/** Display a category with all dynamic delegates on a CDO */
+	void AddEventsCategory(IDetailLayoutBuilder& DetailBuilder);
+
+	/** Handle the creation of a bound event from a dynamic delegate on a CDO */
+	FReply HandleAddOrViewEventForVariable(UBlueprint* BP, class FMulticastDelegateProperty* Property);
+
 	const TArray< TWeakObjectPtr<AActor> >& GetSelectedActors() const;
 
+	// Functions for actor loading strategy details
 private:
 	// Functions to handle actor packaging mode (i.e. external or internal)
 	bool IsActorPackagingModeEditable() const;
 	FText GetCurrentActorPackagingMode() const;
 	void OnActorPackagingModeChanged(bool bExternal);
+
 
 	/** Bring up the menu for user to select the path to create blueprint at */
 	FReply OnPickBlueprintPathClicked(bool bHavest);

@@ -16,19 +16,11 @@ FAnimationBlueprintInterfaceEditorMode::FAnimationBlueprintInterfaceEditorMode(c
 {
 	AnimBlueprintPtr = CastChecked<UAnimBlueprint>(InAnimationBlueprintEditor->GetBlueprintObj());
 
-	TabLayout = FTabManager::NewLayout( "Standalone_AnimationBlueprintInterfaceEditMode_Layout_v1.0" )
+	TabLayout = FTabManager::NewLayout( "Standalone_AnimationBlueprintInterfaceEditMode_Layout_v1.1" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				// Top toolbar
-				FTabManager::NewStack() 
-				->SetSizeCoefficient(0.186721f)
-				->SetHideTabWell(true)
-				->AddTab(InAnimationBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				// Main application area

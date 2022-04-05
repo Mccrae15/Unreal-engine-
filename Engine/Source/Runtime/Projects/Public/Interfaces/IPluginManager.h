@@ -149,6 +149,13 @@ public:
 	virtual bool CanContainContent() const = 0;
 
 	/**
+	 * Determines if the plugin can contain Verse code.
+	 *
+	 * @return True if the plugin can contain Verse code.
+	 */
+	virtual bool CanContainVerse() const = 0;
+
+	/**
 	 * Returns the plugin's location
 	 *
 	 * @return Where the plugin was loaded from
@@ -199,7 +206,7 @@ public:
 	 * 
 	 * @return True if the plugin was added or already in the list. False if it failed to load.
 	 */
-	virtual bool AddToPluginsList( const FString& PluginFilename ) = 0;
+	virtual bool AddToPluginsList(const FString& PluginFilename, FText* OutFailReason = nullptr) = 0;
 
 	/**
 	 * Loads all plug-ins
@@ -278,7 +285,10 @@ public:
 	 *
 	 * @return	 Pointer to the plugin's information, or nullptr.
 	 */
-	virtual PROJECTS_API TSharedPtr<IPlugin> FindPlugin(const FString& Name) = 0;
+	virtual PROJECTS_API TSharedPtr<IPlugin> FindPlugin(const FStringView Name) = 0;
+	virtual PROJECTS_API TSharedPtr<IPlugin> FindPlugin(const ANSICHAR* Name) = 0;
+
+	virtual PROJECTS_API TSharedPtr<IPlugin> FindPluginFromPath(const FString& PluginPath) = 0;
 
 	/**
 	 * Gets an array of all the enabled plugins.
@@ -295,19 +305,23 @@ public:
 	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithContent() const = 0;
 
 	/**
+	 * Gets an array of all enabled plugins that can have Verse code.
+	 *
+	 * @return	Array of plugins with IsEnabled() and CanContainVerse() both true.
+	 */
+	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithVerse() const = 0;
+
+	/**
+	 * Gets an array of all enabled plugins that can have content or Verse code.
+	 */
+	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithContentOrVerse() const = 0;
+
+	/**
 	 * Gets an array of all the discovered plugins.
 	 *
 	 * @return	Array of the discovered plugins.
 	 */
 	virtual TArray<TSharedRef<IPlugin>> GetDiscoveredPlugins() = 0;
-
-	/**
-	 * Gets status about all currently known plug-ins.
-	 *
-	 * @return	 Array of plug-in status objects.
-	 */
-	UE_DEPRECATED(4.18, "QueryStatusForAllPlugins() has been deprecated. Please use GetDiscoveredPlugins() instead.")
-	virtual TArray<FPluginStatus> QueryStatusForAllPlugins() const = 0;
 
 	/**
 	 * Stores the specified path, utilizing it in future search passes when 
@@ -335,13 +349,20 @@ public:
 	 */
 	DECLARE_EVENT_OneParam(IPluginManager, FNewPluginMountedEvent, IPlugin&);
 
-
+	/**
+	 * Event signature for being notified that a new plugin has been created
+	 */
 	virtual FNewPluginMountedEvent& OnNewPluginCreated() = 0;
 
 	/**
-	 * Gets an array of plugins that loaded their own content pak file
+	 * Event for being notified that a new plugin has been mounted
 	 */
 	virtual FNewPluginMountedEvent& OnNewPluginMounted() = 0;
+
+	/**
+	 * Event for being notified that a plugin has been edited
+	 */
+	virtual FNewPluginMountedEvent& OnPluginEdited() = 0;
 
 	/**
 	 * Marks a newly created plugin as enabled, mounts its content and tries to load its modules

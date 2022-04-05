@@ -12,6 +12,7 @@
 #include "Engine/EngineTypes.h"
 
 #include "Curves/RichCurve.h"
+#include "PerPlatformProperties.h"
 
 #include "PropertyEditorTestObject.generated.h"
 
@@ -24,7 +25,7 @@ class UStaticMeshComponent;
 class UTexture;
 
 UENUM()
-enum PropertyEditorTestEnum
+enum EPropertyEditorTestEnum
 {	
 	/** This comment should appear above enum 1 */
 	PropertyEditorTest_Enum1 UMETA(Hidden),
@@ -42,14 +43,14 @@ enum PropertyEditorTestEnum
 };
 
 UENUM(meta=(Bitflags))
-enum class PropertyEditorTestBitflags : uint8
+enum class EPropertyEditorTestBitflags : uint8
 {
 	First,
 	Second,
 	Third,
 	Hidden UMETA(Hidden, ToolTip="This value shouldn't be used or even visible in the editor")
 };
-ENUM_CLASS_FLAGS(PropertyEditorTestBitflags)
+ENUM_CLASS_FLAGS(EPropertyEditorTestBitflags)
 
 UENUM()
 enum ArrayLabelEnum
@@ -63,20 +64,28 @@ enum ArrayLabelEnum
 	ArrayIndex_MAX,
 };
 
-
 UENUM()
-enum class EditColor : uint8
+enum class EPropertyEditorTestEditColor : uint8
 {
 	Red,
 	Orange,
 	Yellow,
 	Green,
 	Blue,
-	Indigo,
+	Indigo UMETA(Hidden),
 	Violet,
 	Pink,
 	Magenta,
 	Cyan
+};
+
+UENUM()
+enum class EPropertyEditorTestUnderscores : uint8
+{
+	_One,
+	_Two,
+	_Three,
+	NotUnderscore
 };
 
 UENUM()
@@ -145,22 +154,28 @@ struct FPropertyEditorTestBasicStruct
 	float FloatPropertyInsideAStruct;
 
 	UPROPERTY(EditAnywhere, Category=InnerStructCategoryWithPushedOutProps)
-	UObject* ObjectPropertyInsideAStruct;
+	TObjectPtr<UObject> ObjectPropertyInsideAStruct;
 
 	UPROPERTY(EditAnywhere, Category=InnerStructCategoryWithPushedOutProps)
 	FPropertyEditorTestSubStruct InnerStruct;
 }; 
 
 USTRUCT()
-struct FPropertyEditorTestInlineEditCondition
+struct FPropertyEditorTestEditCondition
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category=Default, meta=(InlineEditConditionToggle))
 	bool InlineEditCondition = false;
 
-	UPROPERTY(EditAnywhere, Category=Default, meta=(EditCondition=InlineEditCondition))
+	UPROPERTY(EditAnywhere, Category=Default, meta=(EditCondition="InlineEditCondition"))
 	int32 HasInlineEditCondition = 0;
+
+	UPROPERTY(EditAnywhere, Category=Default)
+	ETestEnumFlags Flags = ETestEnumFlags::None;
+
+	UPROPERTY(EditAnywhere, Category=Default, meta=(EditCondition="Flags == ETestEnumFlags::One", EditConditionHides))
+	int32 EnabledAndVisibleWhenOne = 0;
 };
 
 UCLASS(EditInlineNew)
@@ -178,7 +193,7 @@ struct FPropertyEditorTestInstancedStruct
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Instanced, Category=Default)
-	UPropertyEditorTestInstancedObject* Object { nullptr };
+	TObjectPtr<UPropertyEditorTestInstancedObject> Object { nullptr };
 };
 
 UCLASS(transient)
@@ -244,7 +259,7 @@ class UPropertyEditorTestObject : public UObject
 	FRotator RotatorProperty;
 
 	UPROPERTY(EditAnywhere, Category=BasicProperties)
-	UObject* ObjectProperty;
+	TObjectPtr<UObject> ObjectProperty;
 
 	UPROPERTY(EditAnywhere, Category=BasicProperties)
 	FLinearColor LinearColorProperty;
@@ -253,10 +268,13 @@ class UPropertyEditorTestObject : public UObject
 	FColor ColorProperty;
 
 	UPROPERTY(EditAnywhere, Category=BasicProperties)
-	TEnumAsByte<enum PropertyEditorTestEnum> EnumByteProperty;
+	TEnumAsByte<enum EPropertyEditorTestEnum> EnumByteProperty;
 
 	UPROPERTY(EditAnywhere, Category=BasicProperties)
-	EditColor EnumProperty;
+	EPropertyEditorTestEditColor EnumProperty;
+
+	UPROPERTY(EditAnywhere, Category=BasicProperties)
+	EPropertyEditorTestUnderscores EnumUnderscores;
 
 	UPROPERTY(EditAnywhere, Category=BasicProperties)
 	FMatrix MatrixProperty;
@@ -265,13 +283,13 @@ class UPropertyEditorTestObject : public UObject
 	FTransform TransformProperty;
 
 	UPROPERTY(EditAnywhere, Category=Classes)
-	UClass* ClassProperty;
+	TObjectPtr<UClass> ClassProperty;
 
 	UPROPERTY(EditAnywhere, Category=Classes, meta=(AllowedClasses="Texture2D"))
-	UClass* ClassPropertyWithAllowed;
+	TObjectPtr<UClass> ClassPropertyWithAllowed;
 
 	UPROPERTY(EditAnywhere, Category=Classes, meta=(DisallowedClasses="Texture2D"))
-	UClass* ClassPropertyWithDisallowed;
+	TObjectPtr<UClass> ClassPropertyWithDisallowed;
 
 	UPROPERTY(EditAnywhere, Category=Classes)
 	TSubclassOf<UTexture> SubclassOfTexture;
@@ -283,7 +301,7 @@ class UPropertyEditorTestObject : public UObject
 	TSubclassOf<UTexture> SubclassOfWithDisallowed;
 
 	UPROPERTY(EditAnywhere, Category=Classes, meta=(AllowedClasses="StaticMesh,  SkeletalMesh	"))
-	TAssetPtr<UObject> AssetPointerWithAllowedAndWhitespace;
+	TSoftObjectPtr<UObject> AssetPointerWithAllowedAndWhitespace;
 
 	// Integer
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
@@ -321,10 +339,10 @@ class UPropertyEditorTestObject : public UObject
 	TArray<FRotator> RotatorPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
-	TArray<UObject*> ObjectPropertyArray;
+	TArray<TObjectPtr<UObject>> ObjectPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
-	TArray<AActor*> ActorPropertyArray;
+	TArray<TObjectPtr<AActor>> ActorPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
 	TArray<FLinearColor> LinearColorPropertyArray;
@@ -333,7 +351,7 @@ class UPropertyEditorTestObject : public UObject
 	TArray<FColor> ColorPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
-	TArray<TEnumAsByte<enum PropertyEditorTestEnum> > EnumPropertyArray;
+	TArray<TEnumAsByte<enum EPropertyEditorTestEnum> > EnumPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
 	TArray<FPropertyEditorTestBasicStruct> StructPropertyArray;
@@ -341,11 +359,20 @@ class UPropertyEditorTestObject : public UObject
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties, meta=(TitleProperty=IntPropertyInsideAStruct))
 	TArray<FPropertyEditorTestBasicStruct> StructPropertyArrayWithTitle;
 
+	UPROPERTY(EditAnywhere, Category=ArraysOfProperties, meta=(TitleProperty="{IntPropertyInsideAStruct} + {FloatPropertyInsideAStruct}"))
+	TArray<FPropertyEditorTestBasicStruct> StructPropertyArrayWithFormattedTitle;
+
+	UPROPERTY(EditAnywhere, Category=ArraysOfProperties, meta=(TitleProperty=ErrorProperty))
+	TArray<FPropertyEditorTestBasicStruct> StructPropertyArrayWithTitleError;
+
+	UPROPERTY(EditAnywhere, Category=ArraysOfProperties, meta=(TitleProperty="{ErrorProperty}"))
+	TArray<FPropertyEditorTestBasicStruct> StructPropertyArrayWithFormattedTitleError;
+
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
 	TArray<FPropertyEditorTestInstancedStruct> InstancedStructArray;
 
 	UPROPERTY(EditAnywhere, Instanced, Category=ArraysOfProperties)
-	TArray<UPropertyEditorTestInstancedObject*> InstancedUObjectArray;
+	TArray<TObjectPtr<UPropertyEditorTestInstancedObject>> InstancedUObjectArray;
 
 	UPROPERTY(EditAnywhere, editfixedsize, Category=ArraysOfProperties)
 	TArray<int32> FixedArrayOfInts;
@@ -355,6 +382,9 @@ class UPropertyEditorTestObject : public UObject
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
 	int32 StaticArrayOfIntsWithEnumLabels[ArrayIndex_MAX];
+
+	UPROPERTY(VisibleAnywhere, Category = AdvancedProperties)
+	FFloatRange FloatRange;
 
 	// This is a float property tooltip that is overridden
 	UPROPERTY(EditAnywhere, Category=AdvancedProperties, meta=(ClampMin="0.0", ClampMax="100.0", UIMin="0.0", UIMax="50.0", ToolTip="This is a custom tooltip that should be shown"))
@@ -370,9 +400,9 @@ class UPropertyEditorTestObject : public UObject
 	FString StringThatCannotBeChanged;
 
 	UPROPERTY(VisibleAnywhere, Category=AdvancedProperties)
-	UPrimitiveComponent* ObjectThatCannotBeChanged;
+	TObjectPtr<UPrimitiveComponent> ObjectThatCannotBeChanged;
 
-	UPROPERTY(EditAnywhere, Category=AdvancedProperties, meta=(Bitmask, BitmaskEnum="PropertyEditorTestBitflags"))
+	UPROPERTY(EditAnywhere, Category=AdvancedProperties, meta=(Bitmask, BitmaskEnum="EPropertyEditorTestBitflags"))
 	int32 EnumBitflags=0;
 
 	UPROPERTY(EditAnywhere, Category=AdvancedProperties, meta=(PasswordField=true))
@@ -445,22 +475,25 @@ class UPropertyEditorTestObject : public UObject
 	FPropertyEditTestTextStruct Struct;
 
 	UPROPERTY(EditAnywhere, Category=EditInlineProps)
-	UStaticMeshComponent* EditInlineNewStaticMeshComponent;
+	TObjectPtr<UStaticMeshComponent> EditInlineNewStaticMeshComponent;
 
 	UPROPERTY(EditAnywhere, Category=EditInlineProps)
-	TArray<UStaticMeshComponent*> ArrayOfEditInlineNewSMCs;
+	TArray<TObjectPtr<UStaticMeshComponent>> ArrayOfEditInlineNewSMCs;
 
 	UPROPERTY(EditAnywhere, Category=AssetPropertyTests)
-	UTexture* TextureProp;
+	TObjectPtr<UTexture> TextureProp;
 
 	UPROPERTY(EditAnywhere, Category=AssetPropertyTests)
-	UStaticMesh* StaticMeshProp;
+	TObjectPtr<UStaticMesh> StaticMeshProp;
 
 	UPROPERTY(EditAnywhere, Category=AssetPropertyTests)
-	UMaterialInterface* AnyMaterialInterface;
+	TObjectPtr<UMaterialInterface> AnyMaterialInterface;
+
+	UPROPERTY(EditAnywhere, Category = AssetPropertyTests, meta=(DisplayThumbnail=false))
+	TObjectPtr<UMaterialInterface> MaterialNoThumbnail;
 
 	UPROPERTY(EditAnywhere, Category=AssetPropertyTests)
-	AActor* OnlyActorsAllowed;
+	TObjectPtr<AActor> OnlyActorsAllowed;
 
 	UPROPERTY(EditAnywhere, Category="TSet Tests")
 	TSet<int32> Int32Set;
@@ -472,13 +505,13 @@ class UPropertyEditorTestObject : public UObject
 	TSet<FString> StringSet;
 
 	UPROPERTY(EditAnywhere, Category="TSet Tests")
-	TSet<UObject*> ObjectSet;
+	TSet<TObjectPtr<UObject>> ObjectSet;
 
 	UPROPERTY(EditAnywhere, Category="TSet Tests")
-	TSet<AActor*> ActorSet;
+	TSet<TObjectPtr<AActor>> ActorSet;
 
 	UPROPERTY(EditAnywhere, Category="TSet Tests")
-	TSet<EditColor> EditColorSet;
+	TSet<EPropertyEditorTestEditColor> EditColorSet;
 
 	UPROPERTY(EditAnywhere, Category="TSet Tests")
 	TSet<FName> NameSet;
@@ -496,25 +529,25 @@ class UPropertyEditorTestObject : public UObject
 	TMap<FString, float> StringToFloatMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<FString, UObject*> StringToObjectMap;
+	TMap<FString, TObjectPtr<UObject>> StringToObjectMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<FString, AActor*> StringToActorMap;
+	TMap<FString, TObjectPtr<AActor>> StringToActorMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<UObject*, int32> ObjectToInt32Map;
+	TMap<TObjectPtr<UObject>, int32> ObjectToInt32Map;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<UObject*, FLinearColor> ObjectToColorMap;
+	TMap<TObjectPtr<UObject>, FLinearColor> ObjectToColorMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<int32, TEnumAsByte<PropertyEditorTestEnum> > IntToEnumMap;
+	TMap<int32, TEnumAsByte<EPropertyEditorTestEnum> > IntToEnumMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
 	TMap<FName, FName> NameToNameMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
-	TMap<FName, UObject*> NameToObjectMap;
+	TMap<FName, TObjectPtr<UObject>> NameToObjectMap;
 
 	UPROPERTY(EditAnywhere, Category="TMap Tests")
 	TMap<FName, FPropertyEditorTestBasicStruct> NameToCustomMap;
@@ -556,7 +589,7 @@ class UPropertyEditorTestObject : public UObject
 	// Allows either an object that's derived from UTexture or IBlendableInterface, to ensure that Object Property handles know how to
 	// filter for AllowedClasses correctly.
 	UPROPERTY(EditAnywhere, Category=ObjectPropertyAllowedClasses, meta=(AllowedClasses="Texture,BlendableInterface"))
-	UObject* TextureOrBlendableInterface;
+	TObjectPtr<UObject> TextureOrBlendableInterface;
 
 	UPROPERTY(EditAnywhere, Category="Subcategory")
 	bool bSubcategory;
@@ -586,21 +619,21 @@ class UPropertyEditorTestObject : public UObject
 	bool bEnabledByPrevious;
 
 	UPROPERTY(EditAnywhere, Category=EditCondition)
-	EditColor EnumEditCondition;
+	EPropertyEditorTestEditColor EnumEditCondition;
 
-	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumEditCondition == EditColor::Blue"))
+	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumEditCondition == EPropertyEditorTestEditColor::Blue"))
 	bool bEnabledWhenBlue;
 
-	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumEditCondition == EditColor::Pink"))
+	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumEditCondition == EPropertyEditorTestEditColor::Pink"))
 	bool bEnabledWhenPink;
 
 	UPROPERTY(EditAnywhere, Category=EditCondition)
-	TEnumAsByte<PropertyEditorTestEnum> EnumAsByteEditCondition;
+	TEnumAsByte<EPropertyEditorTestEnum> EnumAsByteEditCondition;
 
-	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumAsByteEditCondition == PropertyEditorTestEnum::PropertyEditorTest_Enum2"))
+	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumAsByteEditCondition == EPropertyEditorTestEnum::PropertyEditorTest_Enum2"))
 	bool bEnabledWhenEnumIs2;
 
-	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumAsByteEditCondition == PropertyEditorTestEnum::PropertyEditorTest_Enum4"))
+	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="EnumAsByteEditCondition == EPropertyEditorTestEnum::PropertyEditorTest_Enum4"))
 	bool bEnabledWhenEnumIs4;
 
 	UPROPERTY(EditAnywhere, Category=EditCondition)
@@ -625,7 +658,7 @@ class UPropertyEditorTestObject : public UObject
 	bool bEditConditionForArrays;
 
 	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="bEditConditionForArrays"))
-	TArray<UTexture2D*> ArrayWithEditCondition;
+	TArray<TObjectPtr<UTexture2D>> ArrayWithEditCondition;
 
 	UPROPERTY(EditAnywhere, Category=EditCondition, meta=(EditCondition="bEditConditionForArrays"))
 	TArray<FPropertyEditorTestBasicStruct> ArrayOfStructsWithEditCondition;
@@ -660,6 +693,18 @@ class UPropertyEditorTestObject : public UObject
 	UPROPERTY(EditAnywhere, Category=DateTime)
 	FDateTime DateTime;
 
+	UPROPERTY(EditAnywhere, Category = DateTime)
+	FTimespan Timespan;
+
+	UPROPERTY(EditAnywhere, Category = AdvancedProperties)
+	FGuid Guid;
+
+	UPROPERTY(EditAnywhere, Category = AdvancedProperties)
+	FPerPlatformFloat PerPlatformFloat;
+
+	UPROPERTY(EditAnywhere, Category = AdvancedProperties)
+	FPerPlatformInt PerPlatformInt;
+
 	UPROPERTY()
 	bool bInlineEditConditionWithoutMetaToggle;
 
@@ -688,10 +733,10 @@ class UPropertyEditorTestObject : public UObject
 	float UsesSharedEditCondition2;
 
 	UPROPERTY(EditAnywhere, Category="Inline Edit Conditions")
-	FPropertyEditorTestInlineEditCondition StructWithInlineCondition;
+	FPropertyEditorTestEditCondition StructWithInlineCondition;
 
 	UPROPERTY(EditAnywhere, Category="Inline Edit Conditions")
-	TArray<FPropertyEditorTestInlineEditCondition> ArrayOfStructsWithInlineCondition;
+	TArray<FPropertyEditorTestEditCondition> ArrayOfStructsWithInlineCondition;
 
 	bool CanEditChange(const FProperty* InProperty) const;
 };
@@ -714,7 +759,7 @@ class UBlueprintPropertyContainerTestObject : public UObject
 	GENERATED_BODY()
 public:
 	UPROPERTY(Instanced, EditAnywhere, Category="Default", meta=(ShowOnlyInnerProperties))
-	TArray<UBlueprintPropertyTestObject*> Array;
+	TArray<TObjectPtr<UBlueprintPropertyTestObject>> Array;
 };
 
 UCLASS(Abstract, BlueprintType, SparseClassDataType=TestSparseClassDataStorage)
@@ -736,4 +781,16 @@ struct FTestSparseClassDataStorage
 
 	UPROPERTY(EditDefaultsOnly, Category=Default)
 	TMap<int, int> Map;
+};
+
+UCLASS()
+class APropertyEditorTestActor : public AActor
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category=Default, meta=(GetOptions=GetOptionsFunc))
+	FName GetOptionsValue;
+
+	UFUNCTION()
+	TArray<FString> GetOptionsFunc() const;
 };

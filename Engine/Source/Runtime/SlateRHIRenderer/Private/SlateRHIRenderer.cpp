@@ -96,9 +96,7 @@ struct FSlateDrawWindowCommandParams
 #if WANTS_DRAW_MESH_EVENTS
 	FString WindowTitle;
 #endif
-	float WorldTimeSeconds;
-	float DeltaTimeSeconds;
-	float RealTimeSeconds;
+	FGameTime Time;
 	bool bLockToVsync;
 	bool bClear;
 };
@@ -151,7 +149,7 @@ void FViewportInfo::RecreateDepthBuffer_RenderThread()
 	if (bRequiresStencilTest)
 	{
 		FTexture2DRHIRef ShaderResourceUnused;
-		FRHIResourceCreateInfo CreateInfo(FClearValueBinding::DepthZero);
+		FRHIResourceCreateInfo CreateInfo(TEXT("SlateViewportDepthStencil"), FClearValueBinding::DepthZero);
 
 		ETextureCreateFlags TargetableTextureFlags = TexCreate_DepthStencilTargetable;
 		if (CVarMemorylessDepthStencil.GetValueOnAnyThread() != 0)
@@ -169,7 +167,7 @@ bool IsMemorylessTexture(const FTexture2DRHIRef& Tex)
 {
 	if (Tex)
 	{
-		return (Tex->GetFlags() & TexCreate_Memoryless) != 0;
+		return EnumHasAnyFlags(Tex->GetFlags(), TexCreate_Memoryless);
 	}
 	return false;
 }
@@ -516,7 +514,7 @@ void FSlateRHIRenderer::OnWindowDestroyed(const TSharedRef<SWindow>& InWindow)
 
 		// Need to flush rendering commands as the viewport may be in use by the render thread
 		// and the rendering resources must be released on the render thread before the viewport can be deleted
-		FlushRenderingCommands(true /* bFlushDeferredDeletes */);
+		FlushRenderingCommands();
 
 		delete *ViewportInfoPtr;
 	}
@@ -786,8 +784,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				ViewportInfo.ColorSpaceLUTRT.SafeRelease();
 				ViewportInfo.ColorSpaceLUTSRV.SafeRelease();
 
-				FRHIResourceCreateInfo CreateInfo;
-				CreateInfo.DebugName = TEXT("ColorSpaceLUT");
+				FRHIResourceCreateInfo CreateInfo(TEXT("ColorSpaceLUT"));
 				RHICreateTargetableShaderResource3D(CompositionLUTSize, CompositionLUTSize, CompositionLUTSize, PF_A2B10G10R10, 1, TexCreate_None, TexCreate_RenderTargetable, false, CreateInfo, ViewportInfo.ColorSpaceLUTRT, ViewportInfo.ColorSpaceLUTSRV);
 				bLUTStale = true;
 			}
@@ -844,7 +841,6 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 
 			RHICmdList.BeginDrawingViewport(ViewportInfo.ViewportRHI, FTextureRHIRef());
 			RHICmdList.SetViewport(0, 0, 0, ViewportWidth, ViewportHeight, 0.0f);
-			RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::Unknown, ERHIAccess::RTV));
 
 			{
 				FRHIRenderPassInfo RPInfo(BackBuffer, ERenderTargetActions::Load_Store);
@@ -882,6 +878,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 					bool bHasBatches = BatchData.GetRenderBatches().Num() > 0;
 					if (bHasBatches || bClear)
 					{
+						TransitionRenderPassTargets(RHICmdList, RPInfo);
 						RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateBatches"));
 						SCOPE_CYCLE_COUNTER(STAT_SlateRTDrawBatches);
 
@@ -889,7 +886,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 						{
 							FSlateBackBuffer BackBufferTarget(BackBuffer, FIntPoint(ViewportWidth, ViewportHeight));
 
-							FSlateRenderingParams RenderParams(ViewMatrix * ViewportInfo.ProjectionMatrix, DrawCommandParams.WorldTimeSeconds, DrawCommandParams.DeltaTimeSeconds, DrawCommandParams.RealTimeSeconds);
+							FSlateRenderingParams RenderParams(ViewMatrix * ViewportInfo.ProjectionMatrix, DrawCommandParams.Time);
 							RenderParams.bWireFrame = !!SlateWireFrame;
 							RenderParams.bIsHDR = ViewportInfo.bHDREnabled;
 
@@ -934,8 +931,8 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				if (bLUTStale)
 				{
 					// #todo-renderpasses will this touch every pixel? use NoAction?
-					RHICmdList.Transition(FRHITransitionInfo(ViewportInfo.ColorSpaceLUTRT, ERHIAccess::Unknown, ERHIAccess::RTV));
 					FRHIRenderPassInfo RPInfo(ViewportInfo.ColorSpaceLUTRT, ERenderTargetActions::Load_Store);
+					TransitionRenderPassTargets(RHICmdList, RPInfo);
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("GenerateLUT"));
 					{
 						FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -951,12 +948,10 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 
 						GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GScreenVertexDeclaration.VertexDeclarationRHI;
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-						GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GeometryShader.GetGeometryShader();
-#endif
+						GraphicsPSOInit.BoundShaderState.SetGeometryShader(GeometryShader.GetGeometryShader());
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
-						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 						VertexShader->SetParameters(RHICmdList, VolumeBounds, FIntVector(VolumeBounds.MaxX - VolumeBounds.MinX));
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
@@ -1011,7 +1006,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 							GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, UITargetRTMaskTexture, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.ColorSpaceLUTSRV);
 						}
@@ -1025,7 +1020,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 							GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, UITargetRTMaskTexture, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.ColorSpaceLUTSRV);
 						}
@@ -1056,6 +1051,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 
 				FRHIRenderPassInfo RPInfo(FinalBuffer, ERenderTargetActions::Load_Store);
+				TransitionRenderPassTargets(RHICmdList, RPInfo);
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateComposite"));
 
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -1073,7 +1069,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 				PixelShader->SetParameters(RHICmdList, HDRRenderRT->GetRenderTargetItem().TargetableTexture );
 
@@ -1326,9 +1322,9 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 #else
 					Params.bClear = false;
 #endif	
-					Params.WorldTimeSeconds = FApp::GetCurrentTime() - GStartTime;
-					Params.DeltaTimeSeconds = FApp::GetDeltaTime();
-					Params.RealTimeSeconds = FPlatformTime::Seconds() - GStartTime;
+					Params.Time = FGameTime::CreateDilated(
+						FPlatformTime::Seconds() - GStartTime, FApp::GetDeltaTime(),
+						FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime());
 
 					// Skip the actual draw if we're in a headless execution environment
 					bool bLocalTakingAScreenShot = bTakingAScreenShot;
@@ -1390,6 +1386,7 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 
 	// flush the cache if needed
 	FontCache->ConditionalFlushCache();
+	ResourceManager->ConditionalFlushAtlases();
 }
 
 
@@ -1439,9 +1436,9 @@ bool FSlateRHIRenderer::GenerateDynamicImageResource(FName ResourceName, FSlateT
 	return TextureResource.IsValid();
 }
 
-FSlateResourceHandle FSlateRHIRenderer::GetResourceHandle( const FSlateBrush& Brush )
+FSlateResourceHandle FSlateRHIRenderer::GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale)
 {
-	return ResourceManager->GetResourceHandle( Brush );
+	return ResourceManager->GetResourceHandle(Brush, LocalSize, DrawScale);
 }
 
 bool FSlateRHIRenderer::CanRenderResource(UObject& InResourceObject) const
@@ -1583,6 +1580,11 @@ FSlateUpdatableTexture* FSlateRHIRenderer::CreateUpdatableTexture(uint32 Width, 
 		BeginInitResource(NewTexture);
 	}
 	return NewTexture;
+}
+
+FSlateUpdatableTexture* FSlateRHIRenderer::CreateSharedHandleTexture(void* SharedHandle)
+{
+	return nullptr;
 }
 
 void FSlateRHIRenderer::ReleaseUpdatableTexture(FSlateUpdatableTexture* Texture)

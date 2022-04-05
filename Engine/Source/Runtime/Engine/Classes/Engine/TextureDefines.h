@@ -4,7 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+
+// TextureDefines.h is used from the TextureCompressor module as an "include only"
+// dependency to get visibility of these enum values without linking to the engine module
+// to facilitate that the generated TextureDefines header is only conditionally included
+// if we're compiling with the engine.
+#if WITH_ENGINE
 #include "TextureDefines.generated.h"
+#endif // WITH_ENGINE
 
 /**
  * @warning: if this is changed:
@@ -79,6 +86,7 @@ enum TextureGroup
 	TEXTUREGROUP_Project13 UMETA(DisplayName="ini:Project Group 13"),
 	TEXTUREGROUP_Project14 UMETA(DisplayName="ini:Project Group 14"),
 	TEXTUREGROUP_Project15 UMETA(DisplayName="ini:Project Group 15"),
+	TEXTUREGROUP_Project16 UMETA(DisplayName="ini:Project Group 16"),
 	TEXTUREGROUP_MAX,
 };
 
@@ -122,6 +130,8 @@ enum TextureMipGenSettings
 	TMGS_Blur5 UMETA(DisplayName = "Blur5"),
 	/** Use the first texel of each 2x2 (or 2x2x2) group. */
 	TMGS_Unfiltered UMETA(DisplayName = "Unfiltered"),
+	/** Introduce significant amount of blur using angular filtering (only applies to cubemaps, useful for ambient lighting). */
+	TMGS_Angular UMETA(DisplayName = "Angular"),
 	TMGS_MAX,
 
 	// Note: These are serialized as as raw values in the texture DDC key, so additional entries
@@ -216,3 +226,131 @@ enum ETextureLossyCompressionAmount
 	TLCA_High			UMETA(DisplayName = "High"),
 	TLCA_Highest		UMETA(DisplayName = "Highest (Worst image quality, smallest filesize)"),
 };
+
+UENUM()
+enum ECompositeTextureMode
+{
+	CTM_Disabled UMETA(DisplayName="Disabled"),
+	/** CompositingTexture needs to be a normal map with the same or larger size. */
+	CTM_NormalRoughnessToRed UMETA(DisplayName="Add Normal Roughness To Red"),
+	/** CompositingTexture needs to be a normal map with the same or larger size. */
+	CTM_NormalRoughnessToGreen UMETA(DisplayName="Add Normal Roughness To Green"),
+	/** CompositingTexture needs to be a normal map with the same or larger size. */
+	CTM_NormalRoughnessToBlue UMETA(DisplayName="Add Normal Roughness To Blue"),
+	/** CompositingTexture needs to be a normal map with the same or larger size. */
+	CTM_NormalRoughnessToAlpha UMETA(DisplayName="Add Normal Roughness To Alpha"),
+	CTM_MAX,
+
+	// Note: These are serialized as as raw values in the texture DDC key, so additional entries
+	// should be added at the bottom; reordering or removing entries will require changing the GUID
+	// in the texture compressor DDC key
+};
+
+UENUM()
+enum ETextureSourceCompressionFormat
+{
+	TSCF_None	UMETA(DisplayName = "ZLib"),
+	TSCF_PNG	UMETA(DisplayName = "PNG"),
+	TSCF_JPEG	UMETA(DisplayName = "JPEG"),
+
+	TSCF_MAX
+};
+
+UENUM()
+enum ETextureSourceFormat
+{
+	TSF_Invalid,
+	TSF_G8,
+	TSF_BGRA8,
+	TSF_BGRE8,
+	TSF_RGBA16,
+	TSF_RGBA16F,
+
+	//@todo: Deprecated!
+	TSF_RGBA8,
+	//@todo: Deprecated!
+	TSF_RGBE8,
+
+	TSF_G16,
+
+	TSF_MAX
+};
+
+// This needs to be mirrored in EditorFactories.cpp.
+UENUM()
+enum TextureCompressionSettings
+{
+	TC_Default					UMETA(DisplayName = "Default (DXT1/5, BC1/3 on DX11)"),
+	TC_Normalmap				UMETA(DisplayName = "Normalmap (DXT5, BC5 on DX11)"),
+	TC_Masks					UMETA(DisplayName = "Masks (no sRGB)"),
+	TC_Grayscale				UMETA(DisplayName = "Grayscale (R8, RGB8 sRGB)"),
+	TC_Displacementmap			UMETA(DisplayName = "Displacementmap (8/16bit)"),
+	TC_VectorDisplacementmap	UMETA(DisplayName = "VectorDisplacementmap (RGBA8)"),
+	TC_HDR						UMETA(DisplayName = "HDR (RGB, no sRGB)"),
+	TC_EditorIcon				UMETA(DisplayName = "UserInterface2D (RGBA)"),
+	TC_Alpha					UMETA(DisplayName = "Alpha (no sRGB, BC4 on DX11)"),
+	TC_DistanceFieldFont		UMETA(DisplayName = "DistanceFieldFont (R8)"),
+	TC_HDR_Compressed			UMETA(DisplayName = "HDRCompressed (RGB, BC6H, DX11)"),
+	TC_BC7						UMETA(DisplayName = "BC7 (DX11, optional A)"),
+	TC_HalfFloat				UMETA(DisplayName = "Half Float (R16F)"),
+	TC_LQ				        UMETA(Hidden, DisplayName = "Low Quality (BGR565/BGR555A1)", ToolTip = "BGR565/BGR555A1, fallback to DXT1/DXT5 on Mac platform"),
+	TC_EncodedReflectionCapture		UMETA(Hidden),
+	TC_MAX,
+};
+
+/** List of (advanced) texture source encodings, matching the list in ColorManagementDefines.h. */
+UENUM()
+enum class ETextureSourceEncoding : uint8
+{
+	TSE_None		= 0 UMETA(DisplayName = "Default", ToolTip = "The source encoding is assumed to match the state of the sRGB checkbox parameter."),
+	TSE_Linear		= 1 UMETA(DisplayName = "Linear", ToolTip = "The source encoding is considered linear (before optional sRGB encoding is applied)."),
+	TSE_sRGB		= 2 UMETA(DisplayName = "sRGB", ToolTip = "sRGB source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_ST2084		= 3 UMETA(DisplayName = "ST 2084/PQ", ToolTip = "SMPTE ST 2084/PQ source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_Gamma22		= 4 UMETA(DisplayName = "Gamma 2.2", ToolTip = "Gamma 2.2 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_BT1886		= 5 UMETA(DisplayName = "BT1886/Gamma 2.4", ToolTip = "BT1886/Gamma 2.4 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_Gamma26		= 6 UMETA(DisplayName = "Gamma 2.6", ToolTip = "Gamma 2.6 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_Cineon		= 7 UMETA(DisplayName = "Cineon", ToolTip = "Cineon source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_REDLog		= 8 UMETA(DisplayName = "REDLog", ToolTip = "RED Log source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_REDLog3G10	= 9 UMETA(DisplayName = "REDLog3G10", ToolTip = "RED Log3G10 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_SLog1		= 10 UMETA(DisplayName = "SLog1", ToolTip = "Sony SLog1 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_SLog2		= 11 UMETA(DisplayName = "SLog2", ToolTip = "Sony SLog2 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_SLog3		= 12 UMETA(DisplayName = "SLog3", ToolTip = "Sony SLog3 source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_AlexaV3LogC	= 13 UMETA(DisplayName = "AlexaV3LogC", ToolTip = "ARRI Alexa V3 LogC source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_CanonLog	= 14 UMETA(DisplayName = "CanonLog", ToolTip = "Canon Log source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_ProTune		= 15 UMETA(DisplayName = "ProTune", ToolTip = "GoPro ProTune source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_VLog		= 16 UMETA(DisplayName = "V-Log", ToolTip = "Panasonic V-Log source encoding to be linearized (before optional sRGB encoding is applied)."),
+	TSE_MAX,
+};
+
+//TODO: Rename nearly-colliding ETextureSourceColorSpace enum in TextureFactory.h
+/** List of (source) texture color spaces, matching the list in ColorManagementDefines.h. */
+UENUM()
+enum class ETextureColorSpace : uint8
+{
+	TCS_None				= 0 UMETA(DisplayName = "None", ToolTip = "No explicit color space definition."),
+	TCS_sRGB				= 1 UMETA(DisplayName = "sRGB / Rec709", ToolTip = "sRGB / Rec709 (BT.709) color primaries, with D65 white point."),
+	TCS_Rec2020				= 2 UMETA(DisplayName = "Rec2020", ToolTip = "Rec2020 (BT.2020) primaries with D65 white point."),
+	TCS_ACESAP0				= 3 UMETA(DIsplayName = "ACES AP0", ToolTip = "ACES AP0 wide gamut primaries, with D60 white point."),
+	TCS_ACESAP1				= 4 UMETA(DIsplayName = "ACES AP1 / ACEScg", ToolTip = "ACES AP1 / ACEScg wide gamut primaries, with D60 white point."),
+	TCS_P3DCI				= 5 UMETA(DisplayName = "P3DCI", ToolTip = "P3 (Theater) primaries, with DCI Calibration white point."),
+	TCS_P3D65				= 6 UMETA(DisplayName = "P3D65", ToolTip = "P3 (Display) primaries, with D65 white point."),
+	TCS_REDWideGamut		= 7 UMETA(DisplayName = "RED Wide Gamut", ToolTip = "RED Wide Gamut primaries, with D65 white point."),
+	TCS_SonySGamut3			= 8 UMETA(DisplayName = "Sony S-Gamut3", ToolTip = "Sony S-Gamut/S-Gamut3 primaries, with D65 white point."),
+	TCS_SonySGamut3Cine		= 9 UMETA(DisplayName = "Sony S-Gamut3 Cine", ToolTip = "Sony S-Gamut3 Cine primaries, with D65 white point."),
+	TCS_AlexaWideGamut		= 10 UMETA(DisplayName = "Alexa Wide Gamut", ToolTip = "Alexa Wide Gamut primaries, with D65 white point."),
+	TCS_CanonCinemaGamut	= 11 UMETA(DisplayName = "Canon Cinema Gamut", ToolTip = "Canon Cinema Gamut primaries, with D65 white point."),
+	TCS_GoProProtuneNative	= 12 UMETA(DisplayName = "GoPro Protune Native", ToolTip = "GoPro Protune Native primaries, with D65 white point."),
+	TCS_PanasonicVGamut		= 13 UMETA(DisplayName = "Panasonic V-Gamut", ToolTip = "Panasonic V-Gamut primaries, with D65 white point."),
+	TCS_Custom				= 99 UMETA(DisplayName = "Custom", ToolTip = "User defined color space and white point."),
+	TCS_MAX,
+};
+
+/** List of chromatic adaptation methods, matching the list in ColorManagementDefines.h. */
+UENUM()
+enum class ETextureChromaticAdaptationMethod : uint8
+{
+	TCAM_None		= 0 UMETA(DisplayName = "None", ToolTip = "No chromatic adaptation is applied."),
+	TCAM_Bradford	= 1 UMETA(DisplayName = "Bradford", ToolTip = "Chromatic adaptation is applied using the Bradford method."),
+	TCAM_CAT02		= 2 UMETA(DisplayName = "CAT02", ToolTip = "Chromatic adaptation is applied using the CAT02 method."),
+};
+

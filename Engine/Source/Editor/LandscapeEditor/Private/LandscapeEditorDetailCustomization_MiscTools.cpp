@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeEditorDetailCustomization_MiscTools.h"
+#include "Modules/ModuleManager.h"
 #include "Widgets/Text/STextBlock.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SBox.h"
@@ -256,7 +257,14 @@ FReply FLandscapeEditorDetailCustomization_MiscTools::OnClearComponentSelectionB
 		{
 			FScopedTransaction Transaction(LOCTEXT("Component.Undo_ClearSelected", "Clearing Selection"));
 			LandscapeInfo->Modify();
+
+			TSet<ULandscapeComponent*> PreviouslySelectedComponents = LandscapeInfo->GetSelectedComponents();
 			LandscapeInfo->ClearSelectedRegion(true);
+
+			// Remove the previously selected components from the selected objects in the details view: 
+			FPropertyEditorModule& PropertyModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+			TArray<UObject*> ObjectsToRemove(PreviouslySelectedComponents.Array());
+			PropertyModule.RemoveDeletedObjects(ObjectsToRemove);
 		}
 	}
 

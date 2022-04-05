@@ -9,6 +9,8 @@
 #include "VT/RuntimeVirtualTextureEnum.h"
 #include "RuntimeVirtualTexture.generated.h"
 
+namespace UE { namespace Shader	{ enum class EValueType : uint8; } }
+
 /** Runtime virtual texture UObject */
 UCLASS(ClassGroup = Rendering, BlueprintType)
 class ENGINE_API URuntimeVirtualTexture : public UObject
@@ -37,8 +39,14 @@ protected:
 	ERuntimeVirtualTextureMaterialType MaterialType = ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular;
 
 	/** Enable storing the virtual texture in GPU supported compression formats. Using uncompressed is only recommended for debugging and quality comparisons. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Layout, meta = (DisplayName = "Enable BC texture compression"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Layout, meta = (DisplayName = "Enable texture compression"))
 	bool bCompressTextures = true;
+
+	/**
+	* Use low quality textures (RGB565/RGB555A1) to replace runtime compression
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Performance, meta = (DisplayName = "Use Low Quality Compression", editcondition = "MaterialType == ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness && bCompressTextures == true"))
+	bool bUseLowQualityCompression = false;
 
 	/** Enable clear before rendering a page of the virtual texture. Disabling this can be an optimization if you know that the texture will always be fully covered by rendering.  */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Layout, meta = (DisplayName = "Enable clear before render"))
@@ -74,7 +82,7 @@ protected:
 
 	/** Deprecated texture object containing streamed low mips. */
 	UPROPERTY()
-	class URuntimeVirtualTextureStreamingProxy* StreamingTexture_DEPRECATED = nullptr;
+	TObjectPtr<class URuntimeVirtualTextureStreamingProxy> StreamingTexture_DEPRECATED = nullptr;
 
 public:
 	/** Get the material set that this virtual texture stores. */
@@ -115,6 +123,7 @@ public:
 	/** Public getter for virtual texture removed low mips */
 	int32 GetRemoveLowMips() const { return FMath::Clamp(RemoveLowMips, 0, 5); }
 
+	bool GetLQCompression() const { return bUseLowQualityCompression; }
 	/** Public getter for texture LOD Group */
 	TEnumAsByte<enum TextureGroup> GetLODGroup() const { return LODGroup; }
 
@@ -152,6 +161,8 @@ public:
 
 	/** Getter for the shader uniform parameters. */
 	FVector4 GetUniformParameter(int32 Index) const;
+	/** Getter for the shader uniform parameter type. */
+	static UE::Shader::EValueType GetUniformParameterType(int32 Index);
 
 protected:
 	/** Initialize the render resources. This kicks off render thread work. */
@@ -181,11 +192,15 @@ class UVirtualTexture2D;
 
 namespace RuntimeVirtualTexture
 {
-	/** Helper function to wrap a runtime virtual texture producer with a streaming producer. */
+	/** Helper function to create a streaming virtual texture producer. */
 	ENGINE_API IVirtualTexture* CreateStreamingTextureProducer(
-		IVirtualTexture* InProducer,
-		FVTProducerDescription const& InProducerDesc,
 		UVirtualTexture2D* InStreamingTexture,
-		int32 InMaxLevel,
-		int32& OutTransitionLevel);
+		FVTProducerDescription const& InOwnerProducerDesc,
+		FVTProducerDescription& OutStreamingProducerDesc);
+
+	/** Helper function to bind a runtime virtual texture producer to a streaming producer. Returns the new combined producer. */
+	ENGINE_API IVirtualTexture* BindStreamingTextureProducer(
+		IVirtualTexture* InProducer,
+		IVirtualTexture* InStreamingProducer,
+		int32 InTransitionLevel);
 }

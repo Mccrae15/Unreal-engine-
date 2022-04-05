@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -52,7 +53,7 @@ namespace UnrealBuildTool
 		/// <param name="Location">Filename to read from</param>
 		/// <param name="Manifest">If successful, the manifest that was read</param>
 		/// <returns>True if successful</returns>
-		public static bool TryRead(FileReference Location, out PrecompiledManifest Manifest)
+		public static bool TryRead(FileReference Location, [NotNullWhen(true)] out PrecompiledManifest? Manifest)
 		{
 			if (!FileReference.Exists(Location))
 			{

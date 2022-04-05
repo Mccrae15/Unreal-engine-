@@ -2,15 +2,17 @@
 
 #pragma once
 
-
 #include "CoreMinimal.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "Engine/EngineTypes.h"
 #include "SceneTypes.h"
 #include "RenderResource.h"
 #include "ShaderParameters.h"
 #include "UniformBuffer.h"
+#include "InstanceUniformShaderParameters.h"
 #include "LightmapUniformShaderParameters.h"
 #include "UnifiedBuffer.h"
+#include "Containers/StaticArray.h"
 
 /** 
  * The uniform shader parameters associated with a primitive. 
@@ -18,136 +20,394 @@
  * Note 2: Try to keep this 16 byte aligned. i.e |Matrix4x4|Vector3,float|Vector3,float|Vector4|  _NOT_  |Vector3,(waste padding)|Vector3,(waste padding)|Vector3. Or at least mark out padding if it can't be avoided.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FPrimitiveUniformShaderParameters,ENGINE_API)
-	SHADER_PARAMETER(FMatrix,LocalToWorld)		// always needed
-	SHADER_PARAMETER_EX(FVector4,InvNonUniformScaleAndDeterminantSign,EShaderPrecisionModifier::Half) //often needed
-	SHADER_PARAMETER(FVector4,ObjectWorldPositionAndRadius)	// needed by some materials
-	SHADER_PARAMETER(FMatrix,WorldToLocal)		// rarely needed
-	SHADER_PARAMETER(FMatrix,PreviousLocalToWorld)	// Used to calculate velocity
-	SHADER_PARAMETER(FMatrix,PreviousWorldToLocal)	// rarely used when calculating velocity, if material uses vertex offset along with world->local transform
-	SHADER_PARAMETER(FVector,ActorWorldPosition)
-	SHADER_PARAMETER_EX(float,UseSingleSampleShadowFromStationaryLights,EShaderPrecisionModifier::Half)	
-	SHADER_PARAMETER(FVector,ObjectBounds)		// only needed for editor/development
-	SHADER_PARAMETER(float,LpvBiasMultiplier)
-	SHADER_PARAMETER_EX(float,DecalReceiverMask,EShaderPrecisionModifier::Half)
-	SHADER_PARAMETER_EX(float,PerObjectGBufferData,EShaderPrecisionModifier::Half)		// 0..1, 2 bits, bCastContactShadow, bHeightfieldRepresentation
-	SHADER_PARAMETER_EX(float,UseVolumetricLightmapShadowFromStationaryLights,EShaderPrecisionModifier::Half)		
-	SHADER_PARAMETER_EX(float,DrawsVelocity,EShaderPrecisionModifier::Half)
-	SHADER_PARAMETER_EX(FVector4,ObjectOrientation,EShaderPrecisionModifier::Half)
-	SHADER_PARAMETER_EX(FVector4,NonUniformScale,EShaderPrecisionModifier::Half)
-	SHADER_PARAMETER(FVector, LocalObjectBoundsMin)		// This is used in a custom material function (ObjectLocalBounds.uasset)
-	SHADER_PARAMETER(uint32,LightingChannelMask)
-	SHADER_PARAMETER(FVector, LocalObjectBoundsMax)		// This is used in a custom material function (ObjectLocalBounds.uasset)
-	SHADER_PARAMETER(uint32,LightmapDataIndex)
-	SHADER_PARAMETER(FVector, PreSkinnedLocalBoundsMin)	// Local space min bounds, pre-skinning
-	SHADER_PARAMETER(int32, SingleCaptureIndex)			// Should default to 0 if no reflection captures are provided, as there will be a default black (0,0,0,0) cubemap in that slot
-	SHADER_PARAMETER(FVector, PreSkinnedLocalBoundsMax)	// Local space max bounds, pre-skinning
-    SHADER_PARAMETER(uint32, OutputVelocity)
-	SHADER_PARAMETER_ARRAY(FVector4, CustomPrimitiveData, [FCustomPrimitiveData::NumCustomPrimitiveDataFloat4s]) // Custom data per primitive that can be accessed through material expression parameters and modified through UStaticMeshComponent
-
+	SHADER_PARAMETER(uint32,		Flags)
+	SHADER_PARAMETER(uint32,		InstanceSceneDataOffset)
+	SHADER_PARAMETER(uint32,		NumInstanceSceneDataEntries)
+	SHADER_PARAMETER(int32,			SingleCaptureIndex)										// Should default to 0 if no reflection captures are provided, as there will be a default black (0,0,0,0) cubemap in that slot
+	SHADER_PARAMETER(FVector3f,		TilePosition)
+	SHADER_PARAMETER(uint32,		PrimitiveComponentId)									// TODO: Refactor to use PersistentPrimitiveIndex, ENGINE USE ONLY - will be removed
+	SHADER_PARAMETER(FMatrix44f,	LocalToRelativeWorld)									// Always needed
+	SHADER_PARAMETER(FMatrix44f,	RelativeWorldToLocal)									// Rarely needed
+	SHADER_PARAMETER(FMatrix44f,	PreviousLocalToRelativeWorld)							// Used to calculate velocity
+	SHADER_PARAMETER(FMatrix44f,	PreviousRelativeWorldToLocal)							// Rarely used when calculating velocity, if material uses vertex offset along with world->local transform
+	SHADER_PARAMETER_EX(FVector3f,	InvNonUniformScale,  EShaderPrecisionModifier::Half)	// Often needed
+	SHADER_PARAMETER(float,			ObjectBoundsX)											// Only needed for editor/development
+	SHADER_PARAMETER(FVector4f,		ObjectRelativeWorldPositionAndRadius)					// Needed by some materials
+	SHADER_PARAMETER(FVector3f,		ActorRelativeWorldPosition)
+	SHADER_PARAMETER(uint32,		LightmapUVIndex)										// Only needed if static lighting is enabled
+	SHADER_PARAMETER_EX(FVector3f,	ObjectOrientation,   EShaderPrecisionModifier::Half)
+	SHADER_PARAMETER(uint32,		LightmapDataIndex)										// Only needed if static lighting is enabled
+	SHADER_PARAMETER_EX(FVector4f,	NonUniformScale,     EShaderPrecisionModifier::Half)
+	SHADER_PARAMETER(FVector3f,		PreSkinnedLocalBoundsMin)								// Local space min bounds, pre-skinning
+	SHADER_PARAMETER(uint32,		NaniteResourceID)
+	SHADER_PARAMETER(FVector3f,		PreSkinnedLocalBoundsMax)								// Local space bounds, pre-skinning
+	SHADER_PARAMETER(uint32,		NaniteHierarchyOffset)
+	SHADER_PARAMETER(FVector3f,		LocalObjectBoundsMin)									// This is used in a custom material function (ObjectLocalBounds.uasset)
+	SHADER_PARAMETER(float,			ObjectBoundsY)											// Only needed for editor/development
+	SHADER_PARAMETER(FVector3f,		LocalObjectBoundsMax)									// This is used in a custom material function (ObjectLocalBounds.uasset)
+	SHADER_PARAMETER(float,			ObjectBoundsZ)											// Only needed for editor/development
+	SHADER_PARAMETER(FVector3f,		InstanceLocalBoundsCenter)
+	SHADER_PARAMETER(uint32,		InstancePayloadDataOffset)
+	SHADER_PARAMETER(FVector3f,		InstanceLocalBoundsExtent)
+	SHADER_PARAMETER(uint32,		InstancePayloadDataStride)
+	SHADER_PARAMETER(FVector3f,		WireframeColor)											// Only needed for editor/development
+	SHADER_PARAMETER(uint32,		NaniteImposterIndex)
+	SHADER_PARAMETER(FVector3f,		LevelColor)												// Only needed for editor/development
+	SHADER_PARAMETER(int32,			PersistentPrimitiveIndex)
+	SHADER_PARAMETER_ARRAY(FVector4f, CustomPrimitiveData, [FCustomPrimitiveData::NumCustomPrimitiveDataFloat4s]) // Custom data per primitive that can be accessed through material expression parameters and modified through UStaticMeshComponent
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
-/** Initializes the primitive uniform shader parameters. */
-inline FPrimitiveUniformShaderParameters GetPrimitiveUniformShaderParameters(
-	const FMatrix& LocalToWorld,
-	const FMatrix& PreviousLocalToWorld,
-	FVector ActorPosition,
-	const FBoxSphereBounds& WorldBounds,
-	const FBoxSphereBounds& LocalBounds,
-	const FBoxSphereBounds& PreSkinnedLocalBounds,
-	bool bReceivesDecals,
-	bool bHasDistanceFieldRepresentation,		// Currently unused
-	bool bHasCapsuleRepresentation,
-	bool bUseSingleSampleShadowFromStationaryLights,
-	bool bUseVolumetricLightmap,
-	bool bDrawsVelocity,
-	uint32 LightingChannelMask,
-	float LpvBiasMultiplier,
-	uint32 LightmapDataIndex,
-	int32 SingleCaptureIndex,
-	bool bOutputVelocity,
-	const FCustomPrimitiveData* CustomPrimitiveData,
-	bool bCastContactShadow = true
-)
-{
-	FPrimitiveUniformShaderParameters Result;
-	Result.LocalToWorld = LocalToWorld;
-	Result.WorldToLocal = LocalToWorld.Inverse();
-	Result.PreviousLocalToWorld = PreviousLocalToWorld;
-	Result.PreviousWorldToLocal = PreviousLocalToWorld.Inverse();
-	Result.ObjectWorldPositionAndRadius = FVector4(WorldBounds.Origin, WorldBounds.SphereRadius);
-	Result.ObjectBounds = WorldBounds.BoxExtent;
-	Result.LocalObjectBoundsMin = LocalBounds.GetBoxExtrema(0); // 0 == minimum
-	Result.LocalObjectBoundsMax = LocalBounds.GetBoxExtrema(1); // 1 == maximum
-	Result.PreSkinnedLocalBoundsMin = PreSkinnedLocalBounds.GetBoxExtrema(0); // 0 == minimum
-	Result.PreSkinnedLocalBoundsMax = PreSkinnedLocalBounds.GetBoxExtrema(1); // 1 == maximum
-	Result.ObjectOrientation = LocalToWorld.GetUnitAxis( EAxis::Z );
-	Result.ActorWorldPosition = ActorPosition;
-	Result.LightingChannelMask = LightingChannelMask;
-	Result.LpvBiasMultiplier = LpvBiasMultiplier;
+// Must match SceneData.ush
+#define PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS							0x1
+#define PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL			0x2
+#define PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL			0x4
+#define PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER						0x8
+#define PRIMITIVE_SCENE_DATA_FLAG_DRAWS_VELOCITY						0x10
+#define PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY						0x20
+#define PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN						0x40
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION			0x80
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW				0x100
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA				0x200
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0					0x400
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1					0x800
+#define PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2					0x1000
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS				0x2000
+#define PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER					0x4000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME						0x8000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR						0x10000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES		0x20000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES		0x40000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING				0x80000
+#define PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY			0x100000
+#define PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE				0x200000
+#define PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN							0x400000
+#define PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW					0x800000
 
+struct FPrimitiveUniformShaderParametersBuilder
+{
+public:
+	inline FPrimitiveUniformShaderParametersBuilder& Defaults()
 	{
-		// Extract per axis scales from LocalToWorld transform
-		FVector4 WorldX = FVector4(LocalToWorld.M[0][0],LocalToWorld.M[0][1],LocalToWorld.M[0][2],0);
-		FVector4 WorldY = FVector4(LocalToWorld.M[1][0],LocalToWorld.M[1][1],LocalToWorld.M[1][2],0);
-		FVector4 WorldZ = FVector4(LocalToWorld.M[2][0],LocalToWorld.M[2][1],LocalToWorld.M[2][2],0);
-		float ScaleX = FVector(WorldX).Size();
-		float ScaleY = FVector(WorldY).Size();
-		float ScaleZ = FVector(WorldZ).Size();
-		Result.NonUniformScale = FVector4(ScaleX,ScaleY,ScaleZ,0);
-		Result.InvNonUniformScaleAndDeterminantSign = FVector4(
-			ScaleX > KINDA_SMALL_NUMBER ? 1.0f/ScaleX : 0.0f,
-			ScaleY > KINDA_SMALL_NUMBER ? 1.0f/ScaleY : 0.0f,
-			ScaleZ > KINDA_SMALL_NUMBER ? 1.0f/ScaleZ : 0.0f,
-			FMath::FloatSelect(LocalToWorld.RotDeterminant(),1,-1)
+		ObjectRadius = 0.0f;
+
+		// Flags defaulted on
+		bCastShadow									= true;
+		bCastContactShadow							= true;
+		bVisibleInGame								= true;
+		bVisibleInEditor							= true;
+		bVisibleInReflectionCaptures				= true;
+		bVisibleInRealTimeSkyCaptures				= true;
+		bVisibleInRayTracing						= true;
+
+		// Flags defaulted off
+		bReceivesDecals								= false;
+		bUseSingleSampleShadowFromStationaryLights	= false;
+		bUseVolumetricLightmap						= false;
+		bDrawsVelocity								= false;
+		bOutputVelocity								= false;
+		bHasCapsuleRepresentation					= false;
+		bHasPreSkinnedLocalBounds					= false;
+		bHasPreviousLocalToWorld					= false;
+		bHasInstanceLocalBounds						= false;
+		bCastHiddenShadow							= false;
+		bVisibleInSceneCaptureOnly					= false;
+		bHiddenInSceneCapture						= false;
+		bForceHidden								= false;
+
+		// Default colors
+		Parameters.WireframeColor					= FVector3f(1.0f, 1.0f, 1.0f);
+		Parameters.LevelColor						= FVector3f(1.0f, 1.0f, 1.0f);
+
+		// Invalid indices
+		Parameters.LightmapDataIndex				= INDEX_NONE;
+		Parameters.LightmapUVIndex					= INDEX_NONE;
+		Parameters.SingleCaptureIndex				= INDEX_NONE;
+		Parameters.PersistentPrimitiveIndex			= INDEX_NONE;
+		Parameters.PrimitiveComponentId				= ~uint32(0u);
+
+		// Nanite
+		Parameters.NaniteResourceID					= INDEX_NONE;
+		Parameters.NaniteHierarchyOffset			= INDEX_NONE;
+		Parameters.NaniteImposterIndex				= INDEX_NONE;
+
+		// Instance data
+		Parameters.InstanceSceneDataOffset			= INDEX_NONE;
+		Parameters.NumInstanceSceneDataEntries		= 0;
+		Parameters.InstancePayloadDataOffset		= INDEX_NONE;
+		Parameters.InstancePayloadDataStride		= 0;
+
+		LightingChannels = GetDefaultLightingChannelMask();
+
+		return CustomPrimitiveData(nullptr);
+	}
+
+#define PRIMITIVE_UNIFORM_BUILDER_METHOD(INPUT_TYPE, VARIABLE_NAME) \
+	inline FPrimitiveUniformShaderParametersBuilder& VARIABLE_NAME(INPUT_TYPE In##VARIABLE_NAME) { Parameters.VARIABLE_NAME = In##VARIABLE_NAME; return *this; }
+
+#define PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(INPUT_TYPE, VARIABLE_NAME) \
+	inline FPrimitiveUniformShaderParametersBuilder& VARIABLE_NAME(INPUT_TYPE In##VARIABLE_NAME) { b##VARIABLE_NAME = In##VARIABLE_NAME; return *this; }
+
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			ReceivesDecals);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HasCapsuleRepresentation);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HasInstanceLocalBounds);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CastContactShadow);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CastHiddenShadow);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CastShadow);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			UseSingleSampleShadowFromStationaryLights);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			UseVolumetricLightmap);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			DrawsVelocity);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			OutputVelocity);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInGame);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInEditor);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInReflectionCaptures);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInRealTimeSkyCaptures);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInRayTracing);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInSceneCaptureOnly);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			HiddenInSceneCapture);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			ForceHidden);
+
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			InstanceSceneDataOffset);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NumInstanceSceneDataEntries);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			InstancePayloadDataOffset);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			InstancePayloadDataStride);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(int32,				SingleCaptureIndex);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(int32,				PersistentPrimitiveIndex);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			PrimitiveComponentId);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteResourceID);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteHierarchyOffset);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteImposterIndex);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			LightmapUVIndex);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			LightmapDataIndex);
+
+#undef PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD
+#undef PRIMITIVE_UNIFORM_BUILDER_METHOD
+
+	inline FPrimitiveUniformShaderParametersBuilder& LightingChannelMask(uint32 InLightingChannelMask)
+	{
+		LightingChannels = InLightingChannelMask;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& ObjectBounds(const FVector3f& InObjectBounds)
+	{
+		Parameters.ObjectBoundsX = InObjectBounds.X;
+		Parameters.ObjectBoundsY = InObjectBounds.Y;
+		Parameters.ObjectBoundsZ = InObjectBounds.Z;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& WorldBounds(const FBoxSphereBounds& InWorldBounds)
+	{
+		AbsoluteObjectWorldPosition = InWorldBounds.Origin;
+		ObjectRadius = InWorldBounds.SphereRadius;
+		Parameters.ObjectBoundsX = InWorldBounds.BoxExtent.X;
+		Parameters.ObjectBoundsY = InWorldBounds.BoxExtent.Y;
+		Parameters.ObjectBoundsZ = InWorldBounds.BoxExtent.Z;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& LocalBounds(const FBoxSphereBounds& InLocalBounds)
+	{
+		Parameters.LocalObjectBoundsMin = FVector3f(InLocalBounds.GetBoxExtrema(0)); // 0 == minimum		//LWC_TODO: Precision loss
+		Parameters.LocalObjectBoundsMax = FVector3f(InLocalBounds.GetBoxExtrema(1)); // 1 == maximum		//LWC_TODO: Precision loss
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& PreSkinnedLocalBounds(const FBoxSphereBounds& InPreSkinnedLocalBounds)
+	{
+		bHasPreSkinnedLocalBounds = true;
+		Parameters.PreSkinnedLocalBoundsMin = FVector3f(InPreSkinnedLocalBounds.GetBoxExtrema(0)); // 0 == minimum		//LWC_TODO: Precision loss
+		Parameters.PreSkinnedLocalBoundsMax = FVector3f(InPreSkinnedLocalBounds.GetBoxExtrema(1)); // 1 == maximum		//LWC_TODO: Precision loss
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& ActorWorldPosition(const FVector& InActorWorldPosition)
+	{
+		AbsoluteActorWorldPosition = InActorWorldPosition;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& LocalToWorld(const FMatrix& InLocalToWorld)
+	{
+		AbsoluteLocalToWorld = InLocalToWorld;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& InstanceLocalBounds(const FRenderBounds& InInstanceLocalBounds)
+	{
+		bHasInstanceLocalBounds = true;
+		Parameters.InstanceLocalBoundsCenter = InInstanceLocalBounds.GetCenter();
+		Parameters.InstanceLocalBoundsExtent = InInstanceLocalBounds.GetExtent();
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& PreviousLocalToWorld(const FMatrix& InPreviousLocalToWorld)
+	{
+		bHasPreviousLocalToWorld = true;
+		AbsolutePreviousLocalToWorld = InPreviousLocalToWorld;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& EditorColors(const FLinearColor& InWireframeColor, const FLinearColor& InLevelColor)
+	{
+		Parameters.WireframeColor = FVector3f(InWireframeColor.R, InWireframeColor.G, InWireframeColor.B);
+		Parameters.LevelColor = FVector3f(InLevelColor.R, InLevelColor.G, InLevelColor.B);
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& CustomPrimitiveData(const FCustomPrimitiveData* InCustomPrimitiveData)
+	{
+		// If this primitive has custom primitive data, set it
+		if (InCustomPrimitiveData)
+		{
+			// Copy at most up to the max supported number of floats for safety
+			FMemory::Memcpy(
+				&Parameters.CustomPrimitiveData,
+				InCustomPrimitiveData->Data.GetData(),
+				InCustomPrimitiveData->Data.GetTypeSize() * FMath::Min(InCustomPrimitiveData->Data.Num(),
+				FCustomPrimitiveData::NumCustomPrimitiveDataFloats)
 			);
+
+			bHasCustomData = true;
+		}
+		else
+		{
+			// Clear to 0
+			FMemory::Memzero(Parameters.CustomPrimitiveData);
+			bHasCustomData = false;
+		}
+
+		return *this;
 	}
-	Result.DecalReceiverMask = bReceivesDecals ? 1 : 0;
-	Result.PerObjectGBufferData = (2 * (int32)bHasCapsuleRepresentation + (int32)bCastContactShadow) / 3.0f;
-	Result.UseSingleSampleShadowFromStationaryLights = bUseSingleSampleShadowFromStationaryLights ? 1.0f : 0.0f;
-	Result.UseVolumetricLightmapShadowFromStationaryLights = bUseVolumetricLightmap && bUseSingleSampleShadowFromStationaryLights ? 1.0f : 0.0f;
-	Result.DrawsVelocity = bDrawsVelocity ? 1 : 0;
-	Result.LightmapDataIndex = LightmapDataIndex;
-	// If SingleCaptureIndex is invalid, set it to 0 since there will be a default cubemap at that slot
-	Result.SingleCaptureIndex = FMath::Max(SingleCaptureIndex, 0);
-	Result.OutputVelocity = (bOutputVelocity) ? 1 : 0;
 
-	// Clear to 0
-	FMemory::Memzero(Result.CustomPrimitiveData);
-
-	// If this primitive has custom primitive data, set it
-	if (CustomPrimitiveData)
+	inline const FPrimitiveUniformShaderParameters& Build()
 	{
-		// Copy at most up to the max supported number of dwords for safety
-		FMemory::Memcpy(&Result.CustomPrimitiveData, CustomPrimitiveData->Data.GetData(), CustomPrimitiveData->Data.GetTypeSize() * FMath::Min(CustomPrimitiveData->Data.Num(), FCustomPrimitiveData::NumCustomPrimitiveDataFloats));
-	}
-	return Result;
-}
+		const FLargeWorldRenderPosition AbsoluteWorldPosition(AbsoluteLocalToWorld.GetOrigin());
+		const FVector TilePositionOffset = AbsoluteWorldPosition.GetTileOffset();
 
-/** Initializes the primitive uniform shader parameters. Pre-skinned local bounds default to LocalBounds */
-inline FPrimitiveUniformShaderParameters GetPrimitiveUniformShaderParameters(
-	const FMatrix& LocalToWorld,
-	const FMatrix& PreviousLocalToWorld,
-	FVector ActorPosition,
-	const FBoxSphereBounds& WorldBounds,
-	const FBoxSphereBounds& LocalBounds,
-	bool bReceivesDecals,
-	bool bHasDistanceFieldRepresentation,
-	bool bHasCapsuleRepresentation,
-	bool bUseSingleSampleShadowFromStationaryLights,
-	bool bUseVolumetricLightmap,
-	bool bDrawsVelocity,
-	uint32 LightingChannelMask,
-	float LpvBiasMultiplier,
-	uint32 LightmapDataIndex,
-	int32 SingleCaptureIndex,
-    bool bOutputVelocity,
-	bool bCastContactShadow = true
-)
-{
-	// Pass through call
-	return GetPrimitiveUniformShaderParameters(LocalToWorld, PreviousLocalToWorld, ActorPosition, WorldBounds, LocalBounds, LocalBounds, bReceivesDecals, bHasDistanceFieldRepresentation, bHasCapsuleRepresentation, 
-		bUseSingleSampleShadowFromStationaryLights, bUseVolumetricLightmap, bDrawsVelocity, LightingChannelMask, LpvBiasMultiplier, LightmapDataIndex, SingleCaptureIndex, bOutputVelocity, nullptr, bCastContactShadow);
-}
+		Parameters.TilePosition = AbsoluteWorldPosition.GetTile();
+
+		{
+			// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
+			FMatrix LocalToRelativeWorld = FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(TilePositionOffset, AbsoluteLocalToWorld);
+			Parameters.LocalToRelativeWorld = FMatrix44f(LocalToRelativeWorld);
+			Parameters.RelativeWorldToLocal = FMatrix44f(LocalToRelativeWorld.Inverse());
+		}
+
+		Parameters.ActorRelativeWorldPosition = FVector3f(AbsoluteActorWorldPosition - TilePositionOffset);	//LWC_TODO: Precision loss
+		const FVector3f ObjectRelativeWorldPositionAsFloat = FVector3f(AbsoluteObjectWorldPosition - TilePositionOffset);
+		Parameters.ObjectRelativeWorldPositionAndRadius = FVector4f(ObjectRelativeWorldPositionAsFloat, ObjectRadius);
+
+		if (bHasPreviousLocalToWorld)
+		{
+			// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
+			FMatrix PrevLocalToRelativeWorld = FLargeWorldRenderScalar::MakeClampedToRelativeWorldMatrixDouble(TilePositionOffset, AbsolutePreviousLocalToWorld);
+			Parameters.PreviousLocalToRelativeWorld = FMatrix44f(PrevLocalToRelativeWorld);
+			Parameters.PreviousRelativeWorldToLocal = FMatrix44f(PrevLocalToRelativeWorld.Inverse());
+		}
+		else
+		{
+			Parameters.PreviousLocalToRelativeWorld = Parameters.LocalToRelativeWorld;
+			Parameters.PreviousRelativeWorldToLocal = Parameters.RelativeWorldToLocal;
+		}
+
+		if (!bHasInstanceLocalBounds)
+		{
+			FRenderBounds InstanceLocalBounds(Parameters.LocalObjectBoundsMin, Parameters.LocalObjectBoundsMax);
+			Parameters.InstanceLocalBoundsCenter = InstanceLocalBounds.GetCenter();
+			Parameters.InstanceLocalBoundsExtent = InstanceLocalBounds.GetExtent();
+		}
+
+
+		if (!bHasPreSkinnedLocalBounds)
+		{
+			Parameters.PreSkinnedLocalBoundsMin = Parameters.LocalObjectBoundsMin;
+			Parameters.PreSkinnedLocalBoundsMax = Parameters.LocalObjectBoundsMax;
+		}
+
+		Parameters.ObjectOrientation = Parameters.LocalToRelativeWorld.GetUnitAxis(EAxis::Z);
+
+		{
+			// Extract per axis scales from LocalToWorld transform
+			FVector4f WorldX = FVector4f(Parameters.LocalToRelativeWorld.M[0][0], Parameters.LocalToRelativeWorld.M[0][1], Parameters.LocalToRelativeWorld.M[0][2], 0);
+			FVector4f WorldY = FVector4f(Parameters.LocalToRelativeWorld.M[1][0], Parameters.LocalToRelativeWorld.M[1][1], Parameters.LocalToRelativeWorld.M[1][2], 0);
+			FVector4f WorldZ = FVector4f(Parameters.LocalToRelativeWorld.M[2][0], Parameters.LocalToRelativeWorld.M[2][1], Parameters.LocalToRelativeWorld.M[2][2], 0);
+			float ScaleX = FVector3f(WorldX).Size();
+			float ScaleY = FVector3f(WorldY).Size();
+			float ScaleZ = FVector3f(WorldZ).Size();
+			Parameters.NonUniformScale = FVector4f(ScaleX, ScaleY, ScaleZ, FMath::Max3(FMath::Abs(ScaleX), FMath::Abs(ScaleY), FMath::Abs(ScaleZ)));
+			Parameters.InvNonUniformScale = FVector3f(
+				ScaleX > KINDA_SMALL_NUMBER ? 1.0f / ScaleX : 0.0f,
+				ScaleY > KINDA_SMALL_NUMBER ? 1.0f / ScaleY : 0.0f,
+				ScaleZ > KINDA_SMALL_NUMBER ? 1.0f / ScaleZ : 0.0f);
+		}
+
+		// If SingleCaptureIndex is invalid, set it to 0 since there will be a default cubemap at that slot
+		Parameters.SingleCaptureIndex = FMath::Max(Parameters.SingleCaptureIndex, 0);
+
+		Parameters.Flags = 0;
+		Parameters.Flags |= bReceivesDecals ? PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER : 0u;
+		Parameters.Flags |= bHasCapsuleRepresentation ? PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION : 0u;
+		Parameters.Flags |= bUseSingleSampleShadowFromStationaryLights ? PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL : 0u;
+		Parameters.Flags |= (bUseVolumetricLightmap && bUseSingleSampleShadowFromStationaryLights) ? PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL : 0u;
+		Parameters.Flags |= bDrawsVelocity ? PRIMITIVE_SCENE_DATA_FLAG_DRAWS_VELOCITY : 0u;
+		Parameters.Flags |= bOutputVelocity ? PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY : 0u;
+		Parameters.Flags |= (Parameters.LocalToRelativeWorld.RotDeterminant() < 0.0f) ? PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN : 0u;
+		Parameters.Flags |= bHasCustomData ? PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA : 0u;
+		Parameters.Flags |= ((LightingChannels & 0x1) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0 : 0u;
+		Parameters.Flags |= ((LightingChannels & 0x2) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1 : 0u;
+		Parameters.Flags |= ((LightingChannels & 0x4) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2 : 0u;
+		Parameters.Flags |= (Parameters.NaniteImposterIndex != INDEX_NONE) ? PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER : 0u;
+		Parameters.Flags |= bHasInstanceLocalBounds ? PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS : 0u;
+		Parameters.Flags |= bCastShadow ? PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS : 0u;
+		Parameters.Flags |= bCastContactShadow ? PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW : 0u;
+		Parameters.Flags |= bCastHiddenShadow ? PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW : 0u;
+		Parameters.Flags |= bVisibleInGame ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_GAME : 0u;
+	#if WITH_EDITOR
+		Parameters.Flags |= bVisibleInEditor ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_EDITOR : 0u;
+	#endif
+		Parameters.Flags |= bVisibleInReflectionCaptures ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REFLECTION_CAPTURES : 0u;
+		Parameters.Flags |= bVisibleInRealTimeSkyCaptures ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_REAL_TIME_SKY_CAPTURES : 0u;
+		Parameters.Flags |= bVisibleInRayTracing ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_RAY_TRACING : 0u;
+		Parameters.Flags |= bVisibleInSceneCaptureOnly ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY : 0u;
+		Parameters.Flags |= bHiddenInSceneCapture ? PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE : 0u;
+		Parameters.Flags |= bForceHidden ? PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN : 0u;
+		return Parameters;
+	}
+
+private:
+	FPrimitiveUniformShaderParameters Parameters;
+	
+	FMatrix AbsoluteLocalToWorld;
+	FMatrix AbsolutePreviousLocalToWorld;
+	FVector AbsoluteObjectWorldPosition;
+	FVector AbsoluteActorWorldPosition;
+
+	float ObjectRadius;
+
+	uint32 LightingChannels : 3;
+	uint32 bReceivesDecals : 1;
+	uint32 bUseSingleSampleShadowFromStationaryLights : 1;
+	uint32 bUseVolumetricLightmap : 1;
+	uint32 bDrawsVelocity : 1;
+	uint32 bOutputVelocity : 1;
+	uint32 bCastShadow : 1;
+	uint32 bCastContactShadow : 1;
+	uint32 bCastHiddenShadow : 1;
+	uint32 bHasCapsuleRepresentation : 1;
+	uint32 bHasPreSkinnedLocalBounds : 1;
+	uint32 bHasInstanceLocalBounds : 1;
+	uint32 bHasCustomData : 1;
+	uint32 bHasPreviousLocalToWorld : 1;
+	uint32 bVisibleInGame : 1;
+	uint32 bVisibleInEditor : 1;
+	uint32 bVisibleInReflectionCaptures : 1;
+	uint32 bVisibleInRealTimeSkyCaptures : 1;
+	uint32 bVisibleInRayTracing : 1;
+	uint32 bVisibleInSceneCaptureOnly : 1;
+	uint32 bHiddenInSceneCapture : 1;
+	uint32 bForceHidden : 1;
+};
 
 inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUniformBufferImmediate(
 	const FMatrix& LocalToWorld,
@@ -155,40 +415,36 @@ inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUnifo
 	const FBoxSphereBounds& LocalBounds,
 	const FBoxSphereBounds& PreSkinnedLocalBounds,
 	bool bReceivesDecals,
-	bool bDrawsVelocity,
-	float LpvBiasMultiplier = 1.0f
-	)
+	bool bDrawsVelocity
+)
 {
 	check(IsInRenderingThread());
 	return TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(
-		GetPrimitiveUniformShaderParameters(LocalToWorld, LocalToWorld, WorldBounds.Origin, WorldBounds, LocalBounds, PreSkinnedLocalBounds, bReceivesDecals, false, false, false, false, bDrawsVelocity, GetDefaultLightingChannelMask(), LpvBiasMultiplier, INDEX_NONE, INDEX_NONE, false, nullptr),
+		FPrimitiveUniformShaderParametersBuilder{}
+		.Defaults()
+			.LocalToWorld(LocalToWorld)
+			.ActorWorldPosition(WorldBounds.Origin)
+			.WorldBounds(WorldBounds)
+			.LocalBounds(LocalBounds)
+			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
+			.ReceivesDecals(bReceivesDecals)
+			.DrawsVelocity(bDrawsVelocity)
+		.Build(),
 		UniformBuffer_MultiFrame
-		);
+	);
 }
 
 inline FPrimitiveUniformShaderParameters GetIdentityPrimitiveParameters()
 {
-	//don't use FMatrix::Identity here as GetIdentityPrimitiveParameters is used by TGlobalResource<FIdentityPrimitiveUniformBuffer> and because static initialization order is undefined
-	//FMatrix::Identiy might be all 0's or random data the first time this is called.
-	return GetPrimitiveUniformShaderParameters(
-		FMatrix(FPlane(1, 0, 0, 0), FPlane(0, 1, 0, 0), FPlane(0, 0, 1, 0), FPlane(0, 0, 0, 1)),
-		FMatrix(FPlane(1, 0, 0, 0), FPlane(0, 1, 0, 0), FPlane(0, 0, 1, 0), FPlane(0, 0, 0, 1)),
-		FVector(0.0f, 0.0f, 0.0f),
-		FBoxSphereBounds(EForceInit::ForceInit),
-		FBoxSphereBounds(EForceInit::ForceInit),
-		true,
-		false,
-		false,
-		false,
-		false,
-		/* bDrawsVelocity = */ true,
-		GetDefaultLightingChannelMask(),
-		1.0f,		// LPV bias
-		INDEX_NONE,
-		INDEX_NONE,
-		false,
-		/* bCastContactShadow = */ true
-	);
+	// Don't use FMatrix44f::Identity here as GetIdentityPrimitiveParameters is used by TGlobalResource<FIdentityPrimitiveUniformBuffer> and because
+	// static initialization order is undefined, FMatrix44f::Identity might be all 0's or random data the first time this is called.
+	return FPrimitiveUniformShaderParametersBuilder{}
+		.Defaults()
+			.LocalToWorld(FMatrix(FPlane(1, 0, 0, 0), FPlane(0, 1, 0, 0), FPlane(0, 0, 1, 0), FPlane(0, 0, 0, 1)))
+			.ActorWorldPosition(FVector(0.0, 0.0, 0.0))
+			.WorldBounds(FBoxSphereBounds(EForceInit::ForceInit))
+			.LocalBounds(FBoxSphereBounds(EForceInit::ForceInit))
+		.Build();
 }
 
 /**
@@ -210,18 +466,20 @@ extern ENGINE_API TGlobalResource<FIdentityPrimitiveUniformBuffer> GIdentityPrim
 
 struct FPrimitiveSceneShaderData
 {
-	// Must match usf
-	enum { PrimitiveDataStrideInFloat4s = 36 };
+	// Must match PRIMITIVE_SCENE_DATA_STRIDE in SceneData.ush
+	enum { DataStrideInFloat4s = 40 };
 
-	FVector4 Data[PrimitiveDataStrideInFloat4s];
+	TStaticArray<FVector4f, DataStrideInFloat4s> Data;
 
 	FPrimitiveSceneShaderData()
+		: Data(InPlace, NoInit)
 	{
-		static_assert(FPrimitiveSceneShaderData::PrimitiveDataStrideInFloat4s == FScatterUploadBuffer::PrimitiveDataStrideInFloat4s,"");
+		static_assert(FPrimitiveSceneShaderData::DataStrideInFloat4s == FScatterUploadBuffer::PrimitiveDataStrideInFloat4s,"");
 		Setup(GetIdentityPrimitiveParameters());
 	}
 
 	explicit FPrimitiveSceneShaderData(const FPrimitiveUniformShaderParameters& PrimitiveUniformShaderParameters)
+		: Data(InPlace, NoInit)
 	{
 		Setup(PrimitiveUniformShaderParameters);
 	}
@@ -229,7 +487,6 @@ struct FPrimitiveSceneShaderData
 	ENGINE_API FPrimitiveSceneShaderData(const class FPrimitiveSceneProxy* RESTRICT Proxy);
 
 	ENGINE_API void Setup(const FPrimitiveUniformShaderParameters& PrimitiveUniformShaderParameters);
-	ENGINE_API static uint16 GetPrimitivesPerTextureLine();
 };
 
 class FSinglePrimitiveStructured : public FRenderResource
@@ -248,10 +505,21 @@ public:
 		PrimitiveSceneDataBufferSRV.SafeRelease();
 		SkyIrradianceEnvironmentMapRHI.SafeRelease();
 		SkyIrradianceEnvironmentMapSRV.SafeRelease();
+		InstanceSceneDataBufferRHI.SafeRelease();
+		InstanceSceneDataBufferSRV.SafeRelease();
+		InstancePayloadDataBufferRHI.SafeRelease();
+		InstancePayloadDataBufferSRV.SafeRelease();
 		PrimitiveSceneDataTextureRHI.SafeRelease();
 		PrimitiveSceneDataTextureSRV.SafeRelease();
 		LightmapSceneDataBufferRHI.SafeRelease();
 		LightmapSceneDataBufferSRV.SafeRelease();
+//#if WITH_EDITOR
+		EditorVisualizeLevelInstanceDataBufferRHI.SafeRelease();
+		EditorVisualizeLevelInstanceDataBufferSRV.SafeRelease();
+
+		EditorSelectedDataBufferRHI.SafeRelease();
+		EditorSelectedDataBufferSRV.SafeRelease();
+//#endif
 	}
 
 	ENGINE_API void UploadToGPU();
@@ -259,19 +527,34 @@ public:
 	EShaderPlatform ShaderPlatform=SP_NumPlatforms;
 
 	FPrimitiveSceneShaderData PrimitiveSceneData;
+	FInstanceSceneShaderData InstanceSceneData;
 	FLightmapSceneShaderData LightmapSceneData;
 
-	FStructuredBufferRHIRef PrimitiveSceneDataBufferRHI;
+	FBufferRHIRef PrimitiveSceneDataBufferRHI;
 	FShaderResourceViewRHIRef PrimitiveSceneDataBufferSRV;
 
-	FStructuredBufferRHIRef SkyIrradianceEnvironmentMapRHI;
+	FBufferRHIRef SkyIrradianceEnvironmentMapRHI;
 	FShaderResourceViewRHIRef SkyIrradianceEnvironmentMapSRV;
+
+	FBufferRHIRef InstanceSceneDataBufferRHI;
+	FShaderResourceViewRHIRef InstanceSceneDataBufferSRV;
+
+	FBufferRHIRef InstancePayloadDataBufferRHI;
+	FShaderResourceViewRHIRef InstancePayloadDataBufferSRV;
 
 	FTexture2DRHIRef PrimitiveSceneDataTextureRHI;
 	FShaderResourceViewRHIRef PrimitiveSceneDataTextureSRV;
 
-	FStructuredBufferRHIRef LightmapSceneDataBufferRHI;
+	FBufferRHIRef LightmapSceneDataBufferRHI;
 	FShaderResourceViewRHIRef LightmapSceneDataBufferSRV;
+
+//#if WITH_EDITOR
+	FBufferRHIRef EditorVisualizeLevelInstanceDataBufferRHI;
+	FShaderResourceViewRHIRef EditorVisualizeLevelInstanceDataBufferSRV;
+
+	FBufferRHIRef EditorSelectedDataBufferRHI;
+	FShaderResourceViewRHIRef EditorSelectedDataBufferSRV;
+//#endif
 };
 
 /**

@@ -60,7 +60,7 @@ void GetOuterAndTargetScripts(TSharedRef<FNiagaraSystemViewModel> SystemViewMode
 	if (SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
 	{
 		OutOuter = &SystemViewModel->GetSystem();
-		OutTargetScripts = &SystemViewModel->GetSystem().ScratchPadScripts;
+		OutTargetScripts = &ToRawPtrTArrayUnsafe(SystemViewModel->GetSystem().ScratchPadScripts);
 	}
 	else
 	{
@@ -68,7 +68,7 @@ void GetOuterAndTargetScripts(TSharedRef<FNiagaraSystemViewModel> SystemViewMode
 		{
 			UNiagaraEmitter* TargetEmitter = SystemViewModel->GetSystem().GetEmitterHandles()[0].GetInstance();
 			OutOuter = TargetEmitter;
-			OutTargetScripts = &TargetEmitter->ScratchPadScripts;
+			OutTargetScripts = &ToRawPtrTArrayUnsafe(TargetEmitter->ScratchPadScripts);
 		}
 		else
 		{
@@ -165,6 +165,21 @@ void UNiagaraScratchPadViewModel::RefreshScriptViewModels()
 	{
 		OnScriptViewModelsChangedDelegate.Broadcast();
 	}
+}
+
+void UNiagaraScratchPadViewModel::ApplyScratchPadChanges()
+{
+	bIsBulkApplying = true;
+	for(const TSharedRef<FNiagaraScratchPadScriptViewModel>& ScriptViewModel : ScriptViewModels)
+	{
+		if(ScriptViewModel->HasUnappliedChanges())
+		{
+			ScriptViewModel->ApplyChanges();
+		}
+	}
+
+	GetSystemViewModel()->RefreshAll();
+	bIsBulkApplying = false;
 }
 
 const TArray<TSharedRef<FNiagaraScratchPadScriptViewModel>>& UNiagaraScratchPadViewModel::GetScriptViewModels() const
@@ -440,7 +455,7 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 	TArray<UNiagaraScript*>* TargetScripts;
 	GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
-	UNiagaraScript* NewScript = NewScript = CastChecked<UNiagaraScript>(StaticDuplicateObject(ScriptToDuplicate, ScriptOuter, GetUniqueScriptName(ScriptOuter, *ScriptToDuplicate->GetFName().ToString())));
+	UNiagaraScript* NewScript = CastChecked<UNiagaraScript>(StaticDuplicateObject(ScriptToDuplicate, ScriptOuter, GetUniqueScriptName(ScriptOuter, *ScriptToDuplicate->GetFName().ToString())));
 	NewScript->ClearFlags(RF_Public | RF_Standalone);
 	ScriptOuter->Modify();
 	TargetScripts->Add(NewScript);
@@ -713,6 +728,12 @@ void UNiagaraScratchPadViewModel::ScriptViewModelHasUnappliedChangesChanged()
 void UNiagaraScratchPadViewModel::ScriptViewModelChangesApplied()
 {
 	UpdateChangeId(GetSystemViewModel());
+
+	// if we are bulk applying, we don't want to force refreshes more often than necessary. The bulk apply will refresh explicitly after all scripts have been applied.
+	if(!bIsBulkApplying)
+	{
+		SystemViewModelWeak.Pin()->RefreshAll();
+	}
 }
 
 void UNiagaraScratchPadViewModel::ScriptViewModelRequestDiscardChanges(TWeakPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModelWeak)

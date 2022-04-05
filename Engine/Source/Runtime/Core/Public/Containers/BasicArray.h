@@ -85,6 +85,11 @@ public:
 		}
 	}
 
+	bool IsEmpty() const
+	{
+		return Num() == 0;
+	}
+
 	int32 Num() const
 	{
 		FData* LocalData = Data;
@@ -113,7 +118,7 @@ public:
 	}
 
 private:
-	static const int32 InitialReservationSize = 16;
+	static constexpr int32 InitialReservationSize = 16;
 
 	static FORCEINLINE int32 ApplyGrowthFactor(int32 CurrentNum)
 	{

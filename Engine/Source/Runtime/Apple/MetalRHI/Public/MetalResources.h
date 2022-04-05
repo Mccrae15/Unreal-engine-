@@ -22,15 +22,6 @@ class FMetalContext;
 
 extern NSString* DecodeMetalSourceCode(uint32 CodeSize, TArray<uint8> const& CompressedSource);
 
-enum EMetalIndexType
-{
-	EMetalIndexType_None   = 0,
-	EMetalIndexType_UInt16 = 1,
-	EMetalIndexType_UInt32 = 2,
-	EMetalIndexType_Num	   = 3
-};
-
-
 struct FMetalRenderPipelineHash
 {
 	friend uint32 GetTypeHash(FMetalRenderPipelineHash const& Hash)
@@ -388,11 +379,13 @@ public:
 -(instancetype)initWithBytes:(void const*)Data length:(uint32)Size;
 @end
 
-enum EMetalBufferUsage
+enum class EMetalBufferUsage
 {
-	EMetalBufferUsage_GPUOnly = 0x80000000,
-	EMetalBufferUsage_LinearTex = 0x40000000,
+	None = 0,
+	GPUOnly = 1 << 0,
+	LinearTex = 1 << 1,
 };
+ENUM_CLASS_FLAGS(EMetalBufferUsage);
 
 class FMetalLinearTextureDescriptor
 {
@@ -461,13 +454,13 @@ public:
 		LinearTextureMap Views;
 	};
 	
-	FMetalRHIBuffer(uint32 InSize, uint32 InUsage, ERHIResourceType InType);
+	FMetalRHIBuffer(uint32 InSize, EBufferUsageFlags InUsage, EMetalBufferUsage InMetalUsage, ERHIResourceType InType);
 	virtual ~FMetalRHIBuffer();
 	
 	/**
 	 * Initialize the buffer contents from the render-thread.
 	 */
-	void Init_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 InUsage, FRHIResourceCreateInfo& CreateInfo, FRHIResource* Resource);
+	void Init_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags InUsage, FRHIResourceCreateInfo& CreateInfo, FRHIResource* Resource);
 	
 	/**
 	 * Get a linear texture for given format.
@@ -511,6 +504,11 @@ public:
 		return nil;
 	}
 	
+	EMetalBufferUsage GetMetalUsage() const
+	{
+		return MetalUsage;
+	}
+	
 	void AdvanceBackingIndex()
 	{
 		CurrentIndex = (CurrentIndex + 1) % NumberOfBuffers;
@@ -549,7 +547,10 @@ public:
 	uint32 Size;
 	
 	// Buffer usage.
-	uint32 Usage;
+	EBufferUsageFlags Usage;
+	
+	// Metal buffer usage.
+	EMetalBufferUsage MetalUsage;
 	
 	// Storage mode
 	mtlpp::StorageMode Mode;
@@ -582,43 +583,21 @@ private:
 	void AllocLinearTextures(const LinearTextureMapKey& InLinearTextureMapKey);
 };
 
-/** Index buffer resource class that stores stride information. */
-class FMetalIndexBuffer : public FRHIIndexBuffer, public FMetalRHIBuffer
+class FMetalResourceMultiBuffer : public FRHIBuffer, public FMetalRHIBuffer
 {
 public:
-	
-	/** Constructor */
-	FMetalIndexBuffer(uint32 InStride, uint32 InSize, uint32 InUsage);
-	virtual ~FMetalIndexBuffer();
-	
-	void Swap(FMetalIndexBuffer& Other);
-	
-	// 16- or 32-bit
+	FMetalResourceMultiBuffer(uint32 InSize, EBufferUsageFlags InUsage, EMetalBufferUsage InMetalUsage, uint32 InStride, FResourceArrayInterface* ResourceArray, ERHIResourceType ResourceType);
+	virtual ~FMetalResourceMultiBuffer();
+
+	void Swap(FMetalResourceMultiBuffer& Other);
+
+	// 16- or 32-bit; used for index buffers only.
 	mtlpp::IndexType IndexType;
 };
 
-/** Vertex buffer resource class that stores usage type. */
-class FMetalVertexBuffer : public FRHIVertexBuffer, public FMetalRHIBuffer
-{
-public:
-
-	/** Constructor */
-	FMetalVertexBuffer(uint32 InSize, uint32 InUsage);
-	virtual ~FMetalVertexBuffer();
-
-	void Swap(FMetalVertexBuffer& Other);
-};
-
-class FMetalStructuredBuffer : public FRHIStructuredBuffer, public FMetalRHIBuffer
-{
-public:
-	// Constructor
-	FMetalStructuredBuffer(uint32 Stride, uint32 Size, FResourceArrayInterface* ResourceArray, uint32 InUsage);
-
-	// Destructor
-	~FMetalStructuredBuffer();
-};
-
+typedef FMetalResourceMultiBuffer FMetalIndexBuffer;
+typedef FMetalResourceMultiBuffer FMetalVertexBuffer;
+typedef FMetalResourceMultiBuffer FMetalStructuredBuffer;
 
 class FMetalShaderResourceView : public FRHIShaderResourceView
 {
@@ -693,8 +672,6 @@ class FMetalGraphicsPipelineState;
 class FMetalComputePipelineState;
 class FMetalVertexDeclaration;
 class FMetalVertexShader;
-class FMetalHullShader;
-class FMetalDomainShader;
 class FMetalGeometryShader;
 class FMetalPixelShader;
 class FMetalComputeShader;
@@ -725,16 +702,6 @@ template<>
 struct TMetalResourceTraits<FRHIGeometryShader>
 {
 	typedef FMetalGeometryShader TConcreteType;
-};
-template<>
-struct TMetalResourceTraits<FRHIHullShader>
-{
-	typedef FMetalHullShader TConcreteType;
-};
-template<>
-struct TMetalResourceTraits<FRHIDomainShader>
-{
-	typedef FMetalDomainShader TConcreteType;
 };
 template<>
 struct TMetalResourceTraits<FRHIPixelShader>
@@ -777,19 +744,9 @@ struct TMetalResourceTraits<FRHIUniformBuffer>
 	typedef FMetalSuballocatedUniformBuffer TConcreteType;
 };
 template<>
-struct TMetalResourceTraits<FRHIIndexBuffer>
+struct TMetalResourceTraits<FRHIBuffer>
 {
-	typedef FMetalIndexBuffer TConcreteType;
-};
-template<>
-struct TMetalResourceTraits<FRHIStructuredBuffer>
-{
-	typedef FMetalStructuredBuffer TConcreteType;
-};
-template<>
-struct TMetalResourceTraits<FRHIVertexBuffer>
-{
-	typedef FMetalVertexBuffer TConcreteType;
+	typedef FMetalResourceMultiBuffer TConcreteType;
 };
 template<>
 struct TMetalResourceTraits<FRHIShaderResourceView>

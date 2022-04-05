@@ -22,6 +22,7 @@
 #include "HAL/ThreadManager.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "Misc/StringBuilder.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/CoreDelegates.h"
 #include "Internationalization/Internationalization.h"
@@ -803,6 +804,15 @@ void FMacPlatformMisc::NormalizePath(FString& InPath)
 	if (InPath.StartsWith(TEXT("~"), ESearchCase::CaseSensitive))	// case sensitive is quicker, and our substring doesn't care
 	{
 		InPath = InPath.Replace(TEXT("~"), FPlatformProcess::UserHomeDir(), ESearchCase::CaseSensitive);
+	}
+}
+
+void FMacPlatformMisc::NormalizePath(FStringBuilderBase& InPath)
+{
+	// only expand if path starts with ~, e.g. ~/ should be expanded, /~ should not
+	if (FStringView(InPath).StartsWith('~'))
+	{
+		InPath.ReplaceAt(0, 1, FPlatformProcess::UserHomeDir());
 	}
 }
 
@@ -1922,11 +1932,9 @@ static void DefaultCrashHandler(FMacCrashContext const& Context)
 	return Context.GenerateCrashInfoAndLaunchReporter();
 }
 
-/** Number of stack entries to ignore in backtrace */
-static uint32 GMacStackIgnoreDepth = 6;
-
 /** Message for the assert triggered on this thread */
 thread_local const TCHAR* GCrashErrorMessage = nullptr;
+thread_local void* GCrashErrorProgramCounter = nullptr;
 thread_local ECrashContextType GCrashErrorType = ECrashContextType::Crash;
 thread_local uint8* GCrashContextMemory[sizeof(FMacCrashContext)];
 
@@ -1938,21 +1946,24 @@ static void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 
 	ECrashContextType Type;
 	const TCHAR* ErrorMessage;
+	void* ErrorProgramCounter;
 
 	if (GCrashErrorMessage == nullptr)
 	{
 		Type = ECrashContextType::Crash;
 		ErrorMessage = TEXT("Caught signal");
+		ErrorProgramCounter = Info->si_addr;
 	}
 	else
 	{
 		Type = GCrashErrorType;
 		ErrorMessage = GCrashErrorMessage;
+		ErrorProgramCounter = GCrashErrorProgramCounter;
 	}
 
 	FMacCrashContext* CrashContext = new (GCrashContextMemory) FMacCrashContext(Type, ErrorMessage);
-	CrashContext->IgnoreDepth = GMacStackIgnoreDepth;
 	CrashContext->InitFromSignal(Signal, Info, Context);
+	CrashContext->ErrorFrame = ErrorProgramCounter;
 
 	// Switch to crash handler malloc to avoid malloc reentrancy
 	check(GCrashMalloc);
@@ -2082,7 +2093,7 @@ void FMacPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCrash
 		NSError* Error = nil;
 		if ([FMacApplicationInfo::CrashReporter enableCrashReporterAndReturnError: &Error])
 		{
-			GMacStackIgnoreDepth = 0;
+			/* GMacStackIgnoreDepth = 0; */
 		}
 		else
 		{
@@ -2183,7 +2194,7 @@ void FMacCrashContext::GenerateInfoInFolder(char const* const InfoFolder) const
 		// copy log
 		FCStringAnsi::Strncpy(FilePath, CrashInfoFolder, PATH_MAX);
 		FCStringAnsi::Strcat(FilePath, PATH_MAX, "/");
-		FCStringAnsi::Strcat(FilePath, PATH_MAX, (!GMacAppInfo.AppName.IsEmpty() ? GMacAppInfo.AppNameUTF8 : "UE4"));
+		FCStringAnsi::Strcat(FilePath, PATH_MAX, (!GMacAppInfo.AppName.IsEmpty() ? GMacAppInfo.AppNameUTF8 : "Unreal"));
 		FCStringAnsi::Strcat(FilePath, PATH_MAX, ".log");
 		int LogSrc = open(GMacAppInfo.AppLogPath, O_RDONLY);
 		int LogDst = open(FilePath, O_CREAT|O_WRONLY, 0766);
@@ -2309,6 +2320,8 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		GConfig->GetBool(TEXT("/Script/UnrealEd.AnalyticsPrivacySettings"), TEXT("bSendUsageData"), bSendUsageData, GEditorSettingsIni);
 	}
 
+	// NOTE: A blueprint-only game packaged from a vanilla engine downloaded from Epic Game Store isn't considered a 'Licensee' version because the engine was built by Epic.
+	//       There is no way at the moment do distinguish this case properly.
 	if (BuildSettings::IsLicenseeVersion() && !UE_EDITOR)
 	{
 		// do not send unattended reports in licensees' builds except for the editor, where it is governed by the above setting
@@ -2327,7 +2340,10 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		// create a crash-specific directory
 		FString CrashInfoFolder = FString::Printf(TEXT("%s/CrashReport-UE4-%s-pid-%d-%s"), UTF8_TO_TCHAR(GMacAppInfo.CrashReportPath), UTF8_TO_TCHAR(GMacAppInfo.AppNameUTF8), (int32)getpid(), *GMacAppInfo.RunUUID.ToString());
 
-		GenerateInfoInFolder(TCHAR_TO_UTF8(*CrashInfoFolder));
+		// Do not inline this! The lifetime of this object needs to extend over the usage of Argv in posix_spawn() call below.
+		auto CrashInfoFolderUTF8 = TStringConversion<FTCHARToUTF8_Convert>(*CrashInfoFolder);
+
+		GenerateInfoInFolder(CrashInfoFolderUTF8.Get());
 
 		CrashInfoFolder += TEXT("/");
 
@@ -2337,14 +2353,14 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		int32		Argc		= 0;
 
 		Argv[Argc++] = "CrashReportClient";
-		Argv[Argc++] = TCHAR_TO_UTF8(*CrashInfoFolder);
+		Argv[Argc++] = CrashInfoFolderUTF8.Get();
 
 		if (bImplicitSend)
 		{
 			Argv[Argc++] = "-Unattended";
 			Argv[Argc++] = "-ImplicitSend";
 		}
-		else if (GMacAppInfo.bIsUnattended)
+		else if(GMacAppInfo.bIsUnattended)
 		{
 			Argv[Argc++] ="-Unattended";
 		}
@@ -2422,6 +2438,8 @@ void FMacCrashContext::GenerateEnsureInfoAndLaunchReporter() const
 		GConfig->GetBool(TEXT("/Script/UnrealEd.AnalyticsPrivacySettings"), TEXT("bSendUsageData"), bSendUsageData, GEditorSettingsIni);
 	}
 
+	// NOTE: A blueprint-only game packaged from a vanilla engine downloaded from Epic Game Store isn't considered a 'Licensee' version because the engine was built by Epic.
+	//       There is no way at the moment do distinguish this case properly.
 	if (BuildSettings::IsLicenseeVersion() && !UE_EDITOR)
 	{
 		// do not send unattended reports in licensees' builds except for the editor, where it is governed by the above setting
@@ -2530,16 +2548,23 @@ bool FMacCrashContext::GetPlatformAllThreadContextsString(FString& OutStr) const
 	return !OutStr.IsEmpty();
 }
 
-void ReportAssert(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportAssert(const TCHAR* ErrorMessage, void* ErrorProgramCounter)
 {
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ErrorProgramCounter;
 	GCrashErrorType = ECrashContextType::Assert;
 	FPlatformMisc::RaiseException(1);
 }
 
-void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportGPUCrash(const TCHAR* ErrorMessage, void* ErrorProgramCounter)
 {
+	if (ErrorProgramCounter == nullptr)
+	{
+		ErrorProgramCounter = PLATFORM_RETURN_ADDRESS();
+	}
+
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ErrorProgramCounter;
 	GCrashErrorType = ECrashContextType::GPUCrash;
 	FPlatformMisc::RaiseException(1);
 }
@@ -2547,7 +2572,7 @@ void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
 static FCriticalSection EnsureLock;
 static bool bReentranceGuard = false;
 
-void ReportEnsure( const TCHAR* ErrorMessage, int NumStackFramesToIgnore )
+void ReportEnsure( const TCHAR* ErrorMessage, void* ErrorProgramCounter )
 {
 	// Simple re-entrance guard.
 	EnsureLock.Lock();
@@ -2565,10 +2590,11 @@ void ReportEnsure( const TCHAR* ErrorMessage, int NumStackFramesToIgnore )
 		siginfo_t Signal;
 		Signal.si_signo = SIGTRAP;
 		Signal.si_code = TRAP_TRACE;
-		Signal.si_addr = __builtin_return_address(0);
+		Signal.si_addr = ErrorProgramCounter;
 		
 		FMacCrashContext EnsureContext(ECrashContextType::Ensure, ErrorMessage);
 		EnsureContext.InitFromSignal(SIGTRAP, &Signal, nullptr);
+		EnsureContext.ErrorFrame = ErrorProgramCounter;
 		EnsureContext.GenerateEnsureInfoAndLaunchReporter();
 	}
 	

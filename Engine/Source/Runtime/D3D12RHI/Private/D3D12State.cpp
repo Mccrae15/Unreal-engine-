@@ -11,8 +11,8 @@
 // modifying ref counts if not needed; so we manage that ourselves
 FCriticalSection GD3D12SamplerStateCacheLock;
 
-DECLARE_CYCLE_STAT(TEXT("Graphics: Find or Create time"), STAT_PSOGraphicsFindOrCreateTime, STATGROUP_D3D12PipelineState);
-DECLARE_CYCLE_STAT(TEXT("Compute: Find or Create time"), STAT_PSOComputeFindOrCreateTime, STATGROUP_D3D12PipelineState);
+DECLARE_CYCLE_STAT_WITH_FLAGS(TEXT("Graphics: Find or Create time"), STAT_PSOGraphicsFindOrCreateTime, STATGROUP_D3D12PipelineState, EStatFlags::Verbose);
+DECLARE_CYCLE_STAT_WITH_FLAGS(TEXT("Compute: Find or Create time"), STAT_PSOComputeFindOrCreateTime, STATGROUP_D3D12PipelineState, EStatFlags::Verbose);
 
 static D3D12_TEXTURE_ADDRESS_MODE TranslateAddressMode(ESamplerAddressMode AddressMode)
 {
@@ -454,6 +454,7 @@ bool FD3D12BlendState::GetInitializer(class FBlendStateInitializerRHI& Init)
 			| ((Src.RenderTargetWriteMask & D3D12_COLOR_WRITE_ENABLE_ALPHA) ? CW_ALPHA : 0));
 	}
 	Init.bUseIndependentRenderTargetBlendStates = !!Desc.IndependentBlendEnable;
+	Init.bUseAlphaToCoverage = !!Desc.AlphaToCoverageEnable;
 	return true;
 }
 
@@ -474,14 +475,11 @@ FGraphicsPipelineStateRHIRef FD3D12DynamicRHI::RHICreateGraphicsPipelineState(co
 		return Found;
 	}
 #endif
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FD3D12DynamicRHI::RHICreateGraphicsPipelineState);
+
 	// TODO: Remove the need for BoundShaderState objects. Currently they are needed for the Root Signature.
-	FBoundShaderStateRHIRef const BSS = RHICreateBoundShaderState(
-		Initializer.BoundShaderState.VertexDeclarationRHI,
-		Initializer.BoundShaderState.VertexShaderRHI,
-		TESSELLATION_SHADER(Initializer.BoundShaderState.HullShaderRHI),
-		TESSELLATION_SHADER(Initializer.BoundShaderState.DomainShaderRHI),
-		Initializer.BoundShaderState.PixelShaderRHI,
-		GEOMETRY_SHADER(Initializer.BoundShaderState.GeometryShaderRHI));
+	FBoundShaderStateRHIRef const BSS = DX12CreateBoundShaderState(Initializer.BoundShaderState);
 
 	// Next try to find the PSO based on the hash of its desc.
 	FD3D12BoundShaderState* const BoundShaderState = FD3D12DynamicRHI::ResourceCast(BSS.GetReference());
@@ -530,6 +528,8 @@ TRefCountPtr<FRHIComputePipelineState> FD3D12DynamicRHI::RHICreateComputePipelin
 	{
 		return Found;
 	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FD3D12DynamicRHI::RHICreateComputePipelineState);
 
 	// We need to actually create a PSO.
 	return PSOCache.CreateAndAdd(ComputeShader, LowLevelDesc);

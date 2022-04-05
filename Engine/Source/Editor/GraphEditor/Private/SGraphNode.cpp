@@ -449,7 +449,7 @@ void SGraphNode::OnToolTipClosing()
 
 void SGraphNode::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
-	CachedUnscaledPosition = AllottedGeometry.AbsolutePosition/AllottedGeometry.Scale;
+	CachedUnscaledPosition = FVector2D(AllottedGeometry.AbsolutePosition/AllottedGeometry.Scale);
 
 	SNodePanel::SNode::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
@@ -479,6 +479,10 @@ void SGraphNode::Tick( const FGeometry& AllottedGeometry, const double InCurrent
 bool SGraphNode::IsSelectedExclusively() const
 {
 	TSharedPtr<SGraphPanel> OwnerPanel = OwnerGraphPanelPtr.Pin();
+	if (!OwnerPanel.IsValid())
+	{
+		return false;
+	}
 
 	if (!OwnerPanel->HasKeyboardFocus() || OwnerPanel->SelectionManager.GetSelectedNodes().Num() > 1)
 	{
@@ -624,6 +628,17 @@ FText SGraphNode::GetNodeTooltip() const
 {
 	if (GraphNode != NULL)
 	{
+		// If any of our child pins have an interactive tooltip, we shouldn't have a tooltip
+		for (UEdGraphPin* Pin : GraphNode->GetAllPins())
+		{
+			TSharedPtr<SGraphPin> PinWidget = FindWidgetForPin(Pin);
+
+			if (PinWidget.IsValid() && PinWidget->HasInteractiveTooltip())
+			{
+				return FText::GetEmpty();
+			}
+		}
+
 		// Display the native title of the node when alt is held
 		if(FSlateApplication::Get().GetModifierKeys().IsAltDown())
 		{
@@ -728,7 +743,7 @@ void SGraphNode::SetupErrorReporting()
 TSharedRef<SWidget> SGraphNode::CreateTitleWidget(TSharedPtr<SNodeTitle> NodeTitle)
 {
 	SAssignNew(InlineEditableText, SInlineEditableTextBlock)
-		.Style(FEditorStyle::Get(), "Graph.Node.NodeTitleInlineEditableText")
+		.Style(FAppStyle::Get(), "Graph.Node.NodeTitleInlineEditableText")
 		.Text(NodeTitle.Get(), &SNodeTitle::GetHeadTitle)
 		.OnVerifyTextChanged(this, &SGraphNode::OnVerifyNameTextChanged)
 		.OnTextCommitted(this, &SGraphNode::OnNameTextCommited)
@@ -1072,7 +1087,7 @@ ECheckBoxState SGraphNode::IsAdvancedViewChecked() const
 const FSlateBrush* SGraphNode::GetAdvancedViewArrow() const
 {
 	const bool bAdvancedPinsHidden = GraphNode && (ENodeAdvancedPins::Hidden == GraphNode->AdvancedPinDisplay);
-	return FEditorStyle::GetBrush(bAdvancedPinsHidden ? TEXT("Kismet.TitleBarEditor.ArrowDown") : TEXT("Kismet.TitleBarEditor.ArrowUp"));
+	return FEditorStyle::GetBrush(bAdvancedPinsHidden ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
 }
 
 /** Create widget to show/hide advanced pins */
@@ -1483,14 +1498,15 @@ void SGraphNode::NotifyDisallowedPinConnection(const UEdGraphPin* PinA, const UE
 
 bool SGraphNode::UseLowDetailNodeTitles() const
 {
-	if (const SGraphPanel* MyOwnerPanel = GetOwnerPanel().Get())
+	if (InlineEditableText.IsValid())
 	{
-		return (MyOwnerPanel->GetCurrentLOD() <= EGraphRenderingLOD::LowestDetail) && !InlineEditableText->IsInEditMode();
+		if (const SGraphPanel* MyOwnerPanel = GetOwnerPanel().Get())
+		{
+			return (MyOwnerPanel->GetCurrentLOD() <= EGraphRenderingLOD::LowestDetail) && !InlineEditableText->IsInEditMode();
+		}
 	}
-	else
-	{
-		return false;
-	}
+
+	return false;
 }
 
 TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTooltipText, bool bRightSide, FString DocumentationExcerpt, TSharedPtr<SToolTip> CustomTooltip)
@@ -1513,7 +1529,7 @@ TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTool
 		. Padding( 7,0,0,0 )
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_AddToArray")))
+			.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
 		];
 	}
 	else
@@ -1525,7 +1541,7 @@ TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTool
 		. Padding( 0,0,7,0 )
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_AddToArray")))
+			.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
 		]
 		+SHorizontalBox::Slot()
 		.AutoWidth()

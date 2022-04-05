@@ -5,6 +5,7 @@
 #include "Chaos/Serializable.h"
 #include "Chaos/Core.h"
 #include "Chaos/ImplicitFwd.h"
+#include "Chaos/AABB.h"
 
 #include <functional>
 
@@ -29,13 +30,14 @@ class FImplicitObject;
 
 using FAABB3 = TAABB<FReal, 3>;
 using FParticles = TParticles<FReal, 3>;
+using FSphere = TSphere<FReal, 3>; // warning: code assumes that FImplicitObjects with type ImplicitObjectType::Sphere are FSpheres, but all TSpheres will think they have ImplicitObjectType::Sphere.
 
 namespace ImplicitObjectType
 {
 	enum
 	{
 		//Note: add entries in order to avoid serialization issues (but before IsInstanced)
-		Sphere = 0,
+		Sphere = 0, // warning: code assumes that this is an FSphere, but all TSpheres will think this is their type.
 		Box,
 		Plane,
 		Capsule,
@@ -177,6 +179,9 @@ public:
 		return static_cast<T_DERIVED&>(*this);
 	}
 
+	//Not all implicit objects can be duplicated, up to user code to use this in cases that make sense
+	virtual FImplicitObject* Duplicate() const { check(false); return nullptr; }
+
 	EImplicitObjectType GetType() const;
 	static int32 GetOffsetOfType() { return offsetof(FImplicitObject, Type); }
 
@@ -189,7 +194,9 @@ public:
 	virtual bool IsValidGeometry() const;
 
 	virtual TUniquePtr<FImplicitObject> Copy() const;
+	virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const;
 	virtual TUniquePtr<FImplicitObject> DeepCopy() const { return Copy(); }
+	virtual TUniquePtr<FImplicitObject> DeepCopyWithScale(const FVec3& Scale) const { return CopyWithScale(Scale); }
 
 	//This is strictly used for optimization purposes
 	bool IsUnderlyingUnion() const;
@@ -217,6 +224,13 @@ public:
 	}
 
 	virtual const FAABB3 BoundingBox() const;
+
+	// Calculate the tight-fitting world-space bounding box
+	virtual FAABB3 CalculateTransformedBounds(const FRigidTransform3& Transform) const
+	{
+		check(HasBoundingBox());
+		return BoundingBox().TransformedAABB(Transform);
+	}
 
 	bool HasBoundingBox() const { return bHasBoundingBox; }
 
@@ -291,7 +305,7 @@ public:
 	@param FaceIndices - Vertices that lie on the face plane.
 	@param SearchDistance - distance to surface [def:0.01]
 	*/
-	virtual int32 FindClosestFaceAndVertices(const FVec3& Position, TArray<FVec3>& FaceVertices, FReal SearchDist = 0.01) const
+	virtual int32 FindClosestFaceAndVertices(const FVec3& Position, TArray<FVec3>& FaceVertices, FReal SearchDist = 0.01f) const
 	{
 		//Many objects have no concept of a face
 		return INDEX_NONE;
@@ -364,7 +378,7 @@ protected:
 	FVec3 ScaledNormalHelper(const FVec3& Normal, const FVec3& Scale) const
 	{
 		const FVec3 ScaledNormal = Scale * Normal;
-		const float ScaledNormalLen = ScaledNormal.Size();
+		const FReal ScaledNormalLen = ScaledNormal.Size();
 		return ensure(ScaledNormalLen > TNumericLimits<FReal>::Min())
 			? ScaledNormal / ScaledNormalLen
 			: FVec3(0.f, 0.f, 1.f);

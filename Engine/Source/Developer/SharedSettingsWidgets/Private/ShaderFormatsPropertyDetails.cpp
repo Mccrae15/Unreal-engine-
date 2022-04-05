@@ -53,11 +53,8 @@ FText FShaderFormatsPropertyDetails::GetFriendlyNameFromRHINameMac(const FString
 		case SP_METAL_MRT_TVOS:
 			FriendlyRHIName = LOCTEXT("MetalMRTTV", "tvOS Metal Desktop Renderer (SM5, Metal 1.2+, tvOS 10.0 or later)");
 			break;
-		case SP_METAL_SM5_NOTESS:
-			FriendlyRHIName = LOCTEXT("MetalSM5_NOTESS", "Mac Metal Desktop Renderer without Tessellation (SM5, Metal 2.0+, macOS High Sierra 10.13.6 or later)");
-			break;
 		case SP_METAL_SM5:
-			FriendlyRHIName = LOCTEXT("MetalSM5", "Mac Metal Desktop Renderer with Tessellation (SM5, Metal 2.0+, macOS High Sierra 10.13.6 or later)");
+			FriendlyRHIName = LOCTEXT("MetalSM5", "Mac Metal Desktop Renderer (SM5, Metal 2.1+, macOS Catalina 10.15.7 or later)");
 			break;
 		case SP_METAL_MACES3_1:
 			FriendlyRHIName = LOCTEXT("MetalES3.1", "Mac Metal High-End Mobile Preview (ES3.1)");
@@ -66,15 +63,16 @@ FText FShaderFormatsPropertyDetails::GetFriendlyNameFromRHINameMac(const FString
 			FriendlyRHIName = LOCTEXT("MetalMRTMac", "Mac Metal iOS/tvOS Desktop Renderer Preview (SM5)");
 			break;
 		case SP_VULKAN_SM5:
-		case SP_VULKAN_SM5_LUMIN:
 		case SP_VULKAN_SM5_ANDROID:
 			FriendlyRHIName = LOCTEXT("VulkanSM5", "Vulkan (SM5)");
 			break;
 		case SP_VULKAN_PCES3_1:
 		case SP_VULKAN_ES3_1_ANDROID:
-		case SP_VULKAN_ES3_1_LUMIN:
 			FriendlyRHIName = LOCTEXT("VulkanES31", "Vulkan (ES 3.1)");
-			break;	
+			break;
+		case SP_D3D_ES3_1_HOLOLENS:
+			FriendlyRHIName = LOCTEXT("D3DES31HL", "Direct3D (ES3.1, Hololens)");
+			break;
 		default:
 			break;
 	}
@@ -171,7 +169,8 @@ void FShaderFormatsPropertyDetails::OnTargetedRHIChanged(ECheckBoxState InNewVal
 				Array.Remove(InRHIName.ToString());
 			}
 		}
-		ShaderFormatsPropertyHandle->NotifyPostChange();
+
+		ShaderFormatsPropertyHandle->NotifyPostChange(EPropertyChangeType::Unspecified);
 	}
 }
 

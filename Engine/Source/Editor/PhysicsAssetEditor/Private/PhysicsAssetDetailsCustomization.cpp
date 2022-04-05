@@ -139,6 +139,8 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillPhysicalAnimationPr
 
 	const FPhysicsAssetEditorCommands& Commands = FPhysicsAssetEditorCommands::Get();
 
+	const float MenuIconSize = FCoreStyle::Get().GetFloat("Menu.MenuIconSize", nullptr, 16.f);
+
 	if(SharedData->PhysicsAsset)
 	{
 		MenuBuilder.BeginSection("CurrentProfile", LOCTEXT("PhysicsAssetEditor_CurrentPhysicalAnimationMenu", "Current Profile"));
@@ -185,15 +187,17 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillPhysicalAnimationPr
 
 				auto SearchClickedLambda = [ProfileName, SharedData]()
 				{
-					SharedData->ClearSelectedBody();	//clear selection
+					TArray<int32> NewBodiesSelection;
 					for (int32 BSIndex = 0; BSIndex < SharedData->PhysicsAsset->SkeletalBodySetups.Num(); ++BSIndex)
 					{
 						const USkeletalBodySetup* BS = SharedData->PhysicsAsset->SkeletalBodySetups[BSIndex];
 						if (BS->FindPhysicalAnimationProfile(ProfileName))
 						{
-							SharedData->SetSelectedBodyAnyPrim(BSIndex, true);
+							NewBodiesSelection.Add(BSIndex);
 						}
 					}
+					SharedData->ClearSelectedBody();	//clear selection
+					SharedData->SetSelectedBodiesAnyPrim(NewBodiesSelection, true);
 
 					FSlateApplication::Get().DismissAllMenus();
 
@@ -219,9 +223,9 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillPhysicalAnimationPr
 						.OnClicked_Lambda(SearchClickedLambda)
 						[
 							SNew(SBox)
-							.WidthOverride(MultiBoxConstants::MenuIconSize)
-							.HeightOverride(MultiBoxConstants::MenuIconSize)
-							.Visibility_Lambda([ProfileName](){ return ProfileName == NAME_None ? EVisibility::Collapsed : EVisibility::Visible; })
+							.WidthOverride(MenuIconSize)
+							.HeightOverride(MenuIconSize)
+							.Visibility_Lambda([ProfileName](){ return (ProfileName == NAME_None) ? EVisibility::Collapsed : EVisibility::Visible; })
 							[
 								SNew(SImage)
 								.Image(FSlateIcon(FEditorStyle::GetStyleSetName(), "Symbols.SearchGlass").GetIcon())
@@ -252,6 +256,8 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillConstraintProfilesO
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, CommandList);
 
 	const FPhysicsAssetEditorCommands& Commands = FPhysicsAssetEditorCommands::Get();
+
+	const float MenuIconSize = FCoreStyle::Get().GetFloat("Menu.MenuIconSize", nullptr, 16.f);
 
 	if(SharedData->PhysicsAsset)
 	{
@@ -298,16 +304,19 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillConstraintProfilesO
 
 				auto SearchClickedLambda = [ProfileName, SharedData]()
 				{
-					SharedData->ClearSelectedConstraints();	//clear selection
+					TArray<int32> NewSelectedConstraints;
 					for (int32 CSIndex = 0; CSIndex < SharedData->PhysicsAsset->ConstraintSetup.Num(); ++CSIndex)
 					{
 						const UPhysicsConstraintTemplate* CS = SharedData->PhysicsAsset->ConstraintSetup[CSIndex];
 						if (CS->ContainsConstraintProfile(ProfileName))
 						{
-							SharedData->SetSelectedConstraint(CSIndex, true);
+							NewSelectedConstraints.AddUnique(CSIndex);
 						}
 					}
-							
+
+					SharedData->ClearSelectedConstraints();	//clear selection
+					SharedData->SetSelectedConstraints(NewSelectedConstraints, true);
+
 					FSlateApplication::Get().DismissAllMenus();
 
 					return FReply::Handled();
@@ -332,9 +341,9 @@ TSharedRef< SWidget > FPhysicsAssetDetailsCustomization::FillConstraintProfilesO
 					.OnClicked_Lambda(SearchClickedLambda)
 					[
 						SNew(SBox)
-						.WidthOverride(MultiBoxConstants::MenuIconSize)
-						.HeightOverride(MultiBoxConstants::MenuIconSize)
-						.Visibility_Lambda([ProfileName]() { return ProfileName == NAME_None ? EVisibility::Collapsed : EVisibility::Visible; })
+						.WidthOverride(MenuIconSize)
+						.HeightOverride(MenuIconSize)
+						.Visibility_Lambda([ProfileName]() { return (ProfileName == NAME_None) ? EVisibility::Collapsed : EVisibility::Visible; })
 						[
 							SNew(SImage)
 							.Image(FSlateIcon(FEditorStyle::GetStyleSetName(), "Symbols.SearchGlass").GetIcon())
@@ -467,9 +476,7 @@ TSharedRef<SWidget> FPhysicsAssetDetailsCustomization::MakePhysicalAnimationProf
 		.VAlign(VAlign_Center)
 		[
 			SNew(SComboButton)
-			.ButtonStyle(FEditorStyle::Get(), "ToolBar.Button")
 			.OnGetMenuContent(this, &FPhysicsAssetDetailsCustomization::FillPhysicalAnimationProfileOptions)
-			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
 			.ButtonContent()
 			[
 				SNew(SVerticalBox)
@@ -510,7 +517,6 @@ TSharedRef<SWidget> FPhysicsAssetDetailsCustomization::MakePhysicalAnimationProf
 								PhysicalAnimationProfileNameTextBox->SetError(FText::GetEmpty());
 							}
 						})
-						.Style(FEditorStyle::Get(), "PhysicsAssetEditor.Profiles.EditableTextBoxStyle")
 						.OnTextCommitted(FOnTextCommitted::CreateSP(this, &FPhysicsAssetDetailsCustomization::HandlePhysicalAnimationProfileNameCommitted))
 					]
 				]
@@ -554,9 +560,7 @@ TSharedRef<SWidget> FPhysicsAssetDetailsCustomization::MakeConstraintProfilesWid
 		.VAlign(VAlign_Center)
 		[
 			SNew(SComboButton)
-			.ButtonStyle(FEditorStyle::Get(), "ToolBar.Button")
 			.OnGetMenuContent(this, &FPhysicsAssetDetailsCustomization::FillConstraintProfilesOptions)
-			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
 			.ButtonContent()
 			[
 				SNew(SVerticalBox)
@@ -597,7 +601,6 @@ TSharedRef<SWidget> FPhysicsAssetDetailsCustomization::MakeConstraintProfilesWid
 								ConstraintProfileNameTextBox->SetError(FText::GetEmpty());
 							}
 						})
-						.Style(FEditorStyle::Get(), "PhysicsAssetEditor.Profiles.EditableTextBoxStyle")
 						.OnTextCommitted(FOnTextCommitted::CreateSP(this, &FPhysicsAssetDetailsCustomization::HandleConstraintProfileNameCommitted))
 					]
 				]

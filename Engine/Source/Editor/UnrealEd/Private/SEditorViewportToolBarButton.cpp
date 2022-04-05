@@ -35,7 +35,7 @@ void SEditorViewportToolBarButton::Construct( const FArguments& Declaration)
 			.OnClicked( OnClickedDelegate )
 			.HAlign( HAlign_Center )
 			.VAlign( VAlign_Center )
-			.ForegroundColor( FSlateColor::UseForeground() )
+			.ContentPadding(FMargin(4.f, 0.f))
 			[
 				// If we have a content override use it instead of the default image
 				bContentOverride
@@ -64,12 +64,13 @@ void SEditorViewportToolBarButton::Construct( const FArguments& Declaration)
 				bContentOverride ? ContentSlotWidget :
 				TSharedRef<SWidget>(
 					SNew( SBox )
-					.Padding(1.0f)
+					.Padding(0.0f)
 					.VAlign( VAlign_Center )
 					.HAlign( HAlign_Center )
 					[
 						SNew( SImage )
 						.Image( this, &SEditorViewportToolBarButton::OnGetButtonImage )
+						.ColorAndOpacity(FSlateColor::UseForeground())
 					])
 			];
 	}

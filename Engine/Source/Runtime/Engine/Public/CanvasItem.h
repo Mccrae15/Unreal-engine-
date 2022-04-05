@@ -249,6 +249,9 @@ public:
 	 */
 	virtual void Draw( FCanvas* InCanvas ) override;
 
+	virtual void SetColor(const FLinearColor& InColor) override final { FCanvasItem::SetColor(InColor); }
+
+
 	/* Expose the functions defined in the base class. */
 	using FCanvasItem::Draw;
 
@@ -349,6 +352,8 @@ public:
 	 * @param	InCanvas		Canvas on which to draw
 	 */
 	virtual void Draw( FCanvas* InCanvas ) override;
+
+	virtual void SetColor(const FLinearColor& InColor) override final { FCanvasItem::SetColor(InColor); }
 
 	/* Expose the functions defined in the base class. */
 	using FCanvasItem::Draw;
@@ -555,7 +560,7 @@ public:
 	 * @param	InEndPos		End position 
 	 */
 	FCanvasLineItem( const FVector& InPosition, const FVector& InEndPos )
-		: FCanvasItem( FVector2D( InPosition.X, InPosition.Y ) )
+		: FCanvasItem( FVector2D( UE_REAL_TO_FLOAT(InPosition.X), UE_REAL_TO_FLOAT(InPosition.Y) ) )
 		, LineThickness( 0.0f )
 	{
 		Origin = InPosition;
@@ -882,7 +887,7 @@ public:
 	 }
 
 	 /* Set the Color of the item. */
-	 virtual void SetColor( const FLinearColor& InColor ) override;
+	 virtual void SetColor( const FLinearColor& InColor ) override final;
 
 private:
 	

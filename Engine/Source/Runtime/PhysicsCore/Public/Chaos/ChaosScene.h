@@ -2,6 +2,8 @@
 
 #pragma once
 
+#if WITH_CHAOS
+
 #include "CoreMinimal.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/GCObject.h"
@@ -17,6 +19,10 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Chaos/SimCallbackInput.h"
 #include "Chaos/SimCallbackObject.h"
+
+#ifndef CHAOS_DEBUG_NAME
+#define CHAOS_DEBUG_NAME 0
+#endif
 
 // Currently compilation issue with Incredibuild when including headers required by event template functions
 #define XGE_FIXED 0
@@ -80,7 +86,8 @@ class PHYSICSCORE_API FChaosScene
 public:
 	FChaosScene(
 		UObject* OwnerPtr
-#if CHAOS_CHECKED
+		, Chaos::FReal InAsyncDt
+#if CHAOS_DEBUG_NAME
 	, const FName& DebugName=NAME_None
 #endif
 );
@@ -106,8 +113,10 @@ public:
 	Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>* GetSpacialAcceleration();
 
 	void AddActorsToScene_AssumesLocked(TArray<FPhysicsActorHandle>& InHandles,const bool bImmediate=true);
-	void RemoveActorFromAccelerationStructure(FPhysicsActorHandle& Actor);
-	void RemoveActorFromAccelerationStructure(Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle); // Needed for particles not owned by single particle proxy.
+	void RemoveActorFromAccelerationStructure(FPhysicsActorHandle Actor);
+#if WITH_CHAOS
+	void RemoveActorFromAccelerationStructureImp(Chaos::FGeometryParticle* Particle);
+#endif
 	void UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsActorHandle>& Actors);
 	void UpdateActorInAccelerationStructure(const FPhysicsActorHandle& Actor);
 
@@ -130,7 +139,7 @@ public:
 #endif
 
 	void StartFrame();
-	void SetUpForFrame(const FVector* NewGrav,float InDeltaSeconds,float InMaxPhysicsDeltaTime,float InMaxSubstepDeltaTime,int32 InMaxSubsteps,bool bSubstepping);
+	void SetUpForFrame(const FVector* NewGrav,float InDeltaSeconds,float InMinPhysicsDeltaTime,float InMaxPhysicsDeltaTime,float InMaxSubstepDeltaTime,int32 InMaxSubsteps,bool bSubstepping);
 	void EndFrame();
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPhysScenePostTick,FChaosScene*);
@@ -140,6 +149,9 @@ public:
 	void BeginDestroy();
 	bool IsCompletionEventComplete() const;
 	FGraphEventArray GetCompletionEvents();
+
+	void SetNetworkDeltaTimeScale(float InDeltaTimeScale) { MNetworkDeltaTimeScale = InDeltaTimeScale; }
+	float GetNetworkDeltaTimeScale() const { return MNetworkDeltaTimeScale; }
 
 protected:
 
@@ -165,10 +177,8 @@ protected:
 	virtual void OnSyncBodies(Chaos::FPhysicsSolverBase* Solver);
 	//Engine interface END
 
-	template <typename RigidLambda>
-	void PullPhysicsStateForEachDirtyProxy(const int32 SyncTimestamp, const RigidLambda& DirtyRigidFunc);
-
 	float MDeltaTime;
+	float MNetworkDeltaTimeScale = 1.f; // Scale passed in delta time by this. Used by NetworkPrediction to make clients slow down or catch up when needed
 
 	UObject* Owner;
 
@@ -184,3 +194,5 @@ private:
 
 	FChaosSceneSimCallback* SimCallback;
 };
+
+#endif

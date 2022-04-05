@@ -187,6 +187,19 @@ public:
 		 * in RejectedNodeTypes). 
 		 */
 		BPFILTER_PermitRejectionSubClasses	= (1<<3),
+
+		/**
+		 * Actions that reference member variables or functions that belong
+		 * to a struct that exists outside the scope of the current set of
+		 * imported namespaces will be filtered out.
+		 */
+		BPFILTER_RejectNonImportedFields	= (1<<4),
+
+		/**
+		 * Rejects actions that would spawn nodes with thread safety characteristics
+		 * that are incompatible with the specification of the containing graph
+		 */
+		BPFILTER_RejectIncompatibleThreadSafety = (1<<5)
 	};
 	FBlueprintActionFilter(uint32 const Flags = 0x00);
 	

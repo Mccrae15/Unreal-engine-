@@ -5,6 +5,7 @@
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Input/DragAndDrop.h"
 #include "TraceServices/AnalysisService.h"
 #include "TraceServices/ModuleService.h"
 
@@ -16,16 +17,24 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+namespace UE
+{
 namespace Trace
 {
 	class FStoreClient;
+}
+}
+
+namespace TraceServices
+{
 	class IAnalysisService;
 	class IModuleService;
 }
 
-class SStartPageWindow;
+class STraceStoreWindow;
+class SConnectionWindow;
+class SLauncherWindow;
 class SSessionInfoWindow;
-class FInsightsMessageLogViewModel;
 class FInsightsTestRunner;
 class FInsightsMenuBuilder;
 
@@ -61,8 +70,8 @@ class FInsightsManager : public TSharedFromThis<FInsightsManager>, public IInsig
 
 public:
 	/** Creates the main manager, only one instance can exist. */
-	FInsightsManager(TSharedRef<Trace::IAnalysisService> TraceAnalysisService,
-					 TSharedRef<Trace::IModuleService> TraceModuleService);
+	FInsightsManager(TSharedRef<TraceServices::IAnalysisService> TraceAnalysisService,
+					 TSharedRef<TraceServices::IModuleService> TraceModuleService);
 
 	/** Virtual destructor. */
 	virtual ~FInsightsManager();
@@ -72,8 +81,8 @@ public:
 	 * @param TraceAnalysisService The trace analysis service
 	 * @param TraceModuleService   The trace module service
 	 */
-	static TSharedPtr<FInsightsManager> CreateInstance(TSharedRef<Trace::IAnalysisService> TraceAnalysisService,
-													   TSharedRef<Trace::IModuleService> TraceModuleService);
+	static TSharedPtr<FInsightsManager> CreateInstance(TSharedRef<TraceServices::IAnalysisService> TraceAnalysisService,
+													   TSharedRef<TraceServices::IModuleService> TraceModuleService);
 
 	/** @return the global instance of the main manager (FInsightsManager). */
 	static TSharedPtr<FInsightsManager> Get();
@@ -88,17 +97,17 @@ public:
 
 	//////////////////////////////////////////////////
 
-	TSharedRef<Trace::IAnalysisService> GetAnalysisService() const { return AnalysisService; }
-	TSharedRef<Trace::IModuleService> GetModuleService() const { return ModuleService; }
+	TSharedRef<TraceServices::IAnalysisService> GetAnalysisService() const { return AnalysisService; }
+	TSharedRef<TraceServices::IModuleService> GetModuleService() const { return ModuleService; }
 
 	void SetStoreDir(const FString& InStoreDir) { StoreDir = InStoreDir; }
 	const FString& GetStoreDir() const { return StoreDir; }
 
-	bool ConnectToStore(const TCHAR* Host, uint32 Port);
-	Trace::FStoreClient* GetStoreClient() const { return StoreClient.Get(); }
+	bool ConnectToStore(const TCHAR* Host, uint32 Port=0);
+	UE::Trace::FStoreClient* GetStoreClient() const { return StoreClient.Get(); }
 
 	/** @return an instance of the trace analysis session. */
-	TSharedPtr<const Trace::IAnalysisSession> GetSession() const;
+	TSharedPtr<const TraceServices::IAnalysisSession> GetSession() const;
 
 	/** @return the id of the trace being analyzed. */
 	uint32 GetTraceId() const { return CurrentTraceId; }
@@ -106,7 +115,7 @@ public:
 	/** @return the filename of the trace being analyzed. */
 	const FString& GetTraceFilename() const { return CurrentTraceFilename; }
 
-	/** @returns UI command list for the main manager. */
+	/** @return UI command list for the main manager. */
 	const TSharedRef<FUICommandList> GetCommandList() const;
 
 	/** @return an instance of the main commands. */
@@ -119,25 +128,69 @@ public:
 	static FInsightsSettings& GetSettings();
 
 	//////////////////////////////////////////////////
-	// StartPage (Trace Store Browser)
+	// Trace Store
 
-	void AssignStartPageWindow(const TSharedRef<SStartPageWindow>& InStartPageWindow)
+	void AssignTraceStoreWindow(const TSharedRef<STraceStoreWindow>& InTraceStoreWindow)
 	{
-		StartPageWindow = InStartPageWindow;
+		TraceStoreWindow = InTraceStoreWindow;
 	}
 
-	void RemoveStartPageWindow()
+	void RemoveTraceStoreWindow()
 	{
-		StartPageWindow.Reset();
+		TraceStoreWindow.Reset();
 	}
 
 	/**
-	 * Converts profiler window weak pointer to a shared pointer and returns it.
+	 * Converts Trace Store window weak pointer to a shared pointer and returns it.
 	 * Make sure the returned pointer is valid before trying to dereference it.
 	 */
-	TSharedPtr<class SStartPageWindow> GetStartPageWindow() const
+	TSharedPtr<class STraceStoreWindow> GetTraceStoreWindow() const
 	{
-		return StartPageWindow.Pin();
+		return TraceStoreWindow.Pin();
+	}
+
+	//////////////////////////////////////////////////
+	// Connection
+
+	void AssignConnectionWindow(const TSharedRef<SConnectionWindow>& InConnectionWindow)
+	{
+		ConnectionWindow = InConnectionWindow;
+	}
+
+	void RemoveConnectionWindow()
+	{
+		ConnectionWindow.Reset();
+	}
+
+	/**
+	 * Converts Connection window weak pointer to a shared pointer and returns it.
+	 * Make sure the returned pointer is valid before trying to dereference it.
+	 */
+	TSharedPtr<class SConnectionWindow> GetConnectionWindow() const
+	{
+		return ConnectionWindow.Pin();
+	}
+
+	//////////////////////////////////////////////////
+	// Launcher
+
+	void AssignLauncherWindow(const TSharedRef<SLauncherWindow>& InLauncherWindow)
+	{
+		LauncherWindow = InLauncherWindow;
+	}
+
+	void RemoveLauncherWindow()
+	{
+		LauncherWindow.Reset();
+	}
+
+	/**
+	 * Converts Launcher window weak pointer to a shared pointer and returns it.
+	 * Make sure the returned pointer is valid before trying to dereference it.
+	 */
+	TSharedPtr<class SLauncherWindow> GetLauncherWindow() const
+	{
+		return LauncherWindow.Pin();
 	}
 
 	//////////////////////////////////////////////////
@@ -171,9 +224,6 @@ public:
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	bool ShouldOpenAnalysisInSeparateProcess() const { return bShouldOpenAnalysisInSeparateProcess; }
-	void SetOpenAnalysisInSeparateProcess(bool bOnOff) { bShouldOpenAnalysisInSeparateProcess = bOnOff; }
-
 	/** Creates a new analysis session instance and loads the latest available trace that is live. */
 	void LoadLastLiveSession();
 
@@ -191,19 +241,25 @@ public:
 	 */
 	void LoadTraceFile(const FString& TraceFilename, bool InAutoQuit = false);
 
+	bool OnDragOver(const FDragDropEvent& DragDropEvent);
+	bool OnDrop(const FDragDropEvent& DragDropEvent);
+
+	void UpdateAppTitle();
+
 	/** Opens the Settings dialog. */
 	void OpenSettings();
 
 	void UpdateSessionDuration();
+	void CheckMemoryUsage();
 
 	bool IsAnalysisComplete() const { return bIsAnalysisComplete; }
 	double GetSessionDuration() const { return SessionDuration; }
 	double GetAnalysisDuration() const { return AnalysisDuration; }
 	double GetAnalysisSpeedFactor() const { return AnalysisSpeedFactor; }
 
-	TSharedPtr<FInsightsMessageLogViewModel> GetMessageLog() { return InsightsMessageLogViewModel; }
-
 	TSharedPtr<FInsightsMenuBuilder> GetInsightsMenuBuilder() { return InsightsMenuBuilder; }
+
+	const FName& GetLogListingName() const { return LogListingName; }
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// SessionChangedEvent
@@ -233,20 +289,29 @@ private:
 	/** Binds our UI commands to delegates. */
 	void BindCommands();
 
-	/** Called to spawn the Start Page major tab. */
-	TSharedRef<SDockTab> SpawnStartPageTab(const FSpawnTabArgs& Args);
+	/** Called to spawn the Trace Store major tab. */
+	TSharedRef<SDockTab> SpawnTraceStoreTab(const FSpawnTabArgs& Args);
 
-	/** Callback called when the Start Page major tab is closed. */
-	void OnStartPageTabClosed(TSharedRef<SDockTab> TabBeingClosed);
+	/** Callback called when the Trace Store major tab is closed. */
+	void OnTraceStoreTabClosed(TSharedRef<SDockTab> TabBeingClosed);
+
+	/** Called to spawn the Connection major tab. */
+	TSharedRef<SDockTab> SpawnConnectionTab(const FSpawnTabArgs& Args);
+
+	/** Callback called when the Connection major tab is closed. */
+	void OnConnectionTabClosed(TSharedRef<SDockTab> TabBeingClosed);
+
+	/** Called to spawn the Launcher major tab. */
+	TSharedRef<SDockTab> SpawnLauncherTab(const FSpawnTabArgs& Args);
+
+	/** Callback called when the Launcher major tab is closed. */
+	void OnLauncherTabClosed(TSharedRef<SDockTab> TabBeingClosed);
 
 	/** Called to spawn the Session Info major tab. */
 	TSharedRef<SDockTab> SpawnSessionInfoTab(const FSpawnTabArgs& Args);
 
 	/** Callback called when the Session Info major tab is closed. */
 	void OnSessionInfoTabClosed(TSharedRef<SDockTab> TabBeingClosed);
-
-	/** Called to spawn the Message Log major tab. */
-	TSharedRef<SDockTab> SpawnMessageLogTab(const FSpawnTabArgs& Args);
 
 	/** Updates this manager, done through FCoreTicker. */
 	bool Tick(float DeltaTime);
@@ -263,23 +328,32 @@ private:
 private:
 	bool bIsInitialized;
 
+	/** If true, the "high system memory usage warning" will be disabled until the system memory usage first drops below a certain threshold. */
+	bool bMemUsageLimitHysteresis;
+
+	/** The timestamp when has occurred the last check for system memory usage. */
+	uint64 MemUsageLimitLastTimestamp;
+
+	/** The name of the Unreal Insights log listing. */
+	FName LogListingName;
+
 	/** The delegate to be invoked when this manager ticks. */
 	FTickerDelegate OnTick;
 
 	/** Handle to the registered OnTick. */
-	FDelegateHandle OnTickHandle;
+	FTSTicker::FDelegateHandle OnTickHandle;
 
-	TSharedRef<Trace::IAnalysisService> AnalysisService;
-	TSharedRef<Trace::IModuleService> ModuleService;
+	TSharedRef<TraceServices::IAnalysisService> AnalysisService;
+	TSharedRef<TraceServices::IModuleService> ModuleService;
 
 	/** The location of the trace files managed by the trace store. */
 	FString StoreDir;
 
 	/** The client used to connect to the trace store. */
-	TUniquePtr<Trace::FStoreClient> StoreClient;
+	TUniquePtr<UE::Trace::FStoreClient> StoreClient;
 
 	/** The trace analysis session. */
-	TSharedPtr<const Trace::IAnalysisSession> Session;
+	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	/** The id of the trace being analyzed. */
 	uint32 CurrentTraceId;
@@ -296,19 +370,20 @@ private:
 	/** An instance of the main settings. */
 	FInsightsSettings Settings;
 
-	/** A weak pointer to the Start Page window. */
-	TWeakPtr<class SStartPageWindow> StartPageWindow;
+	/** A weak pointer to the Trace Store window. */
+	TWeakPtr<class STraceStoreWindow> TraceStoreWindow;
+
+	/** A weak pointer to the Connection window. */
+	TWeakPtr<class SConnectionWindow> ConnectionWindow;
+
+	/** A weak pointer to the Launcher window. */
+	TWeakPtr<class SLauncherWindow> LauncherWindow;
 
 	/** A weak pointer to the Session Info window. */
 	TWeakPtr<class SSessionInfoWindow> SessionInfoWindow;
 
-	TSharedPtr<class SWidget> InsightsMessageLog;
-	TSharedPtr<FInsightsMessageLogViewModel> InsightsMessageLogViewModel;
-
 	/** If enabled, UI can display additional info for debugging purposes. */
 	bool bIsDebugInfoEnabled;
-
-	bool bShouldOpenAnalysisInSeparateProcess;
 
 	FStopwatch AnalysisStopwatch;
 	bool bIsAnalysisComplete;

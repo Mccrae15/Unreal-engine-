@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Backends/CborStructSerializerBackend.h"
-#include "UObject/UnrealType.h"
+
+#include "StructSerializationUtilities.h"
 #include "UObject/EnumProperty.h"
-#include "UObject/TextProperty.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/TextProperty.h"
+#include "UObject/UnrealType.h"
 
 FCborStructSerializerBackend::FCborStructSerializerBackend(FArchive& InArchive)
 	: CborWriter(&InArchive)
@@ -215,7 +217,15 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 	// Double & Float
 	else if (State.FieldType == FDoubleProperty::StaticClass())
 	{
-		WritePropertyValue(CborWriter, State, CastFieldChecked<FDoubleProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex));
+		if (EnumHasAnyFlags(Flags, EStructSerializerBackendFlags::WriteLWCTypesAsFloats) && StructSerializationUtilities::IsLWCType(State.ValueProperty->GetOwnerStruct()))
+		{
+			const double Value = CastFieldChecked<FDoubleProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
+			WritePropertyValue(CborWriter, State, static_cast<float>(Value));
+		}
+		else
+		{
+			WritePropertyValue(CborWriter, State, CastFieldChecked<FDoubleProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex));
+		}
 	}
 	else if (State.FieldType == FFloatProperty::StaticClass())
 	{
@@ -287,20 +297,10 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 	}
 
 	// Classes & Objects
-	else if (State.FieldType == FClassProperty::StaticClass())
-	{
-		UObject* const& Value = CastFieldChecked<FClassProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
-		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
-	}
 	else if (State.FieldType == FSoftClassProperty::StaticClass())
 	{
 		FSoftObjectPtr const& Value = CastFieldChecked<FSoftClassProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
 		WritePropertyValue(CborWriter, State, Value.IsValid() ? Value->GetPathName() : FString());
-	}
-	else if (State.FieldType == FObjectProperty::StaticClass())
-	{
-		UObject* const& Value = CastFieldChecked<FObjectProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
-		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
 	}
 	else if (State.FieldType == FWeakObjectProperty::StaticClass())
 	{
@@ -311,6 +311,14 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 	{
 		FSoftObjectPtr const& Value = CastFieldChecked<FSoftObjectProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
 		WritePropertyValue(CborWriter, State, Value.ToString());
+	}
+	else if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(State.ValueProperty))
+	{
+		// @TODO: Could this be expanded to include everything derived from FObjectPropertyBase?
+		// Generic handling for a property type derived from FObjectProperty that is obtainable as a pointer and will be stored using its path.
+		// This must come after all the more specialized handlers for object property types.
+		UObject* const Value = ObjectProperty->GetObjectPropertyValue_InContainer(State.ValueData, ArrayIndex);
+		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
 	}
 
 	// Unsupported

@@ -8,6 +8,7 @@
 #include "Templates/IsFloatingPoint.h"
 #include "Templates/IsIntegral.h"
 #include "Templates/IsSigned.h"
+#include "FloatArrayMath.h"
 
 // Macros which can be enabled to cause DSP sample checking
 #if 0
@@ -77,17 +78,171 @@ namespace Audio
 		return X2;
 	}
 
+	// Valid on interval [-PI, PI] 
 	// Sine approximation using Bhaskara I technique discovered in 7th century. 
 	// https://en.wikipedia.org/wiki/Bh%C4%81skara_I
 	static FORCEINLINE float FastSin3(const float X)
 	{
-		// Component used to get negative radians
-		const float SafeX = X < 0.0f ? FMath::Min(X, -SMALL_NUMBER) : FMath::Max(X, SMALL_NUMBER);
-		const float Temp = SafeX * SafeX / FMath::Abs(SafeX);
-		const float Numerator = 16.0f * SafeX * (PI - Temp);
-		const float Denominator = 5.0f * PI * PI - 4.0f * Temp * (PI - Temp);
+		const float AbsX = FMath::Abs(X);
+		const float Numerator = 16.0f * X * (PI - AbsX);
+		const float Denominator = 5.0f * PI * PI - 4.0f * AbsX * (PI - AbsX);
 		return Numerator / Denominator;
 	}
+	
+	/**
+	* Generates a sine wave in the given buffer with the given frequency.
+	* 
+	* Uses the method of generating a 2D point on the unit circle and multiplying
+	* with a 2d rotation matrix to advance the phase. Very accurate and very fast.
+	* 
+	* Use this unless you're changing frequency every few samples on very tiny
+	* blocks (single digit sample count)
+	* 
+	* Distortion vs directly calling FMath::Sin() is on the order of -100db, and is roughly
+	* 10x faster (for constant frequency).
+	* 
+	* Frequency changes are not interpolated across the buffer, so dramatic changes
+	* could introduce aliasing due to a discontinuous derivative in the output.
+	* If you're changing frequencies by a lot, constantly, you should probably 
+	* use VectorSinCos in a loop.
+	* 
+	* Usage:
+	* 
+	* constexpr const int32 ChunkSampleCount = 480;
+	* alignas (sizeof(VectorRegister4Float)) float ChunkBuffer[ChunkSampleCount];
+	* FSinOscBufferGenerator Generator;
+	* Generator.GenerateBuffer(48000, 400, ChunkBuffer, ChunkSampleCount);
+	* 
+	* ChunkBuffer now has 10ms of sine tone at 400hz. The next call will
+	* continue the sine tone where it left off.
+	*
+	*/
+	class FSinOsc2DRotation
+	{
+	public:
+		FSinOsc2DRotation(float InStartingPhaseRadians = 0.f)
+		{
+			LastPhasePerSample = -1;
+			LastPhase = InStartingPhaseRadians;
+		}
+
+		FSinOsc2DRotation(FSinOsc2DRotation const& other)
+		{
+			FMemory::Memcpy(this, &other, sizeof(FSinOsc2DRotation));
+		}
+
+		FSinOsc2DRotation& operator=(FSinOsc2DRotation const& other)
+		{
+			FMemory::Memcpy(this, &other, sizeof(FSinOsc2DRotation));
+			return *this;
+		}
+
+		/**
+		* Generates the sine tone, continuing from the last phase.
+		* 
+		* @param SampleRate the sample rate the buffer will be played at
+		* @param ClampedFrequency the frequency of the tone to emit, clamped to nyquist (SampleRate/2)
+		* @param Buffer the output buffer
+		* @param BufferSampleCount the number of samples in the buffer. Generally, this should be %4 granularity.
+		* 
+		*/
+		void GenerateBuffer(float SampleRate, float ClampedFrequency, float* Buffer, int32 BufferSampleCount)
+		{
+			// Regenerate our vector rotation components if our changes.
+			const float PhasePerSample = (ClampedFrequency * (2 * PI)) / (SampleRate);
+			if (LastPhasePerSample != PhasePerSample)
+			{
+				float QuadDx = FMath::Cos(PhasePerSample * 4);
+				float QuadDy = FMath::Sin(PhasePerSample * 4);
+
+				QuadDxVec = VectorLoadFloat1(&QuadDx);
+				QuadDyVec = VectorLoadFloat1(&QuadDy);
+
+				LastPhasePerSample = PhasePerSample;
+			}
+
+			float* Write = Buffer;
+
+			// The rotation matrix drifts, so we resync every so often
+			while (BufferSampleCount)
+			{
+				// The concept here is that cos/sin are points on a unit circle,
+				// so an oscilator is just a rotation of that point.
+				//
+				// To avoid drift, we resync off of an accurate sin/cos every evaluation
+				// then do a 2d rotation in the actual loop.
+				//
+				// we store 4 points at once to use SIMD, so each rotation is actually
+				// 4x the phase delta.
+				//
+				alignas(16) float PhaseSource[4];
+				PhaseSource[0] = LastPhase + 0 * PhasePerSample;
+				PhaseSource[1] = LastPhase + 1 * PhasePerSample;
+				PhaseSource[2] = LastPhase + 2 * PhasePerSample;
+				PhaseSource[3] = LastPhase + 3 * PhasePerSample;
+
+				VectorRegister4Float PhaseVec = VectorLoadAligned(PhaseSource);
+				VectorRegister4Float XVector, YVector;
+
+				// We need an accurate representation of the delta
+				// vectors since we are integrating it
+				VectorSinCos(&YVector, &XVector, &PhaseVec);
+
+				// Copy to local (the compiler actually didn't do this!)
+				VectorRegister4Float LocalDxVec = QuadDxVec;
+				VectorRegister4Float LocalDyVec = QuadDyVec;
+				
+				int32 BlockSampleCount = BufferSampleCount;
+				if (BlockSampleCount > 480)
+					BlockSampleCount = 480;
+
+				// Unrolling this didn't seem to really help perf wise.
+				int32 Block4 = BlockSampleCount >> 2;
+				while (Block4)
+				{
+					VectorStore(YVector, Write);
+
+					// 2D rotation matrix.
+					VectorRegister4Float NewX = VectorSubtract(VectorMultiply(LocalDxVec, XVector), VectorMultiply(LocalDyVec, YVector));
+					VectorRegister4Float NewY = VectorAdd(VectorMultiply(LocalDyVec, XVector), VectorMultiply(LocalDxVec, YVector));
+
+					XVector = NewX;
+					YVector = NewY;
+
+					Write += 4;
+					Block4--;
+				}
+
+				constexpr int32 SIMD_MASK = 0x00000003;
+				if (BlockSampleCount & SIMD_MASK)
+				{
+					// We've actually already calculated the next quad - it's in YVector
+					alignas(16) float YFloats[4];
+					//VectorStoreAligned(YVector, YFloats);
+					VectorStore(YVector, YFloats);
+
+					int32 Remn = BlockSampleCount & SIMD_MASK;
+					for (int32 i = 0; i < Remn; i++)
+					{
+						Write[i] = YFloats[i];
+					}
+				}
+
+				// Advance phase, range reduce, and store.
+				float PhaseInRadians = LastPhase + BlockSampleCount * PhasePerSample;
+				PhaseInRadians -= FMath::FloorToFloat(PhaseInRadians / (2 * PI)) * (2 * PI);
+				LastPhase = PhaseInRadians;
+
+				BufferSampleCount -= BlockSampleCount;
+			} // end while BufferSampleCount
+		} // end GenerateBuffer
+
+	private:
+		VectorRegister4Float QuadDxVec, QuadDyVec;
+		float LastPhasePerSample;
+		float LastPhase;
+		float Dx, Dy;
+	}; // end FSinOsc2DRotation
 
 	// Fast tanh based on pade approximation
 	static FORCEINLINE float FastTanh(float X)
@@ -118,6 +273,26 @@ namespace Audio
 		return 0.5f * X + 0.5f;
 	}
 
+	// Converts in place a buffer into Unipolar (0..1)
+	// This is a Vector op version of the GetUnipolar function. (0.5f * X + 0.5f).
+	static void ConvertBipolarBufferToUnipolar(float* InAlignedBuffer, int32 NumSamples)
+	{
+		// Make sure buffers are aligned and we can do a whole number of loops.
+		check(IsAligned(InAlignedBuffer, sizeof(VectorRegister4Float)));
+		check(NumSamples % 4 == 0);
+
+		const VectorRegister4Float Half = VectorSetFloat1(0.5f);
+
+		// Process buffer 1 vector (4 floats) at a time.
+		for(int32 i = NumSamples / 4; i; --i, InAlignedBuffer += 4)
+		{
+			VectorRegister4Float V = VectorLoadAligned(InAlignedBuffer);
+			V = VectorMultiply(V, Half);
+			V = VectorAdd(V, Half);
+			VectorStoreAligned(V, InAlignedBuffer);
+		}
+	}
+
 	// Using midi tuning standard, compute frequency in hz from midi value
 	static FORCEINLINE float GetFrequencyFromMidi(const float InMidiNote)
 	{
@@ -130,22 +305,22 @@ namespace Audio
 		// Check if equal as well as less than to avoid round error in case where at edges.
 		if (InValue <= Domain.X)
 		{
-			return Range.X;
+			return UE_REAL_TO_FLOAT(Range.X);
 		}
 
 		if (InValue >= Domain.Y)
 		{
-			return Range.Y;
+			return UE_REAL_TO_FLOAT(Range.Y);
 		}
 
 		//Handle edge case of NaN
 		if (FMath::IsNaN(InValue))
 		{
-			return Range.X;
+			return UE_REAL_TO_FLOAT(Range.X);
 		}
 
 		const FVector2D RangeLog(FMath::Max(FMath::Loge(Range.X), SMALL_NUMBER), FMath::Min(FMath::Loge(Range.Y), BIG_NUMBER));
-		const float FreqLinear = FMath::GetMappedRangeValueUnclamped(Domain, RangeLog, InValue);
+		const float FreqLinear = (float)FMath::GetMappedRangeValueUnclamped(Domain, RangeLog, (FVector2D::FReal)InValue);
 		return FMath::Exp(FreqLinear);
 	}
 
@@ -155,23 +330,23 @@ namespace Audio
 		// Check if equal as well as less than to avoid round error in case where at edges.
 		if (InFrequencyValue <= Range.X)
 		{
-			return Domain.X;
+			return UE_REAL_TO_FLOAT(Domain.X);
 		}
 
 		if (InFrequencyValue >= Range.Y)
 		{
-			return Domain.Y;
+			return UE_REAL_TO_FLOAT(Domain.Y);
 		}
 
 		//Handle edge case of NaN
 		if (FMath::IsNaN(InFrequencyValue))
 		{
-			return Domain.X;
+			return UE_REAL_TO_FLOAT(Domain.X);
 		}
 
 		const FVector2D RangeLog(FMath::Max(FMath::Loge(Range.X), SMALL_NUMBER), FMath::Min(FMath::Loge(Range.Y), BIG_NUMBER));
-		const float FrequencyLog = FMath::Loge(InFrequencyValue);
-		return FMath::GetMappedRangeValueUnclamped(RangeLog, Domain, FrequencyLog);
+		const FVector2D::FReal FrequencyLog = FMath::Loge(InFrequencyValue);
+		return UE_REAL_TO_FLOAT(FMath::GetMappedRangeValueUnclamped(RangeLog, Domain, FrequencyLog));
 	}
 
 	// Using midi tuning standard, compute midi from frequency in hz
@@ -200,6 +375,16 @@ namespace Audio
 		return FMath::Pow(2.0f, InPitchSemitones / 12.0f);
 	}
 
+	// Returns the number of semitones relative to a base frequency given the input frequency multiplier
+	static FORCEINLINE float GetSemitones(const float InMultiplier)
+	{
+		if (InMultiplier <= 0.0f)
+		{
+			return 12.0f * FMath::Log2(SMALL_NUMBER);
+		}
+		return 12.0f * FMath::Log2(InMultiplier);
+	}
+
 	// Calculates equal power stereo pan using sinusoidal-panning law and cheap approximation for sin
 	// InLinear pan is [-1.0, 1.0] so it can be modulated by a bipolar LFO
 	static FORCEINLINE void GetStereoPan(const float InLinearPan, float& OutLeft, float& OutRight)
@@ -210,7 +395,7 @@ namespace Audio
 		OutRight = FMath::Clamp(FastSin(RightPhase), 0.0f, 1.0f);
 	}
  
-	// This function encodes a stereo Left/Right signal into a stereo Mid/Side signal 
+	// Encodes a stereo Left/Right signal into a stereo Mid/Side signal 
 	static FORCEINLINE void EncodeMidSide(float& LeftChannel, float& RightChannel)
 	{
 		const float Temp = (LeftChannel - RightChannel);
@@ -219,7 +404,15 @@ namespace Audio
 		RightChannel = Temp;
 	}
 
-	// This function decodes a stereo Mid/Side signal into a stereo Left/Right signal
+	// Encodes a stereo Left/Right signal into a stereo Mid/Side signal
+	SIGNALPROCESSING_API void EncodeMidSide(
+		const FAlignedFloatBuffer& InLeftChannel,
+		const FAlignedFloatBuffer& InRightChannel,
+		FAlignedFloatBuffer& OutMidChannel,
+		FAlignedFloatBuffer& OutSideChannel);
+	
+
+	// Decodes a stereo Mid/Side signal into a stereo Left/Right signal
 	static FORCEINLINE void DecodeMidSide(float& MidChannel, float& SideChannel)
 	{
 		const float Temp = (MidChannel - SideChannel) * 0.5f;
@@ -227,6 +420,13 @@ namespace Audio
 		MidChannel = (MidChannel + SideChannel) * 0.5f;
 		SideChannel = Temp;
 	}
+
+	// Decodes a stereo Mid/Side signal into a stereo Left/Right signal
+	SIGNALPROCESSING_API void DecodeMidSide(
+		const FAlignedFloatBuffer& InMidChannel,
+		const FAlignedFloatBuffer& InSideChannel,
+		FAlignedFloatBuffer& OutLeftChannel,
+		FAlignedFloatBuffer& OutRightChannel);
 
 	// Helper function to get bandwidth from Q
 	static FORCEINLINE float GetBandwidthFromQ(const float InQ)
@@ -294,15 +494,15 @@ namespace Audio
 			{
 				if (i != j)
 				{
-					float Denom = Points[i].X - Points[j].X;
+					float Denom = UE_REAL_TO_FLOAT(Points[i].X - Points[j].X);
 					if (FMath::Abs(Denom) < SMALL_NUMBER)
 					{
 						Denom = SMALL_NUMBER;
 					}
-					Lagrangian *= (Alpha - Points[j].X) / Denom;
+					Lagrangian *= (Alpha - UE_REAL_TO_FLOAT(Points[j].X)) / Denom;
 				}
 			}
-			Output += Lagrangian * Points[i].Y;
+			Output += Lagrangian * UE_REAL_TO_FLOAT(Points[i].Y);
 		}
 		return Output;
 	}
@@ -606,6 +806,22 @@ namespace Audio
 			SetCapacity(0);
 		}
 
+		TCircularAudioBuffer(const TCircularAudioBuffer<SampleType, Alignment>& InOther)
+		{
+			*this = InOther;
+		}
+
+		TCircularAudioBuffer& operator=(const TCircularAudioBuffer<SampleType, Alignment>& InOther)
+		{
+			InternalBuffer = InOther.InternalBuffer;
+			Capacity = InOther.Capacity;
+			ReadCounter.Set(InOther.ReadCounter.GetValue());
+			WriteCounter.Set(InOther.WriteCounter.GetValue());
+
+			return *this;
+		}
+
+
 		TCircularAudioBuffer(uint32 InCapacity)
 		{
 			SetCapacity(InCapacity);
@@ -626,8 +842,40 @@ namespace Audio
 			InternalBuffer.AddZeroed(Capacity);
 		}
 
+		/** Reserve capacity.
+		 *
+		 * @param InMinimumCapacity - Minimum capacity of circular buffer.
+		 * @param bRetainExistingSamples - If true, existing samples in the buffer will be retained. If false, they are discarded.
+		 */
+		void Reserve(uint32 InMinimumCapacity, bool bRetainExistingSamples)
+		{
+			if (Capacity <= InMinimumCapacity)
+			{
+				uint32 NewCapacity = InMinimumCapacity + 1;
+
+				checkf(NewCapacity < (uint32)TNumericLimits<int32>::Max(), TEXT("Max capacity overflow. Requested %d. Maximum allowed %d"), NewCapacity, TNumericLimits<int32>::Max());
+
+				uint32 NumToAdd = NewCapacity - Capacity;
+				InternalBuffer.AddZeroed(NumToAdd);
+				Capacity = NewCapacity;
+			}
+
+			if (!bRetainExistingSamples)
+			{
+				ReadCounter.Set(0);
+				WriteCounter.Set(0);
+			}
+		}
+
+		/** Push an array of values into circular buffer. */
+		int32 Push(TArrayView<const SampleType> InBuffer)
+		{
+			return Push(InBuffer.GetData(), InBuffer.Num());
+		}
+
 		// Pushes some amount of samples into this circular buffer.
 		// Returns the amount of samples written.
+		// This can only be used for trivially copyable types.
 		int32 Push(const SampleType* InBuffer, uint32 NumSamples)
 		{
 			SampleType* DestBuffer = InternalBuffer.GetData();
@@ -664,10 +912,50 @@ namespace Audio
 			return NumToZeroEnd;
 		}
 
-		// Same as Pop(), but does not increment the read counter.
-		int32 Peek(SampleType* OutBuffer, uint32 NumSamples)
+		// Push a single sample onto this buffer.
+		// Returns false if the buffer is full.
+		bool Push(const SampleType& InElement)
 		{
-			SampleType* SrcBuffer = InternalBuffer.GetData();
+			if (Remainder() == 0)
+			{
+				return false;
+			}
+			else
+			{
+				SampleType* DestBuffer = InternalBuffer.GetData();
+				const uint32 ReadIndex = ReadCounter.GetValue();
+				const uint32 WriteIndex = WriteCounter.GetValue();
+
+				DestBuffer[WriteIndex] = InElement;
+
+				WriteCounter.Set((WriteIndex + 1) % Capacity);
+				return true;
+			}
+		}
+
+		bool Push(SampleType&& InElement)
+		{
+			if (Remainder() == 0)
+			{
+				return false;
+			}
+			else
+			{
+				SampleType* DestBuffer = InternalBuffer.GetData();
+				const uint32 ReadIndex = ReadCounter.GetValue();
+				const uint32 WriteIndex = WriteCounter.GetValue();
+
+				DestBuffer[WriteIndex] = MoveTemp(InElement);
+
+				WriteCounter.Set((WriteIndex + 1) % Capacity);
+				return true;
+			}
+		}
+
+		// Same as Pop(), but does not increment the read counter.
+		int32 Peek(SampleType* OutBuffer, uint32 NumSamples) const
+		{
+			const SampleType* SrcBuffer = InternalBuffer.GetData();
 			const uint32 ReadIndex = ReadCounter.GetValue();
 			const uint32 WriteIndex = WriteCounter.GetValue();
 
@@ -683,6 +971,25 @@ namespace Audio
 			return NumToCopy;
 		}
 
+		// Peeks a single element.
+		// returns false if the element is empty.
+		bool Peek(SampleType& OutElement) const
+		{
+			if (Num() == 0)
+			{
+				return false;
+			}
+			else
+			{
+				SampleType* SrcBuffer = InternalBuffer.GetData();
+				const uint32 ReadIndex = ReadCounter.GetValue();
+				
+				OutElement = SrcBuffer[ReadIndex];
+
+				return true;
+			}
+		}
+
 		// Pops some amount of samples into this circular buffer.
 		// Returns the amount of samples read.
 		int32 Pop(SampleType* OutBuffer, uint32 NumSamples)
@@ -693,6 +1000,34 @@ namespace Audio
 			ReadCounter.Set((ReadCounter.GetValue() + NumSamplesRead) % Capacity);
 
 			return NumSamplesRead;
+		}
+
+		// Pops some amount of samples into this circular buffer.
+		// Returns the amount of samples read.
+		int32 Pop(uint32 NumSamples)
+		{
+			check(NumSamples < ((uint32)TNumericLimits<int32>::Max()));
+
+			int32 NumSamplesRead = FMath::Min<int32>(NumSamples, Num());
+
+			ReadCounter.Set((ReadCounter.GetValue() + NumSamplesRead) % Capacity);
+
+			return NumSamplesRead;
+		}
+
+		// Pops a single element.
+		// Will assert if the buffer is empty. Please check Num() > 0 before calling.
+		SampleType Pop()
+		{
+			// Calling this when the buffer is empty is considered a fatal error.
+			check(Num() > 0);
+
+			SampleType* SrcBuffer = InternalBuffer.GetData();
+			const uint32 ReadIndex = ReadCounter.GetValue();
+
+			SampleType PoppedValue = MoveTempIfPossible(InternalBuffer[ReadIndex]);
+			ReadCounter.Set((ReadCounter.GetValue() + 1) % Capacity);
+			return PoppedValue;
 		}
 
 		// When called, seeks the read or write cursor to only retain either the NumSamples latest data
@@ -719,7 +1054,7 @@ namespace Audio
 		}
 
 		// Get number of samples that can be popped off of the buffer.
-		uint32 Num()
+		uint32 Num() const
 		{
 			const int32 ReadIndex = ReadCounter.GetValue();
 			const int32 WriteIndex = WriteCounter.GetValue();
@@ -735,13 +1070,13 @@ namespace Audio
 		}
 
 		// Get the current capacity of the buffer
-		uint32 GetCapacity()
+		uint32 GetCapacity() const
 		{
 			return Capacity;
 		}
 
 		// Get number of samples that can be pushed onto the buffer before it is full.
-		uint32 Remainder()
+		uint32 Remainder() const
 		{
 			const uint32 ReadIndex = ReadCounter.GetValue();
 			const uint32 WriteIndex = WriteCounter.GetValue();

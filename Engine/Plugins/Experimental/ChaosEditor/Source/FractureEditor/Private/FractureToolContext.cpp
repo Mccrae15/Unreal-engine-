@@ -3,6 +3,7 @@
 #include "FractureToolContext.h"
 
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
 
 
 FFractureToolContext::FFractureToolContext(UGeometryCollectionComponent* InGeometryCollectionComponent)
@@ -13,8 +14,7 @@ FFractureToolContext::FFractureToolContext(UGeometryCollectionComponent* InGeome
 
 	Transform = GeometryCollectionComponent->GetOwner()->GetActorTransform();
 
-	FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent->EditRestCollection();
-	if (UGeometryCollection* GeometryCollectionObject = GeometryCollectionEdit.GetRestCollection())
+	if (UGeometryCollection* GeometryCollectionObject = RestCollection.GetRestCollection())
 	{
 		GeometryCollection = GeometryCollectionObject->GetGeometryCollection();
 		SelectedBones = GeometryCollectionComponent->GetSelectedBones();
@@ -22,7 +22,7 @@ FFractureToolContext::FFractureToolContext(UGeometryCollectionComponent* InGeome
 }
 
 
-void FFractureToolContext::Sanitize()
+void FFractureToolContext::Sanitize(bool bFavorParents)
 {
 	// Ensure that selected indices are valid
 	int NumTransforms = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
@@ -31,9 +31,12 @@ void FFractureToolContext::Sanitize()
 		});
 	
 	// Ensure that children of a selected node are not also selected.
-	SelectedBones.RemoveAll([this](int32 Index) {
-		return !IsValidBone(Index) || HasSelectedAncestor(Index);
-		});
+	if (bFavorParents)
+	{
+		SelectedBones.RemoveAll([this](int32 Index) {
+			return !IsValidBone(Index) || HasSelectedAncestor(Index);
+			});
+	}
 
 	SelectedBones.Sort();
 }
@@ -49,6 +52,11 @@ void FFractureToolContext::RemoveRootNodes()
 	SelectedBones.RemoveAll([this](int32 Index) {
 		return FGeometryCollectionClusteringUtility::IsARootBone(this->GeometryCollection.Get(), Index);
 		});
+}
+
+void FFractureToolContext::GenerateGuids(int32 StartIdx)
+{
+	::GeometryCollection::GenerateTemporaryGuids(this->GeometryCollection.Get(), StartIdx, true);
 }
 
 TMap<int32, TArray<int32>> FFractureToolContext::GetClusteredSelections()
@@ -95,6 +103,18 @@ void FFractureToolContext::ConvertSelectionToLeafNodes(int32 Index, TArray<int32
 	}	
 }
 
+void FFractureToolContext::RandomReduceSelection(float ProbToKeep)
+{
+	FRandomStream RandStream(GetSeed());
+	for (int32 i = 0; i < SelectedBones.Num(); i++)
+	{
+		if (RandStream.GetFraction() >= ProbToKeep) // range does not include 1, so if ProbToKeep is 1 this will never remove
+		{
+			SelectedBones.RemoveAtSwap(i);
+			i--;
+		}
+	}
+}
 
 void FFractureToolContext::ConvertSelectionToRigidNodes()
 {
@@ -189,11 +209,6 @@ void FFractureToolContext::ConvertSelectionToClusterNodes()
 	Sanitize();
 }
 
-void FFractureToolContext::TransformBoundsToWorld()
-{
-	Bounds = Bounds.TransformBy(Transform);
-}
-
 
 bool FFractureToolContext::HasSelectedAncestor(int32 Index) const
 {
@@ -217,4 +232,6 @@ bool FFractureToolContext::HasSelectedAncestor(int32 Index) const
 	// We've arrived at the top of the hierarchy with no selected ancestors
 	return false;
 }
+
+
 

@@ -21,6 +21,7 @@ UInputSettings::UInputSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bCaptureMouseOnLaunch(true)
 	, bDefaultViewportMouseLock_DEPRECATED(false)
+	, bEnableLegacyInputScales(true)
 	, DefaultViewportMouseCaptureMode(EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown)
 	, DefaultViewportMouseLockMode(EMouseLockMode::LockOnCapture)
 	, DefaultPlayerInputClass(UPlayerInput::StaticClass())
@@ -55,7 +56,7 @@ void UInputSettings::RemoveInvalidKeys()
 			}
 			//if there were any indices to remove, save the new values
 			SaveConfig();
-			UpdateDefaultConfigFile();
+			TryUpdateDefaultConfigFile();
 		}
 		else
 		{
@@ -186,6 +187,11 @@ void UInputSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 	{
 		ForceRebuildKeymaps();
 		FEditorDelegates::OnActionAxisMappingsChanged.Broadcast();
+	}
+
+	if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(UInputSettings, bEnableGestureRecognizer))
+	{
+		FEditorDelegates::OnEnableGestureRecognizerChanged.Broadcast();
 	}
 }
 
@@ -460,3 +466,22 @@ UClass* UInputSettings::GetDefaultInputComponentClass()
 	ensureMsgf(Class.IsValid(), TEXT("Invalid InputComponent class in Input Settings. Manual reset required."));
 	return Class.IsValid() ? Class.Get() : UInputComponent::StaticClass();
 }
+
+void UInputSettings::SetDefaultPlayerInputClass(TSubclassOf<UPlayerInput> NewDefaultPlayerInputClass)
+{
+	if(ensure(NewDefaultPlayerInputClass))
+	{
+		UInputSettings* InputSettings = Cast<UInputSettings>(UInputSettings::StaticClass()->GetDefaultObject());
+		InputSettings->DefaultPlayerInputClass = NewDefaultPlayerInputClass;	
+	}
+}
+
+void UInputSettings::SetDefaultInputComponentClass(TSubclassOf<UInputComponent> NewDefaultInputComponentClass)
+{
+	if(ensure(NewDefaultInputComponentClass))
+	{
+		UInputSettings* InputSettings = Cast<UInputSettings>(UInputSettings::StaticClass()->GetDefaultObject());
+		InputSettings->DefaultInputComponentClass = NewDefaultInputComponentClass;	
+	}
+}
+

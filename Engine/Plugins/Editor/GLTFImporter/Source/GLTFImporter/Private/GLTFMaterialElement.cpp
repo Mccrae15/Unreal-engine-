@@ -14,6 +14,8 @@
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
+#include "Materials/MaterialExpressionClearCoatNormalCustomOutput.h"
 
 namespace GLTFImporterImpl
 {
@@ -233,6 +235,32 @@ void FGLTFMaterialElement::SetTwoSided(bool bTwoSided)
 	Material->TwoSided = bTwoSided;
 }
 
+void FGLTFMaterialElement::SetShadingModel(GLTF::EGLTFMaterialShadingModel InShadingModel)
+{
+	EMaterialShadingModel MaterialShadingModel;
+
+	switch (InShadingModel)
+	{
+		case GLTF::EGLTFMaterialShadingModel::ClearCoat:
+			MaterialShadingModel = EMaterialShadingModel::MSM_ClearCoat;
+			break;
+		case GLTF::EGLTFMaterialShadingModel::Subsurface:
+			MaterialShadingModel = EMaterialShadingModel::MSM_Subsurface;
+			break;
+		case GLTF::EGLTFMaterialShadingModel::ThinTranslucent:
+			MaterialShadingModel = EMaterialShadingModel::MSM_ThinTranslucent;
+			break;
+		default: MaterialShadingModel = EMaterialShadingModel::MSM_DefaultLit;
+
+	};
+	Material->SetShadingModel(MaterialShadingModel);
+}
+
+void FGLTFMaterialElement::SetTranslucencyLightingMode(int InLightingMode)
+{
+	Material->TranslucencyLightingMode = static_cast<ETranslucencyLightingMode>( InLightingMode );
+}
+
 void FGLTFMaterialElement::Finalize()
 {
 	check(!bIsFinal);
@@ -247,8 +275,44 @@ void FGLTFMaterialElement::Finalize()
 	ConnectInput(Opacity, MaterialExpressions, Material->Opacity);
 	ConnectInput(Refraction, MaterialExpressions, Material->Refraction);
 	ConnectInput(Normal, MaterialExpressions, Material->Normal);
-	ConnectInput(WorldDisplacement, MaterialExpressions, Material->WorldDisplacement);
 	ConnectInput(AmbientOcclusion, MaterialExpressions, Material->AmbientOcclusion);
+	ConnectInput(ClearCoat, MaterialExpressions, Material->ClearCoat);
+	ConnectInput(ClearCoatRoughness, MaterialExpressions, Material->ClearCoatRoughness);
+
+	// Handle transmission materials (they add a special output node to the graph)
+	if (ThinTranslucentMaterialOutput)
+	{
+		const int32 ThinTranslucentExpressionIndex = Expressions.Find(ThinTranslucentMaterialOutput);
+		
+		if (ThinTranslucentExpressionIndex != INDEX_NONE && MaterialExpressions[ThinTranslucentExpressionIndex].IsValid())
+		{
+			UMaterialExpression& ThinTranslucentMaterialExpression = *MaterialExpressions[ThinTranslucentExpressionIndex];
+
+			GLTF::FMaterialExpressionInput* ThinTranslucentInput = ThinTranslucentMaterialOutput->GetInput(0);
+
+			if (ThinTranslucentInput)
+			{
+				ConnectInput(*ThinTranslucentInput, MaterialExpressions, *ThinTranslucentMaterialExpression.GetInput(0));
+			}
+		}
+	}
+
+	if (ClearCoatBottomNormalOutput)
+	{
+		const int32 ClearCoatBottomNormalOutputIndex = Expressions.Find(ClearCoatBottomNormalOutput);
+
+		if (ClearCoatBottomNormalOutputIndex != INDEX_NONE && MaterialExpressions[ClearCoatBottomNormalOutputIndex].IsValid())
+		{
+			UMaterialExpression& ClearCoatBottomNormalMaterialExpression = *MaterialExpressions[ClearCoatBottomNormalOutputIndex];
+
+			GLTF::FMaterialExpressionInput* ClearCoatBottomNormalInput = ClearCoatBottomNormalOutput->GetInput(0);
+
+			if (ClearCoatBottomNormalInput)
+			{
+				ConnectInput(*ClearCoatBottomNormalInput, MaterialExpressions, *ClearCoatBottomNormalMaterialExpression.GetInput(0));
+			}
+		}
+	}
 
 	UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
 
@@ -259,11 +323,11 @@ void FGLTFMaterialElement::Finalize()
 	bIsFinal = true;
 }
 
-void FGLTFMaterialElement::CreateExpressions(TArray<TStrongObjectPtr<UMaterialExpression> >& MaterialExpressions) const
+void FGLTFMaterialElement::CreateExpressions(TArray<TStrongObjectPtr<UMaterialExpression> >& MaterialExpressions)
 {
 	MaterialExpressions.Empty(Expressions.Num());
 
-	for (const GLTF::FMaterialExpression* Expression : Expressions)
+	for (GLTF::FMaterialExpression* Expression : Expressions)
 	{
 		using namespace GLTFImporterImpl;
 
@@ -297,6 +361,16 @@ void FGLTFMaterialElement::CreateExpressions(TArray<TStrongObjectPtr<UMaterialEx
 		check(MaterialExpression);
 
 		MaterialExpressions.Add(TStrongObjectPtr<UMaterialExpression>(MaterialExpression));
+
+		if (MaterialExpression->GetClass() == UMaterialExpressionThinTranslucentMaterialOutput::StaticClass())
+		{
+			ThinTranslucentMaterialOutput = Expression;
+		}
+
+		if (MaterialExpression->GetClass() == UMaterialExpressionClearCoatNormalCustomOutput::StaticClass())
+		{
+			ClearCoatBottomNormalOutput = Expression;
+		}
 	}
 }
 

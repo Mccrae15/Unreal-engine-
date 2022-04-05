@@ -1413,7 +1413,7 @@ int32 UWheeledVehicleMovementComponent::GearToPhysXGear(const int32 Gear) const
 		return PxVehicleGearsData::eNEUTRAL;
 	}
 
-	return FMath::Min(PxVehicleGearsData::eNEUTRAL + Gear, PxVehicleGearsData::eGEARSRATIO_COUNT - 1);
+	return FMath::Clamp(PxVehicleGearsData::eNEUTRAL + Gear, (int32)PxVehicleGearsData::eFIRST, (int32)PxVehicleGearsData::eGEARSRATIO_COUNT - 1);
 }
 
 int32 UWheeledVehicleMovementComponent::PhysXGearToGear(const int32 PhysXGear) const
@@ -1899,10 +1899,10 @@ void UWheeledVehicleMovementComponent::DrawDebugLines()
 
 void UWheeledVehicleMovementComponent::PostEditChangeProperty( FPropertyChangedEvent& PropertyChangedEvent )
 {
-	Super::PostEditChangeProperty( PropertyChangedEvent );
-
 	// Trigger a runtime rebuild of the PhysX vehicle
 	FPhysXVehicleManager::VehicleSetupTag++;
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 #endif // WITH_EDITOR && WITH_PHYSX

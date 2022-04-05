@@ -9,10 +9,11 @@
 
 SPropertyEditorSceneDepthPicker::~SPropertyEditorSceneDepthPicker()
 {
-	FActorPickerModeModule& ActorPickerMode = FModuleManager::Get().GetModuleChecked<FActorPickerModeModule>("ActorPickerMode");
-
-	// make sure we are unregistered when this widget goes away
-	ActorPickerMode.EndActorPickingMode();
+	if (FActorPickerModeModule* ActorPickerMode = FModuleManager::Get().GetModulePtr<FActorPickerModeModule>("ActorPickerMode"))
+	{
+		// make sure we are unregistered when this widget goes away
+		ActorPickerMode->EndActorPickingMode();
+	}
 }
 
 void SPropertyEditorSceneDepthPicker::Construct(const FArguments& InArgs)
@@ -28,7 +29,7 @@ void SPropertyEditorSceneDepthPicker::Construct(const FArguments& InArgs)
 		.IsFocusable(false)
 		[ 
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_PickActorInteractive") )
+			.Image( FEditorStyle::GetBrush("Icons.EyeDropper") )
 			.ColorAndOpacity( FSlateColor::UseForeground() )
 		]
 	);

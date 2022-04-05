@@ -9,6 +9,7 @@
 #include "RendererInterface.h"
 #include "RenderTargetPool.h"
 #include "SceneInterface.h"
+#include "RenderGraphBuilder.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "VT/RuntimeVirtualTextureRender.h"
 #include "VT/VirtualTextureBuilder.h"
@@ -29,7 +30,8 @@ namespace
 
 			for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 			{
-				check(InLayerFormats[Layer] == PF_G16 || InLayerFormats[Layer] == PF_B8G8R8A8 || InLayerFormats[Layer] == PF_DXT1 || InLayerFormats[Layer] == PF_DXT5 || InLayerFormats[Layer] == PF_BC5);
+				check(InLayerFormats[Layer] == PF_G16 || InLayerFormats[Layer] == PF_B8G8R8A8 || InLayerFormats[Layer] == PF_DXT1 || InLayerFormats[Layer] == PF_DXT5 || InLayerFormats[Layer] == PF_BC5
+					|| InLayerFormats[Layer] == PF_R5G6B5_UNORM || InLayerFormats[Layer] == PF_B5G5R5A1_UNORM);
 				LayerFormats[Layer] = InLayerFormats[Layer] == PF_G16 ? PF_G16 : PF_B8G8R8A8;
 				LayerOffsets[Layer] = TotalSizeBytes;
 				TotalSizeBytes += CalculateImageBytes(InTileSize, InTileSize, 0, LayerFormats[Layer]) * InNumTilesX * InNumTilesY;
@@ -44,7 +46,7 @@ namespace
 
 			for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 			{
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("FTileRenderResources"));
 				RenderTargets[Layer] = RHICreateTexture2D(TileSize, TileSize, LayerFormats[Layer], 1, 1, TexCreate_RenderTargetable, CreateInfo);
 				StagingTextures[Layer] = RHICreateTexture2D(TileSize, TileSize, LayerFormats[Layer], 1, 1, TexCreate_CPUReadback, CreateInfo);
 			}
@@ -91,7 +93,7 @@ namespace
 		for (int32 y = 0; y < TileSize; y++)
 		{
 			memcpy(
-				DestPixels + (SIZE_T)DestStride * (SIZE_T)(DestPos[1] + y) + DestPos[0],
+				DestPixels + (SIZE_T)DestStride * ((SIZE_T)DestPos[1] + (SIZE_T)y) + DestPos[0],
 				SrcPixels + SrcStride * y,
 				TileSize * sizeof(T));
 		}
@@ -224,50 +226,50 @@ namespace RuntimeVirtualTexture
 						RHICmdList.Transition(FRHITransitionInfo(RenderTileResources.GetRenderTarget(Layer), ERHIAccess::Unknown, ERHIAccess::RTV));
 					}
 
-					RuntimeVirtualTexture::FRenderPageBatchDesc Desc;
-					Desc.Scene = Scene->GetRenderScene();
-					Desc.RuntimeVirtualTextureMask = 1 << VirtualTextureSceneIndex;
-					Desc.UVToWorld = Transform;
-					Desc.WorldBounds = Bounds;
-					Desc.MaterialType = MaterialType;
-					Desc.MaxLevel = MaxLevel;
-					Desc.bClearTextures = true;
-					Desc.bIsThumbnails = false;
-					Desc.DebugType = DebugType;
-					Desc.NumPageDescs = 1;
-					Desc.Targets[0].Texture = RenderTileResources.GetRenderTarget(0);
-					Desc.Targets[1].Texture = RenderTileResources.GetRenderTarget(1);
-					Desc.Targets[2].Texture = RenderTileResources.GetRenderTarget(2);
-					Desc.PageDescs[0].DestBox[0] = TileBox;
-					Desc.PageDescs[0].DestBox[1] = TileBox;
-					Desc.PageDescs[0].DestBox[2] = TileBox;
-					Desc.PageDescs[0].UVRange = UVRange;
-					Desc.PageDescs[0].vLevel = RenderLevel;
-
-					RuntimeVirtualTexture::RenderPages(RHICmdList, Desc);
-
-					// Transition render targets for copying
-					for (int32 Layer = 0; Layer < NumLayers; Layer++)
 					{
-						RHICmdList.Transition(FRHITransitionInfo(RenderTileResources.GetRenderTarget(Layer), ERHIAccess::RTV, ERHIAccess::SRVGraphics));
+						FMemMark MemMark(FMemStack::Get());
+						FRDGBuilder GraphBuilder(RHICmdList);
+
+						RuntimeVirtualTexture::FRenderPageBatchDesc Desc;
+						Desc.Scene = Scene->GetRenderScene();
+						Desc.RuntimeVirtualTextureMask = 1 << VirtualTextureSceneIndex;
+						Desc.UVToWorld = Transform;
+						Desc.WorldBounds = Bounds;
+						Desc.MaterialType = MaterialType;
+						Desc.MaxLevel = MaxLevel;
+						Desc.bClearTextures = true;
+						Desc.bIsThumbnails = false;
+						Desc.DebugType = DebugType;
+						Desc.NumPageDescs = 1;
+						Desc.Targets[0].Texture = RenderTileResources.GetRenderTarget(0);
+						Desc.Targets[1].Texture = RenderTileResources.GetRenderTarget(1);
+						Desc.Targets[2].Texture = RenderTileResources.GetRenderTarget(2);
+						Desc.PageDescs[0].DestBox[0] = TileBox;
+						Desc.PageDescs[0].DestBox[1] = TileBox;
+						Desc.PageDescs[0].DestBox[2] = TileBox;
+						Desc.PageDescs[0].UVRange = UVRange;
+						Desc.PageDescs[0].vLevel = RenderLevel;
+
+						RuntimeVirtualTexture::RenderPagesStandAlone(GraphBuilder, Desc);
+
+						GraphBuilder.Execute();
 					}
 
 					// Copy to staging
 					for (int32 Layer = 0; Layer < NumLayers; Layer++)
 					{
+						RHICmdList.Transition(FRHITransitionInfo(RenderTileResources.GetRenderTarget(Layer), ERHIAccess::RTV, ERHIAccess::CopySrc));
 						RHICmdList.CopyTexture(RenderTileResources.GetRenderTarget(Layer), RenderTileResources.GetStagingTexture(Layer), FRHICopyTextureInfo());
 					}
 
-					//todo[vt]: Insert fence for immediate read back. But is there no API to wait on it?
 					RHICmdList.WriteGPUFence(RenderTileResources.GetFence());
-					RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 
 					// Read back tile data and copy into final destination
 					for (int32 Layer = 0; Layer < NumLayers; Layer++)
 					{
 						void* TilePixels = nullptr;
 						int32 OutWidth, OutHeight;
-						RHICmdList.MapStagingSurface(RenderTileResources.GetStagingTexture(Layer), TilePixels, OutWidth, OutHeight);
+						RHICmdList.MapStagingSurface(RenderTileResources.GetStagingTexture(Layer), RenderTileResources.GetFence(), TilePixels, OutWidth, OutHeight);
 						check(TilePixels != nullptr);
 						check(OutHeight == TileSize);
 

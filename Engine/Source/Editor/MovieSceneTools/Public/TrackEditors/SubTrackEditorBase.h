@@ -77,6 +77,11 @@ public:
     /** Slips the section, returns the new slip time */
     FFrameNumber SlipSection(FFrameNumber SlipTime);
 
+    /** Starts a new dilate operation */
+    void BeginDilateSection();
+    /** Dilates the section */
+    void DilateSection(const TRange<FFrameNumber>& NewRange, float DilationFactor);
+
 private:
     /** The section object this utility class is editing */
     UMovieSceneSubSection& SectionObject;
@@ -86,6 +91,9 @@ private:
 
     /** Cached start time valid only during resize */
     FFrameNumber InitialStartTimeDuringResize;
+
+	/** Cached time scale valid only during dilate */
+	float PreviousTimeScale;
 };
 
 class MOVIESCENETOOLS_API FSubTrackEditorUtil
@@ -121,6 +129,7 @@ public:
     // ISequencerSection interface
     virtual UMovieSceneSection* GetSectionObject() override;
     virtual FText GetSectionTitle() const override;
+	virtual float GetSectionHeight() const override;
     virtual bool IsReadOnly() const override;
     virtual int32 OnPaintSection( FSequencerSectionPainter& InPainter ) const override;
     virtual FReply OnSectionDoubleClicked(const FGeometry& SectionGeometry, const FPointerEvent& MouseEvent) override;
@@ -128,8 +137,11 @@ public:
     virtual void ResizeSection(ESequencerSectionResizeMode ResizeMode, FFrameNumber ResizeTime) override;
     virtual void BeginSlipSection() override;
     virtual void SlipSection(FFrameNumber SlipTime) override;
+	virtual void BeginDilateSection() override;
+	virtual void DilateSection(const TRange<FFrameNumber>& NewRange, float DilationFactor) override;
 
 protected:
+	static const float TrackHeight;
     TSharedPtr<ISequencer> GetSequencer() const { return SequencerPtr.Pin(); }
     UMovieSceneSubSection& GetSubSectionObject() { return SubSectionObject; }
     const UMovieSceneSubSection& GetSubSectionObject() const { return SubSectionObject; }
@@ -150,6 +162,9 @@ private:
     /** Utility class for resizing/slipping sub-sequence sections */
     FSubSectionEditorUtil EditorUtil;
 };
+
+template<typename ParentSectionClass>
+const float TSubSectionMixin<ParentSectionClass>::TrackHeight = 50.f;
 
 template<typename ParentSectionClass>
 template<typename... ParentCtorParams>
@@ -180,6 +195,12 @@ FText TSubSectionMixin<ParentSectionClass>::GetSectionTitle() const
     }
 }
 #undef LOCTEXT_NAMESPACE
+
+template<typename ParentSectionClass>
+float TSubSectionMixin<ParentSectionClass>::GetSectionHeight() const
+{
+	return TSubSectionMixin<ParentSectionClass>::TrackHeight;
+}
 
 template<typename ParentSectionClass>
 bool TSubSectionMixin<ParentSectionClass>::IsReadOnly() const
@@ -244,5 +265,19 @@ void TSubSectionMixin<ParentSectionClass>::SlipSection(FFrameNumber SlipTime)
 {
     SlipTime = EditorUtil.SlipSection(SlipTime);
     ParentSectionClass::SlipSection(SlipTime);
+}
+
+template<typename ParentSectionClass>
+void TSubSectionMixin<ParentSectionClass>::BeginDilateSection()
+{
+    EditorUtil.BeginDilateSection();
+    ParentSectionClass::BeginDilateSection();
+}
+
+template<typename ParentSectionClass>
+void TSubSectionMixin<ParentSectionClass>::DilateSection(const TRange<FFrameNumber>& NewRange, float DilationFactor)
+{
+    EditorUtil.DilateSection(NewRange, DilationFactor);
+    ParentSectionClass::DilateSection(NewRange, DilationFactor);
 }
 

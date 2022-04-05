@@ -4,6 +4,7 @@
 #include "SceneTypes.h"
 #include "RHIDefinitions.h"
 #include "MaterialShared.h"
+#include "Styling/SlateColor.h"
 
 /** custom resource material class used to mark the resource as used for shader stats extraction */
 class MATERIALEDITOR_API FMaterialResourceStats : public FMaterialResource
@@ -16,6 +17,14 @@ public:
 	{
 		return Material;
 	}
+
+	/**
+	 * Should shaders compiled for this material be saved to disk?
+	 */
+	virtual bool IsPersistent() const override { return false; }
+
+	/** Material resource stats never requires a synchronous compilation, otherwise opening up empty (newly created) material instance will block compiling default mat's shaders. */
+	virtual bool RequiresSynchronousCompilation() const override { return false; }
 
 	/** this will enable shader source extraction and pass paths to (eventual) offline shader compilers */
 	virtual void SetupExtaCompilationSettings(const EShaderPlatform Platform, FExtraShaderCompilerSettings& Settings) const override;
@@ -38,7 +47,6 @@ enum class ERepresentativeShader
 	FirstFragmentShader,
 	StationarySurface = FirstFragmentShader,
 	StationarySurfaceCSM,
-	StationarySurface1PointLight,
 	StationarySurfaceNPointLights,
 	DynamicallyLitObject,
 	UIDefaultFragmentShader,
@@ -77,12 +85,6 @@ public:
 		{}
 	};
 
-	static const FLinearColor BlueColor;
-	static const FLinearColor YellowColor;
-	static const FLinearColor GreenColor;
-	static const FLinearColor OrangeColor;
-	static const FLinearColor DefaultGridTextColor;
-
 public:
 	/** call this to create an instance to FMaterialStats */
 	static TSharedPtr<class FMaterialStats> CreateMaterialStats(class IMaterialEditor* MaterialEditor);
@@ -106,8 +108,8 @@ public:
 
 	static FString RepresentativeShaderTypeToString(const ERepresentativeShader ShaderType);
 
-	static FLinearColor QualitySettingColor(const EMaterialQualityLevel::Type QualityType);
-	static FLinearColor PlatformTypeColor(EPlatformCategoryType PlatformType);
+	static FSlateColor QualitySettingColor(const EMaterialQualityLevel::Type QualityType);
+	static FSlateColor PlatformTypeColor(EPlatformCategoryType PlatformType);
 
 	MATERIALEDITOR_API static bool IsPlatformOfflineCompilerAvailable(const EShaderPlatform ShaderPlatform);
 	MATERIALEDITOR_API static FString GetPlatformOfflineCompilerPath(const EShaderPlatform ShaderPlatform);

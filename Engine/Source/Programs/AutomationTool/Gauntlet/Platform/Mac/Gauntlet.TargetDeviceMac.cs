@@ -6,7 +6,8 @@ using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace Gauntlet
 {
@@ -184,6 +185,7 @@ namespace Gauntlet
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Saved", "Config"));
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(ProjectDir, "Content"));
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(ProjectDir, "Saved", "Demos"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.PersistentDownloadDir, Path.Combine(ProjectDir, "Saved", "PersistentDownloadDir"));
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Saved", "Profiling"));
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Saved, Path.Combine(ProjectDir, "Saved"));
 		}
@@ -301,7 +303,7 @@ namespace Gauntlet
 					new List<UnrealTargetConfiguration>(new[] { AppConfig.Configuration }));
 
 				// Would this executable be built under Engine or a Project?
-				DirectoryReference  WorkingDir = Props.bIsCodeBasedProject ? AppConfig.ProjectFile.Directory : CommandUtils.EngineDirectory;
+				DirectoryReference  WorkingDir = Props.bIsCodeBasedProject ? AppConfig.ProjectFile.Directory : Unreal.EngineDirectory;
 
 				// The bundlepath may be under Binaries/Mac for a staged build, or it could be in any folder for a packaged build so just use the name and
 				// build the path ourselves
@@ -403,18 +405,6 @@ namespace Gauntlet
 				Log.Warning("Platform directory mappings have not been populated for this platform! This should be done within InstallApplication()");
 			}
 			return LocalDirectoryMappings;
-		}
-
-		public bool IsOSOutOfDate()
-		{
-			//TODO: not yet implemented
-			return false;
-		}
-
-		public bool UpdateOS()
-		{
-			//TODO: not yet implemented
-			return true;
 		}
 	}
 

@@ -8,7 +8,7 @@
 #include "UObject/UnrealType.h"
 #include "HAL/PlatformStackWalk.h"
 #include "Serialization/AsyncLoading.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/OutputDeviceHelper.h"
@@ -419,12 +419,13 @@ int32 FArchiveStackTrace::GetCallstackAtOffset(int64 InOffset, int32 MinOffsetIn
 	return OffsetForCallstackIndex;
 }
 
-bool FArchiveStackTrace::LoadPackageIntoMemory(const TCHAR* InFilename, FPackageData& OutPackageData)
+bool FArchiveStackTrace::LoadPackageIntoMemory(const TCHAR* InFilename, FPackageData& OutPackageData, TUniquePtr<uint8>& OutLoadedBytes)
 {
-	FArchive* UAssetFileArchive = IFileManager::Get().CreateFileReader(InFilename);
+	TUniquePtr<FArchive> UAssetFileArchive(IFileManager::Get().CreateFileReader(InFilename));
 	if (!UAssetFileArchive || UAssetFileArchive->TotalSize() == 0)
 	{
 		// The package doesn't exist on disk
+		OutLoadedBytes.Reset();
 		OutPackageData.Data = nullptr;
 		OutPackageData.Size = 0;
 		OutPackageData.HeaderSize = 0;
@@ -434,12 +435,11 @@ bool FArchiveStackTrace::LoadPackageIntoMemory(const TCHAR* InFilename, FPackage
 	else
 	{
 		// Handle EDL packages (uexp files)
-		FArchive* ExpFileArchive = nullptr;
+		TUniquePtr<FArchive> ExpFileArchive = nullptr;
 		OutPackageData.Size = UAssetFileArchive->TotalSize();
-		if (IsEventDrivenLoaderEnabledInCookedBuilds())
 		{
 			FString UExpFilename = FPaths::ChangeExtension(InFilename, TEXT("uexp"));
-			ExpFileArchive = IFileManager::Get().CreateFileReader(*UExpFilename);
+			ExpFileArchive.Reset(IFileManager::Get().CreateFileReader(*UExpFilename));
 			if (ExpFileArchive)
 			{				
 				// The header size is the current package size
@@ -448,18 +448,16 @@ bool FArchiveStackTrace::LoadPackageIntoMemory(const TCHAR* InFilename, FPackage
 				OutPackageData.Size += ExpFileArchive->TotalSize();
 			}
 		}
-		OutPackageData.Data = (uint8*)FMemory::Malloc(OutPackageData.Size);
+		OutLoadedBytes.Reset(new uint8[OutPackageData.Size]);
+		OutPackageData.Data = OutLoadedBytes.Get();
 		UAssetFileArchive->Serialize(OutPackageData.Data, UAssetFileArchive->TotalSize());
 
 		if (ExpFileArchive)
 		{
 			// If uexp file is present, append its contents at the end of the buffer
 			ExpFileArchive->Serialize(OutPackageData.Data + OutPackageData.HeaderSize, ExpFileArchive->TotalSize());
-			delete ExpFileArchive;
-			ExpFileArchive = nullptr;
 		}
 	}
-	delete UAssetFileArchive;
 
 	return true;
 }
@@ -612,7 +610,7 @@ void FArchiveStackTrace::CompareWithInternal(const FPackageData& SourcePackage, 
 					if (SourceSize == DestSize && ShouldDumpPropertyValueState(SerProp))
 					{
 						// Walk backwards until we find a callstack which wasn't from the given property
-						int32 OffsetX = DestAbsoluteOffset;
+						int64 OffsetX = DestAbsoluteOffset;
 						for (;;)
 						{
 							if (OffsetX == 0)
@@ -743,132 +741,136 @@ void FArchiveStackTrace::CompareWithInternal(const FPackageData& SourcePackage, 
 
 void FArchiveStackTrace::CompareWith(const TCHAR* InFilename, const int64 TotalHeaderSize, const TCHAR* CallstackCutoffText, const int32 MaxDiffsToLog, TMap<FName, FArchiveDiffStats>& OutStats)
 {
+	TUniquePtr<uint8> SourcePackageBytes;
 	FPackageData SourcePackage;
+	LoadPackageIntoMemory(InFilename, SourcePackage, SourcePackageBytes);
+	CompareWith(SourcePackage, InFilename, TotalHeaderSize, CallstackCutoffText, MaxDiffsToLog, OutStats);
+}
 
+
+void FArchiveStackTrace::CompareWith(const FPackageData& SourcePackage, const TCHAR* FileDisplayName, const int64 TotalHeaderSize,
+	const TCHAR* CallstackCutoffText, const int32 MaxDiffsToLog, TMap<FName, FArchiveDiffStats>&OutStats)
+{
 	OutStats.FindOrAdd(AssetClass).NewFileTotalSize = TotalSize();
-
-	if (LoadPackageIntoMemory(InFilename, SourcePackage))
-	{	
-		FPackageData DestPackage;
-		DestPackage.Data = GetData();
-		DestPackage.Size = TotalSize();
-		DestPackage.HeaderSize = TotalHeaderSize;
-		DestPackage.StartOffset = 0;
-
-		UE_LOG(LogArchiveDiff, Display, TEXT("Comparing: %s"), *GetArchiveName());
-		UE_LOG(LogArchiveDiff, Display, TEXT("Asset class: %s"), *AssetClass.ToString());
-
-		int32 NumLoggedDiffs = 0;
-
-		FPackageData SourcePackageHeader = SourcePackage;
-		SourcePackageHeader.Size = SourcePackageHeader.HeaderSize;
-		SourcePackageHeader.HeaderSize = 0;
-		SourcePackageHeader.StartOffset = 0;
-
-		FPackageData DestPackageHeader = DestPackage;
-		DestPackageHeader.Size = TotalHeaderSize;
-		DestPackageHeader.HeaderSize = 0;
-		DestPackageHeader.StartOffset = 0;
-
-		CompareWithInternal(SourcePackageHeader, DestPackageHeader, InFilename, CallstackCutoffText, MaxDiffsToLog, NumLoggedDiffs, OutStats);
-
-		if (TotalHeaderSize > 0 && OutStats.FindOrAdd(AssetClass).NumDiffs > 0)
-		{
-			DumpPackageHeaderDiffs(SourcePackage, DestPackage, InFilename, MaxDiffsToLog);
-		}
-
-		FPackageData SourcePackageExports = SourcePackage;
-		SourcePackageExports.HeaderSize = 0;
-		SourcePackageExports.StartOffset = SourcePackage.HeaderSize;
-
-		FPackageData DestPackageExports = DestPackage;
-		DestPackageExports.HeaderSize = 0;
-		DestPackageExports.StartOffset = TotalHeaderSize;
-
-		FString AssetName;
-		if (DestPackage.HeaderSize > 0)
-		{
-			AssetName = FPaths::ChangeExtension(InFilename, TEXT("uexp"));
-		}
-		else
-		{
-			AssetName = InFilename;
-		}
-
-		CompareWithInternal(SourcePackageExports, DestPackageExports, *AssetName, CallstackCutoffText, MaxDiffsToLog, NumLoggedDiffs, OutStats);
-
-		// Optionally save out any differences we detected.
-		const FArchiveDiffStats& Stats = OutStats.FindOrAdd(AssetClass);
-		if (Stats.NumDiffs > 0)
-		{
-			static struct FDiffOutputSettings
-			{
-				FString DiffOutputDir;
-
-				FDiffOutputSettings()
-				{
-					FString Dir;
-					if (!FParse::Value(FCommandLine::Get(), TEXT("diffoutputdir="), Dir))
-					{
-						return;
-					}
-
-					FPaths::NormalizeDirectoryName(Dir);
-					DiffOutputDir = MoveTemp(Dir) + TEXT("/");
-				}
-			} DiffOutputSettings;
-
-			// Only save out the differences if we have a -diffoutputdir set.
-			if (!DiffOutputSettings.DiffOutputDir.IsEmpty())
-			{
-				FString OutputFilename = FPaths::ConvertRelativePathToFull(InFilename);
-				FString SavedDir       = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
-				if (OutputFilename.StartsWith(SavedDir))
-				{
-					OutputFilename.ReplaceInline(*SavedDir, *DiffOutputSettings.DiffOutputDir);
-
-					IFileManager& FileManager = IFileManager::Get();
-
-					// Copy the original asset as '.before.uasset'.
-					{
-						TUniquePtr<FArchive> DiffUAssetArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".before.") + FPaths::GetExtension(InFilename))));
-						DiffUAssetArchive->Serialize(SourcePackageHeader.Data + SourcePackageHeader.StartOffset, SourcePackageHeader.Size - SourcePackageHeader.StartOffset);
-					}
-					{
-						TUniquePtr<FArchive> DiffUExpArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".before.uexp"))));
-						DiffUExpArchive->Serialize(SourcePackageExports.Data + SourcePackageExports.StartOffset, SourcePackageExports.Size - SourcePackageExports.StartOffset);
-					}
-
-					// Save out the in-memory data as '.after.uasset'.
-					{
-						TUniquePtr<FArchive> DiffUAssetArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".after.") + FPaths::GetExtension(InFilename))));
-						DiffUAssetArchive->Serialize(DestPackageHeader.Data + DestPackageHeader.StartOffset, DestPackageHeader.Size - DestPackageHeader.StartOffset);
-					}
-					{
-						TUniquePtr<FArchive> DiffUExpArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".after.uexp"))));
-						DiffUExpArchive->Serialize(DestPackageExports.Data + DestPackageExports.StartOffset, DestPackageExports.Size - DestPackageExports.StartOffset);
-					}
-				}
-				else
-				{
-					UE_LOG(LogArchiveDiff, Warning, TEXT("Package '%s' doesn't seem to be writing to the Saved directory - skipping writing diff"), *OutputFilename);
-				}
-			}
-		}
-
-		FMemory::Free(SourcePackage.Data);
-	}
-	else
-	{		
+	if (SourcePackage.Size == 0)
+	{
 		UE_LOG(LogArchiveDiff, Warning, TEXT("New package: %s"), *GetArchiveName());
 		OutStats.FindOrAdd(AssetClass).DiffSize = OutStats.FindOrAdd(AssetClass).NewFileTotalSize;
+		return;
+	}
+
+	FPackageData DestPackage;
+	DestPackage.Data = GetData();
+	DestPackage.Size = TotalSize();
+	DestPackage.HeaderSize = TotalHeaderSize;
+	DestPackage.StartOffset = 0;
+
+	UE_LOG(LogArchiveDiff, Display, TEXT("Comparing: %s"), *GetArchiveName());
+	UE_LOG(LogArchiveDiff, Display, TEXT("Asset class: %s"), *AssetClass.ToString());
+
+	int32 NumLoggedDiffs = 0;
+
+	FPackageData SourcePackageHeader = SourcePackage;
+	SourcePackageHeader.Size = SourcePackageHeader.HeaderSize;
+	SourcePackageHeader.HeaderSize = 0;
+	SourcePackageHeader.StartOffset = 0;
+
+	FPackageData DestPackageHeader = DestPackage;
+	DestPackageHeader.Size = TotalHeaderSize;
+	DestPackageHeader.HeaderSize = 0;
+	DestPackageHeader.StartOffset = 0;
+
+	CompareWithInternal(SourcePackageHeader, DestPackageHeader, FileDisplayName, CallstackCutoffText, MaxDiffsToLog, NumLoggedDiffs, OutStats);
+
+	if (TotalHeaderSize > 0 && OutStats.FindOrAdd(AssetClass).NumDiffs > 0)
+	{
+		DumpPackageHeaderDiffs(SourcePackage, DestPackage, FileDisplayName, MaxDiffsToLog);
+	}
+
+	FPackageData SourcePackageExports = SourcePackage;
+	SourcePackageExports.HeaderSize = 0;
+	SourcePackageExports.StartOffset = SourcePackage.HeaderSize;
+
+	FPackageData DestPackageExports = DestPackage;
+	DestPackageExports.HeaderSize = 0;
+	DestPackageExports.StartOffset = TotalHeaderSize;
+
+	FString AssetName;
+	if (DestPackage.HeaderSize > 0)
+	{
+		AssetName = FPaths::ChangeExtension(FileDisplayName, TEXT("uexp"));
+	}
+	else
+	{
+		AssetName = FileDisplayName;
+	}
+
+	CompareWithInternal(SourcePackageExports, DestPackageExports, *AssetName, CallstackCutoffText, MaxDiffsToLog, NumLoggedDiffs, OutStats);
+
+	// Optionally save out any differences we detected.
+	const FArchiveDiffStats& Stats = OutStats.FindOrAdd(AssetClass);
+	if (Stats.NumDiffs > 0)
+	{
+		static struct FDiffOutputSettings
+		{
+			FString DiffOutputDir;
+
+			FDiffOutputSettings()
+			{
+				FString Dir;
+				if (!FParse::Value(FCommandLine::Get(), TEXT("diffoutputdir="), Dir))
+				{
+					return;
+				}
+
+				FPaths::NormalizeDirectoryName(Dir);
+				DiffOutputDir = MoveTemp(Dir) + TEXT("/");
+			}
+		} DiffOutputSettings;
+
+		// Only save out the differences if we have a -diffoutputdir set.
+		if (!DiffOutputSettings.DiffOutputDir.IsEmpty())
+		{
+			FString OutputFilename = FPaths::ConvertRelativePathToFull(FileDisplayName);
+			FString SavedDir       = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
+			if (OutputFilename.StartsWith(SavedDir))
+			{
+				OutputFilename.ReplaceInline(*SavedDir, *DiffOutputSettings.DiffOutputDir);
+
+				IFileManager& FileManager = IFileManager::Get();
+
+				// Copy the original asset as '.before.uasset'.
+				{
+					TUniquePtr<FArchive> DiffUAssetArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".before.") + FPaths::GetExtension(FileDisplayName))));
+					DiffUAssetArchive->Serialize(SourcePackageHeader.Data + SourcePackageHeader.StartOffset, SourcePackageHeader.Size - SourcePackageHeader.StartOffset);
+				}
+				{
+					TUniquePtr<FArchive> DiffUExpArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".before.uexp"))));
+					DiffUExpArchive->Serialize(SourcePackageExports.Data + SourcePackageExports.StartOffset, SourcePackageExports.Size - SourcePackageExports.StartOffset);
+				}
+
+				// Save out the in-memory data as '.after.uasset'.
+				{
+					TUniquePtr<FArchive> DiffUAssetArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".after.") + FPaths::GetExtension(FileDisplayName))));
+					DiffUAssetArchive->Serialize(DestPackageHeader.Data + DestPackageHeader.StartOffset, DestPackageHeader.Size - DestPackageHeader.StartOffset);
+				}
+				{
+					TUniquePtr<FArchive> DiffUExpArchive(FileManager.CreateFileWriter(*FPaths::SetExtension(OutputFilename, TEXT(".after.uexp"))));
+					DiffUExpArchive->Serialize(DestPackageExports.Data + DestPackageExports.StartOffset, DestPackageExports.Size - DestPackageExports.StartOffset);
+				}
+			}
+			else
+			{
+				UE_LOG(LogArchiveDiff, Warning, TEXT("Package '%s' doesn't seem to be writing to the Saved directory - skipping writing diff"), *OutputFilename);
+			}
+		}
 	}
 }
 
 bool FArchiveStackTrace::GenerateDiffMapInternal(const FPackageData& SourcePackage, const FPackageData& DestPackage, int32 MaxDiffsToFind, FArchiveDiffMap& OutDiffMap)
 {
 	bool bIdentical = true;
-	int32 LastDifferenceCallstackOffsetIndex = -1;
+	int64 LastDifferenceCallstackOffsetIndex = -1;
 	FCallstackData* DifferenceCallstackData = nullptr;
 
 	const int64 SourceSize = SourcePackage.Size - SourcePackage.StartOffset;
@@ -884,7 +886,7 @@ bool FArchiveStackTrace::GenerateDiffMapInternal(const FPackageData& SourcePacka
 			bIdentical = false;
 			if (OutDiffMap.Num() < MaxDiffsToFind)
 			{
-				int64 DifferenceCallstackoffsetIndex = GetCallstackAtOffset(DestAbsoluteOffset, FMath::Max(LastDifferenceCallstackOffsetIndex, 0));
+				int64 DifferenceCallstackoffsetIndex = GetCallstackAtOffset(DestAbsoluteOffset, FMath::Max<int64>(LastDifferenceCallstackOffsetIndex, 0));
 				if (DifferenceCallstackoffsetIndex >= 0 && DifferenceCallstackoffsetIndex != LastDifferenceCallstackOffsetIndex)
 				{
 					const FCallstactAtOffset& CallstackAtOffset = CallstackAtOffsetMap[DifferenceCallstackoffsetIndex];
@@ -935,74 +937,83 @@ bool FArchiveStackTrace::GenerateDiffMapInternal(const FPackageData& SourcePacka
 
 bool FArchiveStackTrace::GenerateDiffMap(const TCHAR* InFilename, int64 TotalHeaderSize, int32 MaxDiffsToFind, FArchiveDiffMap& OutDiffMap)
 {
+	TUniquePtr<uint8> SourcePackageBytes;
+	FPackageData SourcePackage;
+	if (!LoadPackageIntoMemory(InFilename, SourcePackage, SourcePackageBytes))
+	{
+		return false;
+	}
+	return GenerateDiffMap(SourcePackage, TotalHeaderSize, MaxDiffsToFind, OutDiffMap);
+}
+
+bool FArchiveStackTrace::GenerateDiffMap(const FPackageData& SourcePackage, int64 TotalHeaderSize, int32 MaxDiffsToFind, FArchiveDiffMap& OutDiffMap)
+{
 	check(MaxDiffsToFind > 0);
 
-	FPackageData SourcePackage;
-	bool bIdentical = LoadPackageIntoMemory(InFilename, SourcePackage);
-	if (bIdentical)
+	bool bIdentical = true;
+	bool bHeaderIdentical = true;
+	bool bExportsIdentical = true;
+
+	FPackageData DestPackage;
+	DestPackage.Data = GetData();
+	DestPackage.Size = TotalSize();
+	DestPackage.HeaderSize = TotalHeaderSize;
+	DestPackage.StartOffset = 0;
+
 	{
-		bool bHeaderIdentical = true;
-		bool bExportsIdentical = true;
+		FPackageData SourcePackageHeader = SourcePackage;
+		SourcePackageHeader.Size = SourcePackageHeader.HeaderSize;
+		SourcePackageHeader.HeaderSize = 0;
+		SourcePackageHeader.StartOffset = 0;
 
-		FPackageData DestPackage;
-		DestPackage.Data = GetData();
-		DestPackage.Size = TotalSize();
-		DestPackage.HeaderSize = TotalHeaderSize;
-		DestPackage.StartOffset = 0;
+		FPackageData DestPackageHeader = DestPackage;
+		DestPackageHeader.Size = TotalHeaderSize;
+		DestPackageHeader.HeaderSize = 0;
+		DestPackageHeader.StartOffset = 0;
 
-		{
-			FPackageData SourcePackageHeader = SourcePackage;
-			SourcePackageHeader.Size = SourcePackageHeader.HeaderSize;
-			SourcePackageHeader.HeaderSize = 0;
-			SourcePackageHeader.StartOffset = 0;
-
-			FPackageData DestPackageHeader = DestPackage;
-			DestPackageHeader.Size = TotalHeaderSize;
-			DestPackageHeader.HeaderSize = 0;
-			DestPackageHeader.StartOffset = 0;
-
-			bHeaderIdentical = GenerateDiffMapInternal(SourcePackageHeader, DestPackageHeader, MaxDiffsToFind, OutDiffMap);
-		}
-
-		{
-			FPackageData SourcePackageExports = SourcePackage;
-			SourcePackageExports.HeaderSize = 0;
-			SourcePackageExports.StartOffset = SourcePackage.HeaderSize;
-
-			FPackageData DestPackageExports = DestPackage;
-			DestPackageExports.HeaderSize = 0;
-			DestPackageExports.StartOffset = TotalHeaderSize;
-
-			bExportsIdentical = GenerateDiffMapInternal(SourcePackageExports, DestPackageExports, MaxDiffsToFind, OutDiffMap);
-		}
-
-		bIdentical = bHeaderIdentical && bExportsIdentical;
-
-		FMemory::Free(SourcePackage.Data);
+		bHeaderIdentical = GenerateDiffMapInternal(SourcePackageHeader, DestPackageHeader, MaxDiffsToFind, OutDiffMap);
 	}
+
+	{
+		FPackageData SourcePackageExports = SourcePackage;
+		SourcePackageExports.HeaderSize = 0;
+		SourcePackageExports.StartOffset = SourcePackage.HeaderSize;
+
+		FPackageData DestPackageExports = DestPackage;
+		DestPackageExports.HeaderSize = 0;
+		DestPackageExports.StartOffset = TotalHeaderSize;
+
+		bExportsIdentical = GenerateDiffMapInternal(SourcePackageExports, DestPackageExports, MaxDiffsToFind, OutDiffMap);
+	}
+
+	bIdentical = bHeaderIdentical && bExportsIdentical;
 
 	return bIdentical;
 }
 
-
 bool FArchiveStackTrace::IsIdentical(const TCHAR* InFilename, int64 BufferSize, const uint8* BufferData)
 {
+	TUniquePtr<uint8> SourcePackageBytes;
 	FPackageData SourcePackage;
-	bool bIdentical = LoadPackageIntoMemory(InFilename, SourcePackage);
-
-	if (bIdentical)
+	if (!LoadPackageIntoMemory(InFilename, SourcePackage, SourcePackageBytes))
 	{
-		if (BufferSize == SourcePackage.Size)
-		{
-			bIdentical = (FMemory::Memcmp(SourcePackage.Data, BufferData, BufferSize) == 0);
-		}
-		else
-		{
-			bIdentical = false;
-		}
-		FMemory::Free(SourcePackage.Data);
+		return false;
 	}
-	
+
+	return IsIdentical(SourcePackage, BufferSize, BufferData);
+}
+
+bool FArchiveStackTrace::IsIdentical(const FPackageData& SourcePackage, int64 BufferSize, const uint8* BufferData)
+{
+	bool bIdentical = false;
+	if (BufferSize == SourcePackage.Size)
+	{
+		bIdentical = (FMemory::Memcmp(SourcePackage.Data, BufferData, BufferSize) == 0);
+	}
+	else
+	{
+		bIdentical = false;
+	}
 	return bIdentical;
 }
 
@@ -1016,7 +1027,7 @@ FLinkerLoad* FArchiveStackTrace::CreateLinkerForPackage(FUObjectSerializeContext
 	}
 	// Create an archive for the linker. The linker will take ownership of it.
 	FLargeMemoryReader* PackageReader = new FLargeMemoryReader(PackageData.Data, PackageData.Size, ELargeMemoryReaderFlags::None, *InPackageName);	
-	FLinkerLoad* Linker = FLinkerLoad::CreateLinker(LoadContext, Package, *InFilename, LOAD_NoVerify, PackageReader);
+	FLinkerLoad* Linker = FLinkerLoad::CreateLinker(LoadContext, Package, FPackagePath::FromLocalPath(InFilename), LOAD_NoVerify, PackageReader);
 
 	if (Linker && Package)
 	{
@@ -1255,7 +1266,7 @@ static void ForceKillPackageAndLinker(FLinkerLoad* Linker)
 	if (Package)
 	{
 		Package->ClearPackageFlags(PKG_ContainsMapData | PKG_ContainsMap);
-		Package->SetInternalFlags(EInternalObjectFlags::PendingKill);
+		Package->MarkAsGarbage();
 	}
 }
 
@@ -1390,8 +1401,15 @@ void FArchiveStackTrace::DumpPackageHeaderDiffs(const FPackageData& SourcePackag
 {
 #if !NO_LOGGING
 	FString AssetPathName = FPaths::Combine(*FPaths::GetPath(AssetFilename.Mid(AssetFilename.Find(TEXT(":"), ESearchCase::CaseSensitive) + 1)), *FPaths::GetBaseFilename(AssetFilename));
+	// The root directory could have a period in it (d:/Release5.0/EngineTest/Saved/Cooked),
+	// which is not a valid character for a LongPackageName. Remove it.
+	for (TCHAR c : FStringView(INVALID_LONGPACKAGE_CHARACTERS))
+	{
+		AssetPathName.ReplaceCharInline(c, TEXT('_'), ESearchCase::CaseSensitive);
+	}
 	FString SourceAssetPackageName = FPaths::Combine(TEXT("/Memory"), TEXT("/SourceForDiff"), *AssetPathName);
 	FString DestAssetPackageName = FPaths::Combine(TEXT("/Memory"), TEXT("/DestForDiff"), *AssetPathName);
+	check(FPackageName::IsValidLongPackageName(SourceAssetPackageName, true /* bIncludeReadOnlyRoots */));
 
 	TGuardValue<bool> GuardIsSavingPackage(GIsSavingPackage, false);
 	TGuardValue<int32> GuardAllowUnversionedContentInEditor(GAllowUnversionedContentInEditor, 1);
@@ -1486,10 +1504,11 @@ void FArchiveStackTraceReader::Serialize(void* OutData, int64 Num)
 FArchiveStackTraceReader* FArchiveStackTraceReader::CreateFromFile(const TCHAR* InFilename)
 {
 	FArchiveStackTraceReader* Reader = nullptr;
+	TUniquePtr<uint8> PackageBytes;
 	FArchiveStackTrace::FPackageData PackageData;
-	if (FArchiveStackTrace::LoadPackageIntoMemory(InFilename, PackageData))
+	if (FArchiveStackTrace::LoadPackageIntoMemory(InFilename, PackageData, PackageBytes))
 	{
-		Reader = new FArchiveStackTraceReader(InFilename, PackageData.Data, PackageData.Size);
+		Reader = new FArchiveStackTraceReader(InFilename, PackageBytes.Release(), PackageData.Size);
 	}
 	return Reader;
 }

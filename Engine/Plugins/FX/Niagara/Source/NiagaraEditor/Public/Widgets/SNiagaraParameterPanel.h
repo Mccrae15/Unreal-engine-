@@ -99,17 +99,13 @@ private:
 	bool GetCanAddParametersToCategory(FNiagaraParameterPanelCategory Category) const;
 
 	void DeleteSelectedItems() const;
-
 	bool CanDeleteSelectedItems() const;
 
 	void RequestRenameSelectedItem() const;
-
 	bool CanRequestRenameSelectedItem() const;
 
 	void CopyParameterReference() const;
-
 	bool CanCopyParameterReference() const;
-
 	FText GetCopyParameterReferenceToolTip() const;
 
 	void OnParameterNameTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit, const FNiagaraParameterPanelItem ItemToBeRenamed) const;
@@ -122,7 +118,7 @@ private:
 
 	TSharedRef<SWidget> GetViewOptionsMenu();
 
-	FReply HandleDragDropOperation(TSharedPtr<FDragDropOperation> DropOperation);
+	FReply HandleDragDropOperation(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent);
 	
 	bool GetCanHandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation);
 

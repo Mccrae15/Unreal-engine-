@@ -40,11 +40,10 @@ public:
 	// ~Begin UObject interface
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
+	virtual void PostInitProperties() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent) override;
-	virtual void PreEditUndo() override;
-	virtual void PostEditUndo() override; 
 #endif // WITH_EDITOR
 	// ~End UObject interface
 	
@@ -59,11 +58,6 @@ public:
 	virtual bool CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const override;
 	virtual FString GetUserFriendlyName() const override;
 	// ~End UDMXPixelMappingBaseComponent interface
-
-	// ~Begin FTickableGameObject interface
-	virtual void Tick(float DeltaTime) override;
-	virtual bool IsTickable() const { return true; }
-	// ~End FTickableGameObject interface
 
 	// ~Begin UDMXPixelMappingOutputComponent interface
 #if WITH_EDITOR
@@ -85,6 +79,12 @@ public:
 	void HandleMatrixChanged();
 
 protected:
+	/** Called when the fixture type in use changed */
+	void OnFixtureTypeChanged(const UDMXEntityFixtureType* FixtureType);
+
+	/** Called when the fixture patch in use changed */
+	void OnFixturePatchChanged(const UDMXEntityFixturePatch* FixturePatch);
+
 #if WITH_EDITORONLY_DATA
 	/** Children available PreEditUndo, useful to hide all removed ones in post edit undo */
 	TArray<UDMXPixelMappingBaseComponent*> PreEditUndoMatrixCellChildren;

@@ -12,7 +12,6 @@
 #include "EditorStyleSet.h"
 #include "Interfaces/IPluginManager.h"
 #include "SlateOptMacros.h"
-#include "FbxHairTranslator.h"
 
 #include "GroomAsset.h"
 #include "GroomBindingAsset.h"
@@ -83,8 +82,6 @@ void FGroomEditor::StartupModule()
 	RegisteredAssetTypeActions.Add(GroomAssetActions);
 	RegisteredAssetTypeActions.Add(BindingAssetActions);
 
-	RegisterHairTranslator<FFbxHairTranslator>();
-
 	// Only register once
 	if (!StyleSet.IsValid())
 	{
@@ -92,7 +89,7 @@ void FGroomEditor::StartupModule()
 		const FVector2D Icon20x20(20.0f, 20.0f);
 		const FVector2D Icon40x40(40.0f, 40.0f);
 		const FVector2D Icon64x64(64.0f, 64.0f);
-		FString HairStrandsContent = IPluginManager::Get().FindPlugin("HairStrands")->GetBaseDir() + "/Content";
+		FString HairStrandsContent = IPluginManager::Get().FindPlugin(TEXT("HairStrands"))->GetBaseDir() + "/Content";
 
 		StyleSet = MakeShared<FSlateStyleSet>("Groom");
 		StyleSet->SetContentRoot(FPaths::EngineContentDir() / TEXT("Editor/Slate"));
@@ -127,11 +124,6 @@ void FGroomEditor::StartupModule()
 	}
 
 	FGroomEditorCommands::Register();
-	FEditorModeRegistry::Get().RegisterMode<FGroomEditorMode>(
-		FGroomEditorMode::EM_GroomEditorModeId,
-		LOCTEXT("GroomEditorMode", "Groom Editor"),
-		FSlateIcon(),
-		false);
 
 	// Asset create/edition helper/wrapper for creating/edition asset within the HairStrandsCore 
 	// project without any editor dependencies
@@ -175,8 +167,6 @@ void FGroomEditor::ShutdownModule()
 
 	if (UObjectInitialized())
 	{
-		FEditorModeRegistry::Get().UnregisterMode(FGroomEditorMode::EM_GroomEditorModeId);
-
 		FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
 		if (PropertyModule)
 		{

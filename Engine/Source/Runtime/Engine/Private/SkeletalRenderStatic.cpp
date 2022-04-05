@@ -53,8 +53,8 @@ void FSkeletalMeshObjectStatic::InitResources(USkinnedMeshComponent* InMeshCompo
 					check(SkelLOD.SkelMeshRenderData->LODRenderData.IsValidIndex(LODIndex));
 
 					FSkeletalMeshLODRenderData& LODModel = SkelLOD.SkelMeshRenderData->LODRenderData[LODIndex];
-					FVertexBufferRHIRef VertexBufferRHI = LODModel.StaticVertexBuffers.PositionVertexBuffer.VertexBufferRHI;
-					FIndexBufferRHIRef IndexBufferRHI = LODModel.MultiSizeIndexContainer.GetIndexBuffer()->IndexBufferRHI;
+					FBufferRHIRef VertexBufferRHI = LODModel.StaticVertexBuffers.PositionVertexBuffer.VertexBufferRHI;
+					FBufferRHIRef IndexBufferRHI = LODModel.MultiSizeIndexContainer.GetIndexBuffer()->IndexBufferRHI;
 					uint32 VertexBufferStride = LODModel.StaticVertexBuffers.PositionVertexBuffer.GetStride();
 
 					uint32 TrianglesCount = 0;
@@ -90,9 +90,10 @@ void FSkeletalMeshObjectStatic::InitResources(USkinnedMeshComponent* InMeshCompo
 								Segment.VertexBufferElementType = VET_Float3;
 								Segment.VertexBufferOffset = 0;
 								Segment.VertexBufferStride = VertexBufferStride;
+								Segment.MaxVertices = Section.GetNumVertices();
 								Segment.FirstPrimitive = Section.BaseIndex / 3;
 								Segment.NumPrimitives = Section.NumTriangles;
-								Segment.bEnabled = !Section.bDisabled;
+								Segment.bEnabled = !Section.bDisabled && Section.bVisibleInRayTracing;
 								GeometrySections.Add(Segment);
 							}
 							Initializer.Segments = GeometrySections;
@@ -152,7 +153,7 @@ void FSkeletalMeshObjectStatic::ReleaseResources()
 	}
 }
 
-const FVertexFactory* FSkeletalMeshObjectStatic::GetSkinVertexFactory(const FSceneView* View, int32 LODIndex, int32 ChunkIdx) const
+const FVertexFactory* FSkeletalMeshObjectStatic::GetSkinVertexFactory(const FSceneView* View, int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const
 {
 	check(LODs.IsValidIndex(LODIndex));
 	return &LODs[LODIndex].VertexFactory; 
@@ -163,9 +164,9 @@ TArray<FTransform>* FSkeletalMeshObjectStatic::GetComponentSpaceTransforms() con
 	return nullptr;
 }
 
-const TArray<FMatrix>& FSkeletalMeshObjectStatic::GetReferenceToLocalMatrices() const
+const TArray<FMatrix44f>& FSkeletalMeshObjectStatic::GetReferenceToLocalMatrices() const
 {
-	static TArray<FMatrix> ReferenceToLocalMatrices;
+	static TArray<FMatrix44f> ReferenceToLocalMatrices;
 	return ReferenceToLocalMatrices;
 }
 
@@ -222,16 +223,7 @@ void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::ReleaseResources()
 	BeginReleaseResource(&VertexFactory);
 
 #if RHI_RAYTRACING
-	// BeginReleaseResource(&RayTracingGeometry);
-	// Workaround for UE-106993:
-	// Destroy ray tracing geometry on the render thread, as it may hold references to render resources.
-	// These references should be cleared in FRayTracingGeometry::ReleaseResource(), however FRayTracingGeometry does
-	// not implement this method and it can't be added due to 4.26 hotfix rules.
-	ENQUEUE_RENDER_COMMAND(ReleaseRayTracingGeometry)([Ptr = &RayTracingGeometry](FRHICommandListImmediate&)
-	{
-		Ptr->ReleaseResource();
-		*Ptr = FRayTracingGeometry(); // Explicitly reset all contents, including any resource references.
-	});
+	BeginReleaseResource(&RayTracingGeometry);
 #endif // RHI_RAYTRACING
 
 	bResourcesInitialized = false;

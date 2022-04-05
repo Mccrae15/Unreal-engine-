@@ -1,15 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#ifndef PLATFORM_LUMIN
-	#define	PLATFORM_LUMIN	0
-#endif
-
-#ifndef PLATFORM_LUMINGL4
-	#define	PLATFORM_LUMINGL4	0
-#endif
-
-//#todo-Lumin: Remove this define when it becomes untangled from Android
-#if (!defined(PLATFORM_LUMIN) || (!PLATFORM_LUMIN))
 #include "VulkanAndroidPlatform.h"
 #include "../VulkanRHIPrivate.h"
 #include <dlfcn.h>
@@ -17,6 +7,7 @@
 #include "Android/AndroidPlatformFramePacer.h"
 #include "Math/UnrealMathUtility.h"
 #include "Android/AndroidPlatformMisc.h"
+#include "Misc/ConfigCacheIni.h"
 
 // From VulklanSwapChain.cpp
 extern int32 GVulkanCPURenderThreadFramePacer;
@@ -57,8 +48,10 @@ TUniquePtr<struct FAndroidVulkanFramePacer> FVulkanAndroidPlatform::FramePacer;
 int32 FVulkanAndroidPlatform::CachedFramePace = 60;
 int32 FVulkanAndroidPlatform::CachedRefreshRate = 60;
 int32 FVulkanAndroidPlatform::CachedSyncInterval = 1;
-
-bool FVulkanAndroidPlatform::bSupportsUniformBufferPatching = false;
+int32 FVulkanAndroidPlatform::SuccessfulRefreshRateFrames = 1;
+int32 FVulkanAndroidPlatform::UnsuccessfulRefreshRateFrames = 0;
+TArray<TArray<ANSICHAR>> FVulkanAndroidPlatform::DebugVulkanDeviceLayers;
+TArray<TArray<ANSICHAR>> FVulkanAndroidPlatform::DebugVulkanInstanceLayers;
 
 #define CHECK_VK_ENTRYPOINTS(Type,Func) if (VulkanDynamicAPI::Func == NULL) { bFoundAllEntryPoints = false; UE_LOG(LogRHI, Warning, TEXT("Failed to find entry point for %s"), TEXT(#Func)); }
 
@@ -272,8 +265,6 @@ bool FVulkanAndroidPlatform::LoadVulkanLibrary()
 	FramePacer = MakeUnique<FAndroidVulkanFramePacer>();
 	FPlatformRHIFramePacer::Init(FramePacer.Get());
 
-	FVulkanAndroidPlatform::bSupportsUniformBufferPatching = FAndroidMisc::GetDeviceMake() == FString("Oculus");
-
 	return true;
 }
 
@@ -359,6 +350,33 @@ void FVulkanAndroidPlatform::GetInstanceExtensions(TArray<const ANSICHAR*>& OutE
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 }
 
+void FVulkanAndroidPlatform::GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers)
+{
+#if !UE_BUILD_SHIPPING
+	if (DebugVulkanInstanceLayers.IsEmpty())
+	{
+		TArray<FString> LayerNames;
+		GConfig->GetArray(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("DebugVulkanInstanceLayers"), LayerNames, GEngineIni);
+
+		if (!LayerNames.IsEmpty())
+		{
+			uint32 Index = 0;
+			for (auto& LayerName : LayerNames)
+			{
+				TArray<ANSICHAR> LayerNameANSI{ TCHAR_TO_ANSI(*LayerName), LayerName.Len() + 1 };
+				DebugVulkanInstanceLayers.Add(LayerNameANSI);
+			}
+		}
+	}
+
+	for (const TArray<ANSICHAR>& LayerName : DebugVulkanInstanceLayers)
+	{
+		OutLayers.Add(LayerName.GetData());
+	}
+#endif
+}
+
+
 static int32 GVulkanQcomRenderPassTransform = 0;
 static FAutoConsoleVariableRef CVarVulkanQcomRenderPassTransform(
 	TEXT("r.Vulkan.UseQcomRenderPassTransform"),
@@ -392,12 +410,42 @@ void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_KHR_MULTIVIEW_EXTENSION_NAME);
 #endif
 
+#if VULKAN_SUPPORTS_RENDERPASS2
+	OutExtensions.Add(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+#endif
+
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
 #endif
 
 #if !UE_BUILD_SHIPPING
 	OutExtensions.Add(VULKAN_MALI_LAYER_NAME);
+#endif
+}
+
+void FVulkanAndroidPlatform::GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers)
+{
+#if !UE_BUILD_SHIPPING
+	if (DebugVulkanDeviceLayers.IsEmpty())
+	{
+		TArray<FString> LayerNames;
+		GConfig->GetArray(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("DebugVulkanDeviceLayers"), LayerNames, GEngineIni);
+
+		if (!LayerNames.IsEmpty())
+		{
+			uint32 Index = 0;
+			for (auto& LayerName : LayerNames)
+			{
+				TArray<ANSICHAR> LayerNameANSI{ TCHAR_TO_ANSI(*LayerName), LayerName.Len() + 1 };
+				DebugVulkanDeviceLayers.Add(LayerNameANSI);
+			}
+		}
+	}
+
+	for (auto& LayerName : DebugVulkanDeviceLayers)
+	{
+		OutLayers.Add(LayerName.GetData());
+	}
 #endif
 }
 
@@ -448,13 +496,6 @@ void FVulkanAndroidPlatform::SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatur
 	}
 }
 
-bool FVulkanAndroidPlatform::SupportsUniformBufferPatching()
-{
-	// Only Allow it on ( Oculus + Vulkan + Android ) devices for now to reduce the impact on general system
-	// So far, the feature is designed on top of emulated UBs.
-	return !UseRealUBsOptimization(true) && bSupportsUniformBufferPatching;
-}
-
 bool FVulkanAndroidPlatform::FramePace(FVulkanDevice& Device, VkSwapchainKHR Swapchain, uint32 PresentID, VkPresentInfoKHR& Info)
 {
 	bool bVsyncMultiple = true;
@@ -463,12 +504,37 @@ bool FVulkanAndroidPlatform::FramePace(FVulkanDevice& Device, VkSwapchainKHR Swa
 	{
 		int32 CurrentRefreshRate = FAndroidMisc::GetNativeDisplayRefreshRate();
 
-		// cache refresh rate and sync interval
-		if (CurrentFramePace != CachedFramePace || CurrentRefreshRate != CachedRefreshRate)
+		bool bRefreshRateInvalid = (CurrentRefreshRate != CachedRefreshRate);
+		bool bTryChangingRefreshRate = (bRefreshRateInvalid && (SuccessfulRefreshRateFrames > 0 || UnsuccessfulRefreshRateFrames > 1000));
+
+		if (bRefreshRateInvalid)
+		{
+			SuccessfulRefreshRateFrames = 0;
+			UnsuccessfulRefreshRateFrames++;
+		}
+		else
+		{
+			SuccessfulRefreshRateFrames++;
+			UnsuccessfulRefreshRateFrames = 0;
+		}
+
+		// Cache refresh rate and sync interval.
+		// Only try to change the refresh rate immediately if we're successfully running at the desired rate,
+		// or periodically if not successfully running at the desired rate
+		if (CurrentFramePace != CachedFramePace || bTryChangingRefreshRate)
 		{
 			CachedFramePace = CurrentFramePace;
-			FramePacer->SupportsFramePaceInternal(CurrentFramePace, CachedRefreshRate, CachedSyncInterval);
-			FAndroidMisc::SetNativeDisplayRefreshRate(CachedRefreshRate);
+			if (FramePacer->SupportsFramePaceInternal(CurrentFramePace, CachedRefreshRate, CachedSyncInterval))
+			{
+				FAndroidMisc::SetNativeDisplayRefreshRate(CachedRefreshRate);
+			}
+			else
+			{
+				// Desired frame pace not supported, save current refresh rate to prevent logspam.
+				CachedRefreshRate = CurrentRefreshRate;
+			}
+			UnsuccessfulRefreshRateFrames = 0;
+			SuccessfulRefreshRateFrames = 0;
 		}
 
 		if (CachedSyncInterval != 0)
@@ -563,5 +629,3 @@ bool FAndroidVulkanFramePacer::SupportsFramePace(int32 QueryFramePace)
 	int32 TempRefreshRate, TempSyncInterval;
 	return SupportsFramePaceInternal(QueryFramePace, TempRefreshRate, TempSyncInterval);
 }
-
-#endif

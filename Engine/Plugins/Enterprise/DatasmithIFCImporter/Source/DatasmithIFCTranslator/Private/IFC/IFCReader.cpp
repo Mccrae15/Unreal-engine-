@@ -2,7 +2,7 @@
 
 #include "IFCReader.h"
 
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
@@ -1481,9 +1481,9 @@ namespace IFC
 			}
 
 			{
-				// Convert the object transform from IFC (right-handed) to UE4 (left-handed)
+				// Convert the object transform from IFC (right-handed) to Unreal (left-handed)
 				// Another way of thinking about this: The final transform should converts to IFC space, apply the object
-				// transform, then converts back to UE4 space. The first conversion is a pre-multiply and flips a Y column
+				// transform, then converts back to Unreal space. The first conversion is a pre-multiply and flips a Y column
 				// (or row), and the second conversion is a post-multiply and flips the Y row (or column),
 				// hence the pattern of minus signs
 				FMatrix Matrix = FMatrix::Identity;

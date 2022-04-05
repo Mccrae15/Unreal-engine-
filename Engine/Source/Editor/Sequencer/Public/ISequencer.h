@@ -36,8 +36,10 @@ class IDetailsView;
 class IKeyArea;
 enum class EMapChangeType : uint8;
 class FCurveModel;
+class FCurveEditor;
 struct FMovieSceneSequencePlaybackParams;
 struct FMovieSceneChannelMetaData;
+class IToolkitHost;
 
 /**
  * Defines auto change modes.
@@ -147,7 +149,10 @@ enum class EMovieSceneDataChangeType
 	/** Rebuild and evaluate everything immediately. */
 	RefreshAllImmediately,
 	/** It's not known what data has changed. */
-	Unknown
+	Unknown,
+	/** Refresh Tree on Next Tick */
+	RefreshTree
+
 };
 
 /**
@@ -177,7 +182,7 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelectionChangedSections, TArray<UMovieSceneSection*> /*Sections*/);
 
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCurveDisplayChanged, FCurveModel* , bool /*displayed*/);
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCurveDisplayChanged, FCurveModel* , bool /*displayed*/,const FCurveEditor*);
 
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCloseEvent, TSharedRef<ISequencer>);
@@ -329,6 +334,9 @@ public:
 		return GetAllowEditsMode() != EAllowEditsMode::AllowLevelEditsOnly || GetAutoChangeMode() != EAutoChangeMode::None;
 	}
 
+	/** Returns the Toolkit hosting the sequencer instance, if any */	
+	virtual TSharedPtr<IToolkitHost> GetToolkitHost() const = 0;
+
 	/**
 	 * Gets the current time of the time slider relative to the currently focused movie scene
 	 */
@@ -349,14 +357,15 @@ public:
 	 *
 	 * @param Time The local time to set.
 	 * @param SnapTimeMode The type of time snapping allowed.
+	 * @param bEvaluate If True also evaluate
 	 */
-	virtual void SetLocalTime(FFrameTime Time, ESnapTimeMode SnapTimeMode = ESnapTimeMode::STM_None) = 0;
+	virtual void SetLocalTime(FFrameTime Time, ESnapTimeMode SnapTimeMode = ESnapTimeMode::STM_None, bool bEvaluate = true) = 0;
 
 	/** Set the current local time directly, with no other snapping, scrolling or manipulation */
-	virtual void SetLocalTimeDirectly(FFrameTime NewTime) = 0;
+	virtual void SetLocalTimeDirectly(FFrameTime NewTime, bool bEvaluate = true) = 0;
 
 	/** Set the global time directly, without performing any auto-scroll, snapping or other adjustments to the supplied time  */
-	virtual void SetGlobalTime(FFrameTime Time) = 0;
+	virtual void SetGlobalTime(FFrameTime Time, bool bEvaluate = true) = 0;
 
 	/** Play from the current time to the requested time */
 	virtual void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams) = 0;
@@ -416,12 +425,24 @@ public:
 	 */ 
 	virtual bool IsPerspectiveViewportCameraCutEnabled() const { return true; }
 
+	/**
+	 * Gets the list of bindings for camera objects.
+	 *
+	 * @param OutBindingIDs  The list of binding IDs for cameras
+	 */
+	virtual void GetCameraObjectBindings(TArray<FGuid>& OutBindingIDs) {}
+
 	/*
 	 * Render movie for a section.
 	 * 
 	 * @param InSections The given sections to render.
 	 */
 	virtual void RenderMovie(const TArray<UMovieSceneCinematicShotSection*>& InSections) const = 0;
+
+	/*
+	* Recreate any associated Curve Editor 
+	*/
+	virtual void RecreateCurveEditor() {};
 
 	/*
 	 * Puts sequencer in a silent state (whereby it will not redraw viewports, or attempt to update external state besides the sequence itself)
@@ -496,7 +517,6 @@ public:
 
 	/** Refresh the sequencer tree view */
 	virtual void RefreshTree() = 0;
-
 protected:
 	virtual void NotifyMovieSceneDataChangedInternal() = 0;
 
@@ -534,8 +554,8 @@ public:
 	/** Gets the currently selected folders. */
 	virtual void GetSelectedFolders(TArray<UMovieSceneFolder*>& OutSelectedFolders) = 0;
 
-	/** Gets the currently selected key areas */
-	virtual void GetSelectedKeyAreas(TArray<const IKeyArea*>& OutSelectedKeyAreas) = 0;
+	/** Gets the currently selected key areas. If bIncludeSelectedKeys is true it will include key areas for selected keys, if not will only include key areas for selected display nodes */
+	virtual void GetSelectedKeyAreas(TArray<const IKeyArea*>& OutSelectedKeyAreas, bool bIncludeSelectedKeys = true) = 0;
 
 	/** Gets the currently selected Object Guids*/
 	virtual void GetSelectedObjects(TArray<FGuid>& OutSelectedObjects) = 0;
@@ -662,18 +682,18 @@ public:
 	virtual TSharedPtr<class ITimeSlider> GetTopTimeSliderWidget() const = 0;
 
 	/**
-	* Set the selection range's end position to the current global time.
+	* Set the selection range's end position to the requested time.
 	*
 	* @see GetSelectionRange, SetSelectionRange, SetSelectionRangeStart
 	*/
-	virtual void SetSelectionRangeEnd() = 0;
+	virtual void SetSelectionRangeEnd(FFrameTime EndFrame) = 0;
 
 	/**
-	* Set the selection range's start position to the current global time.
+	* Set the selection range's start position to the requested time.
 	*
 	* @see GetSelectionRange, SetSelectionRange, SetSelectionRangeEnd
 	*/
-	virtual void SetSelectionRangeStart() = 0;
+	virtual void SetSelectionRangeStart(FFrameTime StartFrame) = 0;
 
 	/**
 	* Get the selection range.
@@ -690,13 +710,23 @@ public:
 	*/
 	virtual void ObjectImplicitlyAdded(UObject* InObject) const = 0;
 
-public:
 	/**
-	*    Turn on/off the filter with the specified name
-	* @InName The name of the of the filter
-	* @bOn   Whether or not the filter is on or off.
+	* Specify that an object was implicitly removed. We will notify the track editors that it was
+	@InObject Object that was removed that was part of a track/binding but not the real binding
 	*/
-	virtual void SetFilterOn(const FText& InName, bool bOn) = 0;
+	virtual void ObjectImplicitlyRemoved(UObject* InObject) const = 0;
+
+public:
+
+	/** Sets the specified track filter to be on or off */
+	virtual void SetTrackFilterEnabled(const FText& InTrackFilterName, bool bEnabled) = 0;
+
+	/** Gets whether the specified track filter is on/off */
+	virtual bool IsTrackFilterEnabled(const FText& InTrackFilterName) const = 0;
+
+	/** Gets all the available track filter names */
+	virtual TArray<FText> GetTrackFilterNames() const = 0;
+
 public:
 
 	/**

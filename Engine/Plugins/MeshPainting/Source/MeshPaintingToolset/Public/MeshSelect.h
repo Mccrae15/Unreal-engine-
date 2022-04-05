@@ -81,7 +81,8 @@ protected:
 
 
 	UPROPERTY(Transient)
-	UMeshPaintSelectionMechanic* SelectionMechanic;
+	TObjectPtr<UMeshPaintSelectionMechanic> SelectionMechanic;
+
 };
 
 UCLASS()

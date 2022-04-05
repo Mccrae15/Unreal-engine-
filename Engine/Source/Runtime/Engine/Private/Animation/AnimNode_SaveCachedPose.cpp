@@ -4,6 +4,8 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimTrace.h"
 
+IMPLEMENT_ANIMGRAPH_MESSAGE(UE::Anim::FCachedPoseSkippedUpdateHandler);
+
 /////////////////////////////////////////////////////
 // FAnimNode_SaveCachedPose
 
@@ -51,7 +53,6 @@ void FAnimNode_SaveCachedPose::Update_AnyThread(const FAnimationUpdateContext& C
 	{
 		CachedUpdate.SharedContext = MakeShared<FAnimationUpdateSharedContext>();
 		CachedUpdate.SharedContext->CopyForCachedUpdate(*SharedContext);
-
 	}
 
 	// Store this context for the post update
@@ -120,45 +121,30 @@ void FAnimNode_SaveCachedPose::PostGraphUpdate()
 			Pose.Update(CachedUpdateContexts[MaxWeightIdx].Context);
 		}
 
-		// Determine if any ancestors are interested in the other updates we'll be skipping
-		TArray<FAnimNode_Base*, TInlineAllocator<4>> AncestorsWithSkippedUpdateHandlers;
-		if (NumContexts > 1)
+		// Update any branches that will be skipped
+		UE::Anim::FMessageStack& MessageStack = CachedUpdateContexts[MaxWeightIdx].SharedContext->MessageStack;
+		if(MessageStack.HasMessage<UE::Anim::FCachedPoseSkippedUpdateHandler>())
 		{
-			FAnimationUpdateSharedContext* SharedContext = CachedUpdateContexts[MaxWeightIdx].Context.GetSharedContext();
-			FAnimNodeTracker* AncestorTracker = SharedContext ? &SharedContext->AncestorTracker : nullptr;
-
-			if (AncestorTracker)
-			{
-				for (auto Iter : AncestorTracker->Map)
-				{
-					FAnimNode_Base* AncestorNode = Iter.Value.Num() ? Iter.Value.Top() : nullptr;
-					if (AncestorNode && AncestorNode->WantsSkippedUpdates())
-					{
-						AncestorsWithSkippedUpdateHandlers.Add(AncestorNode);
-					}
-				}
-			}
-		}
-
-		if (AncestorsWithSkippedUpdateHandlers.Num() > 0)
-		{
-			// Build a list of skipped updates
-			TArray<const FAnimationUpdateContext *, TInlineAllocator<4>> SkippedUpdateContexts;
+			// Grab handles to all the execution paths that we are not proceeding with
+			TArray<UE::Anim::FMessageStack, TInlineAllocator<4>> SkippedMessageStacks;
 			for (int32 CurrIdx = 0; CurrIdx < NumContexts; ++CurrIdx)
 			{
 				if (CurrIdx != MaxWeightIdx)
 				{
-					SkippedUpdateContexts.Add(&CachedUpdateContexts[CurrIdx].Context);
+					SkippedMessageStacks.Add(MoveTemp(CachedUpdateContexts[CurrIdx].SharedContext->MessageStack));
 				}
 			}
 
-			// Inform any interested ancestors about the skipped updates
-			for (FAnimNode_Base* AncestorNode : AncestorsWithSkippedUpdateHandlers)
+			// Broadcast skipped update message to interested parties
+			MessageStack.ForEachMessage<UE::Anim::FCachedPoseSkippedUpdateHandler>([&SkippedMessageStacks](UE::Anim::FCachedPoseSkippedUpdateHandler& InMessage)
 			{
-				AncestorNode->OnUpdatesSkipped(SkippedUpdateContexts);
-			}
-		}
+				// Fire the event to inform listeners of 'skipped' paths
+				InMessage.OnUpdatesSkipped(SkippedMessageStacks);
 
+				// We only want the topmost registered node here, so early out
+				return UE::Anim::FMessageStack::EEnumerate::Stop;
+			});
+		}
 	}
 
 	CachedUpdateContexts.Reset();

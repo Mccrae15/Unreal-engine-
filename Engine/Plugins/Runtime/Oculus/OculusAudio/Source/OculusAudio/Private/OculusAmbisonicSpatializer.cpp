@@ -39,7 +39,7 @@ class FOculusSoundfieldBuffer : public ISoundfieldAudioPacket
 {
 public:
 	// Interleaved binaural audio buffer.
-	Audio::AlignedFloatBuffer AudioBuffer;
+	Audio::FAlignedFloatBuffer AudioBuffer;
 	int32 NumChannels;
 
 	FOculusSoundfieldBuffer()
@@ -74,8 +74,8 @@ private:
 	TArray<int32> SourceIds;
 
 	// temp buffers use to binauralize each source.
-	Audio::AlignedFloatBuffer ScratchMonoBuffer;
-	Audio::AlignedFloatBuffer ScratchOutputBuffer;
+	Audio::FAlignedFloatBuffer ScratchMonoBuffer;
+	Audio::FAlignedFloatBuffer ScratchOutputBuffer;
 
 	static int32 SourceIdCounter;
 	static FCriticalSection SourceIdCounterCritSection;
@@ -227,7 +227,7 @@ public:
 			else
 			{
 				// Otherwise, downmix and mix in.
-				Audio::AlignedFloatBuffer OutChannelMap;
+				Audio::FAlignedFloatBuffer OutChannelMap;
 				Audio::FMixerDevice::Get2DChannelMap(false, InputBuffer.NumChannels, InputData.PositionalData.NumChannels, false, OutChannelMap);
 				Audio::DownmixAndSumIntoBuffer(InputBuffer.NumChannels, InputData.PositionalData.NumChannels, InputBuffer.AudioBuffer, OutputData.AudioBuffer, OutChannelMap.GetData());
 			}
@@ -262,6 +262,11 @@ public:
 	{
 		const FAmbisonicsSoundfieldBuffer& InputBuffer = DowncastSoundfieldRef<const FAmbisonicsSoundfieldBuffer>(InputData);
 		FOculusSoundfieldBuffer& OutputBuffer = DowncastSoundfieldRef<FOculusSoundfieldBuffer>(PacketToSumTo);
+
+		if (!InputBuffer.NumChannels || InputBuffer.AudioBuffer.IsEmpty())
+		{
+			return;
+		}
 
 		const int32 NumFrames = InputBuffer.AudioBuffer.Num() / InputBuffer.NumChannels;
 		OutputBuffer.AudioBuffer.SetNumZeroed(NumFrames * 2);

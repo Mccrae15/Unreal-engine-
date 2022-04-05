@@ -22,7 +22,9 @@
 #include "EditorFontGlyphs.h"
 #include "Modules/ModuleManager.h"
 #include "ISCSEditorUICustomization.h"
-#include "SSCSEditor.h"
+#include "SSubobjectEditor.h"
+#include "SSubobjectInstanceEditor.h"
+#include "SubobjectData.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -36,7 +38,7 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/Text/STextBlock.h"
-
+#include "PropertyCustomizationHelpers.h"
 
 #define LOCTEXT_NAMESPACE "DataprepAssetView"
 
@@ -68,13 +70,12 @@ void SGraphNodeDetailsWidget::Construct(const FArguments& InArgs)
 {
 	SelectedActor = nullptr;
 
-	FNotifyHook* NotifyHook = nullptr;
-
 	// Create a property view
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FDetailsViewArgs::ENameAreaSettings NameAreaSettings = FDetailsViewArgs::ENameAreaSettings::HideNameArea;
-	FDetailsViewArgs DetailsViewArgs( /*bUpdateFromSelection=*/ false, /*bLockable=*/ false, /*bAllowSearch=*/ true, NameAreaSettings, /*bHideSelectionTip=*/ true, /*InNotifyHook=*/ NotifyHook, /*InSearchInitialKeyFocus=*/ false, NAME_None);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.bShowOptions = false;
 	DetailsViewArgs.bShowPropertyMatrixButton = false;
 
@@ -93,9 +94,8 @@ void SGraphNodeDetailsWidget::Construct(const FArguments& InArgs)
 			SNew(SBox)
 				.Visibility_Lambda([this]() -> EVisibility { return SelectedActor ? EVisibility::Visible : EVisibility::Collapsed; })
 				[
-					SAssignNew(SCSEditor, SSCSEditor)
-						.EditorMode(EComponentEditorMode::ActorInstance)
-						.ActorContext_Lambda([this]() -> AActor* { return SelectedActor; })
+					SAssignNew(SubobjectEditor, SSubobjectInstanceEditor)
+						.ObjectContext_Lambda([this]() -> UObject* { return SelectedActor; })
 						.OnSelectionUpdated(this, &SGraphNodeDetailsWidget::OnSCSEditorTreeViewSelectionChanged)
 						.AllowEditing(false)
 				]
@@ -105,8 +105,8 @@ void SGraphNodeDetailsWidget::Construct(const FArguments& InArgs)
 			PropertyView.ToSharedRef()
 		];
 
-	SCSEditorUICustomization = MakeShared<FDataprepSCSEditorUICustomization>();
-	SCSEditor->SetUICustomization(SCSEditorUICustomization);
+	SubobjectEditorUICustomization = MakeShared<FDataprepSCSEditorUICustomization>();
+	SubobjectEditor->SetUICustomization(SubobjectEditorUICustomization);
 
 	// Create the border that all of the content will get stuffed into
 	ChildSlot
@@ -178,7 +178,7 @@ void SGraphNodeDetailsWidget::AddPropertiesRecursive(FProperty* Property)
 	}
 }
 
-void SGraphNodeDetailsWidget::OnSCSEditorTreeViewSelectionChanged(const TArray<TSharedPtr<class FSCSEditorTreeNode> >& SelectedNodes)
+void SGraphNodeDetailsWidget::OnSCSEditorTreeViewSelectionChanged(const TArray<FSubobjectEditorTreeNodePtrType>& SelectedNodes)
 {
 	if (SelectedNodes.Num() > 0)
 	{
@@ -186,22 +186,23 @@ void SGraphNodeDetailsWidget::OnSCSEditorTreeViewSelectionChanged(const TArray<T
 		{
 			TArray<UObject*> DetailsObjects;
 
-			for (const TSharedPtr<FSCSEditorTreeNode>& SelectedNode : SelectedNodes)
+			for (const FSubobjectEditorTreeNodePtrType& SelectedNode : SelectedNodes)
 			{
 				if (SelectedNode.IsValid())
 				{
-					if (SelectedNode->GetNodeType() == FSCSEditorTreeNode::RootActorNode)
+					if (SelectedNode->IsRootActorNode())
 					{
 						// Root actor takes precedence
 						DetailsObjects.Empty();
 						DetailsObjects.Add(SelectedActor);
 						break;
 					}
-					else if (SelectedNode->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
+					else if (SelectedNode->IsComponentNode())
 					{
-						if (UActorComponent* ComponentInstance = SelectedNode->FindComponentInstanceInActor(SelectedActor))
+						FSubobjectData* Data = SelectedNode->GetDataSource();
+						if (const UActorComponent* ComponentInstance = Data->FindComponentInstanceInActor(SelectedActor))
 						{
-							DetailsObjects.Add(ComponentInstance);
+							DetailsObjects.Add(const_cast<UActorComponent*>(ComponentInstance));
 						}
 					}
 				}
@@ -359,7 +360,7 @@ void SGraphNodeDetailsWidget::UpdateFromObjects(const TArray<UObject*>& Property
 		}
 	}
 
-	SCSEditorUICustomization->SetHideComponentsTree(SelectedActor == nullptr);
+	SubobjectEditorUICustomization->SetHideComponentsTree(SelectedActor == nullptr);
 
 	PropertyView->SetObjects(SelectionInfo.ObjectsForPropertyEditing);
 
@@ -385,7 +386,7 @@ void SGraphNodeDetailsWidget::UpdateFromObjects(const TArray<UObject*>& Property
 	// Don't update component tree if this update comes from itself (avoids infinite recusrsion)
 	if (!bSelfUpdate)
 	{
-		SCSEditor->UpdateTree();
+		SubobjectEditor->UpdateTree();
 	}
 }
 
@@ -522,11 +523,7 @@ void SDataprepAssetView::Construct( const FArguments& InArgs, UDataprepAssetInte
 
 	bIsChecked = true;
 
-	ColumnWidth = 0.7f;
-	ColumnSizeData = MakeShared< FDataprepDetailsViewColumnSizeData >();
-	ColumnSizeData->LeftColumnWidth = TAttribute<float>(this, &SDataprepAssetView::OnGetLeftColumnWidth);
-	ColumnSizeData->RightColumnWidth = TAttribute<float>(this, &SDataprepAssetView::OnGetRightColumnWidth);
-	ColumnSizeData->OnWidthChanged = SSplitter::FOnSlotResized::CreateSP(this, &SDataprepAssetView::OnSetColumnWidth);
+	ColumnSizeData = MakeShared<FDetailColumnSizeData>();
 
 	UDataprepAssetProducers* AssetProducers = DataprepAssetInterfacePtr->GetProducers();
 	check( AssetProducers );
@@ -577,8 +574,8 @@ void SDataprepAssetView::Construct( const FArguments& InArgs, UDataprepAssetInte
 	}
 
 	TSharedRef<SDataprepDetailsView> DetailView = SNew(SDataprepDetailsView)
-	.ColumnSizeData( ColumnSizeData )
-	.Object( DataprepAssetInterfacePtr->GetParameterizationObject() );
+		.ColumnSizeData( ColumnSizeData )
+		.Object( DataprepAssetInterfacePtr->GetParameterizationObject() );
 
 	TSharedRef<SScrollBar> ScrollBar = SNew(SScrollBar);
 
@@ -606,7 +603,9 @@ void SDataprepAssetView::Construct( const FArguments& InArgs, UDataprepAssetInte
 			.AutoHeight()
 			//.MaxHeight( 400.f )
 			[
-				DataprepWidgetUtils::CreateParameterRow( SNew(SDataprepInstanceParentWidget).ColumnSizeData(ColumnSizeData).DataprepInstance(DataprepInstance) )
+				DataprepWidgetUtils::CreateParameterRow( SNew(SDataprepInstanceParentWidget)
+					.ColumnSizeData(ColumnSizeData)
+					.DataprepInstance(DataprepInstance) )
 			]
 		];
 

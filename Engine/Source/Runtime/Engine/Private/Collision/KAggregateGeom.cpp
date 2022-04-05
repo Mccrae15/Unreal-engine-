@@ -27,12 +27,24 @@
 #define MIN_HULL_VERT_DISTANCE		(0.1f)
 #define MIN_HULL_VALID_DIMENSION	(0.5f)
 
+#if INTEL_ISPC
+static_assert(sizeof(ispc::FBox) == sizeof(FBox), "sizeof(ispc::FBox) != sizeof(FBox)");
+static_assert(sizeof(ispc::FRotator) == sizeof(FRotator), "sizeof(ispc::FRotator) != sizeof(FRotator)");
+static_assert(sizeof(ispc::FVector) == sizeof(FVector), "sizeof(ispc::FVector) != sizeof(FVector)");
+#endif
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+bool bPhysics_AggregateGeom_ISPC_Enabled = true;
+FAutoConsoleVariableRef CVarPhysicsAggregateGeomISPCEnabled(TEXT("p.AggregateGeom.ISPC"), bPhysics_AggregateGeom_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in physics aggregate geometry calculations"));
+#else
+const bool bPhysics_AggregateGeom_ISPC_Enabled = INTEL_ISPC;
+#endif
 
 ///////////////////////////////////////
 /////////// FKAggregateGeom ///////////
 ///////////////////////////////////////
 
-float SelectMinScale(FVector Scale)
+float SelectMinScale(FVector3f Scale)
 {
 	float Min = Scale.X, AbsMin = FPlatformMath::Abs(Scale.X);
 
@@ -55,7 +67,7 @@ float SelectMinScale(FVector Scale)
 
 FBox FKAggregateGeom::CalcAABB(const FTransform& Transform) const
 {
-	const FVector Scale3D = Transform.GetScale3D();
+	const FVector3f Scale3D = (FVector3f)Transform.GetScale3D();
 	FTransform BoneTM = Transform;
 	BoneTM.RemoveScaling();
 
@@ -84,7 +96,7 @@ FBox FKAggregateGeom::CalcAABB(const FTransform& Transform) const
 	// Accumulate convex element bounding boxes.
 	for(int32 i=0; i<ConvexElems.Num(); i++)
 	{
-		Box += ConvexElems[i].CalcAABB(BoneTM, Scale3D);
+		Box += ConvexElems[i].CalcAABB(BoneTM, (FVector)Scale3D);
 	}
 
 	for(int32 i=0; i<TaperedCapsuleElems.Num(); i++)
@@ -112,7 +124,7 @@ void FKAggregateGeom::CalcBoxSphereBounds(FBoxSphereBounds& Output, const FTrans
 	{
 		// For bounds that only consist of convex shapes (such as anything generated from a BSP model),
 		// we can get nice tight bounds by considering just the points of the convex shape
-		const FVector Origin = AABB.GetCenter();
+		const FVector3f Origin = (FVector3f)AABB.GetCenter();
 
 		float RadiusSquared = 0.0f;
 		for (int32 i = 0; i < ConvexElems.Num(); i++)
@@ -120,7 +132,7 @@ void FKAggregateGeom::CalcBoxSphereBounds(FBoxSphereBounds& Output, const FTrans
 			const FKConvexElem& Elem = ConvexElems[i];
 			for (int32 j = 0; j < Elem.VertexData.Num(); ++j)
 			{
-				const FVector Point = LocalToWorld.TransformPosition(Elem.VertexData[j]);
+				const FVector3f Point = (FVector3f)LocalToWorld.TransformPosition(Elem.VertexData[j]);
 				RadiusSquared = FMath::Max(RadiusSquared, (Point - Origin).SizeSquared());
 			}
 		}
@@ -180,12 +192,12 @@ static void RemoveDuplicateVerts(TArray<FVector>& InVerts)
 }
 
 // Weisstein, Eric W. "Point-Line Distance--3-Dimensional." From MathWorld--A Switchram Web Resource. http://mathworld.wolfram.com/Point-LineDistance3-Dimensional.html 
-static float DistanceToLine(const FVector& LineStart, const FVector& LineEnd, const FVector& Point)
+static float DistanceToLine(const FVector3f& LineStart, const FVector3f& LineEnd, const FVector3f& Point)
 {
-	const FVector StartToEnd = LineEnd - LineStart;
-	const FVector PointToStart = LineStart - Point;
+	const FVector3f StartToEnd = LineEnd - LineStart;
+	const FVector3f PointToStart = LineStart - Point;
 
-	const FVector Cross = StartToEnd ^ PointToStart;
+	const FVector3f Cross = StartToEnd ^ PointToStart;
 	return Cross.Size()/StartToEnd.Size();
 }
 
@@ -232,7 +244,7 @@ static bool EnsureHullIsValid(TArray<FVector>& InVerts)
 	{
 		if(i != FurthestVertIndex)
 		{
-			const float TestDist = DistanceToLine(FirstVert, InVerts[FurthestVertIndex], InVerts[i]);
+			const float TestDist = DistanceToLine((FVector3f)FirstVert, (FVector3f)InVerts[FurthestVertIndex], (FVector3f)InVerts[i]);
 			if(TestDist > ThirdPointDist)
 			{
 				ThirdPointDist = TestDist;
@@ -297,8 +309,8 @@ FBox FKSphereElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 	ElemTM.ScaleTranslation( FVector(Scale) );
 	ElemTM *= BoneTM;
 
-	const FVector BoxCenter = ElemTM.GetTranslation();
-	const FVector BoxExtents(Radius * Scale);
+	const FVector3f BoxCenter = (FVector3f)ElemTM.GetTranslation();
+	const FVector3f BoxExtents(Radius * Scale);
 
 	return FBox(BoxCenter - BoxExtents, BoxCenter + BoxExtents);
 }
@@ -312,7 +324,7 @@ EAggCollisionShape::Type FKBoxElem::StaticShapeType = EAggCollisionShape::Box;
 
 FBox FKBoxElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 {
-	if (INTEL_ISPC)
+	if (bPhysics_AggregateGeom_ISPC_Enabled)
 	{
 #if INTEL_ISPC
 		FBox LocalBox(ForceInit);
@@ -335,7 +347,7 @@ FBox FKBoxElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 		ElemTM.ScaleTranslation(FVector(Scale));
 		ElemTM *= BoneTM;
 
-		FVector Extent(0.5f * Scale * X, 0.5f * Scale * Y, 0.5f * Scale * Z);
+		FVector3f Extent(0.5f * Scale * X, 0.5f * Scale * Y, 0.5f * Scale * Z);
 		FBox LocalBox(-Extent, Extent);
 
 		return LocalBox.TransformBy(ElemTM);
@@ -351,7 +363,7 @@ EAggCollisionShape::Type FKSphylElem::StaticShapeType = EAggCollisionShape::Sphy
 
 FBox FKSphylElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 {
-	if (INTEL_ISPC)
+	if (bPhysics_AggregateGeom_ISPC_Enabled)
 	{
 #if INTEL_ISPC
 		FBox Result(ForceInit);
@@ -373,18 +385,18 @@ FBox FKSphylElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 		ElemTM.ScaleTranslation( FVector(Scale) );
 		ElemTM *= BoneTM;
 
-		const FVector SphylCenter = ElemTM.GetLocation();
+		const FVector3f SphylCenter = (FVector3f)ElemTM.GetLocation();
 
 		// Get sphyl axis direction
-		const FVector Axis = ElemTM.GetScaledAxis( EAxis::Z );
+		const FVector3f Axis = (FVector3f)ElemTM.GetScaledAxis( EAxis::Z );
 		// Get abs of that vector
-		const FVector AbsAxis(FMath::Abs(Axis.X), FMath::Abs(Axis.Y), FMath::Abs(Axis.Z));
+		const FVector3f AbsAxis(FMath::Abs(Axis.X), FMath::Abs(Axis.Y), FMath::Abs(Axis.Z));
 		// Scale by length of sphyl
-		const FVector AbsDist = (Scale * 0.5f * Length) * AbsAxis;
+		const FVector3f AbsDist = (Scale * 0.5f * Length) * AbsAxis;
 
-		const FVector MaxPos = SphylCenter + AbsDist;
-		const FVector MinPos = SphylCenter - AbsDist;
-		const FVector Extent(Scale * Radius);
+		const FVector3f MaxPos = SphylCenter + AbsDist;
+		const FVector3f MinPos = SphylCenter - AbsDist;
+		const FVector3f Extent(Scale * Radius);
 
 		FBox Result(MinPos - Extent, MaxPos + Extent);
 
@@ -436,7 +448,7 @@ void FKConvexElem::GetPlanes(TArray<FPlane>& Planes) const
 		}
 	}
 #elif WITH_CHAOS
-	using FChaosPlane = Chaos::TPlaneConcrete<float, 3>;
+	using FChaosPlane = Chaos::TPlaneConcrete<Chaos::FReal, 3>;
 	if(Chaos::FConvex* RawConvex = ChaosConvex.Get())
 	{
 		const int32 NumPlanes = RawConvex->NumPlanes();
@@ -462,19 +474,19 @@ FBox FKTaperedCapsuleElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 	ElemTM.ScaleTranslation( FVector(Scale) );
 	ElemTM *= BoneTM;
 
-	const FVector TaperedCapsuleCenter = ElemTM.GetLocation();
+	const FVector3f TaperedCapsuleCenter = (FVector3f)ElemTM.GetLocation();
 
 	// Get tapered capsule axis direction
-	const FVector Axis = ElemTM.GetScaledAxis( EAxis::Z );
+	const FVector3f Axis = (FVector3f)ElemTM.GetScaledAxis( EAxis::Z );
 	// Get abs of that vector
-	const FVector AbsAxis(FMath::Abs(Axis.X), FMath::Abs(Axis.Y), FMath::Abs(Axis.Z));
+	const FVector3f AbsAxis(FMath::Abs(Axis.X), FMath::Abs(Axis.Y), FMath::Abs(Axis.Z));
 	// Scale by length of sphyl
-	const FVector AbsDist = (Scale * 0.5f * Length) * AbsAxis;
+	const FVector3f AbsDist = (Scale * 0.5f * Length) * AbsAxis;
 
-	const FVector MaxPos = TaperedCapsuleCenter + AbsDist;
-	const FVector MinPos = TaperedCapsuleCenter - AbsDist;
-	const FVector Extent0(Scale * Radius0);
-	const FVector Extent1(Scale * Radius1);
+	const FVector3f MaxPos = TaperedCapsuleCenter + AbsDist;
+	const FVector3f MinPos = TaperedCapsuleCenter - AbsDist;
+	const FVector3f Extent0(Scale * Radius0);
+	const FVector3f Extent1(Scale * Radius1);
 
 	FBox Result(MinPos - Extent0, MaxPos + Extent1);
 
@@ -576,23 +588,23 @@ bool FKConvexElem::HullFromPlanes(const TArray<FPlane>& InPlanes, const TArray<F
 	for(int32 i=0; i<InPlanes.Num(); i++)
 	{
 		FPoly Polygon;
-		Polygon.Normal = InPlanes[i];
+		Polygon.Normal = (FVector3f)InPlanes[i];
 
-		FVector AxisX, AxisY;
+		FVector3f AxisX, AxisY;
 		Polygon.Normal.FindBestAxisVectors(AxisX,AxisY);
 
-		const FVector Base = InPlanes[i] * InPlanes[i].W;
+		const FVector3f Base = FVector3f(InPlanes[i] * InPlanes[i].W);
 
-		new(Polygon.Vertices) FVector(Base + AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector(Base - AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector(Base - AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector(Base + AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base + AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base - AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base - AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base + AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
 
 		for(int32 j=0; j<InPlanes.Num(); j++)
 		{
 			if(i != j)
 			{
-				if(!Polygon.Split(-FVector(InPlanes[j]), InPlanes[j] * InPlanes[j].W))
+				if(!Polygon.Split(-FVector3f(InPlanes[j]), FVector3f(InPlanes[j] * InPlanes[j].W)))
 				{
 					Polygon.Vertices.Empty();
 					break;
@@ -617,7 +629,7 @@ bool FKConvexElem::HullFromPlanes(const TArray<FPlane>& InPlanes, const TArray<F
 
 				for(int32 k = 0; k < SnapVerts.Num(); k++)
 				{
-					const float DistSquared = (Polygon.Vertices[j] - SnapVerts[k]).SizeSquared();
+					const float DistSquared = ((FVector)Polygon.Vertices[j] - (FVector)SnapVerts[k]).SizeSquared();
 
 					if( DistSquared < NearestDistSqr )
 					{
@@ -634,7 +646,7 @@ bool FKConvexElem::HullFromPlanes(const TArray<FPlane>& InPlanes, const TArray<F
 				}
 				else
 				{
-					const FVector localVert = Polygon.Vertices[j];
+					const FVector localVert = (FVector)Polygon.Vertices[j];
 					Remap[j] = AddVertexIfNotPresent(VertexData, localVert);
 				}
 			}
@@ -722,7 +734,7 @@ void FKConvexElem::ConvexFromBoxElem(const FKBoxElem& InBox)
 {
 	Reset();
 
-	FVector	B[2], P, Q, Radii;
+	FVector3f	B[2], P, Q, Radii;
 
 	// X,Y,Z member variables are LENGTH not RADIUS
 	Radii.X = 0.5f*InBox.X;
@@ -748,20 +760,20 @@ void FKConvexElem::ConvexFromBoxElem(const FKBoxElem& InBox)
 			P.X = B[i].X; Q.X = B[i].X;
 			P.Y = B[j].Y; Q.Y = B[j].Y;
 			P.Z = B[0].Z; Q.Z = B[1].Z;
-			VertexData.Add(P);
-			VertexData.Add(Q);
+			VertexData.Add((FVector)P);
+			VertexData.Add((FVector)Q);
 
 			P.Y = B[i].Y; Q.Y = B[i].Y;
 			P.Z = B[j].Z; Q.Z = B[j].Z;
 			P.X = B[0].X; Q.X = B[1].X;
-			VertexData.Add(P);
-			VertexData.Add(Q);
+			VertexData.Add((FVector)P);
+			VertexData.Add((FVector)Q);
 
 			P.Z = B[i].Z; Q.Z = B[i].Z;
 			P.X = B[j].X; Q.X = B[j].X;
 			P.Y = B[0].Y; Q.Y = B[1].Y;
-			VertexData.Add(P);
-			VertexData.Add(Q);
+			VertexData.Add((FVector)P);
+			VertexData.Add((FVector)Q);
 		}
 	}
 

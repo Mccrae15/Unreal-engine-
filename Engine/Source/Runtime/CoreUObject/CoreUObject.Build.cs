@@ -25,7 +25,12 @@ public class CoreUObject : ModuleRules
 		PrivateDependencyModuleNames.Add("Projects");
         PrivateDependencyModuleNames.Add("Json");
 
-		PublicDefinitions.Add("UNIQUENETID_ESPMODE=ESPMode::Fast");
-	}
+		//@TODO: UE-127233
+		// UnsafeTypeCastWarningLevel = WarningLevel.Warning;
 
+		if (Target.bBuildWithEditorOnlyData)
+		{
+			PrivateDependencyModuleNames.Add("DerivedDataCache");
+		}
+	}
 }

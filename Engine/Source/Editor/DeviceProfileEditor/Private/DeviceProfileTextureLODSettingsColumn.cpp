@@ -111,11 +111,10 @@ TSharedRef<class SWidget> FTextureLODSettingsCellPresenter::ConstructDisplayWidg
 		SNew(SButton)
 		.OnClicked(this, &FTextureLODSettingsCellPresenter::HandleEditTextureLODSettingsButtonPressed)
 		.ContentPadding(2.0f)
-		.ForegroundColor(FSlateColor::UseForeground())
-		.IsFocusable(false)
+		.ButtonStyle(FAppStyle::Get(), "DeviceDetails.EditButton")
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Edit"))
+			.Image(FEditorStyle::GetBrush("Icons.Edit"))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];

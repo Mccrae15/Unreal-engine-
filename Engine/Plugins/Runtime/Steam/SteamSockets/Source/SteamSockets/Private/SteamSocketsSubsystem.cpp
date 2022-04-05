@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SteamSocketsSubsystem.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/ConfigCacheIni.h"
 #include "IPAddressSteamSockets.h"
@@ -187,9 +188,7 @@ bool FSteamSocketsSubsystem::Init(FString& Error)
 	if (OnlineSteamSubsystem != nullptr && IsUsingRelayNetwork())
 	{
 		// Deletion will be handled by the Steam OSS, we do not need to worry about it in this subsystem.
-		TSharedPtr<FSteamSocketsPing, ESPMode::ThreadSafe> SteamPingHandler = MakeShareable(new FSteamSocketsPing(this, OnlineSteamSubsystem));
-		FOnlinePingSteamPtr NewPingInterface = StaticCastSharedPtr<FOnlinePingInterfaceSteam>(SteamPingHandler);
-		OnlineSteamSubsystem->SetPingInterface(NewPingInterface);
+		OnlineSteamSubsystem->SetPingInterface(MakeShared<FSteamSocketsPing, ESPMode::ThreadSafe>(this, OnlineSteamSubsystem));
 	}
 
 	return true;

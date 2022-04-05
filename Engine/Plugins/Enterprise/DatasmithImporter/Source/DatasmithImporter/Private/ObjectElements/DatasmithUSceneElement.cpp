@@ -150,7 +150,7 @@ UDatasmithSceneElementBase::FDatasmithSceneCollector::FDatasmithSceneCollector()
 
 void UDatasmithSceneElementBase::FDatasmithSceneCollector::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	if (DatasmithSceneElement && !DatasmithSceneElement->IsPendingKill())
+	if (IsValid(DatasmithSceneElement))
 	{
 		DatasmithSceneElement->ExternalAddReferencedObjects(Collector);
 	}
@@ -975,7 +975,7 @@ namespace DatasmithSceneImpl
 			auto* Element = Itt.Value;
 			if (Element)
 			{
-				Element->MarkPendingKill();
+				Element->MarkAsGarbage();
 			}
 		}
 		Elements.Reset();

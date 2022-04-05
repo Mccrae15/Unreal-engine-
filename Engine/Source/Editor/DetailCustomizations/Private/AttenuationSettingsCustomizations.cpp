@@ -322,6 +322,14 @@ void FBaseAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IProper
 	LayoutBuilder.AddPropertyToCategory(PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FBaseAttenuationSettings, FalloffDistance)))
 		.Visibility(IsAttenuationOverriddenVisibleAttribute())
 		.EditCondition(GetIsAttenuationEnabledAttribute(), nullptr);
+
+	LayoutBuilder.AddPropertyToCategory(PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FBaseAttenuationSettings, ConeSphereRadius)))
+		.Visibility(TAttribute<EVisibility>(this, &FBaseAttenuationSettingsCustomization::IsConeSelected))
+		.EditCondition(GetIsAttenuationEnabledAttribute(), nullptr);	
+
+	LayoutBuilder.AddPropertyToCategory(PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FBaseAttenuationSettings, ConeSphereFalloffDistance)))
+		.Visibility(TAttribute<EVisibility>(this, &FBaseAttenuationSettingsCustomization::IsConeSelected))
+		.EditCondition(GetIsAttenuationEnabledAttribute(), nullptr);
 }
 
 TAttribute<bool> FBaseAttenuationSettingsCustomization::IsAttenuationOverriddenAttribute() const
@@ -420,6 +428,7 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 	bIsReverbSendEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableReverbSend)).ToSharedRef();
 	bIsPriorityAttenuationEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnablePriorityAttenuation)).ToSharedRef();
 	bIsSubmixSendAttenuationEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSubmixSends)).ToSharedRef();
+	bIsSourceDataOverrideEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSourceDataOverride)).ToSharedRef();
 	ReverbSendMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, ReverbSendMethod)).ToSharedRef();
 	PriorityAttenuationMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, PriorityAttenuationMethod)).ToSharedRef();
 	AbsorptionMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, AbsorptionMethod)).ToSharedRef();
@@ -657,6 +666,10 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 		.Visibility(IsAttenuationOverriddenVisibleAttribute())
 		.EditCondition(GetIsSubmixSendAttenuationEnabledAttribute(), nullptr);
 
+	LayoutBuilder.AddPropertyToCategory(bIsSourceDataOverrideEnabledHandle)
+		.Visibility(IsAttenuationOverriddenVisibleAttribute())
+		.EditCondition(IsAttenuationOverriddenAttribute(), nullptr);
+
 	if (bIsAudioMixerEnabled)
 	{
 		TSharedPtr<IPropertyHandle> PluginProperty = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, PluginSettings));
@@ -680,9 +693,10 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 	LayoutBuilder.EditCategory("AttenuationPriority", LOCTEXT("AttenuationPriority", "Attenuation (Priority)"));
 	LayoutBuilder.EditCategory("AttenuationAirAbsorption", LOCTEXT("AttenuationAirAbsorption", "Attenuation (Air Absorption)"));
 	LayoutBuilder.EditCategory("AttenuationPluginSettings", LOCTEXT("AttenuationPluginSettings", "Attenuation (Plugin Settings)"));
+	LayoutBuilder.EditCategory("AttenuationSourceDataOverride", LOCTEXT("AttenuationSourceDataOverride", "Attenuation (Source Data Override)"));
 	LayoutBuilder.SortCategories(AttenuationSettingsUtils::SortCategories);
 
-	if (PropertyHandles.Num() != 63)
+	if (PropertyHandles.Num() != 66)
 	{
 		ensureMsgf(false, TEXT("Unexpected property handle(s) customizing FSoundAttenuationSettings. %d handles found"), PropertyHandles.Num());
 	}
@@ -716,7 +730,7 @@ void FForceFeedbackAttenuationSettingsCustomization::CustomizeChildren(TSharedRe
 	EnumRestriction->AddHiddenValue(AttenuationDistanceModelEnum->GetNameStringByValue((uint8)EAttenuationDistanceModel::NaturalSound));
 	DistanceAlgorithmHandle->AddRestriction(EnumRestriction.ToSharedRef());
 
-	if (PropertyHandles.Num() != 7)
+	if (PropertyHandles.Num() != 10)
 	{
 		FString PropertyList;
 		for (auto It(PropertyHandles.CreateConstIterator()); It; ++It)

@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "MeshCreator.h"
@@ -9,8 +9,7 @@
 
 #include "ConstrainedDelaunay2.h"
 
-
-constexpr float FMeshCreator::OutlineExpand;
+using namespace UE::Geometry;
 
 FMeshCreator::FMeshCreator() :
 	Glyph(MakeShared<FText3DGlyph>()),
@@ -18,17 +17,18 @@ FMeshCreator::FMeshCreator() :
 {
 }
 
-void FMeshCreator::CreateMeshes(const TSharedContourNode& Root, const bool bOutline, const float Extrude, const float Bevel, const EText3DBevelType Type, const int32 BevelSegments)
+void FMeshCreator::CreateMeshes(const TSharedContourNode& Root, const float Extrude, const float Bevel, const EText3DBevelType Type, const int32 BevelSegments, const bool bOutline, const float OutlineExpand)
 {
-	CreateFrontMesh(Root, bOutline);
+	CreateFrontMesh(Root, bOutline, OutlineExpand);
 	if (Contours->Num() == 0)
 	{
 		return;
 	}
 
+	const bool bFlipNormals = FMath::Sign(Data->GetPlannedExpand()) < 0;
 	const float BevelLocal = bOutline ? 0.f : Bevel;
 	CreateBevelMesh(BevelLocal, Type, BevelSegments);
-	CreateExtrudeMesh(Extrude, BevelLocal, Type);
+	CreateExtrudeMesh(Extrude, BevelLocal, Type, bFlipNormals);
 }
 
 void FMeshCreator::SetFrontAndBevelTextureCoordinates(const float Bevel)
@@ -36,16 +36,16 @@ void FMeshCreator::SetFrontAndBevelTextureCoordinates(const float Bevel)
 	EText3DGroupType GroupType = FMath::IsNearlyZero(Bevel) ? EText3DGroupType::Front : EText3DGroupType::Bevel;
 	int32 GroupIndex = static_cast<int32>(GroupType);
 
-	FBox2D Box;
+	FBox2f Box;
 	TText3DGroupList& Groups = Glyph->GetGroups();
 
 	const int32 FirstVertex = Groups[GroupIndex].FirstVertex;
 	const int32 LastVertex = Groups[GroupIndex + 1].FirstVertex;
 
-	TVertexAttributesConstRef<FVector> Positions = Glyph->GetStaticMeshAttributes().GetVertexPositions();
+	TVertexAttributesConstRef<FVector3f> Positions = Glyph->GetStaticMeshAttributes().GetVertexPositions();
 
-	const FVector& FirstPosition = Positions[FVertexID(FirstVertex)];
-	const FVector2D PositionFlat = { FirstPosition.Y, FirstPosition.Z };
+	const FVector3f& FirstPosition = Positions[FVertexID(FirstVertex)];
+	const FVector2f PositionFlat = { FirstPosition.Y, FirstPosition.Z };
 
 	Box.Min = PositionFlat;
 	Box.Max = PositionFlat;
@@ -53,7 +53,7 @@ void FMeshCreator::SetFrontAndBevelTextureCoordinates(const float Bevel)
 
 	for (int32 VertexIndex = FirstVertex + 1; VertexIndex < LastVertex; VertexIndex++)
 	{
-		const FVector& Position = Positions[FVertexID(VertexIndex)];
+		const FVector3f& Position = Positions[FVertexID(VertexIndex)];
 
 		Box.Min.X = FMath::Min(Box.Min.X, Position.Y);
 		Box.Min.Y = FMath::Min(Box.Min.Y, Position.Z);
@@ -62,8 +62,8 @@ void FMeshCreator::SetFrontAndBevelTextureCoordinates(const float Bevel)
 	}
 
 	FStaticMeshAttributes& StaticMeshAttributes = Glyph->GetStaticMeshAttributes();
-	TVertexAttributesRef<FVector> VertexPositions = StaticMeshAttributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+	TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
 
 	auto SetTextureCoordinates = [Groups, VertexPositions, VertexInstanceUVs, &Box](const EText3DGroupType Type)
 	{
@@ -72,8 +72,8 @@ void FMeshCreator::SetFrontAndBevelTextureCoordinates(const float Bevel)
 
 		for (int32 Index = TypeFirstVertex; Index < TypeLastVertex; Index++)
 		{
-			const FVector Position = VertexPositions[FVertexID(Index)];
-			const FVector2D TextureCoordinate = (FVector2D(Position.Y, Position.Z) - Box.Min) / Box.Max;
+			const FVector Position = (FVector)VertexPositions[FVertexID(Index)];
+			const FVector2f TextureCoordinate = (FVector2f(Position.Y, Position.Z) - Box.Min) / Box.Max;
 			VertexInstanceUVs[FVertexInstanceID(Index)] = { TextureCoordinate.X, 1.f - TextureCoordinate.Y };
 		}
 	};
@@ -93,7 +93,7 @@ void FMeshCreator::BuildMesh(UStaticMesh* StaticMesh, class UMaterial* DefaultMa
 	Glyph->Build(StaticMesh, DefaultMaterial);
 }
 
-void FMeshCreator::CreateFrontMesh(const TSharedContourNode& Root, const bool bOutline)
+void FMeshCreator::CreateFrontMesh(const TSharedContourNode& Root, const bool bOutline, const float& OutlineExpand)
 {
 	int32 VertexCount = 0;
 	AddToVertexCount(Root, VertexCount);
@@ -109,7 +109,7 @@ void FMeshCreator::CreateFrontMesh(const TSharedContourNode& Root, const bool bO
 
 	if (bOutline)
 	{
-		MakeOutline();
+		MakeOutline(OutlineExpand);
 	}
 }
 
@@ -175,7 +175,7 @@ void FMeshCreator::CreateBevelMesh(const float Bevel, const EText3DBevelType Typ
 	}
 }
 
-void FMeshCreator::CreateExtrudeMesh(float Extrude, float Bevel, const EText3DBevelType Type)
+void FMeshCreator::CreateExtrudeMesh(float Extrude, float Bevel, const EText3DBevelType Type, bool bFlipNormals)
 {
 	if (Type != EText3DBevelType::HalfCircle)
 	{
@@ -184,9 +184,8 @@ void FMeshCreator::CreateExtrudeMesh(float Extrude, float Bevel, const EText3DBe
 
 	if (Type != EText3DBevelType::HalfCircle && Type != EText3DBevelType::Engraved)
 	{
-	Extrude -= Bevel * 2.0f;
+		Extrude -= Bevel * 2.0f;
 	}
-
 
 	Data->SetCurrentGroup(EText3DGroupType::Extrude, 0.f);
 
@@ -290,7 +289,7 @@ void FMeshCreator::CreateExtrudeMesh(float Extrude, float Bevel, const EText3DBe
 
 		for (const FPartPtr& Edge : Contour)
 		{
-			Data->FillEdge(Edge, false);
+			Data->FillEdge(Edge, false, bFlipNormals);
 		}
 	}
 }
@@ -312,32 +311,33 @@ void FMeshCreator::MirrorGroup(const EText3DGroupType TypeIn, const EText3DGroup
 	Data->AddVertices(VerticesInNum);
 
 	FStaticMeshAttributes& StaticMeshAttributes = Glyph->GetStaticMeshAttributes();
-	TVertexAttributesRef<FVector> VertexPositions = StaticMeshAttributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector> VertexNormals = StaticMeshAttributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector> VertexTangents = StaticMeshAttributes.GetVertexInstanceTangents();
-	TVertexInstanceAttributesRef<FVector2D> VertexUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+	TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> VertexNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector3f> VertexTangents = StaticMeshAttributes.GetVertexInstanceTangents();
+	TVertexInstanceAttributesRef<FVector2f> VertexUVs = StaticMeshAttributes.GetVertexInstanceUVs();
 
 	for (int32 VertexIndex = 0; VertexIndex < VerticesInNum; VertexIndex++)
 	{
 		const FVertexID VertexID(GroupIn.FirstVertex + VertexIndex);
 		const FVertexInstanceID InstanceID(static_cast<uint32>(VertexID.GetValue()));
 
-		const FVector Position = VertexPositions[VertexID];
-		const FVector Normal = VertexNormals[InstanceID];
-		const FVector Tangent = VertexTangents[InstanceID];
+		const FVector Position = (FVector)VertexPositions[VertexID];
+		const FVector Normal = (FVector)VertexNormals[InstanceID];
+		const FVector Tangent = (FVector)VertexTangents[InstanceID];
 
-		Data->AddVertex({ Extrude - Position.X, Position.Y, Position.Z }, { -Tangent.X, Tangent.Y, Tangent.Z }, { -Normal.X, Normal.Y, Normal.Z }, VertexUVs[InstanceID]);
+		Data->AddVertex({ Extrude - Position.X, Position.Y, Position.Z }, { -Tangent.X, Tangent.Y, Tangent.Z }, { -Normal.X, Normal.Y, Normal.Z }, FVector2D(VertexUVs[InstanceID]));
 	}
 
 	Data->AddTriangles(TrianglesInNum);
 
 	for (int32 TriangleIndex = 0; TriangleIndex < TrianglesInNum; TriangleIndex++)
 	{
-		const FMeshTriangle& Triangle = MeshDescription.Triangles()[FTriangleID(GroupIn.FirstTriangle + TriangleIndex)];
+		const FTriangleID TriangleID = FTriangleID(GroupIn.FirstTriangle + TriangleIndex);
+		TArrayView<const FVertexInstanceID> VertexInstanceIDs = MeshDescription.GetTriangleVertexInstances(TriangleID);
 
-		uint32 Instance0 = static_cast<uint32>(TotalVerticesNum + Triangle.GetVertexInstanceID(0).GetValue() - GroupIn.FirstVertex);
-		uint32 Instance2 = static_cast<uint32>(TotalVerticesNum + Triangle.GetVertexInstanceID(2).GetValue() - GroupIn.FirstVertex);
-		uint32 Instance1 = static_cast<uint32>(TotalVerticesNum + Triangle.GetVertexInstanceID(1).GetValue() - GroupIn.FirstVertex);
+		uint32 Instance0 = static_cast<uint32>(TotalVerticesNum + VertexInstanceIDs[0].GetValue() - GroupIn.FirstVertex);
+		uint32 Instance2 = static_cast<uint32>(TotalVerticesNum + VertexInstanceIDs[2].GetValue() - GroupIn.FirstVertex);
+		uint32 Instance1 = static_cast<uint32>(TotalVerticesNum + VertexInstanceIDs[1].GetValue() - GroupIn.FirstVertex);
 		Data->AddTriangle(Instance0, Instance2, Instance1);
 	}
 }
@@ -357,8 +357,8 @@ void FMeshCreator::TriangulateAndConvert(const TSharedContourNode& Node, int32& 
 	if (!Node->bClockwise)
 	{
 		int32 VertexCount = 0;
-		FConstrainedDelaunay2f Triangulation;
-		Triangulation.FillRule = FConstrainedDelaunay2f::EFillRule::Positive;
+		UE::Geometry::FConstrainedDelaunay2f Triangulation;
+		Triangulation.FillRule = UE::Geometry::FConstrainedDelaunay2f::EFillRule::Positive;
 
 		const TSharedPtr<FContourList> ContoursLocal = Contours;
 		const TSharedRef<FData> DataLocal = Data;
@@ -424,7 +424,7 @@ void FMeshCreator::TriangulateAndConvert(const TSharedContourNode& Node, int32& 
 	}
 }
 
-void FMeshCreator::MakeOutline()
+void FMeshCreator::MakeOutline(float OutlineExpand)
 {
 	FContourList InitialContours = *Contours;
 
@@ -586,6 +586,7 @@ void FMeshCreator::BevelPartsWithoutIntersectingNormals()
 	Data->SetTarget(Data->GetPlannedExtrude(), Data->GetPlannedExpand());
 	const float MaxExpand = Data->GetPlannedExpand();
 
+	const bool bFlipNormals = FMath::Sign(Data->GetPlannedExpand()) < 0;
 	for (FContour& Contour : *Contours)
 	{
 		for (const FPartPtr& Point : Contour)
@@ -603,7 +604,7 @@ void FMeshCreator::BevelPartsWithoutIntersectingNormals()
 
 		for (const FPartPtr& Edge : Contour)
 		{
-			Data->FillEdge(Edge, false);
+			Data->FillEdge(Edge, false, bFlipNormals);
 		}
 	}
 }

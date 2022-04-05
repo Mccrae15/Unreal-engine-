@@ -16,7 +16,6 @@
 #include "LightmapRenderer.h"
 #include "VolumetricLightmap.h"
 #include "GPUScene.h"
-#include "RayTracingDynamicGeometryCollection.h"
 #include "Lightmass/LightmassImportanceVolume.h"
 #include "Logging/MessageLog.h"
 #include "Misc/ConfigCacheIni.h"
@@ -29,7 +28,7 @@
 
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
 
-extern RENDERER_API void SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance(FVector4* OutSkyIrradianceEnvironmentMap, const FSHVectorRGB3 SkyIrradiance);
+extern RENDERER_API void SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance(FVector4f* OutSkyIrradianceEnvironmentMap, const FSHVectorRGB3 SkyIrradiance);
 extern ENGINE_API bool GCompressLightmaps;
 
 extern float GetTerrainExpandPatchCount(float LightMapRes, int32& X, int32& Y, int32 ComponentSize, int32 LightmapSize, int32& DesiredSize, uint32 LightingLOD);
@@ -140,7 +139,7 @@ void FScene::GatherImportanceVolumes()
 	for (TObjectIterator<ALightmassImportanceVolume> It; It; ++It)
 	{
 		ALightmassImportanceVolume* LMIVolume = *It;
-		if (GPULightmass->World->ContainsActor(LMIVolume) && !LMIVolume->IsPendingKill())
+		if (GPULightmass->World->ContainsActor(LMIVolume) && IsValid(LMIVolume))
 		{
 			CombinedImportanceVolume += LMIVolume->GetComponentsBoundingBox(true);
 			ImportanceVolumes.Add(LMIVolume->GetComponentsBoundingBox(true));
@@ -424,10 +423,11 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 	{
 		for (FPrimitiveSceneProxy* SceneProxy : SceneProxiesToUpdateOnRenderThread)
 		{
-			if (SceneProxy->GetPrimitiveSceneInfo() && SceneProxy->GetPrimitiveSceneInfo()->IsIndexValid())
+			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
+			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				SceneProxy->GetPrimitiveSceneInfo()->UpdateStaticLightingBuffer();
-				AddPrimitiveToUpdateGPU(*SceneProxy->GetPrimitiveSceneInfo()->Scene, SceneProxy->GetPrimitiveSceneInfo()->GetIndex());
+				PrimitiveSceneInfo->UpdateStaticLightingBuffer();
+				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex());
 			}
 		}
 	});
@@ -509,10 +509,11 @@ void FScene::RemoveLight(LightComponentType* PointLightComponent)
 	{
 		for (FPrimitiveSceneProxy* SceneProxy : SceneProxiesToUpdateOnRenderThread)
 		{
-			if (SceneProxy->GetPrimitiveSceneInfo() && SceneProxy->GetPrimitiveSceneInfo()->IsIndexValid())
+			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
+			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				SceneProxy->GetPrimitiveSceneInfo()->UpdateStaticLightingBuffer();
-				AddPrimitiveToUpdateGPU(*SceneProxy->GetPrimitiveSceneInfo()->Scene, SceneProxy->GetPrimitiveSceneInfo()->GetIndex());
+				PrimitiveSceneInfo->UpdateStaticLightingBuffer();
+				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex());
 			}
 		}
 	});
@@ -607,14 +608,14 @@ void FScene::AddLight(USkyLightComponent* SkyLight)
 		NewSkyLightRenderState.ProcessedTexture = ProcessedSkyTexture->TextureRHI;
 		NewSkyLightRenderState.ProcessedTextureSampler = ProcessedSkyTexture->SamplerStateRHI;
 
-		NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Initialize(sizeof(FVector4), 7, 0, TEXT("SkyIrradianceEnvironmentMap"));
+		NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Initialize(TEXT("SkyIrradianceEnvironmentMap"), sizeof(FVector4f), 7);
 
 		NewSkyLightRenderState.PrepareSkyTexture(RHICmdList);
 
 		// Set the captured environment map data
-		void* DataPtr = RHICmdList.LockStructuredBuffer(NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Buffer, 0, NewSkyLightRenderState.SkyIrradianceEnvironmentMap.NumBytes, RLM_WriteOnly);
-		SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance((FVector4*)DataPtr, NewSkyLightRenderState.IrradianceEnvironmentMap);
-		RHICmdList.UnlockStructuredBuffer(NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Buffer);
+		void* DataPtr = RHICmdList.LockBuffer(NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Buffer, 0, NewSkyLightRenderState.SkyIrradianceEnvironmentMap.NumBytes, RLM_WriteOnly);
+		SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance((FVector4f*)DataPtr, NewSkyLightRenderState.IrradianceEnvironmentMap);
+		RHICmdList.UnlockBuffer(NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Buffer);
 
 		RenderState.LightSceneRenderState.SkyLight = MoveTemp(NewSkyLightRenderState);
 
@@ -687,7 +688,7 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 
 	RegisteredStaticMeshComponentUObjects.Add(InComponent, Instance);
 
-	const int32 SMCurrentMinLOD = InComponent->GetStaticMesh()->GetMinLOD().Default;
+	const int32 SMCurrentMinLOD = InComponent->GetStaticMesh()->GetDefaultMinLOD();
 	int32 EffectiveMinLOD = InComponent->bOverrideMinLOD ? InComponent->MinLOD : SMCurrentMinLOD;
 
 	// Find the first LOD with any vertices (ie that haven't been stripped)
@@ -761,7 +762,7 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
 				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
-				FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias)
+				FVector4f(FVector2f(Lightmap->LightmapObject->CoordinateScale), FVector2f(Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(MoveTemp(Initializer));
@@ -789,23 +790,18 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 	{
 		FStaticMeshInstanceRenderStateRef InstanceRenderStateRef = RenderState.StaticMeshInstanceRenderStates.Emplace(MoveTemp(InstanceRenderState));
 
-		InstanceRenderStateRef->PrimitiveUniformShaderParameters = GetPrimitiveUniformShaderParameters(
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->ActorPosition,
-			InstanceRenderStateRef->WorldBounds,
-			InstanceRenderStateRef->LocalBounds,
-			false,
-			false,
-			false,
-			false,
-			false,
-			false,
-			0b111,
-			1.0f,
-			0,
-			INDEX_NONE,
-			false);
+		InstanceRenderStateRef->PrimitiveUniformShaderParameters =
+			FPrimitiveUniformShaderParametersBuilder{}
+			.Defaults()
+				.LocalToWorld(InstanceRenderStateRef->LocalToWorld)
+				.ActorWorldPosition(InstanceRenderStateRef->ActorPosition)
+				.WorldBounds(InstanceRenderStateRef->WorldBounds)
+				.LocalBounds(InstanceRenderStateRef->LocalBounds)
+				.LightingChannelMask(0b111)
+				.LightmapDataIndex(0)
+				.CastContactShadow(true)
+				.CastShadow(true)
+			.Build();
 
 		for (int32 LODIndex = 0; LODIndex < InstanceLightmapRenderStateInitializers.Num(); LODIndex++)
 		{
@@ -982,7 +978,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 				Lightmap->LightmapObject->CoordinateScale = Scale;
 				Lightmap->LightmapObject->CoordinateBias = FVector2D(0, 0);
 
-				int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(InComponent->PerInstanceSMData.Num()));
+				int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(InComponent->PerInstanceSMData.Num())));
 				Lightmap->MeshMapBuildData->PerInstanceLightmapData.AddDefaulted(InComponent->PerInstanceSMData.Num());
 				for (int32 GameThreadInstanceIndex = 0; GameThreadInstanceIndex < InComponent->PerInstanceSMData.Num(); GameThreadInstanceIndex++)
 				{
@@ -991,7 +987,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 					{
 						int32 X = RenderIndex % InstancesPerRow;
 						int32 Y = RenderIndex / InstancesPerRow;
-						FVector2D Bias = (FVector2D(X, Y) * FVector2D(BaseLightMapWidth, BaseLightMapHeight) + FVector2D(1, 1)) / Lightmap->Size;
+						FVector2f Bias = (FVector2f(X, Y) * FVector2f(BaseLightMapWidth, BaseLightMapHeight) + FVector2f(1, 1)) / Lightmap->Size;
 						Lightmap->MeshMapBuildData->PerInstanceLightmapData[GameThreadInstanceIndex].LightmapUVBias = Bias;
 						Lightmap->MeshMapBuildData->PerInstanceLightmapData[GameThreadInstanceIndex].ShadowmapUVBias = Bias;
 					}
@@ -1010,7 +1006,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
 				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
-				FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias)
+				FVector4f(FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(Initializer);
@@ -1022,7 +1018,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 		}
 	}
 
-	InComponent->FlushInstanceUpdateCommands();
+	InComponent->FlushInstanceUpdateCommands(true);
 
 	FInstanceGroupRenderState InstanceRenderState;
 	InstanceRenderState.ComponentUObject = Instance->ComponentUObject;
@@ -1054,29 +1050,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 		](FRHICommandListImmediate&) mutable
 	{
 
-		InstanceRenderState.InstanceOriginBuffer = InstanceRenderState.InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetInstanceOriginBuffer();
-		InstanceRenderState.InstanceTransformBuffer = InstanceRenderState.InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetInstanceTransformBuffer();
-		InstanceRenderState.InstanceLightmapBuffer = InstanceRenderState.InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetInstanceLightmapBuffer();
-
 		FInstanceGroupRenderStateRef InstanceRenderStateRef = RenderState.InstanceGroupRenderStates.Emplace(MoveTemp(InstanceRenderState));
-
-		InstanceRenderStateRef->UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(GetPrimitiveUniformShaderParameters(
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->ActorPosition,
-			InstanceRenderStateRef->WorldBounds,
-			InstanceRenderStateRef->LocalBounds,
-			false,
-			false,
-			false,
-			false,
-			false,
-			false,
-			0b111,
-			1.0f,
-			0,
-			INDEX_NONE,
-			false), UniformBuffer_MultiFrame);
 
 		for (int32 LODIndex = 0; LODIndex < InstanceLightmapRenderStateInitializers.Num(); LODIndex++)
 		{
@@ -1167,13 +1141,12 @@ void FScene::RemoveGeometryInstanceFromComponent(UInstancedStaticMeshComponent* 
 		HISMC->BuildTreeIfOutdated(false, true);
 	}
 
-	InComponent->FlushInstanceUpdateCommands();
+	InComponent->FlushInstanceUpdateCommands(true);
 
 	ENQUEUE_RENDER_COMMAND(RenderThreadRemove)(
 		[ElementId, &RenderState = RenderState](FRHICommandListImmediate&) mutable
 	{
 		RenderState.InstanceGroupRenderStates.Elements[ElementId].InstancedRenderData->ReleaseResources(nullptr, nullptr);
-		RenderState.InstanceGroupRenderStates.Elements[ElementId].UniformBuffer.SafeRelease();
 
 		for (FLightmapRenderStateRef& Lightmap : RenderState.InstanceGroupRenderStates.Elements[ElementId].LODLightmapRenderStates)
 		{
@@ -1246,7 +1219,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
 				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
-				FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias)
+				FVector4f(FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(Initializer);
@@ -1284,11 +1257,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	}
 
 	int32 LODIndex = 0;
-	InstanceRenderState.MaterialInterface = AvailableMaterials[
-		InComponent->MaterialIndexToDisabledTessellationMaterial[InComponent->LODIndexToMaterialIndex[LODIndex]] != INDEX_NONE ? 
-			InComponent->MaterialIndexToDisabledTessellationMaterial[InComponent->LODIndexToMaterialIndex[LODIndex]] :
-			InComponent->LODIndexToMaterialIndex[LODIndex]
-	];
+	InstanceRenderState.MaterialInterface = AvailableMaterials[InComponent->LODIndexToMaterialIndex[LODIndex]];
 
 	InstanceRenderState.LocalToWorldNoScaling = InstanceRenderState.LocalToWorld;
 	InstanceRenderState.LocalToWorldNoScaling.RemoveScaling();
@@ -1306,8 +1275,8 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	Initializer.HeightmapTexture           = InComponent->GetHeightmap();
 	Initializer.HeightmapSubsectionOffsetU = ((float)(InComponent->SubsectionSizeQuads + 1) / (float)InComponent->GetHeightmap()->GetSizeX());
 	Initializer.HeightmapSubsectionOffsetV = ((float)(InComponent->SubsectionSizeQuads + 1) / (float)InComponent->GetHeightmap()->GetSizeY());
-	Initializer.HeightmapScaleBias         = InComponent->HeightmapScaleBias;
-	Initializer.WeightmapScaleBias         = InComponent->WeightmapScaleBias;
+	Initializer.HeightmapScaleBias         = (FVector4f)InComponent->HeightmapScaleBias;
+	Initializer.WeightmapScaleBias         = (FVector4f)InComponent->WeightmapScaleBias;
 	Initializer.WeightmapSubsectionOffset  = InComponent->WeightmapSubsectionOffset;
 
 	TArray<int32> RelevantPointLightsToAddOnRenderThread = AddAllPossiblyRelevantLightsToGeometry(LightScene.PointLights, Instance);
@@ -1331,7 +1300,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 		{
 			InstanceRenderState.SharedBuffers = new FLandscapeSharedBuffers(
 				InstanceRenderState.SharedBuffersKey, Initializer.SubsectionSizeQuads, Initializer.NumSubsections,
-				FeatureLevel, false, /*NumOcclusionVertices*/ 0);
+				FeatureLevel);
 
 			FLandscapeComponentSceneProxy::SharedBuffersMap.Add(InstanceRenderState.SharedBuffersKey, InstanceRenderState.SharedBuffers);
 
@@ -1348,31 +1317,13 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 
 		FLandscapeRenderStateRef InstanceRenderStateRef = RenderState.LandscapeRenderStates.Emplace(MoveTemp(InstanceRenderState));
 
-		InstanceRenderStateRef->UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(GetPrimitiveUniformShaderParameters(
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->LocalToWorld,
-			InstanceRenderStateRef->ActorPosition,
-			InstanceRenderStateRef->WorldBounds,
-			InstanceRenderStateRef->LocalBounds,
-			false,
-			false,
-			false,
-			false,
-			false,
-			false,
-			0b111,
-			1.0f,
-			0,
-			INDEX_NONE,
-			false), UniformBuffer_MultiFrame);
-
 		int32 MaxLOD = 0;
 		InstanceRenderStateRef->LandscapeFixedGridUniformShaderParameters.AddDefaulted(MaxLOD + 1);
 		for (int32 LodIndex = 0; LodIndex <= MaxLOD; ++LodIndex)
 		{
 			InstanceRenderStateRef->LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
 			FLandscapeFixedGridUniformShaderParameters Parameters;
-			Parameters.LodValues = FVector4(
+			Parameters.LodValues = FVector4f(
 				LodIndex,
 				0.f,
 				(float)((InstanceRenderStateRef->SubsectionSizeVerts >> LodIndex) - 1),
@@ -1404,26 +1355,26 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 			LandscapeParams.LastLOD = FMath::CeilLogTwo(Initializer.SubsectionSizeQuads + 1) - 1;
 			LandscapeParams.HeightmapUVScaleBias = Initializer.HeightmapScaleBias;
 			LandscapeParams.WeightmapUVScaleBias = Initializer.WeightmapScaleBias;
-			LandscapeParams.LocalToWorldNoScaling = InstanceRenderState.LocalToWorldNoScaling;
+			LandscapeParams.LocalToWorldNoScaling = FMatrix44f(InstanceRenderState.LocalToWorldNoScaling);				// LWC_TODO: Precision loss
 
-			LandscapeParams.LandscapeLightmapScaleBias = FVector4(
+			LandscapeParams.LandscapeLightmapScaleBias = FVector4f(
 				LightmapScaleX,
 				LightmapScaleY,
 				LightmapBiasY,
 				LightmapBiasX);
-			LandscapeParams.SubsectionSizeVertsLayerUVPan = FVector4(
+			LandscapeParams.SubsectionSizeVertsLayerUVPan = FVector4f(
 				Initializer.SubsectionSizeQuads + 1,
 				1.f / (float)Initializer.SubsectionSizeQuads,
 				Initializer.SectionBase.X,
 				Initializer.SectionBase.Y
 			);
-			LandscapeParams.SubsectionOffsetParams = FVector4(
+			LandscapeParams.SubsectionOffsetParams = FVector4f(
 				Initializer.HeightmapSubsectionOffsetU,
 				Initializer.HeightmapSubsectionOffsetV,
 				Initializer.WeightmapSubsectionOffset,
 				Initializer.SubsectionSizeQuads
 			);
-			LandscapeParams.LightmapSubsectionOffsetParams = FVector4(
+			LandscapeParams.LightmapSubsectionOffsetParams = FVector4f(
 				LightmapExtendFactorX,
 				LightmapExtendFactorY,
 				0,
@@ -1496,89 +1447,9 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 			}
 		}
 
-#if 1
-#if RHI_RAYTRACING
-		if (IsRayTracingEnabled())
-		{
-			// For DynamicGeometryCollection
-			FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
-
-			for (int32 SubY = 0; SubY < InstanceRenderStateRef->NumSubsections; SubY++)
-			{
-				for (int32 SubX = 0; SubX < InstanceRenderStateRef->NumSubsections; SubX++)
-				{
-					const int8 SubSectionIdx = SubX + SubY * InstanceRenderStateRef->NumSubsections;
-
-					int32 LodSubsectionSizeVerts = InstanceRenderStateRef->SubsectionSizeVerts;
-					uint32 NumPrimitives = FMath::Square(LodSubsectionSizeVerts - 1) * 2;
-
-					FRayTracingGeometryInitializer GeometryInitializer;
-					FRHIResourceCreateInfo CreateInfo;
-					GeometryInitializer.IndexBuffer = InstanceRenderStateRef->SharedBuffers->ZeroOffsetIndexBuffers[0]->IndexBufferRHI;
-					GeometryInitializer.TotalPrimitiveCount = NumPrimitives;
-					GeometryInitializer.GeometryType = RTGT_Triangles;
-					GeometryInitializer.bFastBuild = false;
-					GeometryInitializer.bAllowUpdate = false;
-
-					FRayTracingGeometrySegment Segment;
-					Segment.VertexBuffer = nullptr;
-					Segment.VertexBufferStride = sizeof(FVector);
-					Segment.VertexBufferElementType = VET_Float3;
-					Segment.NumPrimitives = NumPrimitives;
-					GeometryInitializer.Segments.Add(Segment);
-
-					InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx] = MakeUnique<FLandscapeRenderState::FLandscapeSectionRayTracingState>();
-					InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->Geometry.SetInitializer(GeometryInitializer);
-					InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->Geometry.InitResource();
-
-					FRayTracingDynamicGeometryCollection DynamicGeometryCollection;
-
-					TArray<FMeshBatch> MeshBatches = InstanceRenderStateRef->GetMeshBatchesForGBufferRendering(0);
-
-					FLandscapeVertexFactoryMVFParameters UniformBufferParams;
-					UniformBufferParams.SubXY = FIntPoint(SubX, SubY);
-					InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->UniformBuffer = FLandscapeVertexFactoryMVFUniformBufferRef::CreateUniformBufferImmediate(UniformBufferParams, UniformBuffer_SingleFrame);
-
-					FLandscapeBatchElementParams& BatchElementParams = *(FLandscapeBatchElementParams*)MeshBatches[0].Elements[0].UserData;
-					BatchElementParams.LandscapeVertexFactoryMVFUniformBuffer = InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->UniformBuffer;
-
-					MeshBatches[0].Elements[0].IndexBuffer = InstanceRenderStateRef->SharedBuffers->ZeroOffsetIndexBuffers[0];
-					MeshBatches[0].Elements[0].FirstIndex = 0;
-					MeshBatches[0].Elements[0].NumPrimitives = NumPrimitives;
-					MeshBatches[0].Elements[0].MinVertexIndex = 0;
-					MeshBatches[0].Elements[0].MaxVertexIndex = 0;
-
-					FRayTracingDynamicGeometryUpdateParams UpdateParams
-					{
-						MeshBatches,
-						false,
-						(uint32)FMath::Square(LodSubsectionSizeVerts),
-						FMath::Square(LodSubsectionSizeVerts) * (uint32)sizeof(FVector),
-						(uint32)FMath::Square(LodSubsectionSizeVerts - 1) * 2,
-						&InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->Geometry,
-						&InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->RayTracingDynamicVertexBuffer,
-						false
-					};
-
-					DynamicGeometryCollection.AddDynamicMeshBatchForGeometryUpdate(
-						InstanceRenderStateRef->ComponentUObject->GetWorld()->Scene->GetRenderScene(),
-						nullptr,
-						nullptr,
-						UpdateParams,
-						0
-					);
-
-					DynamicGeometryCollection.DispatchUpdates(RHICmdList);
-
-					// Landscape VF doesn't really use the vertex buffer in HitGroupSystemParameters
-					// We can release after all related RHI cmds get dispatched onto the cmd list
-					InstanceRenderStateRef->SectionRayTracingStates[SubSectionIdx]->RayTracingDynamicVertexBuffer.Release();
-				}
-			}
-		}
-#endif
-#endif
 		RenderState.LightmapRenderer->BumpRevision();
+
+		RenderState.CachedRayTracingScene.Reset();
 	});
 
 	bNeedsVoxelization = true;
@@ -1668,6 +1539,8 @@ void FScene::RemoveGeometryInstanceFromComponent(ULandscapeComponent* InComponen
 		RenderState.LandscapeRenderStates.RemoveAt(ElementId);
 
 		RenderState.LightmapRenderer->BumpRevision();
+
+		RenderState.CachedRayTracingScene.Reset();
 	});
 
 	bNeedsVoxelization = true;
@@ -2052,7 +1925,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 		}
 
 		{
-			ULevel* SubLevelStorageLevel = LightingScenario ? LightingScenario : World->PersistentLevel;
+			ULevel* SubLevelStorageLevel = LightingScenario ? LightingScenario : ToRawPtr(World->PersistentLevel);
 			UMapBuildDataRegistry* SubLevelRegistry = SubLevelStorageLevel->GetOrCreateMapBuildData();
 			FPrecomputedVolumetricLightmapData& SubLevelData = SubLevelRegistry->AllocateLevelPrecomputedVolumetricLightmapBuildData(World->PersistentLevel->LevelBuildDataId);
 
@@ -2502,7 +2375,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 						int32 BaseLightMapWidth = InstanceGroup.LODPerInstanceLightmapSize[LODIndex].X;
 						int32 BaseLightMapHeight = InstanceGroup.LODPerInstanceLightmapSize[LODIndex].Y;
 
-						int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(InstanceGroup.ComponentUObject->PerInstanceSMData.Num()));
+						int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(InstanceGroup.ComponentUObject->PerInstanceSMData.Num())));
 
 						// Transencode GI layers
 						TArray<TArray<FLightSampleData>> InstanceGroupLightSampleData;
@@ -2763,7 +2636,15 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							Registry, InstanceGroup.ComponentUObject->LODData[LODIndex].MapBuildDataId, InstanceGroup.ComponentUObject->Bounds, PaddingType, LMF_Streamed);
 
 						MeshBuildData.LightMap = NewLightMap;
-
+						
+						for (auto It = InstancedShadowMapData.CreateIterator(); It; It++)
+						{
+							if (It->Num() == 0)
+							{
+								It.RemoveCurrent();
+							}
+						}
+						
 						if (InstancedShadowMapData.Num() > 0 && !bUseVirtualTextures)
 						{
 							TRefCountPtr<FShadowMap2D> NewShadowMap = FShadowMap2D::AllocateInstancedShadowMap(Registry, InstanceGroup.ComponentUObject,

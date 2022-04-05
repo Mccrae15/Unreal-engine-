@@ -18,7 +18,7 @@
 
 #include "EngineUtils.h"
 #include "BlueprintEditor.h"
-#include "SSCSEditor.h"
+#include "SSubobjectEditor.h"
 #include "EditorViewportCommands.h"
 #include "STransformViewportToolbar.h"
 #include "SEditorViewportToolBarMenu.h"
@@ -45,28 +45,28 @@ public:
 		EditorViewport = InArgs._EditorViewport;
 
 		static const FName DefaultForegroundName("DefaultForeground");
+		const FMargin ToolbarSlotPadding(4.0f, 1.0f);
 
 		this->ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-			.ColorAndOpacity(this, &SViewportToolBar::OnGetColorAndOpacity)
-			.ForegroundColor(FEditorStyle::GetSlateColor(DefaultForegroundName))
+			.BorderImage(FAppStyle::Get().GetBrush("EditorViewportToolBar.Background"))
+			.ForegroundColor(FAppStyle::Get().GetSlateColor(DefaultForegroundName))
 			[
 				SNew(SHorizontalBox)
-				+SHorizontalBox::Slot()
+				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(2.0f, 2.0f)
+				.Padding(ToolbarSlotPadding)
 				[
 					SNew(SEditorViewportToolbarMenu)
 					.ParentToolBar(SharedThis(this))
 					.Cursor(EMouseCursor::Default)
-					.Image("EditorViewportToolBar.MenuDropdown")
+					.Image("EditorViewportToolBar.OptionsDropdown")
 					.OnGetMenuContent(this, &SDisplayClusterConfiguratorSCSEditorViewportToolBar::GeneratePreviewMenu)
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(2.0f, 2.0f)
+				.Padding(ToolbarSlotPadding)
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.ParentToolBar( SharedThis( this ) )
@@ -77,7 +77,7 @@ public:
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(2.0f, 2.0f)
+				.Padding(ToolbarSlotPadding)
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.ParentToolBar( SharedThis( this ) )
@@ -88,7 +88,7 @@ public:
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(2.0f, 2.0f)
+				.Padding(ToolbarSlotPadding)
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.ParentToolBar( SharedThis( this ) )
@@ -97,8 +97,8 @@ public:
 					.OnGetMenuContent(this, &SDisplayClusterConfiguratorSCSEditorViewportToolBar::GenerateViewportsMenu)
 				]
 				+ SHorizontalBox::Slot()
-				.Padding( 3.0f, 1.0f )
-				.HAlign( HAlign_Right )
+				.Padding(ToolbarSlotPadding)
+				.HAlign(HAlign_Right)
 				[
 					SNew(STransformViewportToolBar)
 					.Viewport(EditorViewport.Pin().ToSharedRef())
@@ -157,7 +157,7 @@ public:
 			return GetCameraMenuLabelIconFromViewportType( EditorViewport.Pin()->GetViewportClient()->GetViewportType() );
 		}
 
-		return FEditorStyle::GetBrush(NAME_None);
+		return FAppStyle::Get().GetBrush(NAME_None);
 	}
 
 	TSharedRef<SWidget> GenerateCameraMenu() const
@@ -232,7 +232,7 @@ public:
 			}
 		}
 
-		return FEditorStyle::GetBrush(Icon);
+		return FAppStyle::Get().GetBrush(Icon);
 	}
 
 	TSharedRef<SWidget> GenerateViewMenu() const
@@ -268,43 +268,37 @@ public:
 			ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().Show3DViewportNames);
 
 			ViewportsMenuBuilder.AddWidget(
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("PreviewResolution_Label", "Preview Resolution"))
-				]
-
-				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Bottom)
-				.AutoWidth()
+				SNew(SBox)
+				.HAlign(HAlign_Right)
 				[
 					SNew(SBox)
-					.MinDesiredWidth(64)
+					.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+					.WidthOverride(100.0f)
 					[
-						SNew(SNumericEntryBox<float>)
-						.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetPreviewResolutionScale)
-						.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetPreviewResolutionScale)
-						.OnValueCommitted_Lambda([this](const float InValue, ETextCommit::Type)
-						{
-							if (ViewportClient.IsValid())
+						SNew(SBorder)
+						.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+						.Padding(FMargin(1.0f))
+						[
+							SNew(SNumericEntryBox<float>)
+							.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetPreviewResolutionScale)
+							.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetPreviewResolutionScale)
+							.OnValueCommitted_Lambda([this](const float InValue, ETextCommit::Type)
 							{
-								ViewportClient->Invalidate();
-							}
-						})
+								if (ViewportClient.IsValid())
+								{
+									ViewportClient->Invalidate();
+								}
+							})
 
-						.MinValue(0.05f)
-						.MaxValue(1.f)
-						.MinSliderValue(0.05f)
-						.MaxSliderValue(1.f)
-						.AllowSpin(true)
+							.MinValue(0.05f)
+							.MaxValue(1.f)
+							.MinSliderValue(0.05f)
+							.MaxSliderValue(1.f)
+							.AllowSpin(true)
+						]
 					]
 				],
-				FText::GetEmpty()
+				LOCTEXT("PreviewResolution_Label", "Preview Resolution")
 		);
 		}
 		ViewportsMenuBuilder.EndSection();
@@ -314,35 +308,33 @@ public:
 			ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ToggleShowXformGizmos);
 
 			ViewportsMenuBuilder.AddWidget(
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("XformGizmoScale_Label", "Xform Gizmo Scale"))
-				]
-
-				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Bottom)
-				.AutoWidth()
+				SNew(SBox)
+				.HAlign(HAlign_Right)
 				[
 					SNew(SBox)
-					.MinDesiredWidth(64)
+					.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+					.WidthOverride(100.0f)
 					[
-						SNew(SNumericEntryBox<float>)
-						.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetXformGizmoScale)
-						.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetXformGizmoScale)
-						.MinValue(0)
-						.MaxValue(FLT_MAX)
-						.MinSliderValue(0)
-						.MaxSliderValue(2)
-						.AllowSpin(true)
+						SNew(SBorder)
+						.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+						.Padding(FMargin(1.0f))
+						[
+							SNew(SBox)
+							.MinDesiredWidth(64)
+							[
+								SNew(SNumericEntryBox<float>)
+								.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetXformGizmoScale)
+								.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetXformGizmoScale)
+								.MinValue(0)
+								.MaxValue(FLT_MAX)
+								.MinSliderValue(0)
+								.MaxSliderValue(2)
+								.AllowSpin(true)
+							]
+						]
 					]
 				],
-				FText::GetEmpty()
+				LOCTEXT("XformGizmoScale_Label", "Xform Gizmo Scale")
 			);
 		}
 		ViewportsMenuBuilder.EndSection();
@@ -360,7 +352,7 @@ public:
 		{
 			FToolBarBuilder OnePaneButton(CommandList, FMultiBoxCustomization::None);
 			OnePaneButton.SetLabelVisibility(EVisibility::Collapsed);
-			OnePaneButton.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
+			OnePaneButton.SetStyle(&FAppStyle::Get(), "ViewportLayoutToolbar");
 
 			OnePaneButton.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_OnePane);
 
@@ -385,7 +377,7 @@ public:
 		{
 			FToolBarBuilder TwoPaneButtons(CommandList, FMultiBoxCustomization::None);
 			TwoPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
-			TwoPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
+			TwoPaneButtons.SetStyle(&FAppStyle::Get(), "ViewportLayoutToolbar");
 
 			TwoPaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_TwoPanesH, NAME_None, FText());
 			TwoPaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_TwoPanesV, NAME_None, FText());
@@ -411,7 +403,7 @@ public:
 		{
 			FToolBarBuilder ThreePaneButtons(CommandList, FMultiBoxCustomization::None);
 			ThreePaneButtons.SetLabelVisibility(EVisibility::Collapsed);
-			ThreePaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
+			ThreePaneButtons.SetStyle(&FAppStyle::Get(), "ViewportLayoutToolbar");
 
 			ThreePaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_ThreePanesLeft, NAME_None, FText());
 			ThreePaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_ThreePanesRight, NAME_None, FText());
@@ -439,7 +431,7 @@ public:
 		{
 			FToolBarBuilder FourPaneButtons(CommandList, FMultiBoxCustomization::None);
 			FourPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
-			FourPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
+			FourPaneButtons.SetStyle(&FAppStyle::Get(), "ViewportLayoutToolbar");
 
 			FourPaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_FourPanes2x2, NAME_None, FText());
 			FourPaneButtons.AddToolBarButton(FEditorViewportCommands::Get().ViewportConfig_FourPanesLeft, NAME_None, FText());
@@ -471,7 +463,7 @@ private:
 	TSharedPtr<FDisplayClusterConfiguratorSCSEditorViewportClient> ViewportClient;
 };
 
-void SDisplayClusterConfiguratorSCSEditorViewport::Construct(const FArguments& InArgs)
+void SDisplayClusterConfiguratorSCSEditorViewport::Construct(const FArguments& InArgs, const FAssetEditorViewportConstructionArgs& InViewportConstructionArgs)
 {
 	bIsActiveTimerRegistered = false;
 
@@ -479,7 +471,7 @@ void SDisplayClusterConfiguratorSCSEditorViewport::Construct(const FArguments& I
 	BlueprintEditorPtr = InArgs._BlueprintEditor;
 	OwnerTab = InArgs._OwningTab;
 	
-	SAssetEditorViewport::Construct(SAssetEditorViewport::FArguments());
+	SAssetEditorViewport::Construct(SAssetEditorViewport::FArguments(), InViewportConstructionArgs);
 
 	// Restore last used feature level
 	if (ViewportClient.IsValid())
@@ -604,7 +596,7 @@ void SDisplayClusterConfiguratorSCSEditorViewport::PopulateViewportOverlays(TSha
 void SDisplayClusterConfiguratorSCSEditorViewport::BindCommands()
 {
 	TSharedPtr<FBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
-	CommandList->Append(BlueprintEditor->GetSCSEditor()->CommandList.ToSharedRef());
+	CommandList->Append(BlueprintEditor->GetSubobjectEditor()->GetCommandList().ToSharedRef());
 	CommandList->Append(BlueprintEditor->GetToolkitCommands());
 	
 	const FDisplayClusterConfiguratorCommands& Commands = FDisplayClusterConfiguratorCommands::Get();

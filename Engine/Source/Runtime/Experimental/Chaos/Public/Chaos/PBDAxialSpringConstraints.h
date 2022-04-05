@@ -1,41 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/Array.h"
 #include "Chaos/PBDAxialSpringConstraintsBase.h"
-#include "Chaos/PBDParticles.h"
-#include "Chaos/PerParticleRule.h"
-#include "Chaos/GraphColoring.h"
-#include "Chaos/Core.h"
-#include "ChaosStats.h"
 
-namespace Chaos
+namespace Chaos::Softs
 {
 
-class CHAOS_API FPBDAxialSpringConstraints : public FParticleRule, public FPBDAxialSpringConstraintsBase
+class CHAOS_API FPBDAxialSpringConstraints : public FPBDAxialSpringConstraintsBase
 {
 	typedef FPBDAxialSpringConstraintsBase Base;
-	using Base::MBarys;
-	using Base::MConstraints;
+	using Base::Barys;
+	using Base::Constraints;
 
-  public:
-	FPBDAxialSpringConstraints(const FDynamicParticles& InParticles, TArray<TVector<int32, 3>>&& Constraints, const FReal Stiffness = (FReal)1.)
-		: FPBDAxialSpringConstraintsBase(InParticles, MoveTemp(Constraints), Stiffness)
+public:
+	FPBDAxialSpringConstraints(
+		const FSolverParticles& Particles,
+		int32 ParticleOffset,
+		int32 ParticleCount,
+		const TArray<TVec3<int32>>& InConstraints,
+		const TConstArrayView<FRealSingle>& StiffnessMultipliers,
+		const FSolverVec2& InStiffness,
+		bool bTrimKinematicConstraints)
+		: Base(Particles, ParticleOffset, ParticleCount, InConstraints, StiffnessMultipliers, InStiffness, bTrimKinematicConstraints)
 	{
-		InitColor(InParticles);
+		InitColor(Particles);
 	}
-	virtual ~FPBDAxialSpringConstraints() {}
 
-  private:
-	void InitColor(const FDynamicParticles& InParticles);
-	void ApplyImp(FPBDParticles& InParticles, const FReal Dt, const int32 i) const;
-  public:
-	void Apply(FPBDParticles& InParticles, const FReal Dt) const override; //-V762
+	virtual ~FPBDAxialSpringConstraints() override {}
 
-	TArray<TArray<int32>> MConstraintsPerColor;
+	void Apply(FSolverParticles& InParticles, const FSolverReal Dt) const;
+
+private:
+	void InitColor(const FSolverParticles& InParticles);
+	void ApplyHelper(FSolverParticles& InParticles, const FSolverReal Dt, const int32 ConstraintIndex, const FSolverReal ExpStiffnessValue) const;
+
+private:
+	TArray<int32> ConstraintsPerColorStartIndex; // Constraints are ordered so each batch is contiguous. This is ColorNum + 1 length so it can be used as start and end.
 };
 
-}
+}  // End namespace Chaos::Softs
 
 // Support ISPC enable/disable in non-shipping builds
 #if !INTEL_ISPC

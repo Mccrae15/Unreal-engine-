@@ -9,7 +9,16 @@
 #include "ProceduralFoliageTile.h"
 #include "ProceduralFoliageSpawner.h"
 #include "Engine/LevelBounds.h"
+#include "EngineUtils.h"
 #include "Misc/FeedbackContext.h"
+
+#if WITH_EDITOR
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerEditorContext.h"
+#endif
 
 
 #define LOCTEXT_NAMESPACE "ProceduralFoliage"
@@ -112,6 +121,15 @@ FVector UProceduralFoliageComponent::GetWorldPosition() const
 bool UProceduralFoliageComponent::ExecuteSimulation(TArray<FDesiredFoliageInstance>& OutInstances)
 {
 #if WITH_EDITOR
+
+	// In World Partition, load Editor Cells intersecting bounds affected by ProceduralFoliageCompoment
+	if (UWorldPartition* WorldPartition = GetWorld()->GetWorldPartition())
+	{
+		FBox Bounds = GetBounds();
+		check(Bounds.IsValid);
+		WorldPartition->LoadEditorCells(Bounds, false);
+	}
+
 	FBodyInstance* BoundsBodyInstance = GetBoundsBodyInstance();
 	if (FoliageSpawner)
 	{
@@ -123,6 +141,9 @@ bool UProceduralFoliageComponent::ExecuteSimulation(TArray<FDesiredFoliageInstan
 		// Establish basic info about the tiles
 		const float TileSize = FoliageSpawner->TileSize;
 		const FVector WorldPosition = GetWorldPosition();
+		FBox ActorVolumeBounds = GetBounds();
+		FVector2D ActorVolumeLocation = FVector2D(ActorVolumeBounds.GetCenter());
+		const float ActorVolumeMaxExtent = FVector2D(ActorVolumeBounds.GetExtent()).GetMax();
 		FTileLayout TileLayout;
 		GetTileLayout(TileLayout);
 
@@ -192,7 +213,7 @@ bool UProceduralFoliageComponent::ExecuteSimulation(TArray<FDesiredFoliageInstan
 					const FTransform TileTM(OrientedOffset + WorldPosition);
 
 					TArray<FDesiredFoliageInstance>* DesiredInstances = new TArray<FDesiredFoliageInstance>();
-					CompositeTile->ExtractDesiredInstances(*DesiredInstances, TileTM, ProceduralGuid, TileLayout.HalfHeight, BoundsBodyInstance, true);
+					CompositeTile->ExtractDesiredInstances(*DesiredInstances, TileTM, ActorVolumeLocation, ActorVolumeMaxExtent, ProceduralGuid, TileLayout.HalfHeight, BoundsBodyInstance, true);
 
 					return DesiredInstances;
 					
@@ -267,6 +288,38 @@ void UProceduralFoliageComponent::PostEditImport()
 	ProceduralGuid = FGuid::NewGuid();
 }
 
+bool UProceduralFoliageComponent::ResimulateProceduralFoliage(TFunctionRef<void(const TArray<FDesiredFoliageInstance>&)> AddInstancesFunc)
+{
+#if WITH_EDITOR
+	if (FoliageSpawner)
+	{
+		TArray<FDesiredFoliageInstance> DesiredFoliageInstances;
+		if (GenerateProceduralContent(DesiredFoliageInstances))
+		{
+			if (DesiredFoliageInstances.Num() > 0)
+			{
+				{
+					// Remove old foliage instances
+					FScopeChangeDataLayerEditorContext ScopeContext(GetWorld(), LastSimulationDataLayer);
+					RemoveProceduralContent(false);
+				}
+
+				{
+					// Add new foliage instances
+					FScopeChangeDataLayerEditorContext ScopeContext(GetWorld(), DataLayer);
+					AddInstancesFunc(DesiredFoliageInstances);
+					LastSimulationDataLayer = DataLayer;
+				}
+			}
+
+			return true;
+		}
+	}
+#endif
+
+	return false;
+}
+
 bool UProceduralFoliageComponent::GenerateProceduralContent(TArray <FDesiredFoliageInstance>& OutInstances)
 {
 #if WITH_EDITOR
@@ -279,41 +332,44 @@ bool UProceduralFoliageComponent::GenerateProceduralContent(TArray <FDesiredFoli
 void UProceduralFoliageComponent::RemoveProceduralContent(bool InRebuildTree)
 {
 #if WITH_EDITOR
-	UWorld* World = GetWorld();
-
-	for (ULevel* Level : World->GetLevels())
+	for (TActorIterator<AInstancedFoliageActor> It(GetWorld()); It; ++It)
 	{
-		if (Level)
-		{
-			AInstancedFoliageActor* IFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(Level);
-			if (IFA)
-			{
-				IFA->DeleteInstancesForProceduralFoliageComponent(this, InRebuildTree);
-			}
-		}
+		(*It)->DeleteInstancesForProceduralFoliageComponent(this, InRebuildTree);
 	}
 #endif
 }
 
 bool UProceduralFoliageComponent::HasSpawnedAnyInstances()
 {
-	bool bHasSpawnedInstances = false;
 #if WITH_EDITOR
-	UWorld* World = GetWorld();
-
-	for (ULevel* Level : World->GetLevels())
+	for (TActorIterator<AInstancedFoliageActor> It(GetWorld()); It; ++It)
 	{
-		if (Level)
+		if ((*It)->ContainsInstancesFromProceduralFoliageComponent(this))
 		{
-			AInstancedFoliageActor* IFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(Level);
-			if (IFA)
-			{
-				bHasSpawnedInstances |= IFA->ContainsInstancesFromProceduralFoliageComponent(this);
-			}
+			return true;
 		}
 	}
 #endif
-	return bHasSpawnedInstances;
+	return false;
 }
+
+#if WITH_EDITOR
+bool UProceduralFoliageComponent::CanEditChange(const FProperty* InProperty) const
+{
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UProceduralFoliageComponent, DataLayer))
+	{
+		if (!IsTemplate())
+		{
+			const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(GetWorld());
+			if (!bIsPartitionedWorld)
+			{
+				return false;
+			}
+		}
+	}
+	return Super::CanEditChange(InProperty);
+}
+#endif
+
 
 #undef LOCTEXT_NAMESPACE

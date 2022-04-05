@@ -8,6 +8,7 @@ public class GeometryMode : ModuleRules
 	{
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"BSPUtils",
 				"Core",
 				"CoreUObject",
 				"Engine",
@@ -15,6 +16,7 @@ public class GeometryMode : ModuleRules
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
+				"EditorFramework",
 				"UnrealEd",
 				"RenderCore",
 				"LevelEditor",

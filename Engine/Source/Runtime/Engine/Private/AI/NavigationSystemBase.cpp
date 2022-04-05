@@ -32,7 +32,7 @@ namespace FNavigationSystem
 			{
 				if (NavChunk != nullptr)
 				{
-					NavChunk->MarkPendingKill();
+					NavChunk->MarkAsGarbage();
 				}
 			}
 			Level->NavDataChunks.Empty();
@@ -67,6 +67,7 @@ namespace FNavigationSystem
 
 	void AddNavigationSystemToWorld(UWorld& WorldOwner, const FNavigationSystemRunMode RunMode, UNavigationSystemConfig* NavigationSystemConfig, const bool bInitializeForWorld, const bool bOverridePreviousNavSys)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FNavigationSystem::AddNavigationSystemToWorld);
 		UE_LOG(LogNavigation, VeryVerbose, TEXT("%s (WorldOwner: %s)"), ANSI_TO_TCHAR(__FUNCTION__), *WorldOwner.GetOuter()->GetName());
 
 		const FNavigationSystemRunMode ResolvedRunMode = (RunMode == FNavigationSystemRunMode::InferFromWorldMode) ? FindRunModeFromWorldType(WorldOwner) : RunMode;
@@ -130,11 +131,11 @@ namespace FNavigationSystem
 		FNavDatConfigBasedSignature GetDefaultSupportedAgent;
 		FActorBooleBasedSignature UpdateActorAndComponentData;
 		FComponentBoundsChangeSignature OnComponentBoundsChanged;
-		//FNavDataForPropsSignature GetNavDataForProps;
 		FNavDataForActorSignature GetNavDataForActor;
 		FNavDataClassFetchSignature GetDefaultNavDataClass;
 		FWorldBoolBasedSignature VerifyNavigationRenderingComponents;
 		FWorldBasedSignature Build;
+		FOnNavigationInitDoneSignature OnNavigationInitDone;
 #if WITH_EDITOR
 		FWorldBasedSignature OnPIEStart;
 		FWorldBasedSignature OnPIEEnd;
@@ -163,7 +164,6 @@ namespace FNavigationSystem
 			GetDefaultSupportedAgent.BindStatic(&GetFallbackSupportedAgent);
 			UpdateActorAndComponentData.BindLambda([](AActor&, bool) {});
 			OnComponentBoundsChanged.BindLambda([](UActorComponent&, const FBox&, const FBox&) {});
-			//GetNavDataForProps.BindLambda([](const FNavAgentProperties&) { return nullptr; });
 			GetNavDataForActor.BindLambda([](const AActor&) { return nullptr; });
 			GetDefaultNavDataClass.BindLambda([]() { return AActor::StaticClass(); });
 			VerifyNavigationRenderingComponents.BindLambda([](UWorld&, bool) {});
@@ -397,6 +397,7 @@ FNavigationSystem::FNavDataForActorSignature& UNavigationSystemBase::GetNavDataF
 FNavigationSystem::FNavDataClassFetchSignature& UNavigationSystemBase::GetDefaultNavDataClassDelegate() { return FNavigationSystem::Delegates.GetDefaultNavDataClass; }
 FNavigationSystem::FWorldBoolBasedSignature& UNavigationSystemBase::VerifyNavigationRenderingComponentsDelegate() { return FNavigationSystem::Delegates.VerifyNavigationRenderingComponents; }
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::BuildDelegate() { return FNavigationSystem::Delegates.Build; }
+FNavigationSystem::FOnNavigationInitDoneSignature& UNavigationSystemBase::OnNavigationInitDoneStaticDelegate() { return FNavigationSystem::Delegates.OnNavigationInitDone; }
 #if WITH_EDITOR
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::OnPIEStartDelegate() { return FNavigationSystem::Delegates.OnPIEStart; }
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::OnPIEEndDelegate() { return FNavigationSystem::Delegates.OnPIEEnd; }

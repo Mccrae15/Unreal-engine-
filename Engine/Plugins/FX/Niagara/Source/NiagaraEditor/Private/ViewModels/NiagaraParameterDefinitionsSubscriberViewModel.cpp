@@ -183,7 +183,7 @@ TArray<UNiagaraParameterDefinitions*> INiagaraParameterDefinitionsSubscriberView
 		for (int32 Idx = OutParameterDefinitions.Num() - 1; Idx > -1; --Idx)
 		{
 			const UNiagaraParameterDefinitions* Definition = OutParameterDefinitions[Idx];
-			if (Subscriptions.ContainsByPredicate([Definition](const FParameterDefinitionsSubscription& Subscription) { return Subscription.DefinitionsId == Definition->GetDefinitionsUniqueId(); }))
+			if (Subscriptions.ContainsByPredicate([Definition](const FParameterDefinitionsSubscription& Subscription) { return Subscription.Definitions == Definition; }))
 			{
 				OutParameterDefinitions.RemoveAtSwap(Idx);
 			}
@@ -197,7 +197,7 @@ TArray<UNiagaraScriptVariable*> INiagaraParameterDefinitionsSubscriberViewModel:
 	TArray<UNiagaraScriptVariable*> OutScriptVars;
 	for (UNiagaraScriptSourceBase* SourceScript : GetParameterDefinitionsSubscriber()->GetAllSourceScripts())
 	{
-		TArray<UNiagaraScriptVariable*> TempScriptVars;
+		TArray<TObjectPtr<UNiagaraScriptVariable>> TempScriptVars;
 		CastChecked<UNiagaraScriptSource>(SourceScript)->NodeGraph->GetAllMetaData().GenerateValueArray(TempScriptVars);
 		OutScriptVars.Append(TempScriptVars);
 	}

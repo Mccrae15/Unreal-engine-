@@ -109,6 +109,7 @@ FOpenXRInputPlugin::FOpenXRAction::FOpenXRAction(XrActionSet InActionSet, XrActi
 	Info.countSubactionPaths = SubactionPaths.Num();
 	Info.subactionPaths = SubactionPaths.GetData();
 	FCStringAnsi::Strcpy(Info.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, ActionName);
+
 	XR_ENSURE(xrCreateAction(Set, &Info, &Handle));
 }
 
@@ -168,6 +169,7 @@ FOpenXRInputPlugin::FOpenXRInput::FOpenXRInput(FOpenXRHMD* HMD)
 	, Actions()
 	, Controllers()
 	, bActionsBound(false)
+	, bDirectionalBindingSupported(false)
 	, MessageHandler(new FGenericApplicationMessageHandler())
 {
 	IModularFeatures::Get().RegisterModularFeature(GetModularFeatureName(), this);
@@ -175,6 +177,8 @@ FOpenXRInputPlugin::FOpenXRInput::FOpenXRInput(FOpenXRHMD* HMD)
 	// If there is no HMD then this module is not active, but it still needs to exist so we can EnumerateMotionSources from it.
 	if (OpenXRHMD)
 	{
+		bDirectionalBindingSupported = OpenXRHMD->IsExtensionEnabled("XR_EXT_dpad_binding");
+
 		// Note: AnyHand needs special handling because it tries left then falls back to right in each call.
 		MotionSourceToControllerHandMap.Add(OpenXRSourceNames::Left, EControllerHand::Left);
 		MotionSourceToControllerHandMap.Add(OpenXRSourceNames::Right, EControllerHand::Right);
@@ -194,7 +198,12 @@ FOpenXRInputPlugin::FOpenXRInput::FOpenXRInput(FOpenXRHMD* HMD)
 
 XrAction FOpenXRInputPlugin::FOpenXRInput::GetActionForMotionSource(FName MotionSource) const
 {
-	const FOpenXRController& Controller = Controllers[MotionSourceToControllerHandMap.FindChecked(MotionSource)];
+	const EControllerHand* Hand = MotionSourceToControllerHandMap.Find(MotionSource);
+	if (Hand == nullptr)
+	{
+		return XR_NULL_HANDLE;
+	}
+	const FOpenXRController& Controller = Controllers[*Hand];
 	if (MotionSource == OpenXRSourceNames::LeftAim || MotionSource == OpenXRSourceNames::RightAim)
 	{
 		return Controller.AimAction;
@@ -242,7 +251,6 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 	{
 		return;
 	}
-	
 
 	XrInstance Instance = OpenXRHMD->GetInstance();
 	check(Instance);
@@ -252,24 +260,25 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 	XrActionSetCreateInfo SetInfo;
 	SetInfo.type = XR_TYPE_ACTION_SET_CREATE_INFO;
 	SetInfo.next = nullptr;
-	FCStringAnsi::Strcpy(SetInfo.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "ue4");
-	FCStringAnsi::Strcpy(SetInfo.localizedActionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "Unreal Engine 4");
+	FCStringAnsi::Strcpy(SetInfo.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "ue");
+	FCStringAnsi::Strcpy(SetInfo.localizedActionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "Unreal Engine");
 	SetInfo.priority = 0;
 	XR_ENSURE(xrCreateActionSet(Instance, &SetInfo, &ActionSet));
 
 	XrPath LeftHand = GetPath(Instance, "/user/hand/left");
 	XrPath RightHand = GetPath(Instance, "/user/hand/right");
+	XrPath HMD = GetPath(Instance, "/user/head");
 
 	// Controller poses
 	OpenXRHMD->ResetActionDevices();
 	Controllers.Add(EControllerHand::Left, FOpenXRController(ActionSet, LeftHand, "Left Controller"));
 	Controllers.Add(EControllerHand::Right, FOpenXRController(ActionSet, RightHand, "Right Controller"));
+	Controllers.Add(EControllerHand::HMD, FOpenXRController(ActionSet, HMD, "HMD"));
 
 	// Generate a map of all supported interaction profiles
 	XrPath SimpleControllerPath = GetPath(Instance, "/interaction_profiles/khr/simple_controller");
 	TMap<FString, FInteractionProfile> Profiles;
 	Profiles.Add("SimpleController", FInteractionProfile(SimpleControllerPath, true));
-	Profiles.Add("Daydream", FInteractionProfile(GetPath(Instance, "/interaction_profiles/google/daydream_controller"), false));
 	Profiles.Add("Vive", FInteractionProfile(GetPath(Instance, "/interaction_profiles/htc/vive_controller"), true));
 	Profiles.Add("MixedReality", FInteractionProfile(GetPath(Instance, "/interaction_profiles/microsoft/motion_controller"), true));
 	Profiles.Add("OculusGo", FInteractionProfile(GetPath(Instance, "/interaction_profiles/oculus/go_controller"), false));
@@ -280,9 +289,9 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 	for (IOpenXRExtensionPlugin* Plugin : OpenXRHMD->GetExtensionPlugins())
 	{
 		FString KeyPrefix;
-		XrPath Path;
-		bool HasHaptics;
-		if (Plugin->GetInteractionProfile(Instance, KeyPrefix, Path, HasHaptics))
+		XrPath Path = XR_NULL_PATH;
+		bool HasHaptics = false;
+		if (Plugin->GetInteractionProfile(Instance, KeyPrefix, Path, HasHaptics) && Path != XR_NULL_PATH)
 		{
 			Profiles.Add(KeyPrefix, FInteractionProfile(Path, HasHaptics));
 		}
@@ -387,6 +396,7 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildActions()
 			InteractionProfile.interactionProfile = Profile.Path;
 			InteractionProfile.countSuggestedBindings = Profile.Bindings.Num();
 			InteractionProfile.suggestedBindings = Profile.Bindings.GetData();
+
 			XR_ENSURE(xrSuggestInteractionProfileBindings(Instance, &InteractionProfile));
 		}
 	}
@@ -481,10 +491,21 @@ int32 FOpenXRInputPlugin::FOpenXRInput::SuggestBindings(XrInstance Instance, FOp
 					Path += "/click";
 				}
 			}
+			else if (Component == "touch")
+			{
+				Path += "/touch";
+			}
+			else if (Component == "touchaxis")
+			{
+				Path += "/touchvalue";  // Note: this is not a standard openxr identifier.  It is meant to represent some kind of analog touch sensor.
+			}
 			else if (Component == "up" || Component == "down" || Component == "left" || Component == "right")
 			{
-				// TODO: Reserved for D-Pad support
-				continue;
+				if (!bDirectionalBindingSupported)
+				{
+					continue;
+				}
+				Path += "/dpad_" + Component;
 			}
 			else
 			{
@@ -514,8 +535,16 @@ void FOpenXRInputPlugin::FOpenXRInput::Tick(float DeltaTime)
 	{
 		if (!bActionsBound)
 		{
+			// Bind engine action sets
 			TArray<XrActionSet> BindActionSets;
 			for (auto && BindActionSet : ActionSets)
+				BindActionSets.Add(BindActionSet.actionSet);
+
+			// Bind plugin action sets
+			PluginActionSets.Empty();
+			for (IOpenXRExtensionPlugin* Plugin : OpenXRHMD->GetExtensionPlugins())
+				Plugin->AddActionSets(PluginActionSets);
+			for (auto&& BindActionSet : PluginActionSets)
 				BindActionSets.Add(BindActionSet.actionSet);
 
 			XrSessionActionSetsAttachInfo SessionActionSetsAttachInfo;
@@ -539,12 +568,18 @@ void FOpenXRInputPlugin::FOpenXRInput::Tick(float DeltaTime)
 		XrActionsSyncInfo SyncInfo;
 		SyncInfo.type = XR_TYPE_ACTIONS_SYNC_INFO;
 		SyncInfo.next = nullptr;
+
+		PluginActionSets.Empty();
 		for (IOpenXRExtensionPlugin* Plugin : OpenXRHMD->GetExtensionPlugins())
 		{
+			Plugin->AddActionSets(PluginActionSets);
 			SyncInfo.next = Plugin->OnSyncActions(Session, SyncInfo.next);
 		}
-		SyncInfo.countActiveActionSets = ActionSets.Num();
-		SyncInfo.activeActionSets = ActionSets.GetData();
+
+		PluginActionSets.Append(ActionSets);
+		SyncInfo.countActiveActionSets = PluginActionSets.Num();
+		SyncInfo.activeActionSets = PluginActionSets.GetData();
+
 		XR_ENSURE(xrSyncActions(Session, &SyncInfo));
 	
 		for (IOpenXRExtensionPlugin* Plugin : OpenXRHMD->GetExtensionPlugins())
@@ -569,12 +604,12 @@ namespace OpenXRInputNamespace
 
 void FOpenXRInputPlugin::FOpenXRInput::SendControllerEvents()
 {
-	if (!bActionsBound)
+	if (!bActionsBound || OpenXRHMD == nullptr)
 	{
 		return;
 	}
 
-	if (OpenXRHMD == nullptr)
+	if (!OpenXRHMD->IsFocused())
 	{
 		return;
 	}
@@ -711,6 +746,30 @@ void FOpenXRInputPlugin::FOpenXRInput::SetChannelValues(int32 ControllerId, cons
 		rightHaptics);
 }
 
+bool FOpenXRInputPlugin::FOpenXRInput::SupportsForceFeedback(int32 ControllerId)
+{
+	if (!bActionsBound || OpenXRHMD == nullptr)
+	{
+		return false;
+	}
+
+	XrSession Session = OpenXRHMD->GetSession();
+	return Session != XR_NULL_HANDLE;
+}
+
+void FOpenXRInputPlugin::FOpenXRInput::SetDeviceProperty(int32 ControllerId, const FInputDeviceProperty* Property)
+{
+	if (OpenXRHMD == nullptr)
+	{
+		return;
+	}
+
+	for (IOpenXRExtensionPlugin* Module : OpenXRHMD->GetExtensionPlugins())
+	{
+		Module->OnSetDeviceProperty(OpenXRHMD->GetSession(), ControllerId, Property);
+	}
+}
+
 FName FOpenXRInputPlugin::FOpenXRInput::GetMotionControllerDeviceTypeName() const
 {
 	return FName(TEXT("OpenXR"));
@@ -771,10 +830,8 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPosition(const
 	return false;
 }
 
-bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityRadPerSec, float WorldToMetersScale) const
+bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityRadPerSec, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
 {
-	OutTimeWasUsed = true;
-
 	if (OpenXRHMD == nullptr)
 	{
 		return false;
@@ -784,18 +841,18 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTim
 	{
 		if (MotionSource == OpenXRSourceNames::AnyHand)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, WorldToMetersScale)
-				|| GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale)
+				|| GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 
 		if (MotionSource == OpenXRSourceNames::Left)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 
 		if (MotionSource == OpenXRSourceNames::Right)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 	}
 
@@ -812,6 +869,13 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTim
 	GetInfo.subactionPath = XR_NULL_PATH;
 	GetInfo.action = GetActionForMotionSource(MotionSource);
 
+	if (GetInfo.action == XR_NULL_HANDLE)
+	{
+		UE_LOG(LogHMD, Warning, TEXT("GetControllerOrientationAndPositionForTime called with motion source %s which is unknown.  Cannot get pose."), *MotionSource.ToString());
+
+		return false;
+	}
+
 	XrActionStatePose State;
 	State.type = XR_TYPE_ACTION_STATE_POSE;
 	State.next = nullptr;
@@ -819,7 +883,7 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTim
 	if (Result >= XR_SUCCESS && State.isActive)
 	{
 		FQuat Orientation;
-		OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec);
+		OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, OutTimeWasUsed, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		OutOrientation = FRotator(Orientation);
 		return true;
 	}
@@ -902,7 +966,7 @@ void FOpenXRInputPlugin::FOpenXRInput::EnumerateSources(TArray<FMotionController
 // TODO: Refactor API to change the Hand type to EControllerHand
 void FOpenXRInputPlugin::FOpenXRInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values)
 {
-	if (OpenXRHMD == nullptr)
+	if (!bActionsBound || OpenXRHMD == nullptr)
 	{
 		return;
 	}
@@ -910,6 +974,11 @@ void FOpenXRInputPlugin::FOpenXRInput::SetHapticFeedbackValues(int32 ControllerI
 	XrSession Session = OpenXRHMD->GetSession();
 
 	if (Session == XR_NULL_HANDLE)
+	{
+		return;
+	}
+	
+	if (!OpenXRHMD->IsFocused())
 	{
 		return;
 	}
@@ -930,12 +999,17 @@ void FOpenXRInputPlugin::FOpenXRInput::SetHapticFeedbackValues(int32 ControllerI
 			HapticActionInfo.next = nullptr;
 			HapticActionInfo.subactionPath = XR_NULL_PATH;
 			HapticActionInfo.action = Controllers[EControllerHand::Left].VibrationAction;
-			if (Values.Amplitude <= 0.0f || Values.Frequency < XR_FREQUENCY_UNSPECIFIED)
+			if (Values.HapticBuffer == nullptr && (Values.Amplitude <= 0.0f || Values.Frequency < XR_FREQUENCY_UNSPECIFIED))
 			{
 				XR_ENSURE(xrStopHapticFeedback(Session, &HapticActionInfo));
 			}
 			else
-			{
+			{				
+				FOpenXRExtensionChainStructPtrs ScopedExtensionChainStructs;
+				if (Values.HapticBuffer != nullptr)
+				{
+					OpenXRHMD->GetApplyHapticFeedbackAddChainStructsDelegate().Broadcast(&HapticValue, ScopedExtensionChainStructs, Values.HapticBuffer);
+				}
 				XR_ENSURE(xrApplyHapticFeedback(Session, &HapticActionInfo, (const XrHapticBaseHeader*)&HapticValue));
 			}
 		}
@@ -946,7 +1020,29 @@ void FOpenXRInputPlugin::FOpenXRInput::SetHapticFeedbackValues(int32 ControllerI
 			HapticActionInfo.next = nullptr;
 			HapticActionInfo.subactionPath = XR_NULL_PATH;
 			HapticActionInfo.action = Controllers[EControllerHand::Right].VibrationAction;
-			if (Values.Amplitude <= 0.0f || Values.Frequency < XR_FREQUENCY_UNSPECIFIED)
+			if (Values.HapticBuffer == nullptr && (Values.Amplitude <= 0.0f || Values.Frequency < XR_FREQUENCY_UNSPECIFIED))
+			{
+				XR_ENSURE(xrStopHapticFeedback(Session, &HapticActionInfo));
+			}
+			else
+			{
+				FOpenXRExtensionChainStructPtrs ScopedExtensionChainStructs;
+				if (Values.HapticBuffer != nullptr)
+				{
+					OpenXRHMD->GetApplyHapticFeedbackAddChainStructsDelegate().Broadcast(&HapticValue, ScopedExtensionChainStructs, Values.HapticBuffer);
+				}
+				XR_ENSURE(xrApplyHapticFeedback(Session, &HapticActionInfo, (const XrHapticBaseHeader*)&HapticValue));
+			}
+		}
+		if (Hand == (int32)EControllerHand::HMD)
+		{
+			XrHapticActionInfo HapticActionInfo;
+			HapticActionInfo.type = XR_TYPE_HAPTIC_ACTION_INFO;
+			HapticActionInfo.next = nullptr;
+			HapticActionInfo.subactionPath = XR_NULL_PATH;
+			HapticActionInfo.action = Controllers[EControllerHand::HMD].VibrationAction;
+			
+			if (Values.HapticBuffer == nullptr && (Values.Amplitude <= 0.0f || Values.Frequency < XR_FREQUENCY_UNSPECIFIED))
 			{
 				XR_ENSURE(xrStopHapticFeedback(Session, &HapticActionInfo));
 			}

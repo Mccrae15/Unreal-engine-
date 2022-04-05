@@ -12,276 +12,6 @@ DECLARE_STATS_GROUP(TEXT("Lidar Point Cloud"), STATGROUP_LidarPointCloud, STATCA
 #define PC_WARNING(Format, ...) UE_LOG(LogLidarPointCloud, Warning, TEXT(Format), ##__VA_ARGS__)
 #define PC_ERROR(Format, ...) UE_LOG(LogLidarPointCloud, Error, TEXT(Format), ##__VA_ARGS__)
 
-#if !CPP
-USTRUCT(noexport)
-struct FDoubleVector
-{
-	UPROPERTY()
-	double X = 0.0;
-
-	UPROPERTY()
-	double Y = 0.0;
-
-	UPROPERTY()
-	double Z = 0.0;
-};
-#endif
-
-struct LIDARPOINTCLOUDRUNTIME_API FDoubleVector
-{
-	double X;
-	double Y;
-	double Z;
-
-	/** A zero vector (0,0,0) */
-	static const FDoubleVector ZeroVector;
-
-	/** One vector (1,1,1) */
-	static const FDoubleVector OneVector;
-
-	/** World up vector (0,0,1) */
-	static const FDoubleVector UpVector;
-
-	/** Unreal forward vector (1,0,0) */
-	static const FDoubleVector ForwardVector;
-
-	/** Unreal right vector (0,1,0) */
-	static const FDoubleVector RightVector;
-
-	FORCEINLINE FDoubleVector() {}
-
-	explicit FORCEINLINE FDoubleVector(double InD) : X(InD), Y(InD), Z(InD) {}
-
-	FORCEINLINE FDoubleVector(double InX, double InY, double InZ) : X(InX), Y(InY), Z(InZ) {}
-
-	FORCEINLINE FDoubleVector(const FVector& V) : X(V.X), Y(V.Y), Z(V.Z) {}
-
-	FORCEINLINE FDoubleVector operator-() const
-	{
-		return FDoubleVector(-X, -Y, -Z);
-	}
-
-	FORCEINLINE FDoubleVector operator+(const FDoubleVector& V) const
-	{
-		return FDoubleVector(X + V.X, Y + V.Y, Z + V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator-(const FDoubleVector& V) const
-	{
-		return FDoubleVector(X - V.X, Y - V.Y, Z - V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator+(const FVector& V) const
-	{
-		return FDoubleVector(X + V.X, Y + V.Y, Z + V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator-(const FVector& V) const
-	{
-		return FDoubleVector(X - V.X, Y - V.Y, Z - V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator+=(const FDoubleVector& V)
-	{
-		X += V.X; Y += V.Y; Z += V.Z;
-		return *this;
-	}
-
-	FORCEINLINE FDoubleVector operator-=(const FDoubleVector& V)
-	{
-		X -= V.X; Y -= V.Y; Z -= V.Z;
-		return *this;
-	}
-
-	FORCEINLINE FDoubleVector operator+=(const FVector& V)
-	{
-		X += V.X; Y += V.Y; Z += V.Z;
-		return *this;
-	}
-
-	FORCEINLINE FDoubleVector operator-=(const FVector& V)
-	{
-		X -= V.X; Y -= V.Y; Z -= V.Z;
-		return *this;
-	}
-
-	FORCEINLINE FDoubleVector operator*=(double Scale)
-	{
-		X *= Scale; Y *= Scale; Z *= Scale;
-		return *this;
-	}
-
-	FORCEINLINE FDoubleVector operator*(double Scale) const
-	{
-		return FDoubleVector(X * Scale, Y * Scale, Z * Scale);
-	}
-
-	FORCEINLINE FDoubleVector operator*(const FVector& V) const
-	{
-		return FDoubleVector(X * V.X, Y * V.Y, Z * V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator*(const FDoubleVector& V) const
-	{
-		return FDoubleVector(X * V.X, Y * V.Y, Z * V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator*(const FIntVector& V) const
-	{
-		return FDoubleVector(X * V.X, Y * V.Y, Z * V.Z);
-	}
-
-	FORCEINLINE FDoubleVector operator/(int32 Scale) const
-	{
-		return FDoubleVector(X / Scale, Y / Scale, Z / Scale);
-	}
-
-	FORCEINLINE FDoubleVector operator/(double Scale) const
-	{
-		return FDoubleVector(X / Scale, Y / Scale, Z / Scale);
-	}
-
-	FORCEINLINE FDoubleVector operator^(const FDoubleVector& V) const
-	{
-		return FDoubleVector
-		(
-			Y * V.Z - Z * V.Y,
-			Z * V.X - X * V.Z,
-			X * V.Y - Y * V.X
-		);
-	}
-
-	FORCEINLINE bool Equals(const FDoubleVector& V, float Tolerance = KINDA_SMALL_NUMBER) const
-	{
-		return FMath::Abs(X - V.X) <= Tolerance && FMath::Abs(Y - V.Y) <= Tolerance && FMath::Abs(Z - V.Z) <= Tolerance;
-	}
-
-	FORCEINLINE bool IsZero(float Tolerance = KINDA_SMALL_NUMBER) const
-	{
-		return Equals(FDoubleVector::ZeroVector, Tolerance);
-	}
-
-	FORCEINLINE bool IsNearlyZero(float Tolerance) const
-	{
-		return FMath::Abs(X) <= Tolerance && FMath::Abs(Y) <= Tolerance && FMath::Abs(Z) <= Tolerance;
-	}
-
-	FORCEINLINE float GetMax() const { return FMath::Max3(X, Y, Z); }
-
-	/** Ported solution from FQuat::RotateVector */
-	FORCEINLINE FDoubleVector RotateVector(const FQuat& Quat) const
-	{
-		const FDoubleVector V = *this;
-		const FDoubleVector Q(Quat.X, Quat.Y, Quat.Z);
-		const FDoubleVector T = (Q ^ V) * 2;
-		const FDoubleVector Result = V + (T * Quat.W) + (Q ^ T);
-		return Result;
-	}
-
-	FORCEINLINE FVector ToVector() const { return FVector(X, Y, Z); }
-	FORCEINLINE FIntVector ToIntVector() const { return FIntVector(X, Y, Z); }
-
-	FORCEINLINE FString ToString() const { return FString::Printf(TEXT("X=%f Y=%f Z=%f"), X, Y, Z); }
-
-	friend FArchive& operator<<(FArchive& Ar, FDoubleVector& V)
-	{
-		Ar << V.X << V.Y << V.Z;
-		return Ar;
-	}
-};
-
-/** Essentially a double-based version of FBox */
-struct LIDARPOINTCLOUDRUNTIME_API FDoubleBox
-{
-public:
-	FDoubleVector Min;
-	FDoubleVector Max;
-	uint8 IsValid;
-
-public:
-	FDoubleBox() { }
-	explicit FDoubleBox(EForceInit) { Init(); }
-	FDoubleBox(const FDoubleVector& InMin, const FDoubleVector& InMax) : Min(InMin), Max(InMax), IsValid(1) { }
-	FDoubleBox(const FBox& Box) : Min(Box.Min), Max(Box.Max), IsValid(1) { }
-
-public:
-	FORCEINLINE FDoubleBox& operator+=(const FDoubleVector& Other)
-	{
-		if (IsValid)
-		{
-			Min.X = FMath::Min(Min.X, Other.X);
-			Min.Y = FMath::Min(Min.Y, Other.Y);
-			Min.Z = FMath::Min(Min.Z, Other.Z);
-
-			Max.X = FMath::Max(Max.X, Other.X);
-			Max.Y = FMath::Max(Max.Y, Other.Y);
-			Max.Z = FMath::Max(Max.Z, Other.Z);
-		}
-		else
-		{
-			Min = Max = Other;
-			IsValid = 1;
-		}
-
-		return *this;
-	}
-	FORCEINLINE FDoubleBox operator+(const FDoubleVector& Other) const
-	{
-		return FDoubleBox(*this) += Other;
-	}
-	FORCEINLINE FDoubleBox& operator+=(const FDoubleBox& Other)
-	{
-		if (IsValid && Other.IsValid)
-		{
-			Min.X = FMath::Min(Min.X, Other.Min.X);
-			Min.Y = FMath::Min(Min.Y, Other.Min.Y);
-			Min.Z = FMath::Min(Min.Z, Other.Min.Z);
-
-			Max.X = FMath::Max(Max.X, Other.Max.X);
-			Max.Y = FMath::Max(Max.Y, Other.Max.Y);
-			Max.Z = FMath::Max(Max.Z, Other.Max.Z);
-		}
-		else if (Other.IsValid)
-		{
-			*this = Other;
-		}
-
-		return *this;
-	}
-	FORCEINLINE FDoubleBox operator+(const FDoubleBox& Other) const
-	{
-		return FDoubleBox(*this) += Other;
-	}
-
-public:
-	FORCEINLINE FDoubleBox ShiftBy(const FDoubleVector& Offset) const { return FDoubleBox(Min + Offset, Max + Offset); }
-	FORCEINLINE FDoubleVector GetCenter() const { return FDoubleVector((Min + Max) * 0.5f); }
-	FORCEINLINE FDoubleVector GetExtent() const { return (Max - Min) * 0.5f; }
-	FORCEINLINE FDoubleVector GetSize() const { return (Max - Min); }
-
-public:
-	FORCEINLINE void Init()
-	{
-		Min = Max = FDoubleVector::ZeroVector;
-		IsValid = 0;
-	}
-
-	FORCEINLINE FDoubleBox& FlipY()
-	{
-		const double Tmp = Min.Y;
-		Min.Y = -Max.Y;
-		Max.Y = -Tmp;
-		return *this;
-	}
-
-	FORCEINLINE FBox ToBox() const { return FBox(Min.ToVector(), Max.ToVector()); }
-
-	FORCEINLINE FString ToString() const
-	{
-		return FString::Printf(TEXT("IsValid=%s, Min=(%s), Max=(%s)"), IsValid ? TEXT("true") : TEXT("false"), *Min.ToString(), *Max.ToString());
-	}
-};
-
 #pragma pack(push)
 #pragma pack(1)
 /** 3D vector represented using only a single byte per component */
@@ -302,14 +32,15 @@ public:
 
 public:
 	FLidarPointCloudNormal() { Reset(); }
-	FLidarPointCloudNormal(const FVector& Normal) { SetFromVector(Normal); }
+	FLidarPointCloudNormal(const FVector3f& Normal) { SetFromVector(Normal); }
+	FLidarPointCloudNormal(const FPlane& Normal) { SetFromFloats(Normal.X, Normal.Y, Normal.Z); }
 	FLidarPointCloudNormal(const float& X, const float& Y, const float& Z) { SetFromFloats(X, Y, Z); }
 
 	bool operator==(const FLidarPointCloudNormal& Other) const { return X == Other.X && Y == Other.Y && Z == Other.Z; }
 
 	FORCEINLINE bool IsValid() const { return X != 127 || Y != 127 || Z != 127; }
 
-	FORCEINLINE void SetFromVector(const FVector& Normal)
+	FORCEINLINE void SetFromVector(const FVector3f& Normal)
 	{
 		SetFromFloats(Normal.X, Normal.Y, Normal.Z);
 	}
@@ -325,13 +56,13 @@ public:
 		X = Y = Z = 127;
 	}
 
-	FORCEINLINE FVector ToVector() const { return FVector(X / 127.5f - 1, Y / 127.5f - 1, Z / 127.5f - 1); }
+	FORCEINLINE FVector3f ToVector() const { return FVector3f(X / 127.5f - 1, Y / 127.5f - 1, Z / 127.5f - 1); }
 };
 
 /** Used for backwards compatibility with pre-normal datasets */
 struct FLidarPointCloudPoint_Legacy
 {
-	FVector Location;
+	FVector3f Location;
 	FColor Color;
 	uint8 bVisible : 1;
 	uint8 ClassificationID : 5;
@@ -345,7 +76,7 @@ struct LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudPoint
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lidar Point Cloud Point")
-	FVector Location;
+	FVector3f Location;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lidar Point Cloud Point")
 	FColor Color;
@@ -366,7 +97,7 @@ private:
 
 public:
 	FLidarPointCloudPoint()
-		: Location(FVector::ZeroVector)
+		: Location(FVector3f::ZeroVector)
 		, Color(FColor::White)
 		, Normal()
 		, bVisible(true)
@@ -385,7 +116,7 @@ public:
 	FLidarPointCloudPoint(const float& X, const float& Y, const float& Z, const float& I)
 		: FLidarPointCloudPoint(X, Y, Z)
 	{
-		Color.A = FMath::FloorToInt(FMath::Clamp(I, 0.0f, 1.0f) * 255.999f);
+		Color.A = FMath::RoundToInt(FMath::Clamp(I, 0.0f, 1.0f) * 255.f);
 	}
 	FLidarPointCloudPoint(const float& X, const float& Y, const float& Z, const float& R, const float& G, const float& B, const float& A = 1.0f)
 		: FLidarPointCloudPoint(X, Y, Z)
@@ -398,31 +129,31 @@ public:
 		Color = FLinearColor(R, G, B, A).ToFColor(false);
 		Normal.SetFromFloats(NX, NY, NZ);
 	}
-	FLidarPointCloudPoint(const FVector& Location) : FLidarPointCloudPoint(Location.X, Location.Y, Location.Z) {}
-	FLidarPointCloudPoint(const FVector& Location, const float& R, const float& G, const float& B, const float& A = 1.0f)
+	FLidarPointCloudPoint(const FVector3f& Location) : FLidarPointCloudPoint(Location.X, Location.Y, Location.Z) {}
+	FLidarPointCloudPoint(const FVector3f& Location, const float& R, const float& G, const float& B, const float& A = 1.0f)
 		: FLidarPointCloudPoint(Location)
 	{
 		Color = FLinearColor(R, G, B, A).ToFColor(false);
 	}
-	FLidarPointCloudPoint(const FVector& Location, const float& R, const float& G, const float& B, const float& A, const uint8& ClassificationID)
+	FLidarPointCloudPoint(const FVector3f& Location, const float& R, const float& G, const float& B, const float& A, const uint8& ClassificationID)
 		: FLidarPointCloudPoint(Location, R, G, B, A)
 	{
 		this->ClassificationID = ClassificationID;
 	}
-	FLidarPointCloudPoint(const FVector& Location, const uint8& R, const uint8& G, const uint8& B, const uint8& A, const uint8& ClassificationID)
+	FLidarPointCloudPoint(const FVector3f& Location, const uint8& R, const uint8& G, const uint8& B, const uint8& A, const uint8& ClassificationID)
 		: FLidarPointCloudPoint(Location.X, Location.Y, Location.Z)
 	{
 		Color = FColor(R, G, B, A);
 		this->ClassificationID = ClassificationID;
 	}
-	FLidarPointCloudPoint(const FVector& Location, const FColor& Color, const bool& bVisible, const uint8& ClassificationID)
+	FLidarPointCloudPoint(const FVector3f& Location, const FColor& Color, const bool& bVisible, const uint8& ClassificationID)
 		: FLidarPointCloudPoint(Location)
 	{
 		this->Color = Color;
 		this->bVisible = bVisible;
 		this->ClassificationID = ClassificationID;
 	}
-	FLidarPointCloudPoint(const FVector& Location, const FColor& Color, const bool& bVisible, const uint8& ClassificationID, const FLidarPointCloudNormal& Normal)
+	FLidarPointCloudPoint(const FVector3f& Location, const FColor& Color, const bool& bVisible, const uint8& ClassificationID, const FLidarPointCloudNormal& Normal)
 		: FLidarPointCloudPoint(Location)
 	{
 		this->Color = Color;
@@ -451,7 +182,7 @@ public:
 
 	FORCEINLINE FLidarPointCloudPoint Transform(const FTransform& Transform) const
 	{
-		return FLidarPointCloudPoint(Transform.TransformPosition(Location), Color, bVisible, ClassificationID);
+		return FLidarPointCloudPoint((FVector3f)Transform.TransformPosition((FVector)Location), Color, bVisible, ClassificationID);
 	}
 
 	bool operator==(const FLidarPointCloudPoint& P) const { return Location == P.Location && Color == P.Color && bVisible == P.bVisible && ClassificationID == P.ClassificationID && Normal == P.Normal; }
@@ -566,44 +297,49 @@ private:
 struct LIDARPOINTCLOUDRUNTIME_API FLidarPointCloudRay
 {
 public:
-	FVector Origin;
+	FVector3f Origin;
 
 private:
-	FVector Direction;
-	FVector InvDirection;
+	FVector3f Direction;
+	FVector3f InvDirection;
 
 public:
-	FLidarPointCloudRay() : FLidarPointCloudRay(FVector::ZeroVector, FVector::ForwardVector) {}
-	FLidarPointCloudRay(const FVector& Origin, const FVector& Direction) : Origin(Origin)
+	FLidarPointCloudRay() : FLidarPointCloudRay(FVector3f::ZeroVector, FVector3f::ForwardVector) {}
+	FLidarPointCloudRay(const FVector3f& Origin, const FVector3f& Direction) : Origin(Origin)
 	{
 		SetDirection(Direction);
 	}
+	FLidarPointCloudRay(const FVector& Origin, const FVector& Direction) : FLidarPointCloudRay((FVector3f)Origin, (FVector3f)Direction) {}
 
-	static FORCEINLINE FLidarPointCloudRay FromLocations(const FVector& Origin, const FVector& Destination)
+	static FORCEINLINE FLidarPointCloudRay FromLocations(const FVector3f& Origin, const FVector3f& Destination)
 	{
 		return FLidarPointCloudRay(Origin, (Destination - Origin).GetSafeNormal());
 	}
 
 	FLidarPointCloudRay& TransformBy(const FTransform& Transform)
 	{
-		Origin = Transform.TransformPosition(Origin);
-		SetDirection(Transform.TransformVector(Direction));
+		Origin = (FVector3f)Transform.TransformPosition((FVector)Origin);
+		SetDirection((FVector3f)Transform.TransformVector((FVector)Direction));
 		return *this;
 	}
 	FLidarPointCloudRay TransformBy(const FTransform& Transform) const
 	{
-		return FLidarPointCloudRay(Transform.TransformPosition(Origin), Transform.TransformVector(Direction));
+		return FLidarPointCloudRay(Transform.TransformPosition((FVector)Origin), Transform.TransformVector((FVector)Direction));
 	}
-	FORCEINLINE FLidarPointCloudRay ShiftBy(const FVector& Offset) const
+	FORCEINLINE FLidarPointCloudRay ShiftBy(const FVector3f& Offset) const
 	{
 		return FLidarPointCloudRay(Origin + Offset, Direction);
 	}
+	FORCEINLINE FLidarPointCloudRay ShiftBy(const FVector& Offset) const
+	{
+		return FLidarPointCloudRay(Origin + (FVector3f)Offset, Direction);
+	}
 
-	FORCEINLINE FVector GetDirection() const { return Direction; }
-	FORCEINLINE void SetDirection(const FVector& NewDirection)
+	FORCEINLINE FVector3f GetDirection() const { return Direction; }
+	FORCEINLINE void SetDirection(const FVector3f& NewDirection)
 	{
 		Direction = NewDirection;
-		InvDirection = FVector(Direction.X == 0 ? 0 : 1 / Direction.X,
+		InvDirection = FVector3f(Direction.X == 0 ? 0 : 1 / Direction.X,
 								Direction.Y == 0 ? 0 : 1 / Direction.Y,
 								Direction.Z == 0 ? 0 : 1 / Direction.Z);
 	}
@@ -645,15 +381,15 @@ public:
 	}
 	FORCEINLINE bool Intersects(const FLidarPointCloudPoint* Point, const float& RadiusSq) const
 	{
-		const FVector L = Point->Location - Origin;
-		const float tca = FVector::DotProduct(L, Direction);
+		const FVector3f L = Point->Location - Origin;
+		const float tca = FVector3f::DotProduct(L, Direction);
 		
 		if (tca < 0)
 		{
 			return false;
 		}
 		
-		const float d2 = FVector::DotProduct(L, L) - tca * tca;
+		const float d2 = FVector3f::DotProduct(L, L) - tca * tca;
 
 		return d2 <= RadiusSq;
 	}
@@ -713,8 +449,8 @@ struct FLidarPointCloudComponentRenderParams
 	int32 MaxDepth;
 
 	float BoundsScale;
-	FVector BoundsSize;
-	FVector LocationOffset;
+	FVector3f BoundsSize;
+	FVector3f LocationOffset;
 	float ComponentScale;
 
 	float PointSize;
@@ -731,11 +467,11 @@ struct FLidarPointCloudComponentRenderParams
 	ELidarPointCloudSpriteShape PointShape;
 	ELidarPointCloudScalingMethod ScalingMethod;
 
-	FVector4 Saturation;
-	FVector4 Contrast;
-	FVector4 Gamma;
-	FVector4 Offset;
-	FVector ColorTint;
+	FVector4f Saturation;
+	FVector4f Contrast;
+	FVector4f Gamma;
+	FVector4f Offset;
+	FVector3f ColorTint;
 	float IntensityInfluence;
 
 	TMap<int32, FLinearColor> ClassificationColors;
@@ -759,7 +495,7 @@ struct FBenchmarkTimer
 		double Delta = Now - Time;
 		Time = Now;
 
-		uint32 Multiplier = FMath::Pow(10, Decimal);
+		uint32 Multiplier = FMath::Pow(10.f, Decimal);
 
 		return FMath::RoundToDouble(Delta * Multiplier * 1000) / Multiplier;
 	}

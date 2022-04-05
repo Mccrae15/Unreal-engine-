@@ -2,9 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Components/PrimitiveComponent.h"
+#include "Debug/DebugDrawComponent.h"
 #include "DebugRenderSceneProxy.h"
 #include "GameplayDebuggerRenderingComponent.generated.h"
 
@@ -15,7 +13,7 @@ class FGameplayDebuggerDebugDrawDelegateHelper : public FDebugDrawDelegateHelper
 	typedef FDebugDrawDelegateHelper Super;
 
 public:
-	~FGameplayDebuggerDebugDrawDelegateHelper()
+	virtual ~FGameplayDebuggerDebugDrawDelegateHelper() override
 	{
 		Reset();
 	}
@@ -24,8 +22,9 @@ public:
 
 	void AddDelegateHelper(FDebugDrawDelegateHelper* InDebugDrawDelegateHelper);
 
-	virtual void RegisterDebugDrawDelgate() override;
-	virtual void UnregisterDebugDrawDelgate() override;
+protected:
+	virtual void RegisterDebugDrawDelegateInternal() override;
+	virtual void UnregisterDebugDrawDelegate() override;
 
 private:
 	TArray<FDebugDrawDelegateHelper*> DebugDrawDelegateHelpers;
@@ -33,16 +32,16 @@ private:
 
 
 
-UCLASS(NotBlueprintable, NotBlueprintType, noteditinlinenew, hidedropdown, Transient)
-class UGameplayDebuggerRenderingComponent : public UPrimitiveComponent
+UCLASS(ClassGroup = Debug, NotBlueprintable, NotBlueprintType, noteditinlinenew, hidedropdown, Transient)
+class UGameplayDebuggerRenderingComponent : public UDebugDrawComponent
 {
 	GENERATED_UCLASS_BODY()
 
-	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+protected:
+	virtual FDebugRenderSceneProxy* CreateDebugSceneProxy() override;
+	virtual FDebugDrawDelegateHelper& GetDebugDrawDelegateHelper() override { return GameplayDebuggerDebugDrawDelegateHelper; }
 	virtual FBoxSphereBounds CalcBounds(const FTransform &LocalToWorld) const override;
 
-	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
-	virtual void DestroyRenderState_Concurrent() override;
-
+private:
 	FGameplayDebuggerDebugDrawDelegateHelper GameplayDebuggerDebugDrawDelegateHelper;
 };

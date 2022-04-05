@@ -3,26 +3,11 @@
 
 
 #include "CADOptions.h"
-#include "Containers/Array.h"
-#include "Math/Vector.h"
-#include "Math/Vector2D.h"
 
 namespace CADLibrary
 {
-	enum class ECoreTechParsingResult : uint8
-	{
-		Unknown,
-		Running,
-		UnTreated,
-		ProcessOk,
-		ProcessFailed,
-		FileNotFound,
-	};
-
-	class FBodyMesh;
-	struct FFileDescription;
-	class FArchiveSceneGraph;
 	class ICoreTechInterface;
+	class FBodyMesh;
 
 	// Helper struct used to pass Nurbs surface definition to CoreTech
 	struct FNurbsSurface
@@ -58,29 +43,6 @@ namespace CADLibrary
 		TArray<double> ControlPoints;
 	};
 
-	// Helper struct used to pass the result of ICoreTechInterface::LoadFile across dll boundaries
-	// when the ICoreTechInterface object has been created through the DatasmithCADRuntime dll 
-	struct FLoadingContext
-	{
-		FLoadingContext(const FImportParameters& InImportParameters, const FString& InCachePath)
-			: ImportParameters(InImportParameters)
-			, CachePath(InCachePath)
-		{
-		}
-
-		FLoadingContext(const FLoadingContext& Other)
-			: ImportParameters(Other.ImportParameters)
-			, CachePath(Other.CachePath)
-		{
-		}
-
-		const FImportParameters& ImportParameters;
-		const FString& CachePath;
-		TSharedPtr<FArchiveSceneGraph> SceneGraphArchive;
-		TSharedPtr<TArray<FString>> WarningMessages;
-		TSharedPtr<TArray<FBodyMesh>> BodyMeshes;
-	};
-
 	class ICoreTechInterface
 	{
 	public:
@@ -100,7 +62,7 @@ namespace CADLibrary
 		 * @param MetricUnit: Length unit express in meter i.e. 0.001 = mm
 		 */
 		virtual bool ChangeUnit(double SceneUnit) = 0;
-		
+
 		virtual bool ShutdownKernel() = 0;
 
 		virtual bool UnloadModel() = 0;
@@ -137,16 +99,6 @@ namespace CADLibrary
 		virtual void GetTessellation(uint64 BodyId, FBodyMesh& OutBodyMesh, bool bIsBody) = 0;
 
 		virtual void GetTessellation(uint64 BodyId, TSharedPtr<FBodyMesh>& OutBodyMesh, bool bIsBody) = 0;
-
-		virtual ECoreTechParsingResult LoadFile(
-			const FFileDescription& InFileDescription,
-			const FImportParameters& InImportParameters,
-			const FString& InCachePath,
-			FArchiveSceneGraph& OutSceneGraphArchive,
-			TArray<FString>& OutWarningMessages,
-			TArray<FBodyMesh>& OutBodyMeshes) = 0;
-
-		virtual ECoreTechParsingResult LoadFile(const FFileDescription& InFileDescription, FLoadingContext& LoadingContext) = 0;
 
 		virtual bool CreateNurbsSurface(const FNurbsSurface& Surface, uint64& ObjectID) = 0;
 
@@ -191,7 +143,7 @@ namespace CADLibrary
 	 * @param MetricUnit: Length unit express in meter i.e. 0.001 = mm
 	 */
 	CADINTERFACES_API bool CTKIO_ChangeUnit(double SceneUnit);
-
+	
 	CADINTERFACES_API bool CTKIO_ShutdownKernel();
 	CADINTERFACES_API bool CTKIO_UnloadModel();
 	CADINTERFACES_API bool CTKIO_CreateModel(uint64& OutMainObjectId);
@@ -201,10 +153,10 @@ namespace CADLibrary
 	CADINTERFACES_API bool CTKIO_LoadModel
 	(
 		const TCHAR*  file_name,                             
-		uint64&       main_object,
-		int32         load_flags = 0 /*CT_LOAD_FLAGS_USE_DEFAULT*/,
-		int32         lod = 0,
-		const TCHAR*  string_option = TEXT("")
+		uint64& main_object,                           
+		int32      load_flags = 0 /*CT_LOAD_FLAGS_USE_DEFAULT*/,
+		int32        lod = 0,                               
+		const TCHAR*  string_option = TEXT("")               
 	);
 
 	CADINTERFACES_API bool CTKIO_SaveFile
@@ -216,8 +168,6 @@ namespace CADLibrary
 	);
 
 	CADINTERFACES_API void CTKIO_GetTessellation(uint64 ObjectId, FBodyMesh& OutBodyMesh, bool bIsBody = true);
-
-	CADINTERFACES_API ECoreTechParsingResult CTKIO_LoadFile(const FFileDescription& InFileDescription, const FImportParameters& InImportParameters, const FString& InCachePath, FArchiveSceneGraph& OutSceneGraphArchive, TArray<FString>& OutWarningMessages, TArray<FBodyMesh>& OutBodyMeshes);
 
 	CADINTERFACES_API bool CTKIO_CreateNurbsSurface(const FNurbsSurface& NurbsDefinition, uint64& ObjectID);
 
@@ -256,12 +206,9 @@ namespace CADLibrary
 	public:
 		/**
 		 * Make sure CT is initialized, and a main object is ready.
-		 * Handle input file unit and an output unit
-		 * @param FileMetricUnit number of meters per file unit.
-		 * eg. For a file in inches, arg should be 0.0254
 		 */
 		FCoreTechSessionBase(const TCHAR* Owner);
-		bool IsSessionValid() { return Owner != nullptr && MainObjectId != 0; }
+		bool IsCoreTechSessionValid() const;
 		virtual ~FCoreTechSessionBase();
 
 	protected:

@@ -32,6 +32,10 @@
 #include "HAL/ThreadHeartBeat.h"
 #include "BuildSettings.h"
 
+#include <sys/mman.h>
+
+#include <atomic>
+
 extern CORE_API bool GIsGPUCrashed;
 
 FString DescribeSignal(int32 Signal, siginfo_t* Info, ucontext_t *Context)
@@ -53,15 +57,15 @@ FString DescribeSignal(int32 Signal, siginfo_t* Info, ucontext_t *Context)
 		}
 		else
 		{
-			ErrorString += FString::Printf(TEXT("SIGSEGV: invalid attempt to %s memory at address 0x%016x"),
+			ErrorString += FString::Printf(TEXT("SIGSEGV: invalid attempt to %s memory at address 0x%016llx"),
 				(Context != nullptr) ? ((Context->uc_mcontext.gregs[REG_ERR] & 0x2) ? TEXT("write") : TEXT("read")) : TEXT("access"), (uint64)Info->si_addr);
 		}
 #else
-		ErrorString += FString::Printf(TEXT("SIGSEGV: invalid attempt to access memory at address 0x%016x"), (uint64)Info->si_addr);
+		ErrorString += FString::Printf(TEXT("SIGSEGV: invalid attempt to access memory at address 0x%016llx"), (uint64)Info->si_addr);
 #endif // __x86_64__
 		break;
 	case SIGBUS:
-		ErrorString += FString::Printf(TEXT("SIGBUS: invalid attempt to access memory at address 0x%016x"), (uint64)Info->si_addr);
+		ErrorString += FString::Printf(TEXT("SIGBUS: invalid attempt to access memory at address 0x%016llx"), (uint64)Info->si_addr);
 		break;
 
 		HANDLE_CASE(SIGINT, "program interrupted")
@@ -275,7 +279,7 @@ void FUnixCrashContext::GenerateReport(const FString & DiagnosticsPath) const
 	}
 }
 
-void FUnixCrashContext::CaptureStackTrace()
+void FUnixCrashContext::CaptureStackTrace(void* ErrorProgramCounter)
 {
 	// Only do work the first time this function is called - this is mainly a carry over from Windows where it can be called multiple times, left intact for extra safety.
 	if (!bCapturedBacktrace)
@@ -284,11 +288,10 @@ void FUnixCrashContext::CaptureStackTrace()
 		static ANSICHAR StackTrace[StackTraceSize];
 		StackTrace[0] = 0;
 
-		int32 IgnoreCount = NumMinidumpFramesToIgnore;
-		CapturePortableCallStack(IgnoreCount, this);
+		CapturePortableCallStack(ErrorProgramCounter, this);
 
 		// Walk the stack and dump it to the allocated memory (do not ignore any stack frames to be consistent with check()/ensure() handling)
-		FPlatformStackWalk::StackWalkAndDump( StackTrace, StackTraceSize, IgnoreCount, this);
+		FPlatformStackWalk::StackWalkAndDump( StackTrace, StackTraceSize, ErrorProgramCounter, this);
 
 #if !PLATFORM_LINUX
 		printf("StackTrace:\n%s\n", StackTrace);
@@ -335,29 +338,94 @@ void FUnixCrashContext::GetPortableCallStack(const uint64* StackFrames, int32 Nu
 	}
 }
 
+#ifndef SERVER_MAX_CONCURRENT_REPORTS
+	#define SERVER_MAX_CONCURRENT_REPORTS 1
+#endif
+
 namespace UnixCrashReporterTracker
 {
-	FProcHandle CurrentlyRunningCrashReporter;
-	FDelegateHandle CurrentTicker;
+	enum class SlotStatus : uint32
+	{
+		Available,
+		Spawning,
+		Uploading,
+		Closing,
+		Killing
+	};
+
+	struct CrashReporterProcess
+	{
+		FProcHandle Process;
+		std::atomic<UnixCrashReporterTracker::SlotStatus> Status;
+	};
+
+	// Matching MaxPreviousErrorsToTrack = 4 in AssertionMacros.cpp
+	CrashReporterProcess Processes[4];
+
+	/** Maximum index in the process slot array */
+	uint32 MaxProcessSlots;
+
+	/** Number of active processes uploading their data at the moment */
+	std::atomic<uint32> NumUploadingProcesses(0);
 
 	bool Tick(float DeltaTime)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_UnixCrashReporterTracker_Tick);
 
-		if (!FPlatformProcess::IsProcRunning(CurrentlyRunningCrashReporter))
+		uint32 NumActiveProcess = NumUploadingProcesses.load(std::memory_order_relaxed);
+
+		if (NumActiveProcess > 0)
 		{
-			FPlatformProcess::CloseProc(CurrentlyRunningCrashReporter);
-			CurrentlyRunningCrashReporter = FProcHandle();
+			for (uint32 ProcessNumber = 0; ProcessNumber < MaxProcessSlots; ++ProcessNumber)
+			{
+				CrashReporterProcess& CurrentSlot = Processes[ProcessNumber];
 
-			FTicker::GetCoreTicker().RemoveTicker(CurrentTicker);
-			CurrentTicker.Reset();
+				SlotStatus IsUploading = SlotStatus::Uploading;
+				const SlotStatus IsClosing = SlotStatus::Closing;
 
-			UE_LOG(LogCore, Log, TEXT("Done sending crash report for ensure()."));
-			return false;
+				// Test if an uploading process is finished
+				if (CurrentSlot.Status.compare_exchange_weak(IsUploading, IsClosing))
+				{
+					if (!FPlatformProcess::IsProcRunning(CurrentSlot.Process))
+					{
+						FPlatformProcess::CloseProc(CurrentSlot.Process);
+						CurrentSlot.Process = FProcHandle();
+
+						--NumUploadingProcesses;
+						CurrentSlot.Status = SlotStatus::Available;
+					}
+					else
+					{
+						CurrentSlot.Status = SlotStatus::Uploading;
+					}
+				}
+			}
 		}
 
 		// tick again
 		return true;
+	}
+
+	void PreInit()
+	{
+		for (CrashReporterProcess& CurrentSlot : Processes)
+		{
+			CurrentSlot.Status = SlotStatus::Available;
+		}
+
+		uint32 ActiveProcessSlots = UE_ARRAY_COUNT(Processes);
+
+		// Lower the amount of concurrent reports on servers to limit the spike in cpu/memory when sending those reports
+		if (IsRunningDedicatedServer())
+		{
+			ActiveProcessSlots = FMath::Min((uint32)SERVER_MAX_CONCURRENT_REPORTS, ActiveProcessSlots);
+		}
+
+		// Set the valid max index to iterate over
+		UnixCrashReporterTracker::MaxProcessSlots = ActiveProcessSlots;
+
+        // Register our Tick function
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&UnixCrashReporterTracker::Tick), 1.f);
 	}
 
 	/**
@@ -392,12 +460,13 @@ namespace UnixCrashReporterTracker
 
 	void RemoveValidCrashReportTickerForChildProcess()
 	{
-		if (CurrentTicker.IsValid())
+		for (uint32 ProcessNumber = 0; ProcessNumber < UnixCrashReporterTracker::MaxProcessSlots; ++ProcessNumber)
 		{
-			FTicker::GetCoreTicker().RemoveTicker(CurrentTicker);
-			CurrentTicker.Reset();
-			CurrentlyRunningCrashReporter = FProcHandle();
+			UnixCrashReporterTracker::Processes[ProcessNumber].Process = FProcHandle();
+			UnixCrashReporterTracker::Processes[ProcessNumber].Status = UnixCrashReporterTracker::SlotStatus::Available;
 		}
+
+		UnixCrashReporterTracker::NumUploadingProcesses = 0;
 	}
 }
 
@@ -409,7 +478,7 @@ void FUnixCrashContext::AddPlatformSpecificProperties() const
 	if (AnsiSignalName != nullptr)
 	{
 		TStringBuilder<32> SignalName;
-		SignalName.AppendAnsi(AnsiSignalName);
+		SignalName.Append(AnsiSignalName);
 
 		AddCrashProperty(TEXT("CrashSignalName"), *SignalName);
 	}
@@ -603,9 +672,9 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 				static_cast<void>(IFileManager::Get().Copy(*CrashConfigDstAbsolute, CrashConfigFilePath));	// best effort, so don't care about result
 			}
 
-#if PLATFORM_LINUXAARCH64
+#if PLATFORM_LINUXARM64
 			// try launching the tool and wait for its exit, if at all
-			const TCHAR * RelativePathToCrashReporter = TEXT("../../../Engine/Binaries/LinuxAArch64/CrashReportClient");	// FIXME: painfully hard-coded
+			const TCHAR * RelativePathToCrashReporter = TEXT("../../../Engine/Binaries/LinuxArm64/CrashReportClient");	// FIXME: painfully hard-coded
 #else
 			// try launching the tool and wait for its exit, if at all
 			const TCHAR * RelativePathToCrashReporter = TEXT("../../../Engine/Binaries/Linux/CrashReportClient");	// FIXME: painfully hard-coded
@@ -642,31 +711,71 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 
 			if (bReportingNonCrash)
 			{
-				// When running a dedicated server and we are reporting a non-crash and we are already in the process of uploading an ensure
-				// we will skip the upload to avoid hitching.
-				if (UnixCrashReporterTracker::CurrentTicker.IsValid() && IsRunningDedicatedServer())
+				bool bFoundEmptySlot = false;
+
+				constexpr double kEnsureTimeOut = 45.0;
+				constexpr double kEnsureSleepInterval = 0.1;
+				double kTimeOutTimer = 0.0;
+
+				while (!bFoundEmptySlot)
 				{
-					UE_LOG(LogCore, Warning, TEXT("An ensure is already in the process of being uploaded, skipping upload."));
-				}
-				else
-				{
-					// If we're reporting non-crash, try to avoid spinning here and instead do that in the tick.
-					// However, if there was already a crash reporter running (i.e. we hit ensure() too quickly), take a hitch here
-					if (UnixCrashReporterTracker::CurrentTicker.IsValid())
+					// Find an empty slot for sending the report
+					for( uint32 ProcessIdx=0; ProcessIdx < UnixCrashReporterTracker::MaxProcessSlots; ++ProcessIdx )
 					{
-						// do not wait indefinitely, allow 45 second hitch (anticipating callstack parsing)
-						const double kEnsureTimeOut = 45.0;
-						const double kEnsureSleepInterval = 0.1;
-						if (!UnixCrashReporterTracker::WaitForProcWithTimeout(UnixCrashReporterTracker::CurrentlyRunningCrashReporter, kEnsureTimeOut, kEnsureSleepInterval))
+						UnixCrashReporterTracker::SlotStatus IsAvailable = UnixCrashReporterTracker::SlotStatus::Available;
+						const UnixCrashReporterTracker::SlotStatus IsSpawning = UnixCrashReporterTracker::SlotStatus::Spawning;
+						
+						// If the slot is available, get exclusive rights by setting it to spawning state
+						if (UnixCrashReporterTracker::Processes[ProcessIdx].Status.compare_exchange_weak(IsAvailable, IsSpawning))
 						{
-							FPlatformProcess::TerminateProc(UnixCrashReporterTracker::CurrentlyRunningCrashReporter);
+							UnixCrashReporterTracker::Processes[ProcessIdx].Process = FPlatformProcess::CreateProc(
+								RelativePathToCrashReporter, *CrashReportClientArguments, true, false, false, NULL, 0, NULL, NULL);
+							
+							++UnixCrashReporterTracker::NumUploadingProcesses;
+							UnixCrashReporterTracker::Processes[ProcessIdx].Status = UnixCrashReporterTracker::SlotStatus::Uploading;
+
+							bFoundEmptySlot = true;
+							break;
 						}
-
-						UnixCrashReporterTracker::Tick(0.001f);	// tick one more time to make it clean up after itself
 					}
+					
+					// All process handles in use: wait for up to 45 seconds on the next available process
+					if (!bFoundEmptySlot)
+					{
+						// If all slots are uploading on a server, skip the report instead of hitching
+						if (IsRunningDedicatedServer())
+						{
+							UE_LOG(LogCore, Warning, TEXT("Too many reports already in progress, skipping upload of this one."));
+							bFoundEmptySlot = true;
+						}
+						else
+						{
+							FPlatformProcess::Sleep(kEnsureSleepInterval);
+							UnixCrashReporterTracker::Tick(0.001f);
 
-					UnixCrashReporterTracker::CurrentlyRunningCrashReporter = FPlatformProcess::CreateProc(RelativePathToCrashReporter, *CrashReportClientArguments, true, false, false, NULL, 0, NULL, NULL);
-					UnixCrashReporterTracker::CurrentTicker = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&UnixCrashReporterTracker::Tick), 1.f);
+							kTimeOutTimer += kEnsureSleepInterval;
+
+							// After waiting 45seconds, kill the process at slot 0 and lose it's information.
+							if (kTimeOutTimer >= kEnsureTimeOut)
+							{
+								UnixCrashReporterTracker::SlotStatus IsUploading = UnixCrashReporterTracker::SlotStatus::Uploading;
+								const UnixCrashReporterTracker::SlotStatus IsKilling = UnixCrashReporterTracker::SlotStatus::Killing;
+
+								// Take over this uploading slot and kill it
+								if (UnixCrashReporterTracker::Processes[0].Status.compare_exchange_weak(IsUploading, IsKilling))
+								{
+									UE_LOG(LogCore, Warning, TEXT("Terminated CrashReport process[0]"));
+
+									FPlatformProcess::TerminateProc(UnixCrashReporterTracker::Processes[0].Process);
+									UnixCrashReporterTracker::Processes[0].Process = FProcHandle();
+
+									--UnixCrashReporterTracker::NumUploadingProcesses;
+									UnixCrashReporterTracker::Processes[0].Status = UnixCrashReporterTracker::SlotStatus::Available;
+								}
+								
+							}
+						}
+					}
 				}
 			}
 			else
@@ -698,6 +807,10 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 					FPlatformProcess::CloseProc(RunningProc);
 				}
 			}
+		}
+		else
+		{
+			UE_LOG(LogCore, Warning, TEXT("MakeDirectory %s failed"), *CrashInfoAbsolute);
 		}
 	}
 
@@ -731,7 +844,7 @@ void DefaultCrashHandler(const FUnixCrashContext & Context)
 	FThreadHeartBeat::Get().Stop();
 
 	// at this point we should already be using malloc crash handler (see PlatformCrashHandler)
-	const_cast<FUnixCrashContext&>(Context).CaptureStackTrace();
+	const_cast<FUnixCrashContext&>(Context).CaptureStackTrace(Context.ErrorFrame);
 	if (GLog)
 	{
 		GLog->SetCurrentThreadAsMasterThread();
@@ -756,6 +869,7 @@ void (* GCrashHandlerPointer)(const FGenericCrashContext & Context) = NULL;
 extern int32 CORE_API GMaxNumberFileMappingCache;
 
 extern thread_local const TCHAR* GCrashErrorMessage;
+extern thread_local void* GCrashErrorProgramCounter;
 extern thread_local ECrashContextType GCrashErrorType;
 
 namespace
@@ -808,6 +922,7 @@ void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 	ECrashContextType Type;
 	TStringBuilder<128> DefaultErrorMessage;
 	const TCHAR* ErrorMessage;
+	void* ErrorProgramCounter;
 
 	if (GCrashErrorMessage == nullptr)
 	{
@@ -824,26 +939,29 @@ void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 		}
 
 		DefaultErrorMessage.Append(TEXT("Caught signal "));
-		DefaultErrorMessage.AppendAnsi(ItoANSI(Signal, 10));
+		DefaultErrorMessage.Append(ItoANSI(Signal, 10));
 
 		ANSICHAR* SignalName = strsignal(Signal);
 		if (SignalName != nullptr)
 		{
 			DefaultErrorMessage.Append(TEXT(" "));
-			DefaultErrorMessage.AppendAnsi(SignalName);
+			DefaultErrorMessage.Append(SignalName);
 		}
 
 		ErrorMessage = *DefaultErrorMessage;
+		ErrorProgramCounter = __builtin_return_address(0);
 	}
 	else
 	{
 		Type = GCrashErrorType;
 		ErrorMessage = GCrashErrorMessage;
+		ErrorProgramCounter = GCrashErrorProgramCounter;
 	}
 
 	FUnixCrashContext CrashContext(Type, ErrorMessage);
 	CrashContext.InitFromSignal(Signal, Info, Context);
 	CrashContext.FirstCrashHandlerFrame = static_cast<uint64*>(__builtin_return_address(0));
+	CrashContext.ErrorFrame = ErrorProgramCounter;
 
 	// This will ungrab cursor/keyboard and bring down any pointer barriers which will be stuck on when opening the CRC
 	FPlatformMisc::UngrabAllInput();
@@ -892,8 +1010,39 @@ void FUnixPlatformMisc::SetGracefulTerminationHandler()
 	sigaction(SIGHUP, &Action, nullptr);	//  this should actually cause the server to just re-read configs (restart?)
 }
 
-// reserve stack for the main thread in BSS
-char FRunnableThreadUnix::MainThreadSignalHandlerStack[FRunnableThreadUnix::EConstants::CrashHandlerStackSize];
+// Stack pointer for the main thread
+void *FRunnableThreadUnix::MainThreadSignalHandlerStack = nullptr;
+
+void *FRunnableThreadUnix::AllocCrashHandlerStack()
+{
+	uint64 StackBufferSize = GetCrashHandlerStackSize();
+
+	return mmap(nullptr, StackBufferSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+}
+
+void FRunnableThreadUnix::FreeCrashHandlerStack(void *StackBuffer)
+{
+	if (StackBuffer)
+	{
+		munmap(StackBuffer, GetCrashHandlerStackSize());
+	}
+}
+
+// Defined in UnixPlatformMemory, set via -crashhandlerstacksize command line.
+extern uint64 GCrashHandlerStackSize;
+
+uint64 FRunnableThreadUnix::GetCrashHandlerStackSize()
+{
+	if (GCrashHandlerStackSize == 0)
+	{
+		GCrashHandlerStackSize = EConstants::CrashHandlerStackSize;
+	}
+	else if (GCrashHandlerStackSize < EConstants::CrashHandlerStackSizeMin)
+	{
+		GCrashHandlerStackSize = EConstants::CrashHandlerStackSizeMin;
+	}
+	return GCrashHandlerStackSize;
+}
 
 // Defined in UnixPlatformMemory.cpp. Allows settings a specific signal to maintain its default handler rather then ignoring it
 extern int32 GSignalToDefault;
@@ -980,5 +1129,10 @@ void FUnixPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCras
 
 	checkf(IsInGameThread(), TEXT("Crash handler for the game thread should be set from the game thread only."));
 
-	FRunnableThreadUnix::SetupSignalHandlerStack(FRunnableThreadUnix::MainThreadSignalHandlerStack, sizeof(FRunnableThreadUnix::MainThreadSignalHandlerStack), nullptr);
+	if (!FRunnableThreadUnix::MainThreadSignalHandlerStack)
+	{
+		FRunnableThreadUnix::MainThreadSignalHandlerStack = FRunnableThreadUnix::AllocCrashHandlerStack();
+	}
+
+	FRunnableThreadUnix::SetupSignalHandlerStack(FRunnableThreadUnix::MainThreadSignalHandlerStack, FRunnableThreadUnix::GetCrashHandlerStackSize(), nullptr);
 }

@@ -30,6 +30,41 @@
 
 FName FMdlUsdShadeMaterialTranslator::MdlRenderContext = TEXT("mdl");
 
+namespace UE
+{
+	namespace MDLShadeTranslatorImpl
+	{
+		namespace Private
+		{
+			void NotifyIfMaterialNeedsVirtualTextures( UMaterialInterface* MaterialInterface )
+			{
+				if ( UMaterial* Material = Cast<UMaterial>( MaterialInterface ) )
+				{
+					TArray<UTexture*> UsedTextures;
+					const bool bAllQualityLevels = true;
+					const bool bAllFeatureLevels = true;
+					Material->GetUsedTextures( UsedTextures, EMaterialQualityLevel::High, bAllQualityLevels, ERHIFeatureLevel::SM5, bAllFeatureLevels );
+
+					for ( UTexture* UsedTexture : UsedTextures )
+					{
+						UsdUtils::NotifyIfVirtualTexturesNeeded( UsedTexture );
+					}
+				}
+				else if ( UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>( MaterialInterface ) )
+				{
+					for ( const FTextureParameterValue& TextureValue : MaterialInstance->TextureParameterValues )
+					{
+						if ( UTexture* Texture = TextureValue.ParameterValue )
+						{
+							UsdUtils::NotifyIfVirtualTexturesNeeded( Texture );
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 void FMdlUsdShadeMaterialTranslator::CreateAssets()
 {
 	// MDL USD Schema:
@@ -55,7 +90,7 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 	const pxr::TfToken MdlToken = UnrealToUsd::ConvertToken( *MdlRenderContext.ToString() ).Get();
 
 	pxr::UsdShadeShader SurfaceShader = ShadeMaterial.ComputeSurfaceSource( MdlToken );
-	
+
 	if ( !SurfaceShader )
 	{
 		Super::CreateAssets();
@@ -89,7 +124,7 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 		FString ModuleName = UE::Mdl::Util::ConvertFilePathToModuleName( *ModuleRelativePath );
 		return ModuleName;
 	}();
-	
+
 	if ( !MdlModuleName.IsEmpty() )
 	{
 		pxr::TfToken MdlDefinitionToken;
@@ -119,6 +154,8 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 				MdlMaterial->AssetImportData = ImportData;
 
 				Context->AssetCache->CacheAsset( MdlFullname, MdlMaterial );
+
+				UE::MDLShadeTranslatorImpl::Private::NotifyIfMaterialNeedsVirtualTextures( MdlMaterial );
 			}
 			else
 			{
@@ -143,10 +180,21 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 
 				UsdToUnreal::ConvertShadeInputsToParameters( ShadeMaterial, *MdlMaterialInstance, Context->AssetCache.Get(), *Context->RenderContext.ToString() );
 
-				FMaterialUpdateContext UpdateContext( FMaterialUpdateContext::EOptions::Default, GMaxRHIShaderPlatform );
+				// We can't blindly recreate all component render states when a level is being added, because we may end up first creating
+				// render states for some components, and UWorld::AddToWorld calls FScene::AddPrimitive which expects the component to not have
+				// primitives yet
+				FMaterialUpdateContext::EOptions::Type Options = FMaterialUpdateContext::EOptions::Default;
+				if ( Context->Level->bIsAssociatingLevel )
+				{
+					Options = ( FMaterialUpdateContext::EOptions::Type ) ( Options & ~FMaterialUpdateContext::EOptions::RecreateRenderStates );
+				}
+
+				FMaterialUpdateContext UpdateContext( Options, GMaxRHIShaderPlatform );
 				UpdateContext.AddMaterialInstance( MdlMaterialInstance );
 				MdlMaterialInstance->PreEditChange( nullptr );
 				MdlMaterialInstance->PostEditChange();
+
+				UE::MDLShadeTranslatorImpl::Private::NotifyIfMaterialNeedsVirtualTextures( MdlMaterialInstance );
 			}
 		}
 

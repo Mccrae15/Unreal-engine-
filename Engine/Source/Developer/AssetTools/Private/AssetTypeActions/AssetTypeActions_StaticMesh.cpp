@@ -9,6 +9,7 @@
 #include "AssetTools.h"
 #include "Editor/StaticMeshEditor/Public/StaticMeshEditorModule.h"
 #include "FbxMeshUtils.h"
+#include "StaticMeshCompiler.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/MessageDialog.h"
@@ -43,19 +44,28 @@ void FAssetTypeActions_StaticMesh::GetActions(const TArray<UObject*>& InObjects,
 	}
 
 	Section.AddSubMenu(
+		"StaticMesh_NaniteMenu",
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteMenu", "Nanite"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteTooltip", "Nanite Options and Tools"),
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetNaniteMenu, Meshes),
+		false,
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Adjust")
+	);
+
+	Section.AddSubMenu(
 		"StaticMesh_LODMenu",
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_LODMenu", "Level Of Detail"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_LODTooltip", "LOD Options and Tools"),
 		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetLODMenu, Meshes),
 		false,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions")
-		);
-
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.LOD")
+	);
+	
 	Section.AddMenuEntry(
 		"ObjectContext_ClearVertexColors",
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_ClearVertexColors", "Remove Vertex Colors"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_ClearVertexColorsTooltip", "Removes vertex colors from all LODS in all selected meshes."),
-		FSlateIcon(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.RemoveVertexColors"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteRemoveVertexColors, Meshes)
 		)
@@ -102,6 +112,23 @@ void FAssetTypeActions_StaticMesh::GetResolvedSourceFilePaths(const TArray<UObje
 	}
 }
 
+void FAssetTypeActions_StaticMesh::GetNaniteMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes)
+{
+	MenuBuilder.AddMenuEntry(
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnable", "Enable"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnableTooltip", "Enables support for Nanite on the selected mesh(es)."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteEnable, Meshes))
+	);
+
+	MenuBuilder.AddMenuEntry(
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisable", "Disable"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisableTooltip", "Disables support for Nanite on the selected mesh(es)."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteDisable, Meshes))
+	);
+}
+
 void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects)
 {
 	check(Objects.Num() > 0);
@@ -126,7 +153,6 @@ void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuil
 
 void FAssetTypeActions_StaticMesh::GetLODMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes)
 {
-
 	MenuBuilder.AddSubMenu(
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLOD", "Import LOD"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLODtooltip", "Imports meshes into the LODs"),
@@ -159,9 +185,7 @@ void FAssetTypeActions_StaticMesh::GetLODMenu(class FMenuBuilder& MenuBuilder, T
 		FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecutePasteLODSettings, Meshes),
 		FCanExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::CanPasteLODSettings, Meshes)
 		)
-		);
-
-
+	);
 }
 
 void FAssetTypeActions_StaticMesh::ExecuteImportMeshLOD(UObject* Mesh, int32 LOD)
@@ -173,7 +197,6 @@ void FAssetTypeActions_StaticMesh::ExecuteCopyLODSettings(TArray<TWeakObjectPtr<
 {
 	LODCopyMesh = Objects[0];
 }
-
 
 bool FAssetTypeActions_StaticMesh::CanCopyLODSettings(TArray<TWeakObjectPtr<UStaticMesh>> Objects) const
 {
@@ -263,6 +286,46 @@ void FAssetTypeActions_StaticMesh::ExecuteRemoveVertexColors(TArray<TWeakObjectP
 			}
 		}
 	}
+}
+
+void FAssetTypeActions_StaticMesh::ModifyNaniteEnable(TArray<TWeakObjectPtr<UStaticMesh>> Objects, bool bNaniteEnable)
+{
+	TArray<UStaticMesh*> Meshes;
+	Meshes.Reserve(Objects.Num());
+
+	for (TWeakObjectPtr<UStaticMesh>& StaticMeshPtr : Objects)
+	{
+		UStaticMesh* Mesh = StaticMeshPtr.Get();
+		if (Mesh && Mesh->NaniteSettings.bEnabled != bNaniteEnable)
+		{
+			Meshes.Add(Mesh);
+		}
+	}
+
+	FStaticMeshCompilingManager::Get().FinishCompilation(Meshes);
+
+	for (UStaticMesh* Mesh : Meshes)
+	{
+		Mesh->NaniteSettings.bEnabled = bNaniteEnable;
+	}
+
+	UStaticMesh::BatchBuild(Meshes);
+
+	for (UStaticMesh* Mesh : Meshes)
+	{
+		Mesh->MarkPackageDirty();
+		Mesh->OnMeshChanged.Broadcast();
+	}
+}
+
+void FAssetTypeActions_StaticMesh::ExecuteNaniteEnable(TArray<TWeakObjectPtr<UStaticMesh>> Objects)
+{
+	ModifyNaniteEnable(Objects, true);
+}
+
+void FAssetTypeActions_StaticMesh::ExecuteNaniteDisable(TArray<TWeakObjectPtr<UStaticMesh>> Objects)
+{
+	ModifyNaniteEnable(Objects, false);
 }
 
 #undef LOCTEXT_NAMESPACE

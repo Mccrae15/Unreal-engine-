@@ -79,7 +79,7 @@ void UNiagaraNodeSelect::ChangeSelectorPinType(FNiagaraTypeDefinition Type)
 	}
 	// ensure we have at least a minimum amount of entries if we change to integer mode
 	const int32 MinimumEntries = 2;
-	if (SelectorPinType == FNiagaraTypeDefinition::GetIntDef() && NumOptionsPerVariable < MinimumEntries)
+	if (SelectorPinType.IsSameBaseDefinition(FNiagaraTypeDefinition::GetIntDef()) && NumOptionsPerVariable < MinimumEntries)
 	{
 		NumOptionsPerVariable = MinimumEntries;
 	}
@@ -484,16 +484,9 @@ bool UNiagaraNodeSelect::CanRenamePin(const UEdGraphPin* Pin) const
 	return Super::CanRenamePin(Pin) && Pin->Direction == EGPD_Output && Pin->bOrphanedPin == false && !UEdGraphSchema_Niagara::IsPinWildcard(Pin);
 }
 
-bool UNiagaraNodeSelect::AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const
-{
-	return InType.GetScriptStruct() != nullptr
-		&& InType != FNiagaraTypeDefinition::GetGenericNumericDef()
-		&& !InType.IsInternalType();
-}
-
 FString UNiagaraNodeSelect::GetInputCaseName(int32 Case) const
 {
-	if(SelectorPinType == FNiagaraTypeDefinition::GetBoolDef())
+	if( FNiagaraTypeDefinition::GetBoolDef().IsSameBaseDefinition(SelectorPinType))
 	{
 		if(Case == 0)
 		{
@@ -504,7 +497,7 @@ FString UNiagaraNodeSelect::GetInputCaseName(int32 Case) const
 			return TEXT("True");
 		}
 	}
-	else if (SelectorPinType == FNiagaraTypeDefinition::GetIntDef())
+	else if ( FNiagaraTypeDefinition::GetIntDef().IsSameBaseDefinition(SelectorPinType))
 	{
 		return FString::FromInt(Case);
 	}
@@ -668,11 +661,11 @@ TArray<int32> UNiagaraNodeSelect::GetOptionValues() const
 {
 	TArray<int32> SelectorValues;
 
-	if(SelectorPinType == FNiagaraTypeDefinition::GetBoolDef())
+	if(FNiagaraTypeDefinition::GetBoolDef().IsSameBaseDefinition(SelectorPinType))
 	{
 		SelectorValues = { 1, 0 };
 	}
-	else if(SelectorPinType == FNiagaraTypeDefinition::GetIntDef())
+	else if(FNiagaraTypeDefinition::GetIntDef().IsSameBaseDefinition(SelectorPinType))
 	{
 		int32 NewOptionsCount = FMath::Max(2, NumOptionsPerVariable);
 		for(int32 Index = 0; Index < NewOptionsCount; Index++)
@@ -719,12 +712,12 @@ FText UNiagaraNodeSelect::GetIntegerRemoveButtonTooltipText() const
 
 EVisibility UNiagaraNodeSelect::ShowAddIntegerButton() const
 {
-	return SelectorPinType == FNiagaraTypeDefinition::GetIntDef() ? EVisibility::Visible : EVisibility::Collapsed;
+	return SelectorPinType.IsSameBaseDefinition(FNiagaraTypeDefinition::GetIntDef()) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility UNiagaraNodeSelect::ShowRemoveIntegerButton() const
 {
-	return SelectorPinType == FNiagaraTypeDefinition::GetIntDef() && NumOptionsPerVariable > 2 ? EVisibility::Visible : EVisibility::Collapsed;
+	return SelectorPinType.IsSameBaseDefinition(FNiagaraTypeDefinition::GetIntDef()) && NumOptionsPerVariable > 2 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 #undef LOCTEXT_NAMESPACE

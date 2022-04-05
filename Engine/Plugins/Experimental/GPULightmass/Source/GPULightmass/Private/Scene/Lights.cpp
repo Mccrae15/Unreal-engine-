@@ -215,21 +215,21 @@ FRectLightRenderState::FRectLightRenderState(URectLightComponent* RectLightCompo
 	IESTexture = RectLightComponent->IESTexture ? RectLightComponent->IESTexture->GetResource() : nullptr;
 }
 
-FLightShaderParameters FDirectionalLightRenderState::GetLightShaderParameters() const
+FLightRenderParameters FDirectionalLightRenderState::GetLightShaderParameters() const
 {
-	FLightShaderParameters LightParameters;
+	FLightRenderParameters LightParameters;
 
-	LightParameters.Position = FVector::ZeroVector;
+	LightParameters.WorldPosition = FVector::ZeroVector;
 	LightParameters.InvRadius = 0.0f;
 	// TODO: support SkyAtmosphere
-	// LightParameters.Color = FVector(GetColor() * AtmosphereTransmittanceFactor);
-	LightParameters.Color = FVector(Color);
+	// LightParameters.Color = FVector(GetColor() * SkyAtmosphereTransmittanceToLight);
+	LightParameters.Color = Color;
 	LightParameters.FalloffExponent = 0.0f;
 
-	LightParameters.Direction = -Direction;
-	LightParameters.Tangent = -Direction;
+	LightParameters.Direction = (FVector3f)-Direction;					// LWC_TODO: Precision loss?
+	LightParameters.Tangent = (FVector3f)-Direction;					// LWC_TODO: Precision loss?
 
-	LightParameters.SpotAngles = FVector2D(0, 0);
+	LightParameters.SpotAngles = FVector2f(0, 0);
 	LightParameters.SpecularScale = 0; // Irrelevant when tracing shadow rays
 	LightParameters.SourceRadius = FMath::Sin(0.5f * FMath::DegreesToRadians(LightSourceAngle));
 	LightParameters.SoftSourceRadius = 0; // Irrelevant when tracing shadow rays. FMath::Sin(0.5f * FMath::DegreesToRadians(LightSourceSoftAngle));
@@ -239,45 +239,47 @@ FLightShaderParameters FDirectionalLightRenderState::GetLightShaderParameters() 
 	return LightParameters;
 }
 
-FLightShaderParameters FPointLightRenderState::GetLightShaderParameters() const
+FLightRenderParameters FPointLightRenderState::GetLightShaderParameters() const
 {
-	FLightShaderParameters LightParameters;
-
-	LightParameters.Position = Position;
+	FLightRenderParameters LightParameters;
+	
+	LightParameters.WorldPosition = Position;
+	LightParameters.Direction = (FVector3f)-Direction;					// LWC_TODO: Precision loss?
+	LightParameters.Tangent = (FVector3f)Tangent;						// LWC_TODO: Precision loss?
 	LightParameters.InvRadius = 1.0f / AttenuationRadius;
-	LightParameters.Color = FVector(Color);
+	LightParameters.Color = Color;
 	LightParameters.SourceRadius = SourceRadius;
 
 	return LightParameters;
 }
 
-FLightShaderParameters FSpotLightRenderState::GetLightShaderParameters() const
+FLightRenderParameters FSpotLightRenderState::GetLightShaderParameters() const
 {
-	FLightShaderParameters LightParameters;
+	FLightRenderParameters LightParameters;
 
-	LightParameters.Position = Position;
-	LightParameters.Direction = -Direction;
-	LightParameters.Tangent = Tangent;
-	LightParameters.SpotAngles = SpotAngles;
+	LightParameters.WorldPosition = Position;
+	LightParameters.Direction = (FVector3f)-Direction;					// LWC_TODO: Precision loss?
+	LightParameters.Tangent = (FVector3f)Tangent;						// LWC_TODO: Precision loss?
+	LightParameters.SpotAngles = FVector2f(SpotAngles);					// LWC_TODO: Precision loss?
 	LightParameters.InvRadius = 1.0f / AttenuationRadius;
-	LightParameters.Color = FVector(Color);
+	LightParameters.Color = Color;
 	LightParameters.SourceRadius = SourceRadius;
 
 	return LightParameters;
 }
 
-FLightShaderParameters FRectLightRenderState::GetLightShaderParameters() const
+FLightRenderParameters FRectLightRenderState::GetLightShaderParameters() const
 {
-	FLightShaderParameters LightParameters;
+	FLightRenderParameters LightParameters;
 
-	LightParameters.Position = Position;
-	LightParameters.Direction = -Direction;
-	LightParameters.Tangent = Tangent;
+	LightParameters.WorldPosition = Position;
+	LightParameters.Direction = (FVector3f)-Direction;					// LWC_TODO: Precision loss?
+	LightParameters.Tangent = (FVector3f)Tangent;						// LWC_TODO: Precision loss?
 	LightParameters.InvRadius = 1.0f / AttenuationRadius;
 
 	FLinearColor LightColor = Color;
 	LightColor /= 0.5f * SourceWidth * SourceHeight;
-	LightParameters.Color = FVector(LightColor);
+	LightParameters.Color = LightColor;
 
 	LightParameters.SourceRadius = SourceWidth * 0.5f;
 	LightParameters.SourceLength = SourceHeight * 0.5f;
@@ -300,7 +302,7 @@ void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdLis
 	Parameters.SkyLightCubemapSampler = ProcessedTextureSampler;
 	Parameters.SkyLightBlendDestinationCubemap = ProcessedTexture;
 	Parameters.SkyLightBlendDestinationCubemapSampler = ProcessedTextureSampler;
-	Parameters.SkyLightParameters = FVector4(1, 1, 0, 0);
+	Parameters.SkyLightParameters = FVector4f(1, 1, 0, 0);
 
 	FLinearColor SkyColor = Color;
 	// since we are resampled into an octahedral layout, we multiply the cubemap resolution by 2 to get roughly the same number of texels

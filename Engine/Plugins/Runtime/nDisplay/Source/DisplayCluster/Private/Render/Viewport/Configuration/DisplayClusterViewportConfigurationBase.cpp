@@ -9,45 +9,65 @@
 
 #include "DisplayClusterViewportConfigurationHelpers.h"
 #include "DisplayClusterConfigurationTypes.h"
+
+#include "DisplayClusterRootActor.h"
+
+#include "Engine/StaticMesh.h"
+#include "ProceduralMeshComponent.h"
+
+
 ///////////////////////////////////////////////////////////////////
 // FDisplayClusterViewportConfigurationBase
 ///////////////////////////////////////////////////////////////////
 
-void FDisplayClusterViewportConfigurationBase::Update(const TArray<FString>& InClusterNodeIds)
+void FDisplayClusterViewportConfigurationBase::Update(const FString& ClusterNodeId)
 {
 	TMap<FString, UDisplayClusterConfigurationViewport*> DesiredViewports;
 
-	// Get render viewports
-	for (const FString& NodeIt : InClusterNodeIds)
+	// Get render viewports for cluster node
+	const UDisplayClusterConfigurationClusterNode* ClusterNodeConfiguration = ConfigurationData.Cluster->GetNode(ClusterNodeId);
+	if (ClusterNodeConfiguration)
 	{
-		const UDisplayClusterConfigurationClusterNode* ClusterNode = ConfigurationData.GetClusterNode(NodeIt);
-		if (ClusterNode)
+		for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportIt : ClusterNodeConfiguration->Viewports)
 		{
-			for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportIt : ClusterNode->Viewports)
+			if (ViewportIt.Key.Len() && ViewportIt.Value)
 			{
-				if (ViewportIt.Key.Len() && ViewportIt.Value)
-				{
-					DesiredViewports.Add(ViewportIt.Key, ViewportIt.Value);
-				}
+				DesiredViewports.Add(ViewportIt.Key, ViewportIt.Value);
 			}
 		}
 	}
 
 	// Collect unused viewports and delete
 	{
+		TArray<FString> ExistClusterNodesIDs;
+		ConfigurationData.Cluster->GetNodeIds(ExistClusterNodesIDs);
+
 		TArray<FDisplayClusterViewport*> UnusedViewports;
 		for (FDisplayClusterViewport* It : ViewportManager.ImplGetViewports())
 		{
 			// ignore ICVFX internal resources
 			if ((It->GetRenderSettingsICVFX().RuntimeFlags & ViewportRuntime_InternalResource) == 0)
 			{
-				if (!DesiredViewports.Contains(It->GetId()))
+				// Only viewports from cluster node in render
+				if (It->GetClusterNodeId() == ClusterNodeId)
 				{
-					UnusedViewports.Add(It);
+					if (!DesiredViewports.Contains(It->GetId()))
+					{
+						UnusedViewports.Add(It);
+					}
+				}
+				else
+				{
+					if(ExistClusterNodesIDs.Find(It->GetClusterNodeId()) == INDEX_NONE)
+					{
+						// also remove viewports for deleted cluster nodes
+						UnusedViewports.Add(It);
+					}
 				}
 			}
 		}
 
+		// Delete unused viewports
 		for (FDisplayClusterViewport* DeleteIt : UnusedViewports)
 		{
 			ViewportManager.ImplDeleteViewport(DeleteIt);
@@ -69,9 +89,9 @@ void FDisplayClusterViewportConfigurationBase::Update(const TArray<FString>& InC
 	}
 }
 
-void FDisplayClusterViewportConfigurationBase::UpdateClusterNodePostProcess(const FString& InClusterNodeId)
+void FDisplayClusterViewportConfigurationBase::UpdateClusterNodePostProcess(const FString& InClusterNodeId, const FDisplayClusterRenderFrameSettings& InRenderFrameSettings)
 {
-	const UDisplayClusterConfigurationClusterNode* ClusterNode = ConfigurationData.GetClusterNode(InClusterNodeId);
+	const UDisplayClusterConfigurationClusterNode* ClusterNode = ConfigurationData.Cluster->GetNode(InClusterNodeId);
 	if (ClusterNode)
 	{
 		TSharedPtr<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe> PPManager = ViewportManager.GetPostProcessManager();
@@ -112,6 +132,28 @@ void FDisplayClusterViewportConfigurationBase::UpdateClusterNodePostProcess(cons
 				}
 			}
 
+			// Texture sharing is not supported in preview mode.
+			if(InRenderFrameSettings.bIsPreviewRendering == false)
+			{
+				static const FString TextureShareID(TEXT("TextureShare"));
+				if (ClusterNode->bEnableTextureShare)
+				{
+					TSharedPtr<IDisplayClusterPostProcess, ESPMode::ThreadSafe> ExistPostProcess = PPManager->FindPostProcess(TextureShareID);
+					if (!ExistPostProcess.IsValid())
+					{
+						// Helper create postprocess entry for TextureShare
+						FDisplayClusterConfigurationPostprocess TextureShareConfiguration;
+						TextureShareConfiguration.Type = TextureShareID;
+
+						PPManager->CreatePostprocess(TextureShareID, &TextureShareConfiguration);
+					}
+				}
+				else
+				{
+					PPManager->RemovePostprocess(TextureShareID);
+				}
+			}
+
 			// Update OutputRemap PP
 			{
 				const struct FDisplayClusterConfigurationFramePostProcess_OutputRemap& OutputRemapCfg = ClusterNode->OutputRemap;
@@ -121,6 +163,28 @@ void FDisplayClusterViewportConfigurationBase::UpdateClusterNodePostProcess(cons
 					{
 					case EDisplayClusterConfigurationFramePostProcess_OutputRemapSource::StaticMesh:
 						PPManager->GetOutputRemap()->UpdateConfiguration_StaticMesh(OutputRemapCfg.StaticMesh);
+						break;
+
+					case EDisplayClusterConfigurationFramePostProcess_OutputRemapSource::MeshComponent:
+						if (!OutputRemapCfg.MeshComponentName.IsEmpty())
+						{
+							// Get the StaticMeshComponent
+							UStaticMeshComponent* StaticMeshComponent = RootActor.GetComponentByName<UStaticMeshComponent>(OutputRemapCfg.MeshComponentName);
+							if (StaticMeshComponent != nullptr)
+							{
+								PPManager->GetOutputRemap()->UpdateConfiguration_StaticMeshComponent(StaticMeshComponent);
+							}
+							else
+							{
+								// Get the procedural mesh component
+								UProceduralMeshComponent* ProceduralMeshComponent = RootActor.GetComponentByName<UProceduralMeshComponent>(OutputRemapCfg.MeshComponentName);
+								PPManager->GetOutputRemap()->UpdateConfiguration_ProceduralMeshComponent(ProceduralMeshComponent);
+							}
+						}
+						else
+						{
+							PPManager->GetOutputRemap()->UpdateConfiguration_Disabled();
+						}
 						break;
 
 					case EDisplayClusterConfigurationFramePostProcess_OutputRemapSource::ExternalFile:
@@ -152,19 +216,3 @@ bool FDisplayClusterViewportConfigurationBase::UpdateViewportConfiguration(FDisp
 
 	return true;
 }
-
-void FDisplayClusterViewportConfigurationBase::UpdateTextureShare(const FString& ClusterNodeId)
-{
-	for (FDisplayClusterViewport* ViewportIt : ViewportManager.ImplGetViewports())
-	{
-		if (ViewportIt)
-		{
-			const UDisplayClusterConfigurationViewport* ViewportCfg = ConfigurationData.GetViewport(ClusterNodeId, ViewportIt->GetId());
-			if (ViewportCfg)
-			{
-				ViewportIt->TextureShare.UpdateConfiguration(*ViewportIt, ViewportCfg->TextureShare);
-			}
-		}
-	}
-}
-

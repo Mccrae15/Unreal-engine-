@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "../Common.ush"
+#include "/Engine/Public/Platform.ush"
 #include "HairStrandsAABBCommon.ush"
 
-#if SHADER_AABBUPDATE
+#if SHADER_AABBUPDATE 
 
 uint bClearBuffer;
 uint MacroGroupId;

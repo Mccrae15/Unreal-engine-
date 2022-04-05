@@ -17,6 +17,7 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #include "ScopedTransaction.h"
 #include "Animation/BlendProfile.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 //////////////////////////////////////////////////////////////////////////
 // IAnimStateTransitionNodeSharedDataHelper
@@ -111,7 +112,7 @@ void UAnimStateTransitionNode::PostLoad()
 		FAnimStateTransitionNodeSharedCrossfadeHelper().MakeSureGuidExists(this);
 	}
 
-	if(GetLinkerUE4Version() < VER_UE4_ADDED_NON_LINEAR_TRANSITION_BLENDS)
+	if(GetLinkerUEVersion() < VER_UE4_ADDED_NON_LINEAR_TRANSITION_BLENDS)
 	{
 		switch(CrossfadeMode_DEPRECATED)
 		{
@@ -195,7 +196,7 @@ void UAnimStateTransitionNode::PostPasteNode()
 	Super::PostPasteNode();
 
 	// We don't want to paste nodes in that aren't fully linked (transition nodes have fixed pins as they
-	// really describle the connection between two other nodes). If we find one missing link, get rid of the node.
+	// really describe the connection between two other nodes). If we find one missing link, get rid of the node.
 	for(UEdGraphPin* Pin : Pins)
 	{
 		if(Pin->LinkedTo.Num() == 0)
@@ -546,6 +547,7 @@ void UAnimStateTransitionNode::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 	Ar.UsingCustomVersion(FAnimPhysObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 }
 
 void UAnimStateTransitionNode::DestroyNode()
@@ -570,7 +572,7 @@ void UAnimStateTransitionNode::DestroyNode()
 }
 
 /** Returns true if this nodes BoundGraph is shared with another node in the parent graph */
-bool UAnimStateTransitionNode::IsBoundGraphShared()
+bool UAnimStateTransitionNode::IsBoundGraphShared() const
 {
 	if (BoundGraph)
 	{
@@ -637,6 +639,23 @@ void UAnimStateTransitionNode::ValidateNodeDuringCompilation(class FCompilerResu
 	{
 		MessageLog.Error(TEXT("@@ contains an invalid or NULL BoundGraph.  Please delete and recreate the transition."), this);
 	}
+}
+
+UObject* UAnimStateTransitionNode::GetJumpTargetForDoubleClick() const
+{
+	// Our base class uses GetSubGraphs. Since we explicitly ignore a shared bound graph, use BoundGraph directly instead.
+	return BoundGraph;
+}
+
+TArray<UEdGraph*> UAnimStateTransitionNode::GetSubGraphs() const
+{ 
+	TArray<UEdGraph*> SubGraphs;
+	if(!IsBoundGraphShared())
+	{
+		SubGraphs.Add(BoundGraph);
+	}
+	SubGraphs.Add(CustomTransitionGraph);
+	return SubGraphs; 
 }
 
 //////////////////////////////////////////////////////////////////////////

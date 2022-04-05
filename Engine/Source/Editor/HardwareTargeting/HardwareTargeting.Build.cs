@@ -20,7 +20,9 @@ public class HardwareTargeting : ModuleRules
 				"SlateCore",
 				"Slate",
 				"EditorStyle",
+				"EditorFramework",
 				"UnrealEd",
+				"EditorWidgets",
 				"Settings",
 				"EngineSettings",
 			}

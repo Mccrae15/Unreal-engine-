@@ -3,6 +3,7 @@
 #include "Components/SpinBox.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/Font.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -10,6 +11,10 @@
 // USpinBox
 
 static FSpinBoxStyle* DefaultSpinBoxStyle = nullptr;
+
+#if WITH_EDITOR
+static FSpinBoxStyle* EditorSpinBoxStyle = nullptr;
+#endif 
 
 USpinBox::USpinBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -33,18 +38,36 @@ USpinBox::USpinBox(const FObjectInitializer& ObjectInitializer)
 	MinDesiredWidth = 0;
 	ClearKeyboardFocusOnCommit = false;
 	SelectAllTextOnCommit = true;
-	ForegroundColor = FSlateColor(FLinearColor::Black);
 
 	if (DefaultSpinBoxStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultSpinBoxStyle = new FSpinBoxStyle(FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));
+		DefaultSpinBoxStyle = new FSpinBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultSpinBoxStyle->UnlinkColors();
 	}
 
 	WidgetStyle = *DefaultSpinBoxStyle;
+
+#if WITH_EDITOR 
+	if (EditorSpinBoxStyle == nullptr)
+	{
+		EditorSpinBoxStyle = new FSpinBoxStyle(FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorSpinBoxStyle->UnlinkColors();
+	}
+	
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorSpinBoxStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
+
+	ForegroundColor = WidgetStyle.ForegroundColor;
 }
 
 void USpinBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -381,7 +404,7 @@ void USpinBox::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{

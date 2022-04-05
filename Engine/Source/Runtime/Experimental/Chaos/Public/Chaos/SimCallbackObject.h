@@ -9,6 +9,7 @@
 namespace Chaos
 {
 class FPhysicsSolverBase;
+class FCollisionContactModifier;
 
 /**
  * Callback API used for executing code at different points in the simulation.
@@ -46,9 +47,9 @@ public:
 		OnPreSimulate_Internal();
 	}
 
-	void ContactModification_Internal(const TArrayView<FPBDCollisionConstraintHandleModification>& Modifications)
+	void ContactModification_Internal(FCollisionContactModifier& Modifier)
 	{
-		OnContactModification_Internal(Modifications);
+		OnContactModification_Internal(Modifier);
 	}
 
 	void FinalizeOutputData_Internal()
@@ -74,6 +75,11 @@ public:
 
 
 	FPhysicsSolverBase* GetSolver() { return Solver; }
+
+	// Rewind API
+	virtual int32 TriggerRewindIfNeeded_Internal(int32 LastCompletedStep) { ensure(false); return INDEX_NONE; }
+	virtual void ApplyCorrections_Internal(int32 PhysicsStep, FSimCallbackInput* Input) { ensure(false); }
+	virtual void FirstPreResimStep_Internal(int32 PhysicsStep) { }
 	
 protected:
 
@@ -124,7 +130,7 @@ private:
 	*
 	* NOTE: you must explicitly request contact modification when registering the callback for this to be called
 	*/
-	virtual void OnContactModification_Internal(const TArrayView<FPBDCollisionConstraintHandleModification>& Modifications)
+	virtual void OnContactModification_Internal(FCollisionContactModifier& Modifier)
 	{
 		//registered for contact modification, but implementation is missing
 		check(false);

@@ -523,6 +523,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		FTaskTagScope TagScope(ETaskTag::ERhiThread);
 		check(IsRunningRHIInDedicatedThread() && IsInRHIThread()); // this should never be used on a platform that doesn't support the RHI thread, and it can't quite work when running the RHI stuff on task threads
 		if (bWait)
 		{
@@ -676,7 +677,7 @@ FOpenGLRenderQuery::~FOpenGLRenderQuery()
 		}
 		else
 		{
-			CreationFence.WaitFence();
+			CreationFence.WaitFenceRenderThreadOnly();
 			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([Resource = Resource, ResourceContext = ResourceContext]() {VERIFY_GL_SCOPE(); ReleaseResource(Resource, ResourceContext); });
 		}
 	}
@@ -726,24 +727,25 @@ void FOpenGLEventQuery::WaitForCompletion()
 	// Wait up to 1/2 second for sync execution
 	FOpenGL::EFenceResult Status = FOpenGL::ClientWaitSync( Sync, 0, 500*1000*1000);
 
-	if ( Status != FOpenGL::FR_AlreadySignaled && Status != FOpenGL::FR_ConditionSatisfied )
+	switch (Status)
 	{
-		//failure of some type, determine type and send diagnostic message
-		if ( Status == FOpenGL::FR_TimeoutExpired )
-		{
-			UE_LOG(LogRHI, Log, TEXT("Timed out while waiting for GPU to catch up. (500 ms)"));
-		}
-		else if ( Status == FOpenGL::FR_WaitFailed )
-		{
-			UE_LOG(LogRHI, Log, TEXT("Wait on GPU failed in driver"));
-		}
-		else
-		{
-			UE_LOG(LogRHI, Log, TEXT("Unknown error while waiting on GPU"));
-			check(0);
-		}
-	}
+	case FOpenGL::FR_AlreadySignaled:
+	case FOpenGL::FR_ConditionSatisfied:
+		break;
 
+	case FOpenGL::FR_TimeoutExpired:
+		UE_LOG(LogRHI, Log, TEXT("Timed out while waiting for GPU to catch up. (500 ms)"));
+		break;
+
+	case FOpenGL::FR_WaitFailed:
+		UE_LOG(LogRHI, Log, TEXT("Wait on GPU failed in driver"));
+		break;
+
+	default:
+	    UE_LOG(LogRHI, Log, TEXT("Unknown error while waiting on GPU"));
+	    check(0);
+		break;
+	}	
 }
 
 void FOpenGLEventQuery::InitDynamicRHI()

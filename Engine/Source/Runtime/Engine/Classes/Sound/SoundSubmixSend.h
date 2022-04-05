@@ -110,11 +110,15 @@ struct ENGINE_API FSoundSubmixSendInfo
 
 	// The submix to send the audio to
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend)
-	USoundSubmixBase* SoundSubmix;
+	TObjectPtr<USoundSubmixBase> SoundSubmix;
 
 	// The amount of audio to send
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend)
 	float SendLevel;
+
+	// Whether to disable the 0-1 clamp for manual SendLevel control
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend)
+	bool DisableManualSendClamp;
 
 	// The amount to send to master when sound is located at a distance equal to value specified in the min send distance.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend)

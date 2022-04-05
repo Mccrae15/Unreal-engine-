@@ -11,6 +11,7 @@
 #include "StreamTypes.h"
 #include "AdaptiveStreamingPlayerMetrics.h"
 #include "AdaptiveStreamingPlayerEvents.h"
+#include "AdaptiveStreamingPlayerSubtitles.h"
 #include "AdaptiveStreamingPlayerResourceRequest.h"
 
 class IOptionPointerValueContainer;
@@ -55,6 +56,11 @@ public:
 	virtual void AddAEMSReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerAEMSReceiver> InReceiver, FString InForSchemeIdUri, FString InForValue, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) = 0;
 	virtual void RemoveAEMSReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerAEMSReceiver> InReceiver, FString InForSchemeIdUri, FString InForValue, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) = 0;
 
+	//-------------------------------------------------------------------------
+	// Subtitle receiver
+	//
+	virtual void AddSubtitleReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerSubtitleReceiver> InReceiver) = 0;
+	virtual void RemoveSubtitleReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerSubtitleReceiver> InReceiver) = 0;
 
 	//-------------------------------------------------------------------------
 	// Initializes the player. Options may be passed in to affect behaviour.
@@ -70,6 +76,20 @@ public:
 	 * with those of the explicitly selected track.
 	 */
 	virtual void SetInitialStreamAttributes(EStreamType StreamType, const FStreamSelectionAttributes& InitialSelection) = 0;
+
+	/**
+	 * Enables or disables frame accurate seeking.
+	 * Frame accurate positioning may require internal decoding and discarding of video and audio from an
+	 * earlier keyframe up to the intended time, which may make seeking significantly slower.
+	 * This also affects looping which implicitly seeks back to the loop point when the end is reached.
+	 * Frame accurate seeking is enabled by default.
+	 * This method is intended mostly to disable frame accurate seeking on this player instance.
+	 * 
+	 * This should be called prior to SeekTo() and should only be called once on the player instance to
+	 * disable or re-enable frame accurate seeking.
+	 * Calling this during playback may have undesired results.
+	 */
+	virtual void EnableFrameAccurateSeeking(bool bEnabled) = 0;
 
 
 	//-------------------------------------------------------------------------
@@ -91,12 +111,36 @@ public:
 		void Reset()
 		{
 			Time.SetToInvalid();
+			StartingBitrate.Reset();
+			bOptimizeForScrubbing.Reset();
 		}
+		// Time to seek to.
 		FTimeValue	Time;
+		// Maximum stream bitrate to use when seeking.
+		TOptional<int32> StartingBitrate;
+		// Optimize for frame scrubbing (faster display of frame at target time)?
+		TOptional<bool> bOptimizeForScrubbing;
+		// Allowed distance to last performed seek to save a redundant new seek.
+		TOptional<double> DistanceThreshold;
 	};
-	//! Seek to a new position and play from there. This includes first playstart.
-	//! Playback is initially paused on first player use and must be resumed to begin.
-	//! Query the seekable range (GetSeekableRange()) to get the valid time range.
+	
+	/**
+	 * Seek to a new position and play from there. This includes first playstart.
+	 * Playback is initially paused on first player use and must be resumed to begin.
+	 * Query the seekable range (GetSeekableRange()) to get the valid time range.
+	 * 
+	 * Seeks can be issued while a seek is already executing. The seek parameters
+	 * control behaviour. If seeking is performed for scrubbing any new seek will
+	 * be performed only when the previous seek has completed, otherwise the current
+	 * seek will be canceled in favor of the new.
+	 * If the new position being seeked to is within the specified distance to the
+	 * last completed seek a new seek will not be performed.
+	 * If new seeks are performed in rapid succession (as in scrubbing) not every
+	 * new position will be seeked to. Seek commands are aggregated and the position
+	 * set with the most recent call will be used as soon as any previous seek completes.
+	 * As a result you will NOT receive a ReportSeekCompleted() notification for
+	 * every seek requested, only for those that were executed and allowed to complete.
+	 */
 	virtual void SeekTo(const FSeekParam& NewPosition) = 0;
 
 	//! Pauses playback.
@@ -107,6 +151,37 @@ public:
 
 	//! Stops playback. Playback cannot be resumed. Final player events will be sent to registered listeners.
 	virtual void Stop() = 0;
+
+
+	struct FPlaybackRange
+	{
+		TOptional<FTimeValue>	Start;
+		TOptional<FTimeValue>	End;
+	};
+
+	/**
+	 * Constrains playback to the specified time range, which should be a subset of GetTimelineRange().
+	 * The playback range can be specified via URL fragment parameters on the URL given to LoadManifest()
+	 * if the mime type allows for it.
+	 * 
+	 * If you set the playback range before calling LoadManifest() the URL parameter will not be used.
+	 * Otherwise the URL parameters set the playback range if they are specified.
+	 * You can query the playback range set by URL parameters as soon as HaveMetadata() returns true.
+	 * Setting a playback range through this method overrides URL parameters.
+	 * 
+	 * To set or change only the start or end of the playback range, set only the corresponding TOptional<>
+	 * and leave the other unset.
+	 * To disable either start or end set the value to FTimeValue::GetInvalid().
+	 * 
+	 * If you only set start or end, the other value may be set by the respective URL parameter.
+	 * To fully disable any playback range that may be present on the URL you should set the range to
+	 * invalid values once HaveMetadata() returns true.
+	 * 
+	 * Setting a playback range during playback will result in an immediate seek to the current
+	 * playback position. Frame accurate seeking is recommended.
+	 */
+	virtual void SetPlaybackRange(const FPlaybackRange& InPlaybackRange) = 0;
+	virtual void GetPlaybackRange(FPlaybackRange& OutPlaybackRange) = 0;
 
 
 	struct FLoopParam
@@ -122,7 +197,7 @@ public:
 		bool	bEnableLooping;
 	};
 
-	//! Puts playback into loop mode if possible. Live streams cannot be made to loop as they have infinite duration.
+	//! Puts playback into loop mode if possible. Live streams cannot be made to loop as they have infinite duration. Looping is constrained to the playback range, if one is set.
 	virtual void SetLooping(const FLoopParam& InLoopParams) = 0;
 
 
@@ -159,8 +234,14 @@ public:
 	//! Returns true when paused, false if not.
 	virtual bool IsPaused() const = 0;
 
+	struct FLoopState
+	{
+		int64	Count = 0;					//!< Number of times playback jumped back to loop. 0 on first playthrough, 1 on first loop, etc.
+		bool	bIsEnabled = false;			//!< true if looping is enabled, false if not.
+	};
+
 	//! Returns the current loop state.
-	virtual void GetLoopState(FPlayerLoopState& OutLoopState) const = 0;
+	virtual void GetLoopState(FLoopState& OutLoopState) const = 0;
 
 	//! Returns track metadata of the currently active play period.
 	virtual void GetTrackMetadata(TArray<FTrackMetadata>& OutTrackMetadata, EStreamType StreamType) const = 0;
@@ -184,7 +265,7 @@ public:
 	//! This selection will explicitly override the initial stream attributes set by SetInitialStreamAttributes() and be applied automatically for upcoming periods.
 	virtual void SelectTrackByAttributes(EStreamType StreamType, const FStreamSelectionAttributes& Attributes) = 0;
 
-	//! Deselect track. The stream will continue to stream to allow for immediate selection/activation but no data will be fed to the decoder.
+	//! Deselect track. The stream may continue to stream to allow for immediate selection/activation but no data will be fed to the decoder.
 	virtual void DeselectTrack(EStreamType StreamType) = 0;
 
 	//! Returns true if the track stream of the specified type has beed deselected through DeselectTrack().
@@ -196,6 +277,8 @@ public:
 	//
 #if PLATFORM_ANDROID
 	virtual void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface) = 0;
+	virtual void Android_SuspendOrResumeDecoder(bool bSuspend) = 0;
+	static FParamDict& Android_Workarounds(FStreamCodecInformation::ECodec InForCodec);
 #endif
 
 	//-------------------------------------------------------------------------

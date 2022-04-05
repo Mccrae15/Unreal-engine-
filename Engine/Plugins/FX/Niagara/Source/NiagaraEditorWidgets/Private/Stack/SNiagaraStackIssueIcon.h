@@ -13,7 +13,17 @@ class UNiagaraStackEntry;
 class SNiagaraStackIssueIcon : public SCompoundWidget
 {
 public:
-	SLATE_BEGIN_ARGS(SNiagaraStackIssueIcon) {}
+	enum class EIconMode
+	{
+		Normal,
+		Compact
+	};
+
+public:
+	SLATE_BEGIN_ARGS(SNiagaraStackIssueIcon) 
+		: _IconMode(EIconMode::Normal)
+		{}
+		SLATE_ARGUMENT(EIconMode, IconMode)
 		SLATE_EVENT(FOnClicked, OnClicked)
 	SLATE_END_ARGS()
 
@@ -25,16 +35,22 @@ private:
 	bool GetIconIsEnabled() const;
 
 	const FSlateBrush* GetIconBrush() const;
-
 	FText GetIconToolTip() const;
+	FOptionalSize GetIconHeight() const;
+	EVisibility GetCompactIconBorderVisibility() const;
 
 	void UpdateFromEntry(ENiagaraStructureChangedFlags Flags);
 
 private:
 	const FSlateBrush* IconBrush;
+	float IconHeight;
 
 	mutable TOptional<FText> IconToolTipCache;
 
 	UNiagaraStackViewModel* StackViewModel;
 	TWeakObjectPtr<UNiagaraStackEntry> StackEntry;
+	EIconMode IconMode;
+
+	static const float NormalSize;
+	static const float CompactSize;
 };

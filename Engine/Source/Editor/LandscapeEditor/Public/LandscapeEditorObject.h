@@ -9,6 +9,7 @@
 #include "Editor/LandscapeEditor/Private/LandscapeEdMode.h"
 #include "LandscapeFileFormatInterface.h"
 #include "LandscapeBlueprintBrush.h"
+#include "LandscapeImportHelper.h"
 
 #include "LandscapeEditorObject.generated.h"
 
@@ -201,19 +202,28 @@ struct FLandscapeImportLayer : public FLandscapeImportLayerInfo
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(Category="Import", VisibleAnywhere)
-	ULandscapeMaterialInstanceConstant* ThumbnailMIC;
+	TObjectPtr<ULandscapeMaterialInstanceConstant> ThumbnailMIC;
 
-	UPROPERTY(Category="Import", VisibleAnywhere)
+	UPROPERTY(Category = "Import", VisibleAnywhere)
 	ELandscapeImportResult ImportResult;
 
-	UPROPERTY(Category="Import", VisibleAnywhere)
+	UPROPERTY(Category = "Import", VisibleAnywhere)
 	FText ErrorMessage;
+
+	UPROPERTY(Category="Export", EditAnywhere, meta = (DisplayName = "Layer File"))
+	FString ExportFilePath;
+
+	UPROPERTY(Category="Import", EditAnywhere)
+	bool bSelected;
+
+	FLandscapeImportDescriptor ImportDescriptor;
 
 	FLandscapeImportLayer()
 		: FLandscapeImportLayerInfo()
 		, ThumbnailMIC(nullptr)
 		, ImportResult(ELandscapeImportResult::Success)
 		, ErrorMessage(FText())
+		, bSelected(false)
 	{
 	}
 };
@@ -520,20 +530,40 @@ class ULandscapeEditorObject : public UObject
 	UPROPERTY(Category="New Landscape", EditAnywhere, meta=(DisplayName="Scale", ShowForTools="NewLandscape"))
 	FVector NewLandscape_Scale;
 
-	UPROPERTY(Category="New Landscape", VisibleAnywhere, NonTransactional, meta=(ShowForTools="NewLandscape"))
+	UPROPERTY(Category="New Landscape", VisibleAnywhere, NonTransactional, meta=(ShowForTools="NewLandscape,ImportExport"))
 	ELandscapeImportResult ImportLandscape_HeightmapImportResult;
 
-	UPROPERTY(Category="New Landscape", VisibleAnywhere, NonTransactional, meta=(ShowForTools="NewLandscape"))
+	UPROPERTY(Category="New Landscape", VisibleAnywhere, NonTransactional, meta=(ShowForTools="NewLandscape,ImportExport"))
 	FText ImportLandscape_HeightmapErrorMessage;
 
 	// Specify a height map file in 16-bit RAW or PNG format
-	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, meta=(DisplayName="Heightmap File", ShowForTools="NewLandscape"))
+	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, meta=(DisplayName="Heightmap File", ShowForTools="NewLandscape,ImportExport"))
 	FString ImportLandscape_HeightmapFilename;
 	UPROPERTY(NonTransactional)
 	uint32 ImportLandscape_Width;
 	UPROPERTY(NonTransactional)
 	uint32 ImportLandscape_Height;
 
+	UPROPERTY(Category="Import / Export", EditAnywhere, NonTransactional, meta=(DisplayName="Heightmap File", ShowForTools="ImportExport"))
+	FString HeightmapExportFilename;
+		
+	UPROPERTY(NonTransactional)
+	FIntPoint ImportLandscape_GizmoLocalPosition;
+
+	UPROPERTY(Category = "Import / Export", EditAnywhere, NonTransactional, meta =(ShowForTools = "ImportExport"))
+	ELandscapeImportTransformType ImportType;
+		
+	UPROPERTY(NonTransactional)
+	bool bHeightmapSelected = false;
+	
+	UPROPERTY(Category = "Import / Export", EditAnywhere, NonTransactional, meta = (DisplayName="Export Edit Layer", ShowForTools = "ImportExport", ToolTip="When true exports the selected edit layer, if false exports the blend result"))
+	bool bExportEditLayer = true;
+
+	UPROPERTY(NonTransactional)
+	FLandscapeImportDescriptor HeightmapImportDescriptor;
+	
+	UPROPERTY(NonTransactional)
+	int32 HeightmapImportDescriptorIndex;
 private:
 	UPROPERTY(NonTransactional)
 	TArray<uint16> ImportLandscape_Data;
@@ -541,12 +571,18 @@ public:
 	UPROPERTY(Category = "New Landscape", EditAnywhere, NonTransactional, meta = (DisplayName= "Enable Edit Layers", ToolTip="Enable support for landscape edit layers.", ShowForTools= "NewLandscape"))
 	bool bCanHaveLayersContent = false;
 
-	// Whether the imported alpha maps are to be interpreted as "layered" or "additive" (UE4 uses additive internally)
-	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, meta=(DisplayName="Layer Alphamap Type", ShowForTools="NewLandscape"))
+	UPROPERTY(Category = "New Landscape", EditAnywhere, NonTransactional, meta = (DisplayName = "Flip Y Axis", ToolTip = "Whether to flip Y coordinate of imported files.", ShowForTools = "NewLandscape,ImportExport"))
+	bool bFlipYAxis = false;
+
+	UPROPERTY(Category = "New Landscape", EditAnywhere, NonTransactional, meta = (DisplayName= "World Partition Grid Size", ToolTip="Number of components per landscape streaming proxies per axis", ShowForTools="NewLandscape", ClampMin=1, ClampMax=16, UIMin=1, UIMax=16))
+	uint32 WorldPartitionGridSize = 2;
+
+	// Whether the imported alpha maps are to be interpreted as "layered" or "additive" (UE uses additive internally)
+	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, meta=(DisplayName="Layer Alphamap Type", ShowForTools="NewLandscape,ImportExport"))
 	ELandscapeImportAlphamapType ImportLandscape_AlphamapType;
 
 	// The landscape layers that will be created. Only layer names referenced in the material assigned above are shown here. Modify the material to add more layers.
-	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, EditFixedSize, meta=(DisplayName="Layers", ShowForTools="NewLandscape"))
+	UPROPERTY(Category="New Landscape", EditAnywhere, NonTransactional, EditFixedSize, meta=(DisplayName="Layers", ShowForTools="NewLandscape,ImportExport"))
 	TArray<FLandscapeImportLayer> ImportLandscape_Layers;
 
 	// Common Brush Settings:
@@ -593,7 +629,7 @@ public:
 
 	// Mask texture to use
 	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Texture", ShowForBrushes="BrushSet_Alpha,BrushSet_Pattern"))
-	UTexture2D* AlphaTexture;
+	TObjectPtr<UTexture2D> AlphaTexture;
 
 	// Channel of Mask Texture to use
 	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Texture Channel", ShowForBrushes="BrushSet_Alpha,BrushSet_Pattern"))
@@ -653,16 +689,26 @@ public:
 
 	const TArray<uint16>& GetImportLandscapeData() const { return ImportLandscape_Data; }
 	void ClearImportLandscapeData() { ImportLandscape_Data.Empty(); }
-
+	void ChooseBestComponentSizeForImport();
 	void ImportLandscapeData();
-	void RefreshImportLayersList();
-	
-	void UpdateComponentLayerWhitelist();
+	void RefreshImportLayersList(bool bRefreshFromTarget = false);
+	ELandscapeImportResult CreateImportLayersInfo(TArray<FLandscapeImportLayerInfo>& OutImportLayerInfos);
+	ELandscapeImportResult CreateNewLayersInfo(TArray<FLandscapeImportLayerInfo>& OutNewLayerInfos);
+	void InitializeDefaultHeightData(TArray<uint16>& OutData);
+	void ExpandImportData(TArray<uint16>& OutHeightData, TArray<FLandscapeImportLayerInfo>& OutImportLayerInfos);
+	void UpdateComponentLayerAllowList();
+	bool UseSingleFileImport() const;
+	void OnChangeImportLandscapeResolution(int32 DescriptorIndex);
+	void OnImportHeightmapFilenameChanged() { RefreshImports(); }
+	void RefreshImports();
+	void OnImportWeightmapFilenameChanged() { RefreshLayerImports(); }
+	void RefreshLayerImports();
+	void RefreshLayerImport(FLandscapeImportLayer& ImportLayer);
 
 	int32 ClampLandscapeSize(int32 InComponentsCount) const
 	{
 		// Max size is either whole components below 8192 verts, or 32 components
-		return FMath::Clamp(InComponentsCount, 1, FMath::Min(32, FMath::FloorToInt(8191 / (NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection))));
+		return FMath::Clamp(InComponentsCount, 1, FMath::Min(32, FMath::FloorToInt(8191.0f / (float)(NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection))));
 	}
 	
 	int32 CalcComponentsCount(int32 InResolution) const

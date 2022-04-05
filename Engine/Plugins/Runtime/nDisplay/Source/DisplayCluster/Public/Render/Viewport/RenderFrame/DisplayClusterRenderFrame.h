@@ -20,6 +20,12 @@ public:
 	class FFrameView
 	{
 	public:
+		inline bool IsShouldRenderView() const
+		{
+			return !bDisableRender && !bFreezeRendering;
+		}
+
+	public:
 		// Viewport game-thread data
 		class IDisplayClusterViewport* Viewport = nullptr;
 
@@ -27,6 +33,7 @@ public:
 		uint32 ContextNum = 0;
 
 		bool bDisableRender = false;
+		bool bFreezeRendering = false;
 	};
 
 	class FFrameViewFamily
@@ -48,7 +55,7 @@ public:
 		// Vieports, rendered at once for tthis family
 		TArray<FFrameView> Views;
 
-		int NumViewsForRender = 0;
+		int32 NumViewsForRender = 0;
 	};
 
 	class FFrameRenderTarget
@@ -77,36 +84,14 @@ public:
 	};
 
 public:
-	void UpdateDesiredNumberOfViews()
-	{
-		DesiredNumberOfViews = 0;
-
-		for (FDisplayClusterRenderFrame::FFrameRenderTarget& RenderTargetIt : RenderTargets)
-		{
-			for (FDisplayClusterRenderFrame::FFrameViewFamily& ViewFamilyIt : RenderTargetIt.ViewFamilies)
-			{
-				ViewFamilyIt.NumViewsForRender = 0;
-
-				for (FDisplayClusterRenderFrame::FFrameView& ViewIt : ViewFamilyIt.Views)
-				{
-					if (ViewIt.bDisableRender == false)
-					{
-						ViewFamilyIt.NumViewsForRender++;
-						DesiredNumberOfViews++;
-					}
-				}
-			}
-		}
-	}
-
-public:
 	// Render frame to this targets
 	TArray<FFrameRenderTarget> RenderTargets;
 	
 	// Frame rect on final backbuffer
 	FIntRect FrameRect;
 
-	int DesiredNumberOfViews = 0;
+	int32 DesiredNumberOfViews = 0;
+	int32 ViewportsAmount = 0;
 
 	IDisplayClusterViewportManager* ViewportManager = nullptr;
 };

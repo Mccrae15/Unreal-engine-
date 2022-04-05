@@ -11,6 +11,10 @@
 #include "Engine/PoseWatch.h"
 
 class UAnimGraphNode_Base;
+class IDetailTreeNode;
+class IPropertyRowGenerator;
+class UAnimBlueprint;
+class SPoseWatchOverlay;
 
 class ANIMATIONBLUEPRINTEDITOR_API SAnimationGraphNode : public SGraphNodeK2Base
 {
@@ -18,8 +22,23 @@ public:
 	SLATE_BEGIN_ARGS(SAnimationGraphNode) {}
 	SLATE_END_ARGS()
 
+	// Reverse index of the error reporting bar slot
+	static const int32 ErrorReportingSlotReverseIndex = 0;
+
+	// Reverse index of the tag/functions slot
+	static const int32 TagAndFunctionsSlotReverseIndex = 1;
+	
 	void Construct(const FArguments& InArgs, UAnimGraphNode_Base* InNode);
 
+	// Tweak any created pin widgets so they respond to bindings
+	static void ReconfigurePinWidgetsForPropertyBindings(UAnimGraphNode_Base* InAnimGraphNode, TSharedRef<SGraphNode> InGraphNodeWidget, TFunctionRef<TSharedPtr<SGraphPin>(UEdGraphPin*)> InFindWidgetForPin);
+
+	// Create below-widget controls for editing anim node functions
+	static TSharedRef<SWidget> CreateNodeFunctionsWidget(UAnimGraphNode_Base* InAnimNode, TAttribute<bool> InUseLowDetail);
+
+	// Create below-widget controls for editing anim node tags
+	static TSharedRef<SWidget> CreateNodeTagWidget(UAnimGraphNode_Base* InAnimNode, TAttribute<bool> InUseLowDetail);
+	
 protected:
 	// SWidget interface
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
@@ -29,28 +48,34 @@ protected:
 	virtual TArray<FOverlayWidgetInfo> GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const override;
 	virtual TSharedRef<SWidget> CreateTitleWidget(TSharedPtr<SNodeTitle> InNodeTitle) override;
 	virtual void GetNodeInfoPopups(FNodeInfoContext* Context, TArray<FGraphInformationPopupInfo>& Popups) const override;
+	virtual void CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox) override;
+	virtual TSharedRef<SWidget> CreateNodeContentArea() override;
+	virtual bool IsHidingPinWidgets() const override { return UseLowDetailNodeContent(); }
 	// End of SGraphNode interface
 
 private:
-	// Return Pose View Colour for slate indicator
-	FSlateColor GetPoseViewColour() const;
-
-	FReply SpawnColourPicker();
-
 	// Handle the node informing us that the title has changed
 	void HandleNodeTitleChanged();
 
-	// Tweak any created pin widgets so they respond to bindings
-	void ReconfigurePinWidgetsForPropertyBindings();
+	// LOD related functions for content area
+	bool UseLowDetailNodeContent() const;
+	FVector2D GetLowDetailDesiredSize() const;
+
+	// Handler for pose watches changing
+	void HandlePoseWatchesChanged(UAnimBlueprint* InAnimBlueprint, UEdGraphNode* InNode);
 
 	/** Keep a reference to the indicator widget handing around */
 	TSharedPtr<SWidget> IndicatorWidget;
 
 	/** Keep a reference to the pose view indicator widget handing around */
-	TSharedPtr<SWidget> PoseViewWidget;
+	TSharedPtr<SPoseWatchOverlay> PoseViewWidget;
 
 	/** Cache the node title so we can invalidate it */
 	TSharedPtr<SNodeTitle> NodeTitle;
 
-	TWeakObjectPtr<class UPoseWatch> PoseWatch;
+	/** Cached size from when we last drew at high detail */
+	FVector2D LastHighDetailSize;
+
+	/** Cached content area widget (used to derive LastHighDetailSize) */
+	TSharedPtr<SWidget> CachedContentArea;
 };

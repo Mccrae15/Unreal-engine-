@@ -498,6 +498,10 @@ public:
 	{
 		Collector.AddReferencedObject(Tutorial);
 	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FTutorialListEntry_Tutorial");
+	}
 
 public:
 	/** Parent category */
@@ -593,7 +597,6 @@ void STutorialsBrowser::Construct(const FArguments& InArgs)
 						.DelimiterImage(FEditorStyle::GetBrush("Tutorials.Browser.Breadcrumb"))
 						.TextStyle(FEditorStyle::Get(), "Tutorials.Browser.PathText")
 						.ShowLeadingDelimiter( true )
-						.InvertTextColorOnHover( false )
 						.OnCrumbClicked(this, &STutorialsBrowser::OnBreadcrumbClicked)
 					]
 					+SVerticalBox::Slot()

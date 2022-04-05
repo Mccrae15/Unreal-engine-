@@ -45,6 +45,7 @@ protected:
 	// UMovieSceneTrackRecorder Interface
 	virtual void CreateTrackImpl() override;
 	virtual void FinalizeTrackImpl() override;
+	virtual void CancelTrackImpl() override;
 	virtual void RecordSampleImpl(const FQualifiedFrameTime& CurrentTime) override;
 	virtual void StopRecordingImpl() override;
 	virtual void SetSavedRecordingDirectory(const FString& InDirectory) override
@@ -56,6 +57,7 @@ protected:
 	// UMovieSceneTrackRecorder Interface
 
 public:
+	bool RootWasRemoved() const { return bRootWasRemoved; }
 	void RemoveRootMotion();
 	void ProcessRecordedTimes(const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate);
 
@@ -94,4 +96,7 @@ private:
 
 	/**Serializer */
 	FAnimationSerializer AnimationSerializer;
+
+	/** Root Was Removed*/
+	bool bRootWasRemoved = true;
 };

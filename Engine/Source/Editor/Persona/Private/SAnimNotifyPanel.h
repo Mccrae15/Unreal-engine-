@@ -138,6 +138,9 @@ public:
 	TArray<TSharedPtr<SAnimNotifyNode>> OriginalSelection;
 };
 
+DECLARE_DELEGATE_FourParams(FOnNotifyStateHandleBeingDragged, TSharedPtr<SAnimNotifyNode> /*NotifyNode*/, const FPointerEvent& /*PointerEvent*/, ENotifyStateHandleHit::Type /*Handle*/, float /*Time*/)
+DECLARE_DELEGATE_FourParams(FOnNotifyNodesBeingDragged, const TArray<TSharedPtr<SAnimNotifyNode>>& /*NotifyNodes*/, const class FDragDropEvent& /*DragDropEvent*/, float /*XPosition*/, float /*Time*/)
+
 //////////////////////////////////////////////////////////////////////////
 // SAnimNotifyPanel
 
@@ -192,6 +195,8 @@ public:
 	SLATE_EVENT( FOnInvokeTab, OnInvokeTab )
 	SLATE_EVENT( FSimpleDelegate, OnNotifiesChanged )
 	SLATE_EVENT( FOnSnapPosition, OnSnapPosition )
+	SLATE_EVENT( FOnNotifyStateHandleBeingDragged, OnNotifyStateHandleBeingDragged)
+	SLATE_EVENT( FOnNotifyNodesBeingDragged, OnNotifyNodesBeingDragged)
 
 	SLATE_END_ARGS()
 
@@ -219,7 +224,7 @@ public:
 	/**Handler for when a notify node drag has been initiated */
 	FReply OnNotifyNodeDragStarted(TArray<TSharedPtr<SAnimNotifyNode>> NotifyNodes, TSharedRef<SWidget> Decorator, const FVector2D& ScreenCursorPos, const FVector2D& ScreenNodePosition, const bool bDragOnMarker);
 
-	virtual float GetSequenceLength() const override {return Sequence->SequenceLength;}
+	virtual float GetSequenceLength() const override;
 
 	void CopySelectedNodesToClipboard() const;
 	void OnPasteNodes(SAnimNotifyTrack* RequestTrack, float ClickTime, ENotifyPasteMode::Type PasteMode, ENotifyPasteMultipleMode::Type MultiplePasteType);
@@ -356,6 +361,12 @@ private:
 
 	/** Delegate used to inform others that notifies have changed (for timing) */
 	FSimpleDelegate OnNotifiesChanged;
+
+	/** Delegate used to inform others that a notify state handle is being dragged */
+	FOnNotifyStateHandleBeingDragged OnNotifyStateHandleBeingDragged;
+	
+	/** Delegate used to inform others that one or more notifies nodes are being dragged */
+	FOnNotifyNodesBeingDragged OnNotifyNodesBeingDragged;
 
 	/** Recursion guard for selection */
 	bool bIsSelecting;

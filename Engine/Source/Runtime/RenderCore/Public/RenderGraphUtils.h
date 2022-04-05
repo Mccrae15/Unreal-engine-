@@ -11,15 +11,49 @@
 
 class FGlobalShaderMap;
 
-/** Fetches the RHI texture from an RDG texture or null if the RDG texture is null. */
+/** Returns whether the resource was produced by a prior pass. */
+inline bool HasBeenProduced(FRDGParentResourceRef Resource)
+{
+	return Resource && Resource->HasBeenProduced();
+}
+
+/** Returns the texture if it was produced by a prior pass, or null otherwise. */
+inline FRDGTextureRef GetIfProduced(FRDGTextureRef Texture, FRDGTextureRef FallbackTexture = nullptr)
+{
+	return HasBeenProduced(Texture) ? Texture : FallbackTexture;
+}
+
+/** Returns the buffer if has been produced by a prior pass, or null otherwise. */
+inline FRDGBufferRef GetIfProduced(FRDGBufferRef Buffer, FRDGBufferRef FallbackBuffer = nullptr)
+{
+	return HasBeenProduced(Buffer) ? Buffer : FallbackBuffer;
+}
+
+/** Returns 'Load' if the texture has already been produced by a prior pass, or the requested initial action. */
+inline ERenderTargetLoadAction GetLoadActionIfProduced(FRDGTextureRef Texture, ERenderTargetLoadAction ActionIfNotProduced)
+{
+	return HasBeenProduced(Texture) ? ERenderTargetLoadAction::ELoad : ActionIfNotProduced;
+}
+
+/** Returns a binding with the requested initial action, or a load action if the resource has been produced by a prior pass. */
+inline FRenderTargetBinding GetLoadBindingIfProduced(FRDGTextureRef Texture, ERenderTargetLoadAction ActionIfNotProduced)
+{
+	return FRenderTargetBinding(Texture, GetLoadActionIfProduced(Texture, ActionIfNotProduced));
+}
+
+/** Returns the RHI texture from an RDG texture if it exists, or null otherwise. */
 inline FRHITexture* TryGetRHI(FRDGTextureRef Texture)
 {
 	return Texture ? Texture->GetRHI() : nullptr;
 }
 
+/** Returns the pooled render target from an RDG texture if it exists, or null otherwise. */
+UE_DEPRECATED(5.0, "Accessing the underlying pooled render target has been deprecated. Use TryGetRHI() instead.")
 inline IPooledRenderTarget* TryGetPooledRenderTarget(FRDGTextureRef Texture)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return Texture ? Texture->GetPooledRenderTarget() : nullptr;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 inline FRenderTargetBindingSlots GetRenderTargetBindings(ERenderTargetLoadAction ColorLoadAction, TArrayView<FRDGTextureRef> ColorTextures)
@@ -31,6 +65,47 @@ inline FRenderTargetBindingSlots GetRenderTargetBindings(ERenderTargetLoadAction
 	{
 		check(ColorTextures[Index]);
 		BindingSlots[Index] = FRenderTargetBinding(ColorTextures[Index], ColorLoadAction);
+	}
+	return BindingSlots;
+}
+
+struct FTextureRenderTargetBinding
+{
+	FRDGTextureRef Texture;
+	int16 ArraySlice;
+	bool bNeverClear;
+
+	FTextureRenderTargetBinding()
+		: Texture(nullptr)
+		, ArraySlice(-1)
+		, bNeverClear(false)
+	{}
+
+	FTextureRenderTargetBinding(FRDGTextureRef InTexture, bool bInNeverClear)
+		: Texture(InTexture)
+		, ArraySlice(-1)
+		, bNeverClear(bInNeverClear)
+	{}
+
+	FTextureRenderTargetBinding(FRDGTextureRef InTexture, int16 InArraySlice = -1, bool bInNeverClear = false)
+		: Texture(InTexture)
+		, ArraySlice(InArraySlice)
+		, bNeverClear(bInNeverClear)
+	{}
+};
+inline FRenderTargetBindingSlots GetRenderTargetBindings(ERenderTargetLoadAction ColorLoadAction, TArrayView<FTextureRenderTargetBinding> ColorTextures)
+{
+	check(ColorTextures.Num() <= MaxSimultaneousRenderTargets);
+
+	FRenderTargetBindingSlots BindingSlots;
+	for (int32 Index = 0, Count = ColorTextures.Num(); Index < Count; ++Index)
+	{
+		check(ColorTextures[Index].Texture);
+		BindingSlots[Index] = FRenderTargetBinding(ColorTextures[Index].Texture, ColorLoadAction, 0, ColorTextures[Index].ArraySlice);
+		if (ColorLoadAction == ERenderTargetLoadAction::EClear && ColorTextures[Index].bNeverClear)
+		{
+			BindingSlots[Index].SetLoadAction(ERenderTargetLoadAction::ELoad);
+		}
 	}
 	return BindingSlots;
 }
@@ -57,11 +132,10 @@ extern RENDERCORE_API void ClearUnusedGraphResourcesImpl(
 template <typename TShaderClass>
 void ClearUnusedGraphResources(
 	const TShaderRef<TShaderClass>& Shader,
+	const FShaderParametersMetadata* ParametersMetadata,
 	typename TShaderClass::FParameters* InoutParameters,
 	std::initializer_list<FRDGResourceRef> ExcludeList = {})
 {
-	const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
-
 	// Verify the shader have all the parameters it needs. This is done before the
 	// ClearUnusedGraphResourcesImpl() to not mislead user on why some resource are missing
 	// when debugging a validation failure.
@@ -69,6 +143,16 @@ void ClearUnusedGraphResources(
 
 	// Clear the resources the shader won't need.
 	return ClearUnusedGraphResourcesImpl(Shader->Bindings, ParametersMetadata, InoutParameters, ExcludeList);
+}
+
+template <typename TShaderClass>
+void ClearUnusedGraphResources(
+	const TShaderRef<TShaderClass>& Shader,
+	typename TShaderClass::FParameters* InoutParameters,
+	std::initializer_list<FRDGResourceRef> ExcludeList = {})
+{
+	const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+	return ClearUnusedGraphResources(Shader, ParametersMetadata, InoutParameters, MoveTemp(ExcludeList));
 }
 
 template <typename TShaderClassA, typename TShaderClassB, typename TPassParameterStruct>
@@ -102,28 +186,15 @@ void ClearUnusedGraphResources(
 RENDERCORE_API FRDGTextureRef RegisterExternalTextureWithFallback(
 	FRDGBuilder& GraphBuilder,
 	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture,
-	ERenderTargetTexture ExternalTexture = ERenderTargetTexture::ShaderResource,
-	ERenderTargetTexture FallbackTexture = ERenderTargetTexture::ShaderResource);
-
-UE_DEPRECATED(4.26, "RegisterExternalTextureWithFallback no longer takes a Name. It uses name of the external texture instead.")
-inline FRDGTextureRef RegisterExternalTextureWithFallback(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture,
-	const TCHAR* ExternalPooledTextureName)
-{
-	return RegisterExternalTextureWithFallback(GraphBuilder, ExternalPooledTexture, FallbackPooledTexture);
-}
+	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture);
 
 /** Variants of RegisterExternalTexture which will returns null (rather than assert) if the external texture is null. */
 inline FRDGTextureRef TryRegisterExternalTexture(
 	FRDGBuilder& GraphBuilder,
 	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	ERenderTargetTexture RenderTargetTexture = ERenderTargetTexture::ShaderResource,
 	ERDGTextureFlags Flags = ERDGTextureFlags::None)
 {
-	return ExternalPooledTexture ? GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, RenderTargetTexture, Flags) : nullptr;
+	return ExternalPooledTexture ? GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, Flags) : nullptr;
 }
 
 /** Variants of RegisterExternalBuffer which will return null (rather than assert) if the external buffer is null. */
@@ -133,6 +204,16 @@ inline FRDGBufferRef TryRegisterExternalBuffer(
 	ERDGBufferFlags Flags = ERDGBufferFlags::None)
 {
 	return ExternalPooledBuffer ? GraphBuilder.RegisterExternalBuffer(ExternalPooledBuffer, Flags) : nullptr;
+}
+
+inline FRDGTextureRef RegisterExternalTexture(FRDGBuilder& GraphBuilder, FRHITexture* Texture, const TCHAR* NameIfUnregistered)
+{
+	if (FRDGTextureRef FoundTexture = GraphBuilder.FindExternalTexture(Texture))
+	{
+		return FoundTexture;
+	}
+
+	return GraphBuilder.RegisterExternalTexture(CreateRenderTarget(Texture, NameIfUnregistered));
 }
 
 /** Simple pair of RDG textures used for MSAA. */
@@ -145,7 +226,7 @@ struct FRDGTextureMSAA
 		, Resolve(InResolve)
 	{}
 
-	explicit FRDGTextureMSAA(FRDGTextureRef InTexture)
+	FRDGTextureMSAA(FRDGTextureRef InTexture)
 		: Target(InTexture)
 		, Resolve(InTexture)
 	{}
@@ -180,29 +261,6 @@ RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
 	const TCHAR* Name,
 	ETextureCreateFlags ResolveFlagsToAdd = TexCreate_None);
 
-inline FRDGTextureMSAA RegisterExternalTextureMSAA(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
-{
-	return FRDGTextureMSAA(
-		GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, ERenderTargetTexture::Targetable),
-		GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, ERenderTargetTexture::ShaderResource));
-}
-
-inline FRDGTextureMSAA TryRegisterExternalTextureMSAA(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
-{
-	return FRDGTextureMSAA(
-		TryRegisterExternalTexture(GraphBuilder, ExternalPooledTexture, ERenderTargetTexture::Targetable),
-		TryRegisterExternalTexture(GraphBuilder, ExternalPooledTexture, ERenderTargetTexture::ShaderResource));
-}
-
-RENDERCORE_API FRDGTextureMSAA RegisterExternalTextureMSAAWithFallback(
-	FRDGBuilder& GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture);
-
 /** All utils for compute shaders.
  */
 struct RENDERCORE_API FComputeShaderUtils
@@ -210,7 +268,7 @@ struct RENDERCORE_API FComputeShaderUtils
 	/** Ideal size of group size 8x8 to occupy at least an entire wave on GCN, two warp on Nvidia. */
 	static constexpr int32 kGolden2DGroupSize = 8;
 
-	/** Compute the number of group to dispatch. */
+	/** Compute the number of groups to dispatch. */
 	static FIntVector GetGroupCount(const int32 ThreadCount, const int32 GroupSize)
 	{
 		return FIntVector(
@@ -239,17 +297,89 @@ struct RENDERCORE_API FComputeShaderUtils
 			FMath::DivideAndRoundUp(ThreadCount.Y, GroupSize.Y),
 			FMath::DivideAndRoundUp(ThreadCount.Z, GroupSize.Z));
 	}
+	static FIntVector GetGroupCount(const FIntVector& ThreadCount, const int32 GroupSize)
+	{
+		return FIntVector(
+			FMath::DivideAndRoundUp(ThreadCount.X, GroupSize),
+			FMath::DivideAndRoundUp(ThreadCount.Y, GroupSize),
+			FMath::DivideAndRoundUp(ThreadCount.Z, GroupSize));
+	}
+
+
+
+	/**
+	 * Constant stride used when wrapping too large 1D dispatches using GetGroupCountWrapped, selected as 128 appears to be the lowest common denominator 
+	 * for mobile (GLES 3.1). For PC (with ~64k groups / dimension) this yields ~8M groups (500M threads @ group size 64) before even wrapping into Z.
+	 * NOTE: this value must match WRAPPED_GROUP_STRIDE in ComputeShaderUtils.ush
+	 */
+	static constexpr int32 WrappedGroupStride = 128;
+
+	/**
+	 * Wrapping number of groups to Y and Z dimension if X group count overflows GRHIMaxDispatchThreadGroupsPerDimension.
+	 * Calculate the linear group index as (or use GetUnWrappedDispatchGroupId(GroupId) in ComputeShaderUtils.ush):
+	 *  uint LinearGroupId = GroupId.X + (GroupId.Z * WrappedGroupStride + GroupId.Y) * WrappedGroupStride;
+	 * Note that you must use an early out because LinearGroupId may be larger than the ideal due to wrapping.
+	 */
+	static FIntVector GetGroupCountWrapped(const int32 TargetGroupCount)
+	{
+		check(GRHIMaxDispatchThreadGroupsPerDimension.X >= WrappedGroupStride && GRHIMaxDispatchThreadGroupsPerDimension.Y >= WrappedGroupStride);
+
+		FIntVector GroupCount(TargetGroupCount, 1, 1);
+
+		if (GroupCount.X > GRHIMaxDispatchThreadGroupsPerDimension.X)
+		{
+			GroupCount.Y = FMath::DivideAndRoundUp(GroupCount.X, WrappedGroupStride);
+			GroupCount.X = WrappedGroupStride;
+		}
+		if (GroupCount.Y > GRHIMaxDispatchThreadGroupsPerDimension.Y)
+		{
+			GroupCount.Z = FMath::DivideAndRoundUp(GroupCount.Y, WrappedGroupStride);
+			GroupCount.Y = WrappedGroupStride;
+		}
+
+		check(TargetGroupCount <= GroupCount.X * GroupCount.Y * GroupCount.Z);
+
+		return GroupCount;
+	}
+
+	/**
+	 * Compute the number of groups to dispatch and allow wrapping to Y and Z dimension if X group count overflows. 
+	 * Calculate the linear group index as (or use GetUnWrappedDispatchGroupId(GroupId) in ComputeShaderUtils.ush):
+	 *  uint LinearGroupId = GroupId.X + (GroupId.Z * WrappedGroupStride + GroupId.Y) * WrappedGroupStride;
+	 * Note that you must use an early out because LinearGroupId may be larger than the ideal due to wrapping.
+	 */
+	static FIntVector GetGroupCountWrapped(const int32 ThreadCount, const int32 GroupSize)
+	{
+		return GetGroupCountWrapped(FMath::DivideAndRoundUp(ThreadCount, GroupSize));
+	}
 
 
 	/** Dispatch a compute shader to rhi command list with its parameters. */
 	template<typename TShaderClass>
-	static void Dispatch(FRHIComputeCommandList& RHICmdList, const TShaderRef<TShaderClass>& ComputeShader, const typename TShaderClass::FParameters& Parameters, FIntVector GroupCount)
+	static void Dispatch(
+		FRHIComputeCommandList& RHICmdList, 
+		const TShaderRef<TShaderClass>& ComputeShader, 
+		const FShaderParametersMetadata* ParametersMetadata,
+		const typename TShaderClass::FParameters& Parameters,
+		FIntVector GroupCount)
 	{
+		ValidateGroupCount(GroupCount);
 		FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
 		RHICmdList.SetComputeShader(ShaderRHI);
-		SetShaderParameters(RHICmdList, ComputeShader, ShaderRHI, Parameters);
+		SetShaderParameters(RHICmdList, ComputeShader, ShaderRHI, ParametersMetadata, Parameters);
 		RHICmdList.DispatchComputeShader(GroupCount.X, GroupCount.Y, GroupCount.Z);
 		UnsetShaderUAVs(RHICmdList, ComputeShader, ShaderRHI);
+	}
+
+	template<typename TShaderClass>
+	static void Dispatch(
+		FRHIComputeCommandList& RHICmdList,
+		const TShaderRef<TShaderClass>& ComputeShader,
+		const typename TShaderClass::FParameters& Parameters,
+		FIntVector GroupCount)
+	{
+		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+		Dispatch(RHICmdList, ComputeShader, ParametersMetadata, Parameters, GroupCount);
 	}
 	
 	/** Indirect dispatch a compute shader to rhi command list with its parameters. */
@@ -258,9 +388,10 @@ struct RENDERCORE_API FComputeShaderUtils
 		FRHIComputeCommandList& RHICmdList,
 		const TShaderRef<TShaderClass>& ComputeShader,
 		const typename TShaderClass::FParameters& Parameters,
-		FRHIVertexBuffer* IndirectArgsBuffer,
+		FRHIBuffer* IndirectArgsBuffer,
 		uint32 IndirectArgOffset)
 	{
+		ValidateIndirectArgsBuffer(IndirectArgsBuffer->GetSize(), IndirectArgOffset);
 		FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
 		RHICmdList.SetComputeShader(ShaderRHI);
 		SetShaderParameters(RHICmdList, ComputeShader, ShaderRHI, Parameters);
@@ -272,12 +403,13 @@ struct RENDERCORE_API FComputeShaderUtils
 	template<typename TShaderClass>
 	static FORCEINLINE_DEBUGGABLE void DispatchIndirect(
 		FRHIComputeCommandList& RHICmdList,
-		const TShaderClass* ComputeShader,
+		const TShaderRef<TShaderClass>& ComputeShader,
 		const typename TShaderClass::FParameters& Parameters,
 		FRDGBufferRef IndirectArgsBuffer,
 		uint32 IndirectArgOffset)
 	{
-		FRHIComputeShader* ShaderRHI = ComputeShader->GetComputeShader();
+		ValidateIndirectArgsBuffer(IndirectArgsBuffer, IndirectArgOffset);
+		FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
 		RHICmdList.SetComputeShader(ShaderRHI);
 		SetShaderParameters(RHICmdList, ComputeShader, ShaderRHI, Parameters);
 		RHICmdList.DispatchIndirectComputeShader(IndirectArgsBuffer->GetIndirectRHICallBuffer(), IndirectArgOffset);
@@ -291,6 +423,7 @@ struct RENDERCORE_API FComputeShaderUtils
 		FRDGEventName&& PassName,
 		ERDGPassFlags PassFlags,
 		const TShaderRef<TShaderClass>& ComputeShader,
+		const FShaderParametersMetadata* ParametersMetadata,
 		typename TShaderClass::FParameters* Parameters,
 		FIntVector GroupCount)
 	{
@@ -298,16 +431,66 @@ struct RENDERCORE_API FComputeShaderUtils
 			 EnumHasAnyFlags(PassFlags, ERDGPassFlags::Compute | ERDGPassFlags::AsyncCompute) &&
 			!EnumHasAnyFlags(PassFlags, ERDGPassFlags::Copy | ERDGPassFlags::Raster), TEXT("AddPass only supports 'Compute' or 'AsyncCompute'."));
 
-		ClearUnusedGraphResources(ComputeShader, Parameters);
+		ValidateGroupCount(GroupCount);
+		ClearUnusedGraphResources(ComputeShader, ParametersMetadata, Parameters);
 
 		GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
+			ParametersMetadata,
 			Parameters,
 			PassFlags,
-			[Parameters, ComputeShader, GroupCount](FRHIComputeCommandList& RHICmdList)
+			[ParametersMetadata, Parameters, ComputeShader, GroupCount](FRHIComputeCommandList& RHICmdList)
 		{
-			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, *Parameters, GroupCount);
+			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, ParametersMetadata, *Parameters, GroupCount);
 		});
+	}
+
+	/** Dispatch a compute shader to render graph builder with its parameters. GroupCount is supplied through a callback.
+	 *  This allows adding a dispatch with unknown GroupCount but the value must be ready before the pass is executed.
+	 */
+	template<typename TShaderClass>
+	static void AddPass(
+		FRDGBuilder& GraphBuilder,
+		FRDGEventName&& PassName,
+		ERDGPassFlags PassFlags,
+		const TShaderRef<TShaderClass>& ComputeShader,
+		const FShaderParametersMetadata* ParametersMetadata,
+		typename TShaderClass::FParameters* Parameters,
+		FRDGDispatchGroupCountCallback&& GroupCountCallback)
+	{
+		checkf(
+			EnumHasAnyFlags(PassFlags, ERDGPassFlags::Compute | ERDGPassFlags::AsyncCompute) &&
+			!EnumHasAnyFlags(PassFlags, ERDGPassFlags::Copy | ERDGPassFlags::Raster), TEXT("AddPass only supports 'Compute' or 'AsyncCompute'."));
+
+		ClearUnusedGraphResources(ComputeShader, ParametersMetadata, Parameters);
+
+		GraphBuilder.AddPass(
+			Forward<FRDGEventName>(PassName),
+			ParametersMetadata,
+			Parameters,
+			PassFlags,
+			[ParametersMetadata, Parameters, ComputeShader, GroupCountCallback = MoveTemp(GroupCountCallback)](FRHIComputeCommandList& RHICmdList)
+			{
+				const FIntVector GroupCount = GroupCountCallback();
+				if (GroupCount.X > 0 && GroupCount.Y > 0 && GroupCount.Z > 0)
+				{
+					ValidateGroupCount(GroupCount);
+					FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, ParametersMetadata, *Parameters, GroupCount);
+				}
+			});
+	}
+
+	template<typename TShaderClass>
+	static void AddPass(
+		FRDGBuilder& GraphBuilder,
+		FRDGEventName&& PassName,
+		ERDGPassFlags PassFlags,
+		const TShaderRef<TShaderClass>& ComputeShader,
+		typename TShaderClass::FParameters* Parameters,
+		FIntVector GroupCount)
+	{
+		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), PassFlags, ComputeShader, ParametersMetadata, Parameters, GroupCount);
 	}
 
 	template <typename TShaderClass>
@@ -318,7 +501,20 @@ struct RENDERCORE_API FComputeShaderUtils
 		typename TShaderClass::FParameters* Parameters,
 		FIntVector GroupCount)
 	{
-		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, Parameters, GroupCount);
+		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, GroupCount);
+	}
+
+	template <typename TShaderClass>
+	static FORCEINLINE void AddPass(
+		FRDGBuilder& GraphBuilder,
+		FRDGEventName&& PassName,
+		const TShaderRef<TShaderClass>& ComputeShader,
+		typename TShaderClass::FParameters* Parameters,
+		FRDGDispatchGroupCountCallback&& GroupCountCallback)
+	{
+		const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+		AddPass(GraphBuilder, Forward<FRDGEventName>(PassName), ERDGPassFlags::Compute, ComputeShader, ParametersMetadata, Parameters, MoveTemp(GroupCountCallback));
 	}
 
 	/** Dispatch a compute shader to render graph builder with its parameters. */
@@ -335,6 +531,7 @@ struct RENDERCORE_API FComputeShaderUtils
 		checkf(PassFlags == ERDGPassFlags::Compute || PassFlags == ERDGPassFlags::AsyncCompute, TEXT("AddPass only supports 'Compute' or 'AsyncCompute'."));
 		checkf(IndirectArgsBuffer->Desc.Usage & BUF_DrawIndirect, TEXT("The buffer %s was not flagged for indirect draw parameters"), IndirectArgsBuffer->Name);
 
+		ValidateIndirectArgsBuffer(IndirectArgsBuffer, IndirectArgsOffset);
 		ClearUnusedGraphResources(ComputeShader, Parameters, { IndirectArgsBuffer });
 
 		GraphBuilder.AddPass(
@@ -364,7 +561,37 @@ struct RENDERCORE_API FComputeShaderUtils
 	}
 
 	static void ClearUAV(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferUAVRef UAV, uint32 ClearValue);
-	static void ClearUAV(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferUAVRef UAV, FVector4 ClearValue);
+	static void ClearUAV(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferUAVRef UAV, FVector4f ClearValue);
+
+	static inline void ValidateGroupCount(const FIntVector& GroupCount)
+	{
+		ensure(GroupCount.X <= GRHIMaxDispatchThreadGroupsPerDimension.X);
+		ensure(GroupCount.Y <= GRHIMaxDispatchThreadGroupsPerDimension.Y);
+		ensure(GroupCount.Z <= GRHIMaxDispatchThreadGroupsPerDimension.Z);
+	}
+
+	static inline void ValidateIndirectArgsBuffer(uint32 IndirectArgsBufferSize, uint32 IndirectArgOffset)
+	{
+		checkf((IndirectArgOffset % 4) == 0, TEXT("IndirectArgOffset for compute shader indirect dispatch needs to be a multiple of 4."));
+		checkf(
+			(IndirectArgOffset + sizeof(FRHIDispatchIndirectParameters)) <= IndirectArgsBufferSize,
+			TEXT("Indirect parameters buffer for compute shader indirect dispatch at byte offset %d doesn't have anought room for FRHIDispatchIndirectParameters."),
+			IndirectArgOffset);
+	}
+
+	static inline void ValidateIndirectArgsBuffer(FRDGBufferRef IndirectArgsBuffer, uint32 IndirectArgOffset)
+	{
+		checkf(IndirectArgsBuffer->Desc.UnderlyingType == FRDGBufferDesc::EUnderlyingType::VertexBuffer, TEXT("The buffer %s needs to be a vertex buffer to be used as an indirect dispatch parameters"), IndirectArgsBuffer->Name);
+		checkf(IndirectArgsBuffer->Desc.Usage & BUF_DrawIndirect, TEXT("The buffer %s for indirect dispatch parameters was not flagged with BUF_DrawIndirect"), IndirectArgsBuffer->Name);
+		ValidateIndirectArgsBuffer(IndirectArgsBuffer->Desc.GetTotalNumBytes(), IndirectArgOffset);
+	}
+
+	/**
+	 * Create and set up an 1D indirect dispatch argument from some GPU-side integer in a buffer (InputCountBuffer).
+	 * 	Sets up a group count as (InputCountBuffer[InputCountOffset] * Multiplier + Divisor - 1U) / Divisor;
+	 *  Commonly use Divisor <=> number of threads per group.
+	 */
+	static FRDGBufferRef AddIndirectArgsSetupCsPass1D(FRDGBuilder& GraphBuilder, FRDGBufferRef& InputCountBuffer, const TCHAR* OutputBufferName, uint32 Divisor, uint32 InputCountOffset = 0U, uint32 Multiplier = 1U);
 };
 
 /** Adds a render graph pass to copy a region from one texture to another. Uses RHICopyTexture under the hood.
@@ -413,9 +640,22 @@ RENDERCORE_API void AddCopyToResolveTargetPass(
 
 /** Adds a render graph pass to clear a texture or buffer UAV with a single typed value. */
 RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGBufferUAVRef BufferUAV, uint32 Value);
+
 RENDERCORE_API void AddClearUAVFloatPass(FRDGBuilder& GraphBuilder, FRDGBufferUAVRef BufferUAV, float Value);
 
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, float ClearValue);
+
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, uint32 ClearValue);
+
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const FIntPoint& ClearValue);
+
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const FVector2D& ClearValue);
+
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const FVector& ClearValue);
+
 RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const FUintVector4& ClearValues);
+
+RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const FVector4& ClearValues);
 
 RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const float(&ClearValues)[4]);
 
@@ -426,14 +666,36 @@ RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef
 /** Clears parts of UAV specified by an array of screen rects. If no rects are specific, then it falls back to a standard UAV clear. */
 RENDERCORE_API void AddClearUAVPass(FRDGBuilder& GraphBuilder, FRDGTextureUAVRef TextureUAV, const uint32(&ClearValues)[4], FRDGBufferSRVRef RectMinMaxBufferSRV, uint32 NumRects);
 
-/** Adds a render graph pass to clear a render target to its clear value. */
+/** Adds a render graph pass to clear a render target to its clear value (single mip, single slice) */
 RENDERCORE_API void AddClearRenderTargetPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture);
 
-/** Adds a render graph pass to clear a render target. Uses render pass clear actions if the clear color matches the fast clear color. */
+/** Adds a render graph pass to clear a render target (single mip, single slice). Uses render pass clear actions if the clear color matches the fast clear color. */
 RENDERCORE_API void AddClearRenderTargetPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, const FLinearColor& ClearColor);
 
-/** Adds a render graph pass to clear a render target. Draws a quad to the requested viewport. */
+/** Adds a render graph pass to clear a part of a render target (single mip, single slice). Draws a quad to the requested viewport. */
 RENDERCORE_API void AddClearRenderTargetPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, const FLinearColor& ClearColor, FIntRect Viewport);
+
+struct FRDGTextureClearInfo
+{
+	FRDGTextureClearInfo() = default;
+
+	// Optional : specifies the area of the texture to clear (draws a quad to the requested viewport). If zero (and clear color is not passed or matches the fast clear color), the clear will be done with render pass clear actions :
+	FIntRect Viewport;
+
+	// Optional : specifies the clear color. If not specified or if the clear color matches the fast clear color (and Viewport is zero), the clear will be done with render pass clear actions :
+	TOptional<FLinearColor> ClearColor;
+
+	// For texture arrays, specifies which slice(s) to clear
+	uint32 FirstSliceIndex = 0;
+	uint32 NumSlices = 1;
+
+	// Specifies which mip(s) to clear
+	uint32 FirstMipIndex = 0;
+	uint32 NumMips = 1;
+};
+
+/** Adds a render graph pass to clear a render target to its clear value. */
+RENDERCORE_API void AddClearRenderTargetPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, const FRDGTextureClearInfo& TextureClearInfo);
 
 /** Adds a render graph pass to clear a depth stencil target. Prefer to use clear actions if possible. */
 RENDERCORE_API void AddClearDepthStencilPass(
@@ -444,8 +706,21 @@ RENDERCORE_API void AddClearDepthStencilPass(
 	bool bClearStencil,
 	uint8 Stencil);
 
+/** Adds a render graph pass to clear a depth stencil target to its optimized clear value using a raster pass. */
+RENDERCORE_API void AddClearDepthStencilPass(
+	FRDGBuilder& GraphBuilder,
+	FRDGTextureRef Texture,
+	ERenderTargetLoadAction DepthLoadAction = ERenderTargetLoadAction::EClear,
+	ERenderTargetLoadAction StencilLoadAction = ERenderTargetLoadAction::EClear);
+
 /** Adds a render graph pass to clear the stencil portion of a depth / stencil target to its fast clear value. */
 RENDERCORE_API void AddClearStencilPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture);
+
+/** Adds a render graph pass to resummarize the htile plane. */
+RENDERCORE_API void AddResummarizeHTilePass(FRDGBuilder& GraphBuilder, FRDGTextureRef DepthTexture);
+
+/** Adds a render graph pass to copy SrcBuffer content into DstBuffer. */
+RENDERCORE_API void AddCopyBufferPass(FRDGBuilder& GraphBuilder, FRDGBufferRef DstBuffer, FRDGBufferRef SrcBuffer);
 
 /** Adds a pass to readback contents of an RDG texture. */
 RENDERCORE_API void AddEnqueueCopyPass(FRDGBuilder& GraphBuilder, FRHIGPUTextureReadback* Readback, FRDGTextureRef SourceTexture, FResolveRect Rect = FResolveRect());
@@ -453,21 +728,31 @@ RENDERCORE_API void AddEnqueueCopyPass(FRDGBuilder& GraphBuilder, FRHIGPUTexture
 /** Adds a pass to readback contents of an RDG buffer. */
 RENDERCORE_API void AddEnqueueCopyPass(FRDGBuilder& GraphBuilder, FRHIGPUBufferReadback* Readback, FRDGBufferRef SourceBuffer, uint32 NumBytes);
 
-enum class ERDGInitialDataFlags : uint8
+UE_DEPRECATED(5.0, "Please use GraphBuilder.QueueBufferUpload to perform an upload.")
+inline void AddBufferUploadPass(
+	FRDGBuilder& GraphBuilder,
+	FRDGBufferRef Buffer,
+	const void* InitialData,
+	uint64 InitialDataSize,
+	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None)
 {
-	/** Specifies the default behavior, which is to make a copy of the initial data for replay when
-	 *  the graph is executed. The user does not need to preserve lifetime of the data pointer.
-	 */
-	None = 0,
+	GraphBuilder.QueueBufferUpload(Buffer, InitialData, InitialDataSize, InitialDataFlags);
+}
 
-	/** Specifies that the user will maintain ownership of the data until the graph is executed. The
-	 *  upload pass will only use a reference to store the data. Use caution with this flag since graph
-	 *  execution is deferred! Useful to avoid the copy if the initial data lifetime is guaranteed to
-	 *  outlive the graph.
-	 */
-	NoCopy = 0x1
+/** Helper class to allocate data from a GraphBuilder in order to upload said data to an RDG resource.
+*   Allocating from the GraphBuilder makes it so we don't have to copy the data before deferring the upload.
+*/
+template<typename InElementType>
+struct FRDGUploadData : public TArrayView<InElementType, int32>
+{
+	FRDGUploadData() = delete;
+	FRDGUploadData(FRDGBuilder& GraphBuilder, uint32 InCount)
+		: TArrayView<InElementType, int32>(GraphBuilder.AllocPODArray<InElementType>(InCount), InCount)
+	{
+	}
+
+	FORCEINLINE int32 GetTotalSize() const { return this->Num() * this->GetTypeSize(); }
 };
-ENUM_CLASS_FLAGS(ERDGInitialDataFlags)
 
 /** Creates a structured buffer with initial data by creating an upload pass. */
 RENDERCORE_API FRDGBufferRef CreateStructuredBuffer(
@@ -478,6 +763,141 @@ RENDERCORE_API FRDGBufferRef CreateStructuredBuffer(
 	const void* InitialData,
 	uint64 InitialDataSize,
 	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None);
+
+/** A variant where NumElements, InitialData, and InitialDataSize are supplied through callbacks. This allows creating a buffer with
+ *  information unknown at creation time. Though, data must be ready before the most recent RDG pass that references the buffer
+ *  is executed.
+ */
+RENDERCORE_API FRDGBufferRef CreateStructuredBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	uint32 BytesPerElement,
+	FRDGBufferNumElementsCallback&& NumElementsCallback,
+	FRDGBufferInitialDataCallback&& InitialDataCallback,
+	FRDGBufferInitialDataSizeCallback&& InitialDataSizeCallback);
+
+/**
+ * Helper to create a structured buffer with initial data from a TArray.
+ */
+template <typename ElementType, typename AllocatorType>
+FORCEINLINE FRDGBufferRef CreateStructuredBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	const TArray<ElementType, AllocatorType>& InitialData,
+	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None)
+{
+	static const ElementType DummyElement = ElementType();
+	if (InitialData.Num() == 0)
+	{
+		return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), 1, &DummyElement, InitialData.GetTypeSize(), ERDGInitialDataFlags::NoCopy);
+	}
+	return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), InitialData.Num(), InitialData.GetData(), InitialData.Num() * InitialData.GetTypeSize(), InitialDataFlags);
+}
+
+/**
+ * Helper to create a structured buffer with initial data from a TConstArrayView.
+ */
+template <typename ElementType>
+FORCEINLINE FRDGBufferRef CreateStructuredBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	TConstArrayView<ElementType> InitialData,
+	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None)
+{
+	static const ElementType DummyElement = ElementType();
+	if (InitialData.Num() == 0)
+	{
+		return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), 1, &DummyElement, InitialData.GetTypeSize(), ERDGInitialDataFlags::NoCopy);
+	}
+	return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), InitialData.Num(), InitialData.GetData(), InitialData.Num() * InitialData.GetTypeSize(), InitialDataFlags);
+}
+
+/** A variant where the TArray is supplied through callbacks. This allows creating a buffer with
+ *  information unknown at creation time. Though, data must be ready before the most recent RDG pass that references the buffer
+ *  is executed.
+ */
+template <typename ArrayType>
+FORCEINLINE FRDGBufferRef CreateStructuredBuffer_Impl(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	TRDGBufferArrayCallback<ArrayType>&& ArrayCallback)
+{
+	return CreateStructuredBuffer(GraphBuilder, Name, sizeof(std::remove_reference_t<ArrayType>::ElementType),
+		/*NumElementsCallback = */[ArrayCallback]() { return ArrayCallback().Num(); },
+		/*InitialDataCallback = */[ArrayCallback]() { return ArrayCallback().GetData(); },
+		/*InitialDataSizeCallback = */[ArrayCallback]() { return ArrayCallback().Num() * ArrayCallback().GetTypeSize(); });
+}
+
+/** Same as the previous function but where the type of the array is automatically inferred, so we can do : 
+ *  TArray<FSomeType> Array;
+ *  CreateStructuredBuffer(..., [&]() -> auto&{ return Array; });
+ */
+template <typename GetArrayRefCallback, typename Type = TInvokeResult_T<GetArrayRefCallback>>
+FORCEINLINE FRDGBufferRef CreateStructuredBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	GetArrayRefCallback&& ArrayCallback)
+{
+	return CreateStructuredBuffer_Impl<Type>(GraphBuilder, Name, MoveTemp(ArrayCallback));
+}
+
+template <typename ElementType>
+FORCEINLINE FRDGBufferRef CreateStructuredBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	const FRDGUploadData<ElementType>& InitialData)
+{
+	static const ElementType DummyElement = ElementType();
+	if (InitialData.Num() == 0)
+	{
+		return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), 1, &DummyElement, InitialData.GetTypeSize(), ERDGInitialDataFlags::NoCopy);
+	}
+	return CreateStructuredBuffer(GraphBuilder, Name, InitialData.GetTypeSize(), InitialData.Num(), InitialData.GetData(), InitialData.GetTotalSize(), ERDGInitialDataFlags::NoCopy);
+}
+
+RENDERCORE_API FRDGBufferRef CreateUploadBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	uint32 BytesPerElement,
+	uint32 NumElements,
+	const void* InitialData,
+	uint64 InitialDataSize,
+	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None);
+
+template <typename ElementType>
+FORCEINLINE FRDGBufferRef CreateUploadBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	uint32 BytesPerElement,
+	uint32 NumElements,
+	const FRDGUploadData<ElementType>& InitialData)
+{
+	return CreateUploadBuffer(GraphBuilder, Name, BytesPerElement, NumElements, InitialData.GetData(), InitialData.GetTotalSize(), ERDGInitialDataFlags::NoCopy);
+}
+
+template <typename ElementType>
+FORCEINLINE FRDGBufferRef CreateUploadBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	const FRDGUploadData<ElementType>& InitialData)
+{
+	return CreateUploadBuffer(GraphBuilder, Name, sizeof(ElementType), InitialData.Num(), InitialData);
+}
+
+template <typename ElementType>
+FORCEINLINE FRDGBufferRef CreateUploadBuffer(
+	FRDGBuilder& GraphBuilder,
+	const TCHAR* Name,
+	TConstArrayView<ElementType> InitialData,
+	ERDGInitialDataFlags InitialDataFlags = ERDGInitialDataFlags::None)
+{
+	static const ElementType DummyElement = ElementType();
+	if (InitialData.Num() == 0)
+	{
+		return CreateUploadBuffer(GraphBuilder, Name, sizeof(ElementType), 1, &DummyElement, sizeof(ElementType), ERDGInitialDataFlags::NoCopy);
+	}
+	return CreateUploadBuffer(GraphBuilder, Name, sizeof(ElementType), InitialData.Num(), InitialData.GetData(), sizeof(ElementType) * InitialData.Num(), InitialDataFlags);
+}
 
 /** Creates a vertex buffer with initial data by creating an upload pass. */
 RENDERCORE_API FRDGBufferRef CreateVertexBuffer(
@@ -496,21 +916,10 @@ FORCEINLINE void AddPass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, Execut
 }
 
 template <typename ExecuteLambdaType>
+UE_DEPRECATED(5.0, "AddPass without an RDG_EVENT_NAME is deprecated. Use the named version instead.")
 FORCEINLINE void AddPass(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
 {
 	AddPass(GraphBuilder, {}, MoveTemp(ExecuteLambda));
-}
-
-template <typename ExecuteLambdaType>
-FORCEINLINE void AddUntrackedAccessPass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, ExecuteLambdaType&& ExecuteLambda)
-{
-	GraphBuilder.AddPass(MoveTemp(Name), ERDGPassFlags::UntrackedAccess, MoveTemp(ExecuteLambda));
-}
-
-template <typename ExecuteLambdaType>
-FORCEINLINE void AddUntrackedAccessPass(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
-{
-	AddUntrackedAccessPass(GraphBuilder, {}, MoveTemp(ExecuteLambda));
 }
 
 template <typename ExecuteLambdaType>
@@ -522,84 +931,83 @@ FORCEINLINE void AddPassIfDebug(FRDGBuilder& GraphBuilder, FRDGEventName&& Name,
 }
 
 template <typename ExecuteLambdaType>
+UE_DEPRECATED(5.0, "AddPassIfDebug without an RDG_EVENT_NAME is deprecated. Use the named version instead.")
 FORCEINLINE void AddPassIfDebug(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
 {
 	AddPassIfDebug(GraphBuilder, {}, MoveTemp(ExecuteLambda));
 }
 
-template <typename ExecuteLambdaType>
-FORCEINLINE void AddUntrackedAccessPassIfDebug(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, ExecuteLambdaType&& ExecuteLambda)
-{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	AddUntrackedAccessPass(GraphBuilder, MoveTemp(Name), MoveTemp(ExecuteLambda));
-#endif
-}
-
-template <typename ExecuteLambdaType>
-FORCEINLINE void AddUntrackedAccessPassIfDebug(FRDGBuilder& GraphBuilder, ExecuteLambdaType&& ExecuteLambda)
-{
-	AddUntrackedAccessPassIfDebug(GraphBuilder, {}, MoveTemp(ExecuteLambda));
-}
-
+UE_DEPRECATED(5.0, "AddSetCurrentStatPass is deprecated. Use GraphBuilder.SetCommandListStat instead.")
 FORCEINLINE void AddSetCurrentStatPass(FRDGBuilder& GraphBuilder, TStatId StatId)
 {
-	AddPassIfDebug(GraphBuilder, [StatId](FRHICommandListImmediate& RHICmdList)
+	GraphBuilder.SetCommandListStat(StatId);
+}
+
+FORCEINLINE void AddDispatchToRHIThreadPass(FRDGBuilder& GraphBuilder)
+{
+	AddPass(GraphBuilder, RDG_EVENT_NAME("DispatchToRHI"), [](FRHICommandListImmediate& RHICmdList)
 	{
-		RHICmdList.SetCurrentStat(StatId);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 	});
 }
 
+UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
 FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder)
 {
-	AddPass(GraphBuilder, [](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.BeginUAVOverlap();
 	});
 }
 
+UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
 FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder)
 {
-	AddPass(GraphBuilder, [](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.EndUAVOverlap();
 	});
 }
 
+UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
 FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder, FRHIUnorderedAccessView* UAV)
 {
-	AddPass(GraphBuilder, [UAV](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [UAV](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.BeginUAVOverlap(UAV);
 	});
 }
 
+UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
 FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder, FRHIUnorderedAccessView* UAV)
 {
-	AddPass(GraphBuilder, [UAV](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [UAV](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.EndUAVOverlap(UAV);
 	});
 }
 
+UE_DEPRECATED(5.0, "AddBeginUAVOverlapPass is deprecated.")
 FORCEINLINE void AddBeginUAVOverlapPass(FRDGBuilder& GraphBuilder, TArrayView<FRHIUnorderedAccessView*> UAVs)
 {
 	uint32 AllocSize = UAVs.Num() * sizeof(FRHIUnorderedAccessView*);
 	FRHIUnorderedAccessView** LocalUAVs = (FRHIUnorderedAccessView**)GraphBuilder.Alloc(AllocSize, alignof(FRHIUnorderedAccessView*));
 	FMemory::Memcpy(LocalUAVs, UAVs.GetData(), AllocSize);
 	TArrayView<FRHIUnorderedAccessView*> LocalView(LocalUAVs, UAVs.Num());
-	AddPass(GraphBuilder, [LocalView](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("BeginUAVOverlap"), [LocalView](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.BeginUAVOverlap(LocalView);
 	});
 }
 
+UE_DEPRECATED(5.0, "AddEndUAVOverlapPass is deprecated.")
 FORCEINLINE void AddEndUAVOverlapPass(FRDGBuilder& GraphBuilder, TArrayView<FRHIUnorderedAccessView*> UAVs)
 {
 	uint32 AllocSize = UAVs.Num() * sizeof(FRHIUnorderedAccessView*);
 	FRHIUnorderedAccessView** LocalUAVs = (FRHIUnorderedAccessView**)GraphBuilder.Alloc(AllocSize, alignof(FRHIUnorderedAccessView*));
 	FMemory::Memcpy(LocalUAVs, UAVs.GetData(), AllocSize);
 	TArrayView<FRHIUnorderedAccessView*> LocalView(LocalUAVs, UAVs.Num());
-	AddPass(GraphBuilder, [LocalView](FRHICommandListImmediate& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("EndUAVOverlap"), [LocalView](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.EndUAVOverlap(LocalView);
 	});
@@ -617,55 +1025,109 @@ void AddReadbackTexturePass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, FRD
 	GraphBuilder.AddPass(MoveTemp(Name), PassParameters, ERDGPassFlags::Readback, MoveTemp(ExecuteLambda));
 }
 
-// Forces the graph to make the resource immediately available as if it were registered. Returns the pooled resource.
+BEGIN_SHADER_PARAMETER_STRUCT(FReadbackBufferParameters, )
+	RDG_BUFFER_ACCESS(Buffer, ERHIAccess::CopySrc)
+END_SHADER_PARAMETER_STRUCT()
 
-inline void ConvertToExternalBuffer(FRDGBuilder& GraphBuilder, FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>& OutPooledBuffer)
+template <typename ExecuteLambdaType>
+void AddReadbackBufferPass(FRDGBuilder& GraphBuilder, FRDGEventName&& Name, FRDGBufferRef Buffer, ExecuteLambdaType&& ExecuteLambda)
 {
-	check(Buffer);
-	GraphBuilder.PreallocateBuffer(Buffer);
-	OutPooledBuffer = GraphBuilder.GetPooledBuffer(Buffer);
+	auto* PassParameters = GraphBuilder.AllocParameters<FReadbackBufferParameters>();
+	PassParameters->Buffer = Buffer;
+	GraphBuilder.AddPass(MoveTemp(Name), PassParameters, ERDGPassFlags::Readback, MoveTemp(ExecuteLambda));
 }
 
-inline void ConvertToExternalTexture(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, TRefCountPtr<IPooledRenderTarget>& OutPooledRenderTarget)
+/** Batches up RDG resource access finalizations and submits them all at once to RDG. */
+class FRDGResourceAccessFinalizer
 {
-	check(Texture);
-	GraphBuilder.PreallocateTexture(Texture);
-	OutPooledRenderTarget = GraphBuilder.GetPooledTexture(Texture);
+public:
+	FRDGResourceAccessFinalizer() = default;
+	~FRDGResourceAccessFinalizer()
+	{
+		checkf(IsEmpty(), TEXT("Finalize must be called before destruction."));
+	}
+
+	void Reserve(uint32 TextureCount, uint32 BufferCount)
+	{
+		Textures.Reserve(TextureCount);
+		Buffers.Reserve(BufferCount);
+	}
+
+	void AddTexture(FRDGTextureRef Texture, ERHIAccess Access)
+	{
+		if (Texture)
+		{
+			checkf(IsValidAccess(Access) && Access != ERHIAccess::Unknown, TEXT("Attempted to finalize texture %s with an invalid access %s."), Texture->Name, *GetRHIAccessName(Access));
+			Textures.Emplace(Texture, Access);
+		}
+	}
+
+	void AddBuffer(FRDGBufferRef Buffer, ERHIAccess Access)
+	{
+		if (Buffer)
+		{
+			checkf(IsValidAccess(Access) && Access != ERHIAccess::Unknown, TEXT("Attempted to finalize buffer %s with an invalid access %s."), Buffer->Name, *GetRHIAccessName(Access));
+			Buffers.Emplace(Buffer, Access);
+		}
+	}
+
+	void Finalize(FRDGBuilder& GraphBuilder)
+	{
+		if (!IsEmpty())
+		{
+			GraphBuilder.FinalizeResourceAccess(MoveTemp(Textures), MoveTemp(Buffers));
+		}
+	}
+
+	bool IsEmpty() const
+	{
+		return Textures.IsEmpty() && Buffers.IsEmpty();
+	}
+
+private:
+	FRDGTextureAccessArray Textures;
+	FRDGBufferAccessArray Buffers;
+};
+
+inline const TRefCountPtr<IPooledRenderTarget>& ConvertToFinalizedExternalTexture(
+	FRDGBuilder& GraphBuilder,
+	FRDGResourceAccessFinalizer& ResourceAccessFinalizer,
+	FRDGTextureRef Texture,
+	ERHIAccess AccessFinal = ERHIAccess::SRVMask)
+{
+	ResourceAccessFinalizer.AddTexture(Texture, AccessFinal);
+	return GraphBuilder.ConvertToExternalTexture(Texture);
 }
 
-RENDERCORE_API void AddAsyncComputeSRVTransitionHackPass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture);
+inline const TRefCountPtr<FRDGPooledBuffer>& ConvertToFinalizedExternalBuffer(
+	FRDGBuilder& GraphBuilder,
+	FRDGResourceAccessFinalizer& ResourceAccessFinalizer,
+	FRDGBufferRef Buffer,
+	ERHIAccess AccessFinal = ERHIAccess::SRVMask)
+{
+	ResourceAccessFinalizer.AddBuffer(Buffer, AccessFinal);
+	return GraphBuilder.ConvertToExternalBuffer(Buffer);
+}
 
-// Forces a resource into its final state early in the graph. Useful if an external texture is produced by the graph but consumed
-// later in the graph without being registered. For example, if the resource is read-only embedded in a non-RDG uniform buffer and
-// or registration with RDG is too expensive or difficult.
-RENDERCORE_API void ConvertToUntrackedTexture(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, ERHIAccess AccessFinal);
-RENDERCORE_API void ConvertToUntrackedBuffer(FRDGBuilder& GraphBuilder, FRDGBufferRef Buffer, ERHIAccess AccessFinal);
-
-inline void ConvertToUntrackedExternalTexture(
+inline const TRefCountPtr<IPooledRenderTarget>& ConvertToFinalizedExternalTexture(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureRef Texture,
-	TRefCountPtr<IPooledRenderTarget>& OutPooledRenderTarget,
-	ERHIAccess AccessFinal)
+	ERHIAccess AccessFinal = ERHIAccess::SRVMask)
 {
-	ConvertToExternalTexture(GraphBuilder, Texture, OutPooledRenderTarget);
-	ConvertToUntrackedTexture(GraphBuilder, Texture, AccessFinal);
+	const TRefCountPtr<IPooledRenderTarget>& PooledTexture = GraphBuilder.ConvertToExternalTexture(Texture);
+	GraphBuilder.FinalizeTextureAccess(Texture, AccessFinal);
+	return PooledTexture;
 }
 
-inline void ConvertToUntrackedExternalBuffer(
+inline const TRefCountPtr<FRDGPooledBuffer>& ConvertToFinalizedExternalBuffer(
 	FRDGBuilder& GraphBuilder,
 	FRDGBufferRef Buffer,
-	TRefCountPtr<FRDGPooledBuffer>& OutPooledBuffer,
 	ERHIAccess AccessFinal)
 {
-	ConvertToExternalBuffer(GraphBuilder, Buffer, OutPooledBuffer);
-	ConvertToUntrackedBuffer(GraphBuilder, Buffer, AccessFinal);
+	const TRefCountPtr<FRDGPooledBuffer>& PooledBuffer = GraphBuilder.ConvertToExternalBuffer(Buffer);
+	GraphBuilder.FinalizeBufferAccess(Buffer, AccessFinal);
+	return PooledBuffer;
 }
-
-// Used to help port code over to RDG. If the graph builder is null, creates a passthrough RDG texture instead. Will be removed once port is complete.
-RENDERCORE_API FRDGTextureRef RegisterExternalOrPassthroughTexture(
-	FRDGBuilder* GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& PooledRenderTarget,
-	ERDGTextureFlags Flags = ERDGTextureFlags::None);
 
 /** Scope used to wait for outstanding tasks when the scope destructor is called. Used for command list recording tasks. */
 class FRDGWaitForTasksScope
@@ -685,3 +1147,104 @@ private:
 
 #define RDG_WAIT_FOR_TASKS_CONDITIONAL(GraphBuilder, bCondition) FRDGWaitForTasksScope PREPROCESSOR_JOIN(RDGWaitForTasksScope, __LINE__){ GraphBuilder, bCondition }
 #define RDG_WAIT_FOR_TASKS(GraphBuilder) RDG_WAIT_FOR_TASKS_CONDITIONAL(GraphBuilder, true)
+
+// Allocates an RDG pooled buffer instance. Attempts to reuse allocation if Out has a value. Returns true a new instance was allocated, or false if the existing allocation was reused.
+RENDERCORE_API bool GetPooledFreeBuffer(
+	FRHICommandList& RHICmdList,
+	const FRDGBufferDesc& Desc,
+	TRefCountPtr<FRDGPooledBuffer>& Out,
+	const TCHAR* InDebugName);
+
+RENDERCORE_API bool AllocatePooledTexture(
+	const FRDGTextureDesc& Desc,
+	TRefCountPtr<IPooledRenderTarget>& Out,
+	const TCHAR* Name);
+
+RENDERCORE_API TRefCountPtr<IPooledRenderTarget> AllocatePooledTexture(const FRDGTextureDesc& Desc, const TCHAR* Name);
+
+//////////////////////////////////////////////////////////////////////////
+//! Deprecated Functions
+
+UE_DEPRECATED(5.0, "ConvertToExternalBuffer has been refactored to FRDGBuilder::ConvertToExternalBuffer.")
+inline void ConvertToExternalBuffer(FRDGBuilder& GraphBuilder, FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>& OutPooledBuffer)
+{
+	OutPooledBuffer = GraphBuilder.ConvertToExternalBuffer(Buffer);
+}
+
+UE_DEPRECATED(5.0, "ConvertToExternalTexture has been refactored to FRDGBuilder::ConvertToExternalTexture.")
+inline void ConvertToExternalTexture(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, TRefCountPtr<IPooledRenderTarget>& OutPooledRenderTarget)
+{
+	OutPooledRenderTarget = GraphBuilder.ConvertToExternalTexture(Texture);
+}
+
+UE_DEPRECATED(5.0, "ConvertToUntrackedExternalTexture has been refactored to ConvertToFinalizedExternalTexture.")
+inline void ConvertToUntrackedExternalTexture(
+	FRDGBuilder& GraphBuilder,
+	FRDGTextureRef Texture,
+	TRefCountPtr<IPooledRenderTarget>& OutPooledRenderTarget,
+	ERHIAccess AccessFinal)
+{
+	OutPooledRenderTarget = ConvertToFinalizedExternalTexture(GraphBuilder, Texture, AccessFinal);
+}
+
+UE_DEPRECATED(5.0, "ConvertToUntrackedExternalTexture has been refactored to ConvertToFinalizedExternalBuffer.")
+inline void ConvertToUntrackedExternalBuffer(
+	FRDGBuilder& GraphBuilder,
+	FRDGBufferRef Buffer,
+	TRefCountPtr<FRDGPooledBuffer>& OutPooledBuffer,
+	ERHIAccess AccessFinal)
+{
+	OutPooledBuffer = ConvertToFinalizedExternalBuffer(GraphBuilder, Buffer, AccessFinal);
+}
+
+UE_DEPRECATED(5.0, "RegisterExternalTextureWithFallback no longer requires ERenderTargetTexture")
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+inline FRDGTextureRef RegisterExternalTextureWithFallback(
+	FRDGBuilder& GraphBuilder,
+	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
+	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture,
+	ERenderTargetTexture ExternalTexture,
+	ERenderTargetTexture FallbackTexture = ERenderTargetTexture::ShaderResource)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+{
+	return RegisterExternalTextureWithFallback(GraphBuilder, ExternalPooledTexture, FallbackPooledTexture);
+}
+
+UE_DEPRECATED(5.0, "TryRegisterExternalTexture no longer requires ERenderTargetTexture")
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+inline FRDGTextureRef TryRegisterExternalTexture(
+	FRDGBuilder& GraphBuilder,
+	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
+	ERenderTargetTexture RenderTargetTexture,
+	ERDGTextureFlags Flags = ERDGTextureFlags::None)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+{
+	return ExternalPooledTexture ? GraphBuilder.RegisterExternalTexture(ExternalPooledTexture, Flags) : nullptr;
+}
+
+UE_DEPRECATED(5.0, "RegisterExternalTextureMSAA with a single pooled render target is no longer supported.")
+inline FRDGTextureMSAA RegisterExternalTextureMSAA(
+	FRDGBuilder& GraphBuilder,
+	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
+{
+	return FRDGTextureMSAA();
+}
+
+UE_DEPRECATED(5.0, "RegisterExternalTextureMSAA with a single pooled render target is no longer supported.")
+inline FRDGTextureMSAA TryRegisterExternalTextureMSAA(
+	FRDGBuilder& GraphBuilder,
+	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture)
+{
+	return FRDGTextureMSAA();
+}
+
+UE_DEPRECATED(5.0, "RegisterExternalTextureMSAAWithFallback is no longer supported.")
+inline FRDGTextureMSAA RegisterExternalTextureMSAAWithFallback(
+	FRDGBuilder& GraphBuilder,
+	const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
+	const TRefCountPtr<IPooledRenderTarget>& FallbackPooledTexture)
+{
+	return FRDGTextureMSAA();
+}
+
+//////////////////////////////////////////////////////////////////////////

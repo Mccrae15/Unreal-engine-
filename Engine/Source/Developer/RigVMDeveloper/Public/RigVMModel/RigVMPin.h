@@ -3,15 +3,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 #include "UObject/ObjectMacros.h"
 #include "RigVMCore/RigVMRegistry.h"
+#include "RigVMCore/RigVMByteCode.h"
+#include "RigVMCompiler/RigVMASTProxy.h"
 #include "RigVMPin.generated.h"
 
 class URigVMGraph;
 class URigVMNode;
-class URigVMStructNode;
+class URigVMUnitNode;
 class URigVMPin;
 class URigVMLink;
+class URigVMVariableNode;
 
 /**
  * The Injected Info is used for injecting a node on a pin.
@@ -31,16 +35,19 @@ public:
 	}
 
 	UPROPERTY()
-	URigVMStructNode* StructNode;
+	TObjectPtr<URigVMUnitNode> UnitNode_DEPRECATED;
+
+	UPROPERTY()
+	TObjectPtr<URigVMNode> Node;
 
 	UPROPERTY()
 	bool bInjectedAsInput;
 
 	UPROPERTY()
-	URigVMPin* InputPin;
+	TObjectPtr<URigVMPin> InputPin;
 
 	UPROPERTY()
-	URigVMPin* OutputPin;
+	TObjectPtr<URigVMPin> OutputPin;
 
 	// Returns the graph of this injected node.
 	UFUNCTION(BlueprintCallable, Category = RigVMInjectionInfo)
@@ -50,14 +57,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMInjectionInfo)
 	URigVMPin* GetPin() const;
 };
-
-
-/**
- * The Visual Debugging Info is used for visually displaying
- * Data flowing through a pin. Typically this is attached to an input
- * pin causes the pin to inject a node on the link driving it
- */
-
 
 /**
  * The Pin represents a single connector / pin on a node in the RigVM model.
@@ -77,8 +76,29 @@ class RIGVMDEVELOPER_API URigVMPin : public UObject
 
 public:
 
+	// A struct to store a pin override value
+	struct FPinOverrideValue 
+	{
+		FPinOverrideValue()
+			: DefaultValue()
+			, BoundVariablePath()
+		{}
+
+		FPinOverrideValue(URigVMPin* InPin)
+			: DefaultValue(InPin->GetDefaultValue())
+			, BoundVariablePath(InPin->GetBoundVariablePath())
+		{
+		}
+
+		FString DefaultValue;
+		FString BoundVariablePath;
+	};
+
 	// A map used to override pin default values
-	typedef TMap<URigVMPin*, FString> FDefaultValueOverride;
+	typedef TMap<FRigVMASTProxy, FPinOverrideValue> FPinOverrideMap;
+	typedef TPair<FRigVMASTProxy, const FPinOverrideMap&> FPinOverride;
+	static const URigVMPin::FPinOverrideMap EmptyPinOverrideMap;
+	static const FPinOverride EmptyPinOverride;
 
 	// Splits a PinPath at the start, so for example "Node.Color.R" becomes "Node" and "Color.R"
 	static bool SplitPinPathAtStart(const FString& InPinPath, FString& LeftMost, FString& Right);
@@ -95,13 +115,18 @@ public:
 	// Joins a PinPath from to segments, so for example ["Node", "Color", "R"] becomes "Node.Color.R"
 	static FString JoinPinPath(const TArray<FString>& InParts);
 
+	// Splits the default value into name-value pairs
+	static TArray<FString> SplitDefaultValue(const FString& InDefaultValue);
+	// Joins a collection of element DefaultValues into a default value for an array of those elements
+	static FString GetDefaultValueForArray(TConstArrayView<FString> InDefaultValues);
+
 	// Default constructor
 	URigVMPin();
 
 	// Returns a . separated path containing all names of the pin and its owners,
 	// this includes the node name, for example "Node.Color.R"
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
-	FString GetPinPath() const;
+	FString GetPinPath(bool bUseNodePath = false) const;
 
 	// Returns a . separated path containing all names of the pin within its main
 	// memory owner / storage. This is typically used to create an offset pointer
@@ -110,7 +135,12 @@ public:
 	// corresponding SegmentPath is "Translation.X", since the transform is the
 	// storage / memory.
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
-	FString GetSegmentPath() const;
+	FString GetSegmentPath(bool bIncludeRootPin = false) const;
+
+	// Populates an array of pins which will be reduced to the same operand in the
+	// VM. This includes Source-Target pins in different nodes, pins in collapse and
+	// referenced function nodes, and their corresponding entry and return nodes.
+	void GetExposedPinChain(TArray<const URigVMPin*>& OutExposedPins) const;
 
 	// Returns the display label of the pin
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -130,7 +160,7 @@ public:
 
 	// Returns true if the pin should be watched
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
-	bool RequiresWatch() const;
+	bool RequiresWatch(const bool bCheckExposedPinChain = false) const;
 
 	// Returns true if the data type of the Pin is a struct
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -139,6 +169,10 @@ public:
 	// Returns true if the Pin is a SubPin within a struct
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsStructMember() const;
+
+	// Returns true if the data type of the Pin is a uobject
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsUObject() const;
 
 	// Returns true if the data type of the Pin is an array
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -151,6 +185,10 @@ public:
 	// Returns true if this pin represents a dynamic array
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsDynamicArray() const;
+
+	// Returns true if this data type is referenced counted
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsReferenceCountedContainer() const { return IsDynamicArray(); }
 
 	// Returns the index of the Pin within the node / parent Pin
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -176,6 +214,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsExecuteContext() const;
 
+	// Returns true if the C++ data type is unknown
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsUnknownType() const;
+
 	// Returns the default value of the Pin as a string.
 	// Note that this value is computed based on the Pin's
 	// SubPins - so for example for a FVector typed Pin
@@ -185,7 +227,13 @@ public:
 	FString GetDefaultValue() const;
 
 	// Returns the default value with an additional override ma
-	FString GetDefaultValue(const FDefaultValueOverride& InDefaultValueOverride) const;
+	FString GetDefaultValue(const FPinOverride& InOverride) const;
+
+	// Returns true if the default value provided is valid
+	bool IsValidDefaultValue(const FString& InDefaultValue) const;
+
+	// Returns the default value clamped with the limit meta values defined by the UPROPERTY in URigVMUnitNodes 
+	FString ClampDefaultValueFromMetaData(const FString& InDefaultValue) const;
 
 	// Returns the name of a custom widget to be used
 	// for editing the Pin.
@@ -221,6 +269,10 @@ public:
 	// the Pin for "Node.Transform".
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	URigVMPin* GetRootPin() const;
+
+	// Returns true if this pin is a root pin
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsRootPin() const;
 
 	// Returns the pin to be used for a link.
 	// This might differ from this actual pin, since
@@ -280,13 +332,50 @@ public:
 
 	// Returns true is the two provided source and target Pins
 	// can be linked to one another.
-	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason = nullptr);
+	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode);
 
 	// Returns true if this pin has injected nodes
 	bool HasInjectedNodes() const { return InjectionInfos.Num() > 0; }
 
+	// Returns true if this pin has injected nodes
+	bool HasInjectedUnitNodes() const;
+
 	// Returns the injected nodes this pin contains.
 	const TArray<URigVMInjectionInfo*> GetInjectedNodes() const { return InjectionInfos; }
+
+	URigVMVariableNode* GetBoundVariableNode() const;
+
+	// Returns the variable bound to this pin (or NAME_None)
+	const FString GetBoundVariablePath() const;
+
+	// Returns the variable bound to this pin (or NAME_None)
+	const FString GetBoundVariablePath(const FPinOverride& InOverride) const;
+
+	// Returns the variable bound to this pin (or NAME_None)
+	FString GetBoundVariableName() const;
+
+	// Returns true if this pin is bound to a variable
+	bool IsBoundToVariable() const;
+
+	// Returns true if this pin is bound to a variable
+	bool IsBoundToVariable(const FPinOverride& InOverride) const;
+
+	// Returns true if this pin is bound to an external variable
+	bool IsBoundToExternalVariable() const;
+
+	// Returns true if this pin is bound to a local variable
+	bool IsBoundToLocalVariable() const;
+
+	// Returns true if this pin is bound to an input argument
+	bool IsBoundToInputArgument() const;
+
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+	// Returns true if the pin can be bound to a given variable
+	bool CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FRigVMRegisterOffset& InOffset = FRigVMRegisterOffset()) const;
+#else
+	// Returns true if the pin can be bound to a given variable
+	bool CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FString& InSegmentPath = FString()) const;
+#endif
 
 	// helper function to retrieve an object from a path
 	static UObject* FindObjectFromCPPTypeObjectPath(const FString& InObjectPath);
@@ -296,23 +385,39 @@ public:
 		return Cast<T>(FindObjectFromCPPTypeObjectPath(InObjectPath));
 	}
 
-	// Returns the name of the context this pin belongs to
-	FName GetSliceContext(const FRigVMUserDataArray& InUserData);
-
-	// Returns the number of slices in memory exist for this pin
-	int32 GetNumSlices(const FRigVMUserDataArray& InUserData);
-
 	// Returns true if the pin should not show up on a node, but in the details panel
 	bool ShowInDetailsPanelOnly() const;
 
+	// Returns an external variable matching this pin's type
+	FRigVMExternalVariable ToExternalVariable() const;
+
+	// Returns true if the pin has been orphaned
+	bool IsOrphanPin() const;
+
 private:
 
-	void UpdateCPPTypeObjectIfRequired() const;
+	void UpdateTypeInformationIfRequired() const;
 	void SetNameFromIndex();
+
+	void GetExposedPinChainImpl(TArray<const URigVMPin*>& OutExposedPins, TArray<const URigVMPin*>& VisitedPins) const;
 
 	UPROPERTY()
 	FName DisplayName;
 
+#if UE_BUILD_DEBUG
+	
+	// A cache for the pin path for debugging purposes.
+	// When looking at a debug symbol of a pin it is difficult
+	// To grasp where the pin is stored etc.
+	// With this member you can see the full pin path during a debugging session
+	mutable FString CachedPinPath;
+
+#endif
+
+	// if new members are added to the pin in the future 
+	// it is important to search for all existing usages of all members
+	// to make sure things are copied/initialized properly
+	
 	UPROPERTY()
 	ERigVMPinDirection Direction;
 
@@ -331,8 +436,12 @@ private:
 	UPROPERTY()
 	FString CPPType;
 
-	UPROPERTY(transient)
-	UObject* CPPTypeObject;
+	// serialize object ptr here to keep track of the latest version of the type object,
+	// type object can reference assets like user defined struct, which can be renamed
+	// or moved to new locations, serializing the type object with the pin
+	// ensure automatic update whenever those things happen
+	UPROPERTY()
+	TObjectPtr<UObject> CPPTypeObject;
 
 	UPROPERTY()
 	FName CPPTypeObjectPath;
@@ -344,15 +453,21 @@ private:
 	FName CustomWidgetName;
 
 	UPROPERTY()
-	TArray<URigVMPin*> SubPins;
+	TArray<TObjectPtr<URigVMPin>> SubPins;
 
 	UPROPERTY(transient)
-	TArray<URigVMLink*> Links;
+	TArray<TObjectPtr<URigVMLink>> Links;
 
 	UPROPERTY()
-	TArray<URigVMInjectionInfo*> InjectionInfos;
+	TArray<TObjectPtr<URigVMInjectionInfo>> InjectionInfos;
+
+	UPROPERTY()
+	FString BoundVariablePath_DEPRECATED;
+
+	static const FString OrphanPinPrefix;
 
 	friend class URigVMController;
+	friend class UControlRigBlueprint;
 	friend class URigVMGraph;
 	friend class URigVMNode;
 	friend class FRigVMParserAST;

@@ -98,12 +98,12 @@ public:
 
 static void ConvertProcMeshToDynMeshVertex(FDynamicMeshVertex& Vert, const FProcMeshVertex& ProcVert)
 {
-	Vert.Position = ProcVert.Position;
+	Vert.Position = (FVector3f)ProcVert.Position;
 	Vert.Color = ProcVert.Color;
-	Vert.TextureCoordinate[0] = ProcVert.UV0;
-	Vert.TextureCoordinate[1] = ProcVert.UV1;
-	Vert.TextureCoordinate[2] = ProcVert.UV2;
-	Vert.TextureCoordinate[3] = ProcVert.UV3;
+	Vert.TextureCoordinate[0] = FVector2f(ProcVert.UV0);	// LWC_TODO: Precision loss
+	Vert.TextureCoordinate[1] = FVector2f(ProcVert.UV1);	// LWC_TODO: Precision loss
+	Vert.TextureCoordinate[2] = FVector2f(ProcVert.UV2);	// LWC_TODO: Precision loss
+	Vert.TextureCoordinate[3] = FVector2f(ProcVert.UV3);	// LWC_TODO: Precision loss
 	Vert.TangentX = ProcVert.Tangent.TangentX;
 	Vert.TangentZ = ProcVert.Normal;
 	Vert.TangentZ.Vector.W = ProcVert.Tangent.bFlipTangentY ? -127 : 127;
@@ -197,6 +197,7 @@ public:
 						FRayTracingGeometrySegment Segment;
 						Segment.VertexBuffer = NewSection->VertexBuffers.PositionVertexBuffer.VertexBufferRHI;
 						Segment.NumPrimitives = NewSection->RayTracingGeometry.Initializer.TotalPrimitiveCount;
+						Segment.MaxVertices = NewSection->VertexBuffers.PositionVertexBuffer.GetNumVertices();
 						NewSection->RayTracingGeometry.Initializer.Segments.Add(Segment);
 
 						//#dxr_todo: add support for segments?
@@ -260,7 +261,7 @@ public:
 					ConvertProcMeshToDynMeshVertex(Vertex, ProcVert);
 
 					Section->VertexBuffers.PositionVertexBuffer.VertexPosition(i) = Vertex.Position;
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector());
+					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector3f(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector3f());
 					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, Vertex.TextureCoordinate[0]);
 					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 1, Vertex.TextureCoordinate[1]);
 					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 2, Vertex.TextureCoordinate[2]);
@@ -270,30 +271,30 @@ public:
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.PositionVertexBuffer;
-					void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+					void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHIUnlockVertexBuffer(VertexBuffer.VertexBufferRHI);
+					RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.ColorVertexBuffer;
-					void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+					void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHIUnlockVertexBuffer(VertexBuffer.VertexBufferRHI);
+					RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
+					void* VertexBufferData = RHILockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
-					RHIUnlockVertexBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
+					RHIUnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
+					void* VertexBufferData = RHILockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
-					RHIUnlockVertexBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
+					RHIUnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
 				}
 
 #if RHI_RAYTRACING
@@ -314,6 +315,7 @@ public:
 					FRayTracingGeometrySegment Segment;
 					Segment.VertexBuffer = Section->VertexBuffers.PositionVertexBuffer.VertexBufferRHI;
 					Segment.NumPrimitives = Section->RayTracingGeometry.Initializer.TotalPrimitiveCount;
+					Segment.MaxVertices = Section->VertexBuffers.PositionVertexBuffer.GetNumVertices();
 					Section->RayTracingGeometry.Initializer.Segments.Add(Segment);
 
 					Section->RayTracingGeometry.UpdateRHI();
@@ -384,7 +386,7 @@ public:
 						GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
 
 						FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity);
+						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity, GetCustomPrimitiveData());
 						BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 						BatchElement.FirstIndex = 0;
@@ -432,7 +434,7 @@ public:
 		Result.bRenderCustomDepth = ShouldRenderCustomDepth();
 		Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
-		Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 		return Result;
 	}
 
@@ -454,6 +456,8 @@ public:
 
 #if RHI_RAYTRACING
 	virtual bool IsRayTracingRelevant() const override { return true; }
+
+	virtual bool HasRayTracingRepresentation() const override { return true; }
 
 	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override final
 	{
@@ -499,7 +503,7 @@ public:
 					GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity);
+					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity, GetCustomPrimitiveData());
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 					BatchElement.FirstIndex = 0;
@@ -509,7 +513,7 @@ public:
 
 					RayTracingInstance.Materials.Add(MeshBatch);
 
-					RayTracingInstance.BuildInstanceMaskAndFlags();
+					RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 					OutRayTracingInstances.Add(RayTracingInstance);
 				}
 			}
@@ -843,7 +847,7 @@ void UProceduralMeshComponent::AddCollisionConvexMesh(TArray<FVector> ConvexVert
 		// Copy in vertex info
 		NewConvexElem.VertexData = ConvexVerts;
 		// Update bounding box
-		NewConvexElem.ElemBox = FBox(NewConvexElem.VertexData);
+		NewConvexElem.ElemBox = FBox(ConvexVerts);
 		// Add to array of convex elements
 		CollisionConvexElems.Add(NewConvexElem);
 		// Refresh collision
@@ -886,7 +890,7 @@ void UProceduralMeshComponent::UpdateLocalBounds()
 		LocalBox += Section.SectionLocalBox;
 	}
 
-	LocalBounds = LocalBox.IsValid ? FBoxSphereBounds(LocalBox) : FBoxSphereBounds(FVector(0, 0, 0), FVector(0, 0, 0), 0); // fallback to reset box sphere bounds
+	LocalBounds = LocalBox.IsValid ? FBoxSphereBounds(LocalBox) : FBoxSphereBounds(FVector::ZeroVector, FVector::ZeroVector, 0); // fallback to reset box sphere bounds
 
 	// Update global bounds
 	UpdateBounds();
@@ -966,7 +970,7 @@ bool UProceduralMeshComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionDat
 			// Copy vert data
 			for (int32 VertIdx = 0; VertIdx < Section.ProcVertexBuffer.Num(); VertIdx++)
 			{
-				CollisionData->Vertices.Add(Section.ProcVertexBuffer[VertIdx].Position);
+				CollisionData->Vertices.Add((FVector3f)Section.ProcVertexBuffer[VertIdx].Position);
 
 				// Copy UV if desired
 				if (bCopyUVs)

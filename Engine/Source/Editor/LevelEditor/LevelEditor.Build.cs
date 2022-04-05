@@ -17,7 +17,9 @@ public class LevelEditor : ModuleRules
                 "AppFramework",
                 "PortalServices",
                 "Persona",
-            }
+				"DataLayerEditor",
+				"MergeActors",
+			}
 		);
 
 		PublicIncludePathModuleNames.AddRange(
@@ -35,6 +37,7 @@ public class LevelEditor : ModuleRules
 			new string[] {
 				"LevelSequence",
 				"Analytics",
+				"ApplicationCore",
 				"Core",
 				"CoreUObject",
 				"LauncherPlatform",
@@ -47,6 +50,7 @@ public class LevelEditor : ModuleRules
 				"SourceControl",
 				"SourceControlWindows",
 				"StatsViewer",
+				"EditorFramework",
 				"UnrealEd", 
 				"DeveloperSettings",
 				"RenderCore",
@@ -57,6 +61,8 @@ public class LevelEditor : ModuleRules
 				"RHI",
 				"Projects",
 				"TargetPlatform",
+				"TypedElementFramework",
+				"TypedElementRuntime",
 				"EngineSettings",
 				"PropertyEditor",
 				"Kismet",
@@ -69,8 +75,18 @@ public class LevelEditor : ModuleRules
 				"PixelInspectorModule",
 				"CommonMenuExtensions",
 				"ToolMenus",
+				"StatusBar",
+				"AppFramework",
+				"EditorSubsystem",
 				"EnvironmentLightingViewer",
 				"DesktopPlatform",
+				"DataLayerEditor",
+				"TranslationEditor",
+				"SubobjectEditor",
+				"SubobjectDataInterface",
+				"DerivedDataEditor",
+				"EditorWidgets",
+				"ToolWidgets",
 			}
 		);
 
@@ -80,12 +96,11 @@ public class LevelEditor : ModuleRules
 				"ClassViewer",
 				"DeviceManager",
 				"SettingsEditor",
-				"SessionFrontend",
 				"SlateReflector",
 				"AutomationWindow",
 				"Layers",
-                "WorldBrowser",
-				"EditorWidgets",
+				"WorldBrowser",
+				"WorldPartitionEditor",
 				"AssetTools",
 				"WorkspaceMenuStructure",
 				"NewLevelDialog",
@@ -95,10 +110,19 @@ public class LevelEditor : ModuleRules
 				"HeadMountedDisplay",
 				"VREditor",
                 "Persona",
-            }
+				"LevelAssetEditor",
+				"MergeActors",
+
+			}
 		);
 
-		if(Target.bWithLiveCoding)
+		if (Target.bBuildTargetDeveloperTools)
+		{
+			DynamicallyLoadedModuleNames.Add("SessionFrontend");
+		}
+
+
+		if (Target.bWithLiveCoding)
 		{
 			PrivateIncludePathModuleNames.Add("LiveCoding");
 		}

@@ -3,17 +3,18 @@
 #pragma once
 
 #include "Render/Viewport/IDisplayClusterViewportProxy.h"
-
 #include "Render/Viewport/Containers/DisplayClusterViewport_OverscanSettings.h"
 
-class FDisplayClusterRenderTargetResource;
-class FDisplayClusterTextureResource;
+class FDisplayClusterViewportRenderTargetResource;
+class FDisplayClusterViewportTextureResource;
 class FDisplayClusterViewportProxyData;
 class IDisplayClusterViewportManagerProxy;
 class FDisplayClusterViewportManagerProxy;
 class FDisplayClusterViewport;
 class IDisplayClusterShaders;
 class IDisplayClusterProjectionPolicy;
+class IDisplayClusterRender_MeshComponent;
+class FDisplayClusterViewportReadPixelsData;
 
 class FDisplayClusterViewportProxy
 	: public IDisplayClusterViewportProxy
@@ -30,6 +31,12 @@ public:
 	{
 		check(IsInRenderingThread());
 		return ViewportId;
+	}
+
+	virtual FString GetClusterNodeId() const override
+	{
+		check(IsInRenderingThread());
+		return ClusterNodeId;
 	}
 
 	virtual const FDisplayClusterViewport_RenderSettings& GetRenderSettings_RenderThread() const override
@@ -62,6 +69,19 @@ public:
 		return Contexts;
 	}
 
+	virtual void SetRenderSettings_RenderThread(const FDisplayClusterViewport_RenderSettings& InRenderSettings) const override
+	{
+		check(IsInRenderingThread());
+		RenderSettings = InRenderSettings;
+	}
+
+	virtual void SetContexts_RenderThread(const TArray<FDisplayClusterViewport_Context>& InContexts) const override
+	{
+		check(IsInRenderingThread());
+		Contexts.Empty();
+		Contexts.Append(InContexts);
+	}
+
 	// Apply postprocess, generate mips, etc from settings in FDisplayClusterViewporDeferredUpdateSettings
 	void UpdateDeferredResources(FRHICommandListImmediate& RHICmdList) const;
 
@@ -70,26 +90,30 @@ public:
 	virtual bool GetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutRects) const override;
 
 	// Resolve resource contexts
-	virtual bool ResolveResources(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const override;
+	virtual bool ResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const override;
 
-	virtual const IDisplayClusterViewportManagerProxy& GetOwner() const override;
-	virtual EDisplayClusterViewportResourceType GetOutputResourceType() const override;
+	virtual EDisplayClusterViewportResourceType GetOutputResourceType_RenderThread() const override;
+
+	virtual const IDisplayClusterViewportManagerProxy& GetOwner_RenderThread() const override;
 
 
 	///////////////////////////////
 	// ~IDisplayClusterViewportProxy
 	///////////////////////////////
 
-	bool ImplResolveResources(FRHICommandListImmediate& RHICmdList, FDisplayClusterViewportProxy const* SourceProxy, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const;
+	void PostResolveViewport_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 
+#if WITH_EDITOR
+	bool GetPreviewPixels_GameThread(TSharedPtr<FDisplayClusterViewportReadPixelsData, ESPMode::ThreadSafe>& OutPixelsData) const;
+#endif
 
-	inline bool FindContext_RenderThread(const enum EStereoscopicPass StereoPassType, uint32* OutContextNum)
+	inline bool FindContext_RenderThread(const int32 ViewIndex, uint32* OutContextNum)
 	{
 		check(IsInRenderingThread());
 
-		for (int ContextNum = 0; ContextNum < Contexts.Num(); ContextNum++)
+		for (int32 ContextNum = 0; ContextNum < Contexts.Num(); ContextNum++)
 		{
-			if (StereoPassType == Contexts[ContextNum].StereoscopicPass)
+			if (ViewIndex == Contexts[ContextNum].StereoViewIndex)
 			{
 				if (OutContextNum != nullptr)
 				{
@@ -103,6 +127,17 @@ public:
 		return false;
 	}
 
+private:
+	bool ImplGetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutResourceRects, const int32 InRecursionDepth) const;
+	bool ImplGetResources_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, const int32 InRecursionDepth) const;
+
+	void ImplViewportRemap_RenderThread(FRHICommandListImmediate& RHICmdList) const;
+	void ImplPreviewReadPixels_RenderThread(FRHICommandListImmediate& RHICmdList) const;
+
+	bool ImplResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, FDisplayClusterViewportProxy const* SourceProxy, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const;
+
+	bool IsShouldOverrideViewportResource(const EDisplayClusterViewportResourceType InResourceType) const;
+
 protected:
 	friend FDisplayClusterViewportProxyData;
 	friend FDisplayClusterViewportManagerProxy;
@@ -110,35 +145,43 @@ protected:
 	// Unique viewport name
 	const FString ViewportId;
 
+	const FString ClusterNodeId;
+
 	// Viewport render params
-	FDisplayClusterViewport_RenderSettings       RenderSettings;
+	mutable FDisplayClusterViewport_RenderSettings       RenderSettings;
 	FDisplayClusterViewport_RenderSettingsICVFX  RenderSettingsICVFX;
 	FDisplayClusterViewport_PostRenderSettings   PostRenderSettings;
 
 	// Additional parameters
 	FDisplayClusterViewport_OverscanSettings     OverscanSettings;
 
+	TSharedPtr<IDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe> RemapMesh;
+
 	// Projection policy instance that serves this viewport
 	TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> ProjectionPolicy;
 
 	// Viewport contexts (left/center/right eyes)
-	TArray<FDisplayClusterViewport_Context> Contexts;
+	mutable TArray<FDisplayClusterViewport_Context> Contexts;
 
 	// View family render to this resources
-	TArray<FDisplayClusterRenderTargetResource*> RenderTargets;
+	TArray<FDisplayClusterViewportRenderTargetResource*> RenderTargets;
 
 	// Projection policy output resources
-	TArray<FDisplayClusterTextureResource*> OutputFrameTargetableResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> OutputFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalFrameTargetableResources;
 
 #if WITH_EDITOR
 	FTextureRHIRef OutputPreviewTargetableResource;
+	
+	mutable bool bPreviewReadPixels = false;
+	mutable FCriticalSection PreviewPixelsCSGuard;
+	mutable TSharedPtr<FDisplayClusterViewportReadPixelsData, ESPMode::ThreadSafe> PreviewPixels;
 #endif
 
 	// unique viewport resources
-	TArray<FDisplayClusterTextureResource*> InputShaderResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalTargetableResources;
-	TArray<FDisplayClusterTextureResource*> MipsShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> InputShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> MipsShaderResources;
 
 	const FDisplayClusterViewportManagerProxy& Owner;
 	IDisplayClusterShaders& ShadersAPI;

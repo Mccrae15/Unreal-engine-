@@ -1,14 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientPackageBridge.h"
+
 #include "ConcertLogGlobal.h"
 #include "ConcertWorkspaceData.h"
 #include "ConcertSyncClientUtil.h"
 
 #include "Engine/World.h"
 #include "Engine/Engine.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/PackageReload.h"
+#include "UObject/SavePackage.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -56,9 +60,11 @@ FConcertClientPackageBridge::FConcertClientPackageBridge()
 	// correctly outside of take recorder.  There is a lot of code in MultiUser that assumes that in -game mode is
 	// "receive" only.
 	//
-	UPackage::PreSavePackageEvent.AddRaw(this, &FConcertClientPackageBridge::HandlePackagePreSave);
-	UPackage::PackageSavedEvent.AddRaw(this, &FConcertClientPackageBridge::HandlePackageSaved);
+	UPackage::PreSavePackageWithContextEvent.AddRaw(this, &FConcertClientPackageBridge::HandlePackagePreSave);
+	UPackage::PackageSavedWithContextEvent.AddRaw(this, &FConcertClientPackageBridge::HandlePackageSaved);
 	FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &FConcertClientPackageBridge::HandleAssetReload);
+
+	FCoreDelegates::OnEndFrame.AddRaw(this, &FConcertClientPackageBridge::OnEndFrame);
 
 	if (GIsEditor)
 	{
@@ -79,9 +85,10 @@ FConcertClientPackageBridge::~FConcertClientPackageBridge()
 {
 #if WITH_EDITOR
 	// Unregister Package Events
-	UPackage::PreSavePackageEvent.RemoveAll(this);
-	UPackage::PackageSavedEvent.RemoveAll(this);
+	UPackage::PreSavePackageWithContextEvent.RemoveAll(this);
+	UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 	FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
+	FCoreDelegates::OnEndFrame.RemoveAll(this);
 
 	if (GIsEditor)
 	{
@@ -122,12 +129,11 @@ bool& FConcertClientPackageBridge::GetIgnoreLocalDiscardRef()
 	return bIgnoreLocalDiscard;
 }
 
-void FConcertClientPackageBridge::HandlePackagePreSave(UPackage* Package)
+void FConcertClientPackageBridge::HandlePackagePreSave(UPackage* Package, FObjectPreSaveContext ObjectSaveContext)
 {
-	// Ignore package operations fired by the cooker (cook on the fly).
-	if (GIsCookerLoadingPackage)
+	// Only execute if this is a user save
+	if (ObjectSaveContext.IsProceduralSave())
 	{
-		check(IsInGameThread()); // We expect the cooker to call us on the game thread otherwise, we can have concurrency issues.
 		return;
 	}
 
@@ -154,7 +160,7 @@ void FConcertClientPackageBridge::HandlePackagePreSave(UPackage* Package)
 			ConcertSyncClientUtil::FillPackageInfo(Package, Asset, EConcertPackageUpdateType::Saved, PackageInfo);
 			PackageInfo.bPreSave = true;
 			PackageInfo.bAutoSave = GEngine->IsAutosaving();
-		
+
 			OnLocalPackageEventDelegate.Broadcast(PackageInfo, PackageFilename);
 		}
 	}
@@ -162,14 +168,30 @@ void FConcertClientPackageBridge::HandlePackagePreSave(UPackage* Package)
 	UE_LOG(LogConcert, Verbose, TEXT("Asset Pre-Saved: %s"), *Package->GetName());
 }
 
-void FConcertClientPackageBridge::HandlePackageSaved(const FString& PackageFilename, UObject* Outer)
+void FConcertClientPackageBridge::OnEndFrame()
 {
-	UPackage* Package = CastChecked<UPackage>(Outer);
-
-	// Ignore package operations fired by the cooker (cook on the fly).
-	if (GIsCookerLoadingPackage)
+	if (PendingPackageInfos.Num() == 0)
 	{
-		check(IsInGameThread()); // We expect the cooker to call us on the game thread otherwise, we can have concurrency issues.
+		return;
+	}
+
+	UPackage::WaitForAsyncFileWrites();
+	for (const FConcertPackageInfoTuple& PackageInfoTuple : PendingPackageInfos)
+	{
+		const FString& PackageFilename = PackageInfoTuple.Get<1>();
+		if (IFileManager::Get().FileExists(*PackageFilename))
+		{
+			OnLocalPackageEventDelegate.Broadcast(PackageInfoTuple.Get<0>(), PackageFilename);
+		}
+	}
+	PendingPackageInfos.Reset();
+}
+
+void FConcertClientPackageBridge::HandlePackageSaved(const FString& PackageFilename, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)
+{
+	// Only execute if this is a user save
+	if (ObjectSaveContext.IsProceduralSave())
+	{
 		return;
 	}
 
@@ -189,16 +211,13 @@ void FConcertClientPackageBridge::HandlePackageSaved(const FString& PackageFilen
 	FName NewPackageName;
 	PackagesBeingRenamed.RemoveAndCopyValue(Package->GetFName(), NewPackageName);
 
-	if (IFileManager::Get().FileExists(*PackageFilename))
-	{
-		FConcertPackageInfo PackageInfo;
-		ConcertSyncClientUtil::FillPackageInfo(Package, nullptr, NewPackageName.IsNone() ? EConcertPackageUpdateType::Saved : EConcertPackageUpdateType::Renamed, PackageInfo);
-		PackageInfo.NewPackageName = NewPackageName;
-		PackageInfo.bPreSave = false;
-		PackageInfo.bAutoSave = GEngine->IsAutosaving();
-	
-		OnLocalPackageEventDelegate.Broadcast(PackageInfo, PackageFilename);
-	}
+	FConcertPackageInfo PackageInfo;
+	ConcertSyncClientUtil::FillPackageInfo(Package, nullptr, NewPackageName.IsNone() ? EConcertPackageUpdateType::Saved : EConcertPackageUpdateType::Renamed, PackageInfo);
+	PackageInfo.NewPackageName = NewPackageName;
+	PackageInfo.bPreSave = false;
+	PackageInfo.bAutoSave = GEngine->IsAutosaving();
+
+	PendingPackageInfos.Add(FConcertPackageInfoTuple(MoveTemp(PackageInfo), PackageFilename));
 
 	UE_LOG(LogConcert, Verbose, TEXT("Asset Saved: %s"), *Package->GetName());
 }
@@ -229,7 +248,13 @@ void FConcertClientPackageBridge::HandleAssetAdded(UObject *Object)
 
 		const FString PackageFilename = FPaths::ProjectIntermediateDir() / TEXT("Concert") / TEXT("Temp") / FGuid::NewGuid().ToString() + (Asset && Asset->IsA<UWorld>() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
 		uint32 PackageFlags = Package->GetPackageFlags();
-		if (UPackage::SavePackage(Package, World, RF_Standalone, *PackageFilename, GWarn, nullptr, false, false, SAVE_Async | SAVE_NoError | SAVE_KeepDirty))
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		SaveArgs.Error = GWarn;
+		SaveArgs.bWarnOfLongFilename = false;
+		// Identify this save as an autosave since we currently don't have a better alternative, but we want to distinguish it from a save triggered by the user and want to allow save callbacks to handle it as such
+		SaveArgs.SaveFlags = SAVE_Async | SAVE_NoError | SAVE_KeepDirty | SAVE_FromAutosave;
+		if (UPackage::SavePackage(Package, World, *PackageFilename, SaveArgs))
 		{
 			UPackage::WaitForAsyncFileWrites();
 			// Saving the newly added asset here shouldn't modify any of its package flags since it's a 'dummy' save i.e. PKG_NewlyCreated

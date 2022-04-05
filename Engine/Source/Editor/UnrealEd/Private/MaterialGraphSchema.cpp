@@ -21,12 +21,15 @@
 #include "MaterialGraph/MaterialGraph.h"
 #include "Engine/Texture.h"
 #include "MaterialGraph/MaterialGraphNode_Base.h"
+#include "MaterialGraph/MaterialGraphNode_Comment.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 #include "MaterialGraph/MaterialGraphNode_Root.h"
 #include "Materials/MaterialParameterCollection.h"
 
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionComment.h"
+#include "Materials/MaterialExpressionComposite.h"
+#include "Materials/MaterialExpressionPinBase.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
@@ -147,6 +150,28 @@ UEdGraphNode* FMaterialGraphSchemaAction_NewFunctionCall::PerformAction(class UE
 	return NULL;
 }
 
+/////////////////////////////////////////////
+// FMaterialGraphSchemaAction_NewComposite //
+
+UEdGraphNode* FMaterialGraphSchemaAction_NewComposite::PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode)
+{
+	return SpawnNode(ParentGraph, Location);
+}
+
+UEdGraphNode* FMaterialGraphSchemaAction_NewComposite::SpawnNode(UEdGraph* ParentGraph, const FVector2D Location)
+{
+	const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "MaterialEditorNewComposite", "Material Editor: New Composite"));
+
+	UMaterialExpressionComposite* NewComposite = FMaterialEditorUtilities::CreateNewMaterialExpressionComposite(ParentGraph, Location);
+
+	if (NewComposite)
+	{
+		return NewComposite->GraphNode;
+	}
+
+	return nullptr;
+}
+
 ///////////////////////////////////////////
 // FMaterialGraphSchemaAction_NewComment //
 
@@ -203,12 +228,15 @@ const FName UMaterialGraphSchema::PC_Mask(TEXT("mask"));
 const FName UMaterialGraphSchema::PC_Required(TEXT("required"));
 const FName UMaterialGraphSchema::PC_Optional(TEXT("optional"));
 const FName UMaterialGraphSchema::PC_MaterialInput(TEXT("materialinput"));
+const FName UMaterialGraphSchema::PC_Exec(TEXT("exec"));
 
 const FName UMaterialGraphSchema::PSC_Red(TEXT("red"));
 const FName UMaterialGraphSchema::PSC_Green(TEXT("green"));
 const FName UMaterialGraphSchema::PSC_Blue(TEXT("blue"));
 const FName UMaterialGraphSchema::PSC_Alpha(TEXT("alpha"));
 const FName UMaterialGraphSchema::PSC_RGBA(TEXT("rgba"));
+
+const FName UMaterialGraphSchema::PN_Execute("execute");
 
 const FLinearColor UMaterialGraphSchema::ActivePinColor = FLinearColor::White;
 const FLinearColor UMaterialGraphSchema::InactivePinColor = FLinearColor(0.05f, 0.05f, 0.05f);
@@ -326,15 +354,15 @@ void UMaterialGraphSchema::GetPaletteActions(FGraphActionMenuBuilder& ActionMenu
 
 bool UMaterialGraphSchema::ConnectionCausesLoop(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin) const
 {
-	// Only nodes representing Expressions have outputs
-	UMaterialGraphNode* OutputNode = CastChecked<UMaterialGraphNode>(OutputPin->GetOwningNode());
-
-	TArray<UMaterialExpression*> InputExpressions;
-	OutputNode->MaterialExpression->GetAllInputExpressions(InputExpressions);
-
-	if (UMaterialGraphNode* InputNode = Cast<UMaterialGraphNode>(InputPin->GetOwningNode()))
+	if (UMaterialGraphNode* OutputNode = Cast<UMaterialGraphNode>(OutputPin->GetOwningNode()))
 	{
-		return InputExpressions.Contains(InputNode->MaterialExpression);
+		TArray<UMaterialExpression*> InputExpressions;
+		OutputNode->MaterialExpression->GetAllInputExpressions(InputExpressions);
+
+		if (UMaterialGraphNode* InputNode = Cast<UMaterialGraphNode>(InputPin->GetOwningNode()))
+		{
+			return InputExpressions.Contains(InputNode->MaterialExpression);
+		}
 	}
 
 	// Simple connection to root node
@@ -384,14 +412,13 @@ bool UMaterialGraphSchema::ArePinsCompatible_Internal(const UEdGraphPin* InputPi
 
 uint32 UMaterialGraphSchema::GetMaterialValueType(const UEdGraphPin* MaterialPin)
 {
+	const UMaterialGraphNode_Base* OwningNode = CastChecked<UMaterialGraphNode_Base>(MaterialPin->GetOwningNode());
 	if (MaterialPin->Direction == EGPD_Output)
 	{
-		UMaterialGraphNode* OwningNode = CastChecked<UMaterialGraphNode>(MaterialPin->GetOwningNode());
 		return OwningNode->GetOutputType(MaterialPin);
 	}
 	else
 	{
-		UMaterialGraphNode_Base* OwningNode = CastChecked<UMaterialGraphNode_Base>(MaterialPin->GetOwningNode());
 		return OwningNode->GetInputType(MaterialPin);
 	}
 }
@@ -533,23 +560,50 @@ const FPinConnectionResponse UMaterialGraphSchema::CanCreateConnection(const UEd
 		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, ResponseMessage);
 	}
 
-	// Break existing connections on inputs only - multiple output connections are acceptable
+	// For non-exec pins, break existing connections on inputs only - multiple output connections are acceptable
 	if (InputPin->LinkedTo.Num() > 0)
 	{
-		ECanCreateConnectionResponse ReplyBreakOutputs;
-		if (InputPin == A)
+		const uint32 InputType = GetMaterialValueType(InputPin);
+		if (!(InputType & MCT_Execution))
 		{
-			ReplyBreakOutputs = CONNECT_RESPONSE_BREAK_OTHERS_A;
+			ECanCreateConnectionResponse ReplyBreakOutputs;
+			if (InputPin == A)
+			{
+				ReplyBreakOutputs = CONNECT_RESPONSE_BREAK_OTHERS_A;
+			}
+			else
+			{
+				ReplyBreakOutputs = CONNECT_RESPONSE_BREAK_OTHERS_B;
+			}
+			if (ResponseMessage.IsEmpty())
+			{
+				ResponseMessage = LOCTEXT("ConnectionReplace", "Replace existing connections");
+			}
+			return FPinConnectionResponse(ReplyBreakOutputs, ResponseMessage);
 		}
-		else
+	}
+
+	// For exec pins, reverse is true - multiple input connections are acceptable
+	if (OutputPin->LinkedTo.Num() > 0)
+	{
+		const uint32 OutputType = GetMaterialValueType(InputPin);
+		if (OutputType & MCT_Execution)
 		{
-			ReplyBreakOutputs = CONNECT_RESPONSE_BREAK_OTHERS_B;
+			ECanCreateConnectionResponse ReplyBreakInputs;
+			if (OutputPin == A)
+			{
+				ReplyBreakInputs = CONNECT_RESPONSE_BREAK_OTHERS_A;
+			}
+			else
+			{
+				ReplyBreakInputs = CONNECT_RESPONSE_BREAK_OTHERS_B;
+			}
+			if (ResponseMessage.IsEmpty())
+			{
+				ResponseMessage = LOCTEXT("ConnectionReplace", "Replace existing connections");
+			}
+			return FPinConnectionResponse(ReplyBreakInputs, ResponseMessage);
 		}
-		if (ResponseMessage.IsEmpty())
-		{
-			ResponseMessage = LOCTEXT("ConnectionReplace", "Replace existing connections");
-		}
-		return FPinConnectionResponse(ReplyBreakOutputs, ResponseMessage);
 	}
 
 	return FPinConnectionResponse(CONNECT_RESPONSE_MAKE, ResponseMessage);
@@ -664,6 +718,22 @@ void UMaterialGraphSchema::BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPi
 	{
 		FMaterialEditorUtilities::UpdateMaterialAfterGraphChange(SourcePin->GetOwningNode()->GetGraph());
 	}
+}
+
+bool UMaterialGraphSchema::CanEncapuslateNode(UEdGraphNode const& TestNode) const
+{
+	if (TestNode.IsA(UMaterialGraphNode_Comment::StaticClass()))
+	{
+		return true;
+	}
+
+	// Disallow output nodes from encapsulation, everything else (including parameters) is fair game for materials.
+	const UMaterialGraphNode* MaterialGraphNode = Cast<UMaterialGraphNode>(&TestNode);
+
+	return  MaterialGraphNode && MaterialGraphNode->MaterialExpression 
+		&& !MaterialGraphNode->MaterialExpression->IsA(UMaterialExpressionFunctionOutput::StaticClass())
+		&& !MaterialGraphNode->MaterialExpression->IsA(UMaterialExpressionPinBase::StaticClass())
+		&& !TestNode.IsA(UMaterialGraphNode_Root::StaticClass());
 }
 
 void UMaterialGraphSchema::DroppedAssetsOnGraph(const TArray<struct FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraph* Graph) const
@@ -851,6 +921,18 @@ void UMaterialGraphSchema::GetMaterialFunctionActions(FGraphActionMenuBuilder& A
 	}
 }
 
+void UMaterialGraphSchema::GetCompositeAction(FGraphActionMenuBuilder& ActionMenuBuilder, const UEdGraph* CurrentGraph) const
+{
+	if (!ActionMenuBuilder.FromPin)
+	{
+		const bool bIsManyNodesSelected = CurrentGraph ? (FMaterialEditorUtilities::GetNumberOfSelectedNodes(CurrentGraph) > 0) : false;
+		const FText CompositeDesc = LOCTEXT("CompositeDesc", "New Composite");
+		const FText CompositeToolTip = LOCTEXT("CompositeToolTip", "Create a composite node that holds a subgraph.");
+		TSharedPtr<FMaterialGraphSchemaAction_NewComposite> NewAction(new FMaterialGraphSchemaAction_NewComposite(FText::GetEmpty(), CompositeDesc, CompositeToolTip, 0));
+		ActionMenuBuilder.AddAction(NewAction);
+	}
+}
+
 void UMaterialGraphSchema::GetCommentAction(FGraphActionMenuBuilder& ActionMenuBuilder, const UEdGraph* CurrentGraph) const
 {
 	if (!ActionMenuBuilder.FromPin)
@@ -873,7 +955,7 @@ void UMaterialGraphSchema::GetNamedRerouteActions(FGraphActionMenuBuilder& Actio
 		{
 			if (auto* MaterialGraphNode = Cast<UMaterialGraphNode>(GraphNode))
 			{
-				if (auto* Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(MaterialGraphNode->MaterialExpression))
+				if (auto Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(MaterialGraphNode->MaterialExpression))
 				{
 					static const FText Category = LOCTEXT("NamedRerouteCategory", "Named Reroutes");
 					const FText Name = FText::FromString(Declaration->Name.ToString());

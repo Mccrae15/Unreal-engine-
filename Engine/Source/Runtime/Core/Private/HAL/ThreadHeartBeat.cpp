@@ -30,10 +30,6 @@
 	#define UE_ASSERT_ON_HANG 0
 #endif
 
-#ifndef WALK_STACK_ON_HITCH_DETECTED
-	#define WALK_STACK_ON_HITCH_DETECTED 0
-#endif
-
 #ifndef NEEDS_DEBUG_INFO_ON_PRESENT_HANG
 #define NEEDS_DEBUG_INFO_ON_PRESENT_HANG 0
 #endif
@@ -277,7 +273,7 @@ void FORCENOINLINE FThreadHeartBeat::OnHang(double HangDuration, uint32 ThreadTh
 
 		const FString ErrorMessage = FString::Printf(TEXT("Hang detected on %s:%s%s%sCheck log for full callstack."), *ThreadName, LINE_TERMINATOR, *StackTrimmed, LINE_TERMINATOR);
 
-#if PLATFORM_DESKTOP
+#if PLATFORM_USE_REPORT_ENSURE
 		UE_LOG(LogCore, Error, TEXT("%s"), *ErrorMessage);
 		GLog->PanicFlushThreadedLogs();
 
@@ -689,7 +685,8 @@ uint32 FThreadHeartBeat::CheckCheckpointHeartBeat(double& OutHangDuration)
 {
 	// Editor and debug builds run too slow to measure them correctly
 #if USE_HANG_DETECTION
-	bool CheckBeats = IsEnabled();
+	static bool bCheckpointDisabled = FParse::Param(FCommandLine::Get(), TEXT("nocheckpointhangdetector"));
+	bool CheckBeats = IsEnabled() && !bCheckpointDisabled;
 
 	if (CheckBeats)
 	{
@@ -883,11 +880,12 @@ void FThreadHeartBeat::SetDurationMultiplier(double NewMultiplier)
 
 FGameThreadHitchHeartBeatThreaded::FGameThreadHitchHeartBeatThreaded()
 	: Thread(nullptr)
-	, HangDuration(-1.f)
+#if USE_HITCH_DETECTION
 	, bWalkStackOnHitch(false)
 	, FirstStartTime(0.0)
 	, FrameStartTime(0.0)
 	, SuspendedCount(0)
+#endif
 	, Clock(HitchDetectorClock_MaxTimeStep_MS / 1000.0)
 {
 	// We don't care about programs for now so no point in spawning the extra thread
@@ -943,6 +941,7 @@ FGameThreadHitchHeartBeatThreaded* FGameThreadHitchHeartBeatThreaded::GetNoInit(
 //~ Begin FRunnable Interface.
 bool FGameThreadHitchHeartBeatThreaded::Init()
 {
+	StopTaskCounter.Reset();
 	return true;
 }
 
@@ -953,6 +952,8 @@ void FGameThreadHitchHeartBeatThreaded::InitSettings()
 	static bool bHasCmdLine = false;
 	static float CmdLine_HangDuration = 0.0f;
 	static bool CmdLine_StackWalk = false;
+
+	float OldHangDuration = HangDuration;
 
 	if (bFirst)
 	{
@@ -1012,7 +1013,12 @@ void FGameThreadHitchHeartBeatThreaded::InitSettings()
 			bWalkStackOnHitch = false;
 		}
 	}
-	
+
+	if (OldHangDuration != HangDuration)
+	{
+		UE_LOG(LogCore, Display, TEXT("Hitch detector threshold: %dms"), int32(HangDuration * 1000.0f));
+	}
+
 	// Start the heart beat thread if it hasn't already been started.
 	if (Thread == nullptr && (FPlatformProcess::SupportsMultithreading() || FForkProcessHelper::SupportsMultithreadingPostFork()) && HangDuration > 0)
 	{
@@ -1179,7 +1185,11 @@ void FGameThreadHitchHeartBeatThreaded::ResumeHeartBeat()
 
 double FGameThreadHitchHeartBeatThreaded::GetFrameStartTime()
 {
+#if USE_HITCH_DETECTION
 	return FrameStartTime;
+#else
+	return 0.0;
+#endif
 }
 
 double FGameThreadHitchHeartBeatThreaded::GetCurrentTime()

@@ -97,7 +97,7 @@ bool UHLODProxyDesc::UpdateFromLODActor(const ALODActor* InLODActor)
 
 	StaticMesh = InLODActor->StaticMeshComponent ? InLODActor->StaticMeshComponent->GetStaticMesh() : nullptr;
 
-	const TMap<FHLODInstancingKey, UInstancedStaticMeshComponent*>& ISMComponents = InLODActor->InstancedStaticMeshComponents;
+	const TMap<FHLODInstancingKey, TObjectPtr<UInstancedStaticMeshComponent>>& ISMComponents = InLODActor->InstancedStaticMeshComponents;
 	ISMComponentsDesc.Reset(ISMComponents.Num());
 	for (auto const& Pair : ISMComponents)
 	{
@@ -154,14 +154,14 @@ bool UHLODProxyDesc::ShouldUpdateDesc(const ALODActor* InLODActor) const
 		return true;
 	}
 
-	UStaticMesh* LocalStaticMesh = InLODActor->StaticMeshComponent ? InLODActor->StaticMeshComponent->GetStaticMesh() : nullptr;
+	UStaticMesh* LocalStaticMesh = InLODActor->StaticMeshComponent ? ToRawPtr(InLODActor->StaticMeshComponent->GetStaticMesh()) : nullptr;
 	if (StaticMesh != LocalStaticMesh)
 	{
 		return true;
 	}
 
 	TArray<FHLODISMComponentDesc> LocalISMComponentsDesc;
-	const TMap<FHLODInstancingKey, UInstancedStaticMeshComponent*>& ISMComponents = InLODActor->InstancedStaticMeshComponents;
+	const TMap<FHLODInstancingKey, TObjectPtr<UInstancedStaticMeshComponent>>& ISMComponents = InLODActor->InstancedStaticMeshComponents;
 	LocalISMComponentsDesc.Reset(ISMComponents.Num());
 	for (auto const& Pair : ISMComponents)
 	{
@@ -314,17 +314,20 @@ ALODActor* UHLODProxyDesc::SpawnLODActor(ULevel* InLevel) const
 	{
 		if (ALODActor* SubLODActor = Cast<ALODActor>(Actor))
 		{
-			if (SubHLODDescs.Contains(SubLODActor->ProxyDesc))
+			if (SubLODActor->ProxyDesc && SubHLODDescs.Contains(SubLODActor->ProxyDesc))
 			{
+				check(SubLODActor != LODActor);
 				SubActorsToAdd.Add(SubLODActor);
 			}
 		}
 	}
 
 	// Find all subactors from the level
-	Algo::Transform(SubActors, SubActorsToAdd, [InLevel](const FName& ActorName)
+	Algo::Transform(SubActors, SubActorsToAdd, [InLevel, LODActor](const FName& ActorName)
 	{
-		return FindObjectFast<AActor>(InLevel, ActorName);
+		AActor* Actor = FindObjectFast<AActor>(InLevel, ActorName);
+		check(Actor != LODActor);
+		return Actor;
 	});
 
 	// Remove null entries

@@ -16,8 +16,8 @@
 
 struct FMorphTargetDelta;
 
-template<typename VertexType>
-static void SkinVertices(FFinalSkinVertex* DestVertex, FMatrix* ReferenceToLocal, int32 LODIndex, FSkeletalMeshLODRenderData& LOD, FSkinWeightVertexBuffer& WeightBuffer, TArray<FActiveMorphTarget>& ActiveMorphTargets, TArray<float>& MorphTargetWeights, const TMap<int32, FClothSimulData>& ClothSimulUpdateData, float ClothBlendWeight, const FMatrix& WorldToLocal);
+template<typename VertexType, int32 NumberOfUVs>
+static void SkinVertices(FFinalSkinVertex* DestVertex, FMatrix44f* ReferenceToLocal, int32 LODIndex, FSkeletalMeshLODRenderData& LOD, FSkinWeightVertexBuffer& WeightBuffer, TArray<FActiveMorphTarget>& ActiveMorphTargets, TArray<float>& MorphTargetWeights, const TMap<int32, FClothSimulData>& ClothSimulUpdateData, float ClothBlendWeight, const FMatrix& WorldToLocal);
 
 #define INFLUENCE_0		0
 #define INFLUENCE_1		1
@@ -194,6 +194,29 @@ void FSkeletalMeshObjectCPUSkin::UpdateDynamicData_RenderThread(FRHICommandListI
 	CacheVertices(DynamicData->LODIndex,true);
 }
 
+#define SKIN_LOD_VERTICES(VertexType, NumUVs) \
+{\
+	switch( NumUVs )\
+    {\
+        case 1:\
+			SkinVertices<VertexType<1>, 1>( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal); \
+          	break;\
+        case 2:\
+			SkinVertices<VertexType<2>, 2>( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal); \
+          	break;\
+        case 3:\
+			SkinVertices<VertexType<3>, 3>( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal); \
+          	break;\
+        case 4:\
+			SkinVertices<VertexType<4>, 4>( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal); \
+          	break;\
+        default:\
+          	checkf(false, TEXT("Invalid number of UV sets.  Must be between 1 and 4") );\
+			break;\
+    }\
+}\
+	
+
 void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) const
 {
 	SCOPE_CYCLE_COUNTER( STAT_CPUSkinUpdateRTTime);
@@ -212,7 +235,7 @@ void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) cons
 		const FSkelMeshObjectLODInfo& MeshLODInfo = LODInfo[LODIndex];
 
 		// bone matrices
-		FMatrix* ReferenceToLocal = DynamicData->ReferenceToLocal.GetData();
+		FMatrix44f* ReferenceToLocal = DynamicData->ReferenceToLocal.GetData();
 
 		int32 CachedFinalVerticesNum = LOD.GetNumVertices();
 		CachedFinalVertices.Empty(CachedFinalVerticesNum);
@@ -225,15 +248,15 @@ void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) cons
 		{
 			check(GIsEditor || LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetAllowCPUAccess());
 			SCOPE_CYCLE_COUNTER(STAT_SkinningTime);
+
+			// do actual skinning
 			if (LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetUseFullPrecisionUVs())
 			{
-				// do actual skinning
-				SkinVertices< TGPUSkinVertexFloat32Uvs<1> >( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal);
+				SKIN_LOD_VERTICES(TGPUSkinVertexFloat32Uvs, LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords());
 			}
 			else
 			{
-				// do actual skinning
-				SkinVertices< TGPUSkinVertexFloat16Uvs<1> >( DestVertex, ReferenceToLocal, DynamicData->LODIndex, LOD, *MeshLOD.MeshObjectWeightBuffer, DynamicData->ActiveMorphTargets, DynamicData->MorphTargetWeights, DynamicData->ClothSimulUpdateData, DynamicData->ClothBlendWeight, DynamicData->WorldToLocal);
+				SKIN_LOD_VERTICES(TGPUSkinVertexFloat16Uvs, LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords());
 			}
 
 			if (bRenderOverlayMaterial)
@@ -261,8 +284,12 @@ void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) cons
 		for (int i = 0; i < CachedFinalVertices.Num(); i++)
 		{
 			MeshLOD.PositionVertexBuffer.VertexPosition(i) = CachedFinalVertices[i].Position;
-			MeshLOD.StaticMeshVertexBuffer.SetVertexTangents(i, CachedFinalVertices[i].TangentX.ToFVector(), CachedFinalVertices[i].GetTangentY(), CachedFinalVertices[i].TangentZ.ToFVector());
-			MeshLOD.StaticMeshVertexBuffer.SetVertexUV(i, 0, FVector2D(CachedFinalVertices[i].U, CachedFinalVertices[i].V));
+			MeshLOD.StaticMeshVertexBuffer.SetVertexTangents(i, (FVector3f)CachedFinalVertices[i].TangentX.ToFVector(), CachedFinalVertices[i].GetTangentY(), (FVector3f)CachedFinalVertices[i].TangentZ.ToFVector());
+
+			for (uint32 UVIndex = 0; UVIndex < LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords(); ++UVIndex)
+			{
+				MeshLOD.StaticMeshVertexBuffer.SetVertexUV(i, UVIndex, FVector2f(CachedFinalVertices[i].TextureCoordinates[UVIndex].X, CachedFinalVertices[i].TextureCoordinates[UVIndex].Y));
+			}
 		}
 
 		BeginUpdateResourceRHI(&MeshLOD.PositionVertexBuffer);
@@ -287,7 +314,7 @@ void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) cons
 	}
 }
 
-const FVertexFactory* FSkeletalMeshObjectCPUSkin::GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 /*ChunkIdx*/) const
+const FVertexFactory* FSkeletalMeshObjectCPUSkin::GetSkinVertexFactory(const FSceneView* View, int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const
 {
 	check( LODs.IsValidIndex(LODIndex) );
 	return &LODs[LODIndex].VertexFactory;
@@ -335,7 +362,7 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 
 	const FStaticMeshVertexBuffer& SrcVertexBuf = LODData.StaticVertexBuffers.StaticMeshVertexBuffer;
 	PositionVertexBuffer.Init(LODData.StaticVertexBuffers.PositionVertexBuffer);
-	StaticMeshVertexBuffer.Init(SrcVertexBuf.GetNumVertices(), 1);
+	StaticMeshVertexBuffer.Init(SrcVertexBuf.GetNumVertices(), MAX_TEXCOORDS);
 
 	for (uint32 i = 0; i < SrcVertexBuf.GetNumVertices(); i++)
 	{
@@ -370,9 +397,8 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 		check(SkelMeshRenderData);
 		check(SkelMeshRenderData->LODRenderData.IsValidIndex(LODIndex));
 		FSkeletalMeshLODRenderData& LODModel = SkelMeshRenderData->LODRenderData[LODIndex];
-		FResourceArrayInterface* OfflineData = LODModel.RayTracingData.Num() ? &LODModel.RayTracingData : nullptr;
-		FVertexBufferRHIRef VertexBufferRHI = LODModel.StaticVertexBuffers.PositionVertexBuffer.VertexBufferRHI;
-		FIndexBufferRHIRef IndexBufferRHI = LODModel.MultiSizeIndexContainer.GetIndexBuffer()->IndexBufferRHI;
+		FBufferRHIRef VertexBufferRHI = LODModel.StaticVertexBuffers.PositionVertexBuffer.VertexBufferRHI;
+		FBufferRHIRef IndexBufferRHI = LODModel.MultiSizeIndexContainer.GetIndexBuffer()->IndexBufferRHI;
 		uint32 VertexBufferStride = LODModel.StaticVertexBuffers.PositionVertexBuffer.GetStride();
 
 		uint32 TrianglesCount = 0;
@@ -384,7 +410,7 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 
 		TArray<FSkelMeshRenderSection>* RenderSections = &LODModel.RenderSections;
 		ENQUEUE_RENDER_COMMAND(InitSkeletalRenderCPUSkinRayTracingGeometry)(
-			[this, VertexBufferRHI, IndexBufferRHI, VertexBufferStride, TrianglesCount, RenderSections, OfflineData](FRHICommandListImmediate& RHICmdList)
+			[this, VertexBufferRHI, IndexBufferRHI, VertexBufferStride, TrianglesCount, RenderSections, &SourceGeometry = LODModel.SourceRayTracingGeometry](FRHICommandListImmediate& RHICmdList)
 			{
 				FRayTracingGeometryInitializer Initializer;
 				static const FName DebugName("FSkeletalMeshObjectCPUSkin");
@@ -404,18 +430,14 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 					Segment.VertexBufferStride = VertexBufferStride;
 					Segment.VertexBufferOffset = 0;
 					Segment.VertexBufferElementType = VET_Float3;
+					Segment.MaxVertices = Section.GetNumVertices();
 					Segment.FirstPrimitive = Section.BaseIndex / 3;
 					Segment.NumPrimitives = Section.NumTriangles;
-					Segment.bEnabled = !Section.bDisabled;
+					Segment.bEnabled = !Section.bDisabled && Section.bVisibleInRayTracing;
 					GeometrySections.Add(Segment);
 				}
 				Initializer.Segments = GeometrySections;
-
-				if (OfflineData)
-				{
-					Initializer.OfflineData = OfflineData;
-					Initializer.bDiscardOfflineData = false; // The RayTracingData can be used for multiple SkeletalMeshObjects , so we need to keep it around
-				}
+				Initializer.SourceGeometry = SourceGeometry.RayTracingGeometryRHI;
 
 				RayTracingGeometry.SetInitializer(Initializer);
 				RayTracingGeometry.InitResource();
@@ -472,16 +494,7 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::ReleaseResources()
 	BeginReleaseResource(&StaticMeshVertexBuffer);
 
 #if RHI_RAYTRACING
-	// BeginReleaseResource(&RayTracingGeometry);
-	// Workaround for UE-106993:
-	// Destroy ray tracing geometry on the render thread, as it may hold references to render resources.
-	// These references should be cleared in FRayTracingGeometry::ReleaseResource(), however FRayTracingGeometry does
-	// not implement this method and it can't be added due to 4.26 hotfix rules.
-	ENQUEUE_RENDER_COMMAND(ReleaseRayTracingGeometry)([Ptr = &RayTracingGeometry](FRHICommandListImmediate&)
-	{
-		Ptr->ReleaseResource();
-		*Ptr = FRayTracingGeometry(); // Explicitly reset all contents, including any resource references.
-	});
+	BeginReleaseResource(&RayTracingGeometry);
 #endif // RHI_RAYTRACING
 
 	bResourcesInitialized = false;
@@ -501,7 +514,7 @@ TArray<FTransform>* FSkeletalMeshObjectCPUSkin::GetComponentSpaceTransforms() co
 	}
 }
 
-const TArray<FMatrix>& FSkeletalMeshObjectCPUSkin::GetReferenceToLocalMatrices() const
+const TArray<FMatrix44f>& FSkeletalMeshObjectCPUSkin::GetReferenceToLocalMatrices() const
 {
 	return DynamicData->ReferenceToLocal;
 }
@@ -516,7 +529,7 @@ void FSkeletalMeshObjectCPUSkin::DrawVertexElements(FPrimitiveDrawInterface* PDI
 	{
 		FFinalSkinVertex& Vert = CachedFinalVertices[i];
 
-		const FVector WorldPos = ToWorldSpace.TransformPosition( Vert.Position );
+		const FVector WorldPos = ToWorldSpace.TransformPosition( FVector(Vert.Position) );
 
 		const FVector Normal = Vert.TangentZ.ToFVector();
 		const FVector Tangent = Vert.TangentX.ToFVector();
@@ -579,7 +592,7 @@ struct FMorphTargetInfo
 	/** Index of next delta to try applying. This prevents us looking at every delta for every vertex. */
 	int32						NextDeltaIndex;
 	/** Array of deltas to apply to mesh, sorted based on the index of the base mesh vert that they affect. */
-	FMorphTargetDelta*			Deltas;
+	const FMorphTargetDelta*	Deltas;
 	/** How many deltas are in array */
 	int32						NumDeltas;
 };
@@ -661,7 +674,7 @@ FORCEINLINE void ApplyMorphBlend( VertexType& DestVertex, const FMorphTargetDelt
 	FVector TanZ = DestVertex.TangentZ.ToFVector();
 
 	// add normal offset. can only apply normal deltas up to a weight of 1
-	DestVertex.TangentZ = FVector(TanZ + SrcMorph.TangentZDelta * FMath::Min(Weight,1.0f)).GetUnsafeNormal();
+	DestVertex.TangentZ = (TanZ + FVector(SrcMorph.TangentZDelta * FMath::Min(Weight,1.0f))).GetUnsafeNormal();
 	// Recover W
 	DestVertex.TangentZ.Vector.W = W;
 } 
@@ -708,7 +721,7 @@ const VectorRegister		VECTOR_0001				= DECLARE_VECTOR_REGISTER(0.f, 0.f, 0.f, 1.
 
 #define FIXED_VERTEX_INDEX 0xFFFF
 
-template<typename VertexType>
+template<typename VertexType, int32 NumberOfUVs>
 static void SkinVertexSection(
 	FFinalSkinVertex*& DestVertex,
 	TArray<FMorphTargetInfo>& MorphEvalInfos,
@@ -720,7 +733,7 @@ static void SkinVertexSection(
 	uint32 NumValidMorphs, 
 	int32 &CurBaseVertIdx, 
 	int32 LODIndex, 
-	const FMatrix* RESTRICT ReferenceToLocal, 
+	const FMatrix44f* RESTRICT ReferenceToLocal, 
 	const FClothSimulData* ClothSimData, 
 	float ClothBlendWeight, 
 	const FMatrix& WorldToLocal)
@@ -745,10 +758,10 @@ static void SkinVertexSection(
 			const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
 
 			VertexType SrcSoftVertex;
-			const FVector& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
+			const FVector& VertexPosition = (FVector)LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
 			FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
 			
-			SrcSoftVertex.Position = VertexPosition;
+			SrcSoftVertex.Position = (FVector3f)VertexPosition;
 			SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
 			SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 			for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
@@ -769,7 +782,8 @@ static void SkinVertexSection(
 			const FMeshToMeshVertData* ClothVertData = nullptr;
 			if (bLODUsesCloth)
 			{
-				ClothVertData = &Section.ClothMappingData[VertexIndex];
+				constexpr int32 ClothLODBias = 0;  // Use base Cloth LOD mapping data (biased mappings are only required for GPU skinning of raytraced elements)
+				ClothVertData = &Section.ClothMappingDataLODs[ClothLODBias][VertexIndex];
 				FPlatformMisc::Prefetch(ClothVertData, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next cloth vertex
 			}
 
@@ -794,7 +808,7 @@ static void SkinVertexSection(
 			}
 			VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Unpack and VectorLoadByte4.
 
-			const FMatrix BoneMatrix0 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_0]]];
+			const FMatrix44f BoneMatrix0 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_0]]];
 			VectorRegister Weight0 = VectorReplicate( Weights, INFLUENCE_0 );
 			VectorRegister M00	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[0][0] ), Weight0 );
 			VectorRegister M10	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[1][0] ), Weight0 );
@@ -803,7 +817,7 @@ static void SkinVertexSection(
 
 			if (MaxSectionBoneInfluences > 1 )
 			{
-				const FMatrix BoneMatrix1 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_1]]];
+				const FMatrix44f BoneMatrix1 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_1]]];
 				VectorRegister Weight1 = VectorReplicate( Weights, INFLUENCE_1 );
 				M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[0][0] ), Weight1, M00 );
 				M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[1][0] ), Weight1, M10 );
@@ -812,7 +826,7 @@ static void SkinVertexSection(
 
 				if (MaxSectionBoneInfluences > 2 )
 				{
-					const FMatrix BoneMatrix2 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_2]]];
+					const FMatrix44f BoneMatrix2 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_2]]];
 					VectorRegister Weight2 = VectorReplicate( Weights, INFLUENCE_2 );
 					M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[0][0] ), Weight2, M00 );
 					M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[1][0] ), Weight2, M10 );
@@ -821,7 +835,7 @@ static void SkinVertexSection(
 
 					if (MaxSectionBoneInfluences > 3 )
 					{
-						const FMatrix BoneMatrix3 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_3]]];
+						const FMatrix44f BoneMatrix3 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_3]]];
 						VectorRegister Weight3 = VectorReplicate( Weights, INFLUENCE_3 );
 						M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[0][0] ), Weight3, M00 );
 						M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[1][0] ), Weight3, M10 );
@@ -831,7 +845,7 @@ static void SkinVertexSection(
 
 					if (MaxSectionBoneInfluences > 4)
 					{
-						const FMatrix BoneMatrix4 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_4]]];
+						const FMatrix44f BoneMatrix4 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_4]]];
 						VectorRegister Weight4 = VectorReplicate( ExtraWeights, INFLUENCE_4 - INFLUENCE_4 );
 						M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[0][0] ), Weight4, M00 );
 						M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[1][0] ), Weight4, M10 );
@@ -840,7 +854,7 @@ static void SkinVertexSection(
 
 						if (MaxSectionBoneInfluences > 5)
 						{
-							const FMatrix BoneMatrix5 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_5]]];
+							const FMatrix44f BoneMatrix5 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_5]]];
 							VectorRegister Weight5 = VectorReplicate( ExtraWeights, INFLUENCE_5 - INFLUENCE_4 );
 							M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[0][0] ), Weight5, M00 );
 							M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[1][0] ), Weight5, M10 );
@@ -849,7 +863,7 @@ static void SkinVertexSection(
 
 							if (MaxSectionBoneInfluences > 6)
 							{
-								const FMatrix BoneMatrix6 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_6]]];
+								const FMatrix44f BoneMatrix6 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_6]]];
 								VectorRegister Weight6 = VectorReplicate( ExtraWeights, INFLUENCE_6 - INFLUENCE_4 );
 								M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[0][0] ), Weight6, M00 );
 								M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[1][0] ), Weight6, M10 );
@@ -858,7 +872,7 @@ static void SkinVertexSection(
 
 								if (MaxSectionBoneInfluences > 7)
 								{
-									const FMatrix BoneMatrix7 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_7]]];
+									const FMatrix44f BoneMatrix7 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_7]]];
 									VectorRegister Weight7 = VectorReplicate( ExtraWeights, INFLUENCE_7 - INFLUENCE_4 );
 									M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[0][0] ), Weight7, M00 );
 									M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[1][0] ), Weight7, M10 );
@@ -867,7 +881,7 @@ static void SkinVertexSection(
 
 									if (MaxSectionBoneInfluences > 8)
 									{
-										const FMatrix BoneMatrix8 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_8]]];
+										const FMatrix44f BoneMatrix8 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_8]]];
 										VectorRegister Weight8 = VectorReplicate( ExtraWeights2, INFLUENCE_8 - INFLUENCE_8 );
 										M00 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[0][0]), Weight8, M00 );
 										M10 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[1][0]), Weight8, M10 );
@@ -876,7 +890,7 @@ static void SkinVertexSection(
 
 										if (MaxSectionBoneInfluences > 9)
 										{
-											const FMatrix BoneMatrix9 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_9]]];
+											const FMatrix44f BoneMatrix9 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_9]]];
 											VectorRegister Weight9 = VectorReplicate(ExtraWeights2, INFLUENCE_9 - INFLUENCE_8);
 											M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[0][0]), Weight9, M00);
 											M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[1][0]), Weight9, M10);
@@ -885,7 +899,7 @@ static void SkinVertexSection(
 
 											if (MaxSectionBoneInfluences > 10)
 											{
-												const FMatrix BoneMatrix10 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_10]]];
+												const FMatrix44f BoneMatrix10 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_10]]];
 												VectorRegister Weight10 = VectorReplicate(ExtraWeights2, INFLUENCE_10 - INFLUENCE_8);
 												M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[0][0]), Weight10, M00);
 												M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[1][0]), Weight10, M10);
@@ -894,7 +908,7 @@ static void SkinVertexSection(
 
 												if (MaxSectionBoneInfluences > 11)
 												{
-													const FMatrix BoneMatrix11 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_11]]];
+													const FMatrix44f BoneMatrix11 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_11]]];
 													VectorRegister Weight11 = VectorReplicate(ExtraWeights2, INFLUENCE_11 - INFLUENCE_8);
 													M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[0][0]), Weight11, M00);
 													M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[1][0]), Weight11, M10);
@@ -932,8 +946,8 @@ static void SkinVertexSection(
 			// carry over the W component (sign of basis determinant) 
 			DstNormals[2] = VectorMultiplyAdd( VECTOR_0001, SrcNormals[2], DstNormals[2] );
 
-			// Write to 16-byte aligned memory:
-			VectorStore( DstNormals[0], &DestVertex->Position );
+			// Write to memory:
+			VectorStoreFloat3( DstNormals[0], &DestVertex->Position );
 			Pack3( DstNormals[1], &DestVertex->TangentX.Vector.Packed );
 			Pack4( DstNormals[2], &DestVertex->TangentZ.Vector.Packed );
 			VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Pack().
@@ -947,7 +961,7 @@ static void SkinVertexSection(
 					{
 						if (InClothSimData.Positions.IsValidIndex(InIndex))
 						{
-							return FVector(InClothSimData.Transform.TransformPosition(InClothSimData.Positions[InIndex]));
+							return FVector(InClothSimData.Transform.TransformPosition((FVector)InClothSimData.Positions[InIndex]));
 						}
 
 						return FVector::ZeroVector;
@@ -957,7 +971,7 @@ static void SkinVertexSection(
 					{
 						if (InClothSimData.Normals.IsValidIndex(InIndex))
 						{
-							return FVector(InClothSimData.Transform.TransformVector(InClothSimData.Normals[InIndex]));
+							return FVector(InClothSimData.Transform.TransformVector((FVector)InClothSimData.Normals[InIndex]));
 						}
 
 						return FVector(0, 0, 1);
@@ -1001,10 +1015,12 @@ static void SkinVertexSection(
 				FVector SimulatedPositionWorld = ClothCPU::ClothingPosition(*ClothVertData, *ClothSimData);
 
 				// transform back to local space
-				FVector SimulatedPosition = WorldToLocal.TransformPosition(SimulatedPositionWorld);
+				FVector3f SimulatedPosition = (FVector4f)WorldToLocal.TransformPosition(SimulatedPositionWorld);
 
+				const float VertexBlend = ClothBlendWeight * (1.0f - (ClothVertData->SourceMeshVertIndices[3] / 65535.0f));
+				
 				// Lerp between skinned and simulated position
-				DestVertex->Position = FMath::Lerp(DestVertex->Position, SimulatedPosition, ClothBlendWeight);
+				DestVertex->Position = FMath::Lerp(DestVertex->Position, SimulatedPosition, VertexBlend);
 
 				// recompute tangent & normal
 				FVector TangentX;
@@ -1014,24 +1030,25 @@ static void SkinVertexSection(
 				// Lerp between skinned and simulated tangents
 				FVector SkinnedTangentX = DestVertex->TangentX.ToFVector();
 				FVector4 SkinnedTangentZ = DestVertex->TangentZ.ToFVector4();
-				DestVertex->TangentX = (TangentX * ClothBlendWeight) + (SkinnedTangentX * (1.0f - ClothBlendWeight));
-				DestVertex->TangentZ = FVector4((TangentZ * ClothBlendWeight) + (SkinnedTangentZ * (1.0f - ClothBlendWeight)), SkinnedTangentZ.W);
+				DestVertex->TangentX = (TangentX * VertexBlend) + (SkinnedTangentX * (1.0f - VertexBlend));
+				DestVertex->TangentZ = FVector4((TangentZ * VertexBlend) + (SkinnedTangentZ * (1.0f - VertexBlend)), SkinnedTangentZ.W);
 			}
 
 			// Copy UVs.
-			FVector2D UVs = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Section.GetVertexBufferIndex() + VertexIndex, 0);
-			DestVertex->U = UVs.X;
-			DestVertex->V = UVs.Y;
+			for (int32 UVIndex = 0; UVIndex < NumberOfUVs; ++UVIndex)
+			{
+				DestVertex->TextureCoordinates[UVIndex] = FVector2D(LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Section.GetVertexBufferIndex() + VertexIndex, UVIndex));
+			}
 
 			CurBaseVertIdx++;
 		}
 	}
 }
 
-template<typename VertexType>
+template<typename VertexType, int32 NumberOfUVs>
 static void SkinVertices(
 	FFinalSkinVertex* DestVertex, 
-	FMatrix* ReferenceToLocal, 
+	FMatrix44f* ReferenceToLocal, 
 	int32 LODIndex, 
 	FSkeletalMeshLODRenderData& LOD,
 	FSkinWeightVertexBuffer& WeightBuffer,
@@ -1067,7 +1084,7 @@ static void SkinVertices(
 
 		const FClothSimulData* ClothSimData = ClothSimulUpdateData.Find(Section.CorrespondClothAssetIndex);
 
-		SkinVertexSection<VertexType>(DestVertex, MorphEvalInfos, MorphTargetWeights, Section, LOD, WeightBuffer, VertexBufferBaseIndex, NumValidMorphs, CurBaseVertIdx, LODIndex, ReferenceToLocal, ClothSimData, ClothBlendWeight, WorldToLocal);
+		SkinVertexSection<VertexType, NumberOfUVs>(DestVertex, MorphEvalInfos, MorphTargetWeights, Section, LOD, WeightBuffer, VertexBufferBaseIndex, NumValidMorphs, CurBaseVertIdx, LODIndex, ReferenceToLocal, ClothSimData, ClothBlendWeight, WorldToLocal);
 	}
 
 	VectorSetControlRegister( StatusRegister );
@@ -1110,8 +1127,8 @@ static FORCEINLINE void CalculateSectionBoneWeights(FFinalSkinVertex*& DestVerte
 		FSkinWeightInfo SrcWeight = SkinWeightVertexBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
 		//Zero out the UV coords
-		DestVertex->U = 0.0f;
-		DestVertex->V = 0.0f;
+		DestVertex->TextureCoordinates[0].X = 0.0f;
+		DestVertex->TextureCoordinates[0].Y = 0.0f;
 
 		const FBoneIndexType* RESTRICT BoneIndices = SrcWeight.InfluenceBones;
 		const uint8* RESTRICT BoneWeights = SrcWeight.InfluenceWeights;
@@ -1120,8 +1137,8 @@ static FORCEINLINE void CalculateSectionBoneWeights(FFinalSkinVertex*& DestVerte
 		{
 			if (BonesOfInterest.Contains(BoneMap[BoneIndices[i]]))
 			{
-				DestVertex->U += BoneWeights[i] * INV255; 
-				DestVertex->V += BoneWeights[i] * INV255;
+				DestVertex->TextureCoordinates[0].X += BoneWeights[i] * INV255; 
+				DestVertex->TextureCoordinates[0].Y += BoneWeights[i] * INV255;
 			}
 		}
 	}
@@ -1153,18 +1170,19 @@ static void CalculateMorphTargetWeights(FFinalSkinVertex* DestVertex, FSkeletalM
 
 	for (FFinalSkinVertex* ClearVert = DestVertex; ClearVert != EndVert; ++ClearVert)
 	{
-		ClearVert->U = 0.f;
-		ClearVert->V = 0.f;
+		DestVertex->TextureCoordinates[0].X = 0.0f;
+		DestVertex->TextureCoordinates[0].Y = 0.0f;
 	}
 
 	for (const UMorphTarget* Morphtarget : InMorphTargetOfInterest)
 	{
-		const FMorphTargetLODModel& MTLOD = Morphtarget->MorphLODModels[LODIndex];
-		for (int32 MorphVertexIndex = 0; MorphVertexIndex < MTLOD.Vertices.Num(); ++MorphVertexIndex)
+		int32 NumDeltas;
+		const FMorphTargetDelta* MTLODVertices = Morphtarget->GetMorphTargetDelta(LODIndex, NumDeltas);
+		for (int32 MorphVertexIndex = 0; MorphVertexIndex < NumDeltas; ++MorphVertexIndex)
 		{
-			FFinalSkinVertex* SetVert = DestVertex + MTLOD.Vertices[MorphVertexIndex].SourceIdx;
-			SetVert->U = 1.0f;
-			SetVert->V = 1.0f;
+			FFinalSkinVertex* SetVert = DestVertex + MTLODVertices[MorphVertexIndex].SourceIdx;
+			DestVertex->TextureCoordinates[0].X += 1.0f;
+			DestVertex->TextureCoordinates[0].Y += 1.0f;
 		}
 	}
 }

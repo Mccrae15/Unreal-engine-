@@ -10,10 +10,10 @@
 #include "Math/Vector.h"
 #include "Math/Rotator.h"
 #include "EditorModeManager.h"
+#include "EditorModeTools.h"
 
 ULegacyEdModeWrapper::ULegacyEdModeWrapper()
 {
-
 }
 
 bool ULegacyEdModeWrapper::CreateLegacyMode(FEditorModeID ModeID, FEditorModeTools& ModeManager)
@@ -221,14 +221,6 @@ bool ULegacyEdModeWrapper::HandleClick(FEditorViewportClient* InViewportClient, 
 
 void ULegacyEdModeWrapper::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
 {
-	// Since someone could have held onto the FEdMode directly, bubble up the deletion request to the UEdMode
-	// It will take an extra tick to fully delete in the manager, but go ahead and bail out before ticking the legacy mode.
-	if (LegacyEditorMode->IsPendingDeletion())
-	{
-		RequestDeletion();
-		return;
-	}
-
 	LegacyEditorMode->Tick(ViewportClient, DeltaTime);
 }
 
@@ -282,11 +274,6 @@ bool ULegacyEdModeWrapper::PostConvertMouseMovement(FEditorViewportClient* InVie
 	return LegacyEditorMode->PostConvertMouseMovement(InViewportClient);
 }
 
-void ULegacyEdModeWrapper::DrawBrackets(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
-{
-	LegacyEditorMode->DrawBrackets(ViewportClient, Viewport, View, Canvas);
-}
-
 bool ULegacyEdModeWrapper::ShouldDrawBrushWireframe(AActor* InActor) const
 {
 	return LegacyEditorMode->ShouldDrawBrushWireframe(InActor);
@@ -296,7 +283,6 @@ void ULegacyEdModeWrapper::Enter()
 {
 	LegacyEditorMode->Enter();
 	Toolkit = LegacyEditorMode->GetToolkit();
-	bPendingDeletion = false;
 }
 
 void ULegacyEdModeWrapper::Exit()
@@ -315,6 +301,117 @@ UTexture2D* ULegacyEdModeWrapper::GetVertexTexture()
 {
 	return LegacyEditorMode->GetVertexTexture();
 }
+
+bool ULegacyEdModeWrapper::AllowWidgetMove()
+{
+	return LegacyEditorMode->AllowWidgetMove();
+}
+
+bool ULegacyEdModeWrapper::CanCycleWidgetMode() const
+{
+	return LegacyEditorMode->CanCycleWidgetMode();
+}
+
+bool ULegacyEdModeWrapper::ShowModeWidgets() const
+{
+	return LegacyEditorMode->ShowModeWidgets();
+}
+
+EAxisList::Type ULegacyEdModeWrapper::GetWidgetAxisToDraw(UE::Widget::EWidgetMode InWidgetMode) const
+{
+	return LegacyEditorMode->GetWidgetAxisToDraw(InWidgetMode);
+}
+
+FVector ULegacyEdModeWrapper::GetWidgetLocation() const
+{
+	return LegacyEditorMode->GetWidgetLocation();
+}
+
+bool ULegacyEdModeWrapper::ShouldDrawWidget() const
+{
+	return LegacyEditorMode->ShouldDrawWidget();
+}
+
+bool ULegacyEdModeWrapper::UsesTransformWidget() const
+{
+	return LegacyEditorMode->UsesTransformWidget();
+}
+
+bool ULegacyEdModeWrapper::UsesTransformWidget(UE::Widget::EWidgetMode CheckMode) const
+{
+	return LegacyEditorMode->UsesTransformWidget(CheckMode);
+}
+
+FVector ULegacyEdModeWrapper::GetWidgetNormalFromCurrentAxis(void* InData)
+{
+	return LegacyEditorMode->GetWidgetNormalFromCurrentAxis(InData);
+}
+
+bool ULegacyEdModeWrapper::BoxSelect(FBox& InBox, bool InSelect)
+{
+	return LegacyEditorMode->BoxSelect(InBox, InSelect);
+}
+
+bool ULegacyEdModeWrapper::FrustumSelect(const FConvexVolume& InFrustum, FEditorViewportClient* InViewportClient, bool InSelect)
+{
+	return LegacyEditorMode->FrustumSelect(InFrustum, InViewportClient, InSelect);
+}
+
+void ULegacyEdModeWrapper::SetCurrentWidgetAxis(EAxisList::Type InAxis)
+{
+	LegacyEditorMode->SetCurrentWidgetAxis(InAxis);
+}
+
+EAxisList::Type ULegacyEdModeWrapper::GetCurrentWidgetAxis() const
+{
+	return LegacyEditorMode->GetCurrentWidgetAxis();
+}
+
+bool ULegacyEdModeWrapper::UsesPropertyWidgets() const
+{
+	return LegacyEditorMode->UsesPropertyWidgets();
+}
+
+bool ULegacyEdModeWrapper::GetCustomDrawingCoordinateSystem(FMatrix& InMatrix, void* InData)
+{
+	return LegacyEditorMode->GetCustomDrawingCoordinateSystem(InMatrix, InData);
+}
+
+bool ULegacyEdModeWrapper::GetCustomInputCoordinateSystem(FMatrix& InMatrix, void* InData)
+{
+	return LegacyEditorMode->GetCustomInputCoordinateSystem(InMatrix, InData);
+}
+
+void ULegacyEdModeWrapper::SetCurrentTool(EModeTools InID)
+{
+	LegacyEditorMode->SetCurrentTool(InID);
+}
+
+void ULegacyEdModeWrapper::SetCurrentTool(FModeTool* InModeTool)
+{
+	LegacyEditorMode->SetCurrentTool(InModeTool);
+}
+
+FModeTool* ULegacyEdModeWrapper::FindTool(EModeTools InID)
+{
+	return LegacyEditorMode->FindTool(InID);
+}
+
+const TArray<FModeTool*>& ULegacyEdModeWrapper::GetTools() const
+{
+	return LegacyEditorMode->GetTools();
+}
+
+FModeTool* ULegacyEdModeWrapper::GetCurrentTool()
+{
+	return LegacyEditorMode->GetCurrentTool();
+}
+
+const FModeTool* ULegacyEdModeWrapper::GetCurrentTool() const
+{
+	return LegacyEditorMode->GetCurrentTool();
+}
+
 
 void ULegacyEdModeWrapper::Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI)
 {

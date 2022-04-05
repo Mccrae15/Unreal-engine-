@@ -48,14 +48,14 @@ void FSuspensionConstraintPhysicsProxy::InitializeOnPhysicsThread(Chaos::FPBDRig
 		auto& SuspensionConstraints = InSolver->GetSuspensionConstraints();
 		if (Constraint != nullptr)
 		{
-			Chaos::FConstraintBase::FProxyBasePair& BasePairs = Constraint->GetParticleProxies();
+			Chaos::FProxyBasePair& BasePairs = Constraint->GetParticleProxies();
 
 			
 			Chaos::TGeometryParticleHandle<Chaos::FReal, 3>* Handle0 = GetParticleHandleFromProxy(BasePairs[0]);
 			if (Handle0)
 			{
-				Handle = SuspensionConstraints.AddConstraint(Handle0, Constraint->GetLocation()
-					, SuspensionSettingsBuffer);
+				Handle = SuspensionConstraints.AddConstraint(Handle0, Constraint->GetLocation(), SuspensionSettingsBuffer);
+				Handle0->AddConstraintHandle(Handle);
 			}
 			
 		}
@@ -193,10 +193,23 @@ void FSuspensionConstraintPhysicsProxy::DestroyOnPhysicsThread(Chaos::FPBDRigids
 {
 	if (Handle)
 	{
+		// @todo(chaos): clean up constraint management
+		RBDSolver->GetEvolution()->RemoveConstraintFromConstraintGraph(Handle);
 		auto& SuspensionConstraints = RBDSolver->GetSuspensionConstraints();
 		SuspensionConstraints.RemoveConstraint(Handle->GetConstraintIndex());
 
 		delete Constraint; 
 		Constraint = nullptr;
+	}
+}
+
+void FSuspensionConstraintPhysicsProxy::UpdateTargetOnPhysicsThread(Chaos::FPBDRigidsSolver* RBDSolver, const FVector& TargetPos, const FVector& Normal, bool Enabled)
+{
+	if (Handle)
+	{
+		auto& SuspensionConstraints = RBDSolver->GetSuspensionConstraints();
+		SuspensionConstraints.GetSettings(Handle->GetConstraintIndex()).Target = TargetPos;
+		SuspensionConstraints.GetSettings(Handle->GetConstraintIndex()).Normal = Normal;
+		SuspensionConstraints.GetSettings(Handle->GetConstraintIndex()).Enabled = Enabled;
 	}
 }

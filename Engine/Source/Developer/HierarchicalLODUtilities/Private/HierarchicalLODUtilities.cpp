@@ -32,7 +32,6 @@
 
 #if WITH_EDITOR
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "ScopedTransaction.h"
 #include "PackageTools.h"
 #include "Settings/EditorExperimentalSettings.h"
@@ -45,6 +44,7 @@
 #include "Engine/HLODProxy.h"
 #include "HierarchicalLOD.h"
 #include "LevelUtils.h"
+#include "Materials/Material.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHierarchicalLODUtilities, Verbose, All);
 
@@ -110,7 +110,7 @@ static FString GetHLODPackageName(const ULevel* InLevel, const uint32 InHLODLeve
 	FString LevelPackageName;
 	if (ULevelStreaming* StreamingLevel = FLevelUtils::FindStreamingLevel(InLevel))
 	{
-		LevelPackageName = StreamingLevel->PackageNameToLoad != NAME_None ? StreamingLevel->PackageNameToLoad.ToString() : StreamingLevel->GetWorldAssetPackageName();
+		LevelPackageName = (StreamingLevel->PackageNameToLoad != NAME_None) ? StreamingLevel->PackageNameToLoad.ToString() : StreamingLevel->GetWorldAssetPackageName();
 	}
 	else
 	{
@@ -182,10 +182,8 @@ UPackage* FHierarchicalLODUtilities::CreateOrRetrieveLevelHLODPackage(const ULev
 	HLODPackage->FullyLoad();
 	HLODPackage->SetPackageFlags(PKG_ContainsMapData);		// PKG_ContainsMapData required so FEditorFileUtils::GetDirtyContentPackages can treat this as a map package
 
-	// Target level filename
-	const FString HLODLevelFileName = FPackageName::LongPackageNameToFilename(HLODLevelPackageName);
-	// This is a hack to avoid save file dialog when we will be saving HLOD map package
-	HLODPackage->FileName = FName(*HLODLevelFileName);
+	// Target PackagePath; this is a hack to avoid save file dialog when we will be saving HLOD map package
+	HLODPackage->SetLoadedPath(FPackagePath::FromPackageNameChecked(HLODLevelPackageName));
 
 	return HLODPackage;
 }
@@ -226,10 +224,8 @@ UPackage* FHierarchicalLODUtilities::CreateOrRetrieveLevelHLODPackage(const ULev
 	HLODPackage->Modify();
 	HLODPackage->SetPackageFlags(PKG_ContainsMapData);		// PKG_ContainsMapData required so FEditorFileUtils::GetDirtyContentPackages can treat this as a map package
 
-	// Target level filename
-	const FString HLODLevelFileName = FPackageName::LongPackageNameToFilename(HLODLevelPackageName);
-	// This is a hack to avoid save file dialog when we will be saving HLOD map package
-	HLODPackage->FileName = FName(*HLODLevelFileName);
+	// Target PackagePath; this is a hack to avoid save file dialog when we will be saving HLOD map package
+	HLODPackage->SetLoadedPath(FPackagePath::FromPackageNameChecked(HLODLevelPackageName));
 
 	return HLODPackage;
 }
@@ -273,10 +269,8 @@ static UPackage* CreateOrRetrieveImposterMeshPackage(const UStaticMesh* InImpost
 	UPackage* MeshPackage = CreatePackage( *MeshPackageName);
 	MeshPackage->FullyLoad();
 
-	// Target filename
-	const FString MeshPackageFileName = FPackageName::LongPackageNameToFilename(MeshPackageName);
-	// This is a hack to avoid save file dialog when we will be saving imposter mesh package
-	MeshPackage->FileName = FName(*MeshPackageFileName);
+	// Target PackagePath; this is a hack to avoid save file dialog when we will be saving imposter mesh package
+	MeshPackage->SetLoadedPath(FPackagePath::FromPackageNameChecked(MeshPackageName));
 
 	return MeshPackage;
 }
@@ -287,7 +281,7 @@ static UMaterialInterface* GetImposterMaterial(UStaticMeshComponent* InComponent
 	const int32 LODIndex = InComponent->GetStaticMesh()->GetNumLODs() - 1;
 
 	// Retrieve the sections, we're expect 1 for imposter meshes
-	const FStaticMeshLODResources::FStaticMeshSectionArray& Sections = InComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndex].Sections;
+	const FStaticMeshSectionArray& Sections = InComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndex].Sections;
 	check(Sections.Num() == 1);
 
 	// Retrieve material for this section
@@ -298,14 +292,19 @@ static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, 
 {
 	UPackage* ImposterStaticMeshPackage = CreateOrRetrieveImposterMeshPackage(InComponent->GetStaticMesh());
 
+	const UStaticMesh* SourceImposterStaticMesh = InComponent->GetStaticMesh();
+	const FVector SourcePositiveBoundsExtension = SourceImposterStaticMesh->GetPositiveBoundsExtension();
+	const FVector SourceNegativeBoundsExtension = SourceImposterStaticMesh->GetNegativeBoundsExtension();
+	const bool SourceHasBoundsExtension = !SourcePositiveBoundsExtension.IsZero() || !SourceNegativeBoundsExtension.IsZero();
+
 	// check if our asset exists
-	const FString ImposterStaticMeshName = GetImposterMeshName(InComponent->GetStaticMesh());
+	const FString ImposterStaticMeshName = GetImposterMeshName(SourceImposterStaticMesh);
 	UStaticMesh* ImposterStaticMesh = FindObject<UStaticMesh>(ImposterStaticMeshPackage, *ImposterStaticMeshName);
 	bool bMeshChanged = false;
 
 	FMeshDescription SourceMeshDesc;
 	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-	MeshMergeUtilities.ExtractImposterToRawMesh(InComponent, SourceMeshDesc);
+	MeshMergeUtilities.RetrieveMeshDescription(InComponent->GetStaticMesh(), InComponent->GetStaticMesh()->GetNumLODs() - 1, SourceMeshDesc);
 
 	if (ImposterStaticMesh == nullptr)
 	{
@@ -332,14 +331,13 @@ static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, 
 		SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
 		SrcModel.BuildSettings.bGenerateLightmapUVs = InProxySettings.bGenerateLightmapUVs;
 		SrcModel.BuildSettings.bBuildReversedIndexBuffer = false;
-		SrcModel.BuildSettings.bBuildAdjacencyBuffer = InProxySettings.bAllowAdjacency;
 		if (!InProxySettings.bAllowDistanceField)
 		{
 			SrcModel.BuildSettings.DistanceFieldResolutionScale = 0.0f;
 		}
 
 		ImposterStaticMesh->CreateMeshDescription(0, SourceMeshDesc);
-		
+
 		// Disable collisions on imposters
 		FMeshSectionInfo Info = ImposterStaticMesh->GetSectionInfoMap().Get(0, 0);
 		Info.bEnableCollision = false;
@@ -365,6 +363,13 @@ static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, 
 			*ImposterMeshDesc = SourceMeshDesc;
 			bMeshChanged = true;
 		}
+
+		// Validate source bounds extensions haven't changed
+		if (!bMeshChanged && SourceHasBoundsExtension)
+		{
+			bMeshChanged = !SourcePositiveBoundsExtension.Equals(ImposterStaticMesh->GetNegativeBoundsExtension()) ||
+						   !SourceNegativeBoundsExtension.Equals(ImposterStaticMesh->GetPositiveBoundsExtension());
+		}
 	}
 
 	if (bMeshChanged)
@@ -377,16 +382,26 @@ static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, 
 
 		ImposterStaticMesh->PostEditChange();
 
-		// Our imposters meshes are flat, but they actually represent a volume.
-		// Extend the imposter bounds using the original mesh bounds.
-		if (ImposterStaticMesh->GetBoundingBox().GetVolume() == 0)
+		// If the source has source bounds extensions, apply them unchanged
+		if (SourceHasBoundsExtension)
 		{
-			const FBox StaticMeshBox = ImposterStaticMesh->GetBoundingBox();
-			const FBox CombinedBox = StaticMeshBox + InComponent->GetStaticMesh()->GetBoundingBox();
-			ImposterStaticMesh->SetPositiveBoundsExtension((CombinedBox.Max - StaticMeshBox.Max));
-			ImposterStaticMesh->SetNegativeBoundsExtension((StaticMeshBox.Min - CombinedBox.Min));
-			ImposterStaticMesh->CalculateExtendedBounds();
+			ImposterStaticMesh->SetPositiveBoundsExtension(SourceImposterStaticMesh->GetPositiveBoundsExtension());
+			ImposterStaticMesh->SetNegativeBoundsExtension(SourceImposterStaticMesh->GetNegativeBoundsExtension());
 		}
+		else
+		{
+			// Our imposters meshes are flat, but they actually represent a volume.
+			// Extend the imposter bounds using the original mesh bounds.
+			if (ImposterStaticMesh->GetBoundingBox().GetVolume() == 0)
+			{
+				const FBox StaticMeshBox = ImposterStaticMesh->GetBoundingBox();
+				const FBox CombinedBox = StaticMeshBox + SourceImposterStaticMesh->GetBoundingBox();
+				ImposterStaticMesh->SetPositiveBoundsExtension((CombinedBox.Max - StaticMeshBox.Max));
+				ImposterStaticMesh->SetNegativeBoundsExtension((StaticMeshBox.Min - CombinedBox.Min));
+			}
+		}
+
+		ImposterStaticMesh->CalculateExtendedBounds();
 
 		ImposterStaticMesh->MarkPackageDirty();
 	}
@@ -421,7 +436,7 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 		return false;
 	}
 
-	TArray<UStaticMeshComponent*> AllImposters;
+	TArray<UStaticMeshComponent*> AllInstances;
 	if (LODSetup.MergeSetting.bIncludeImposters)
 	{			
 		// Retrieve all imposters.
@@ -431,13 +446,13 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			{
 				if (LODActor->ShouldUseInstancing(StaticMeshComponent))
 				{
-					AllImposters.Add(StaticMeshComponent);
+					AllInstances.Add(StaticMeshComponent);
 				}
 			}
 		}
 
-		// Imposters won't be merged in the HLOD mesh
-		AllComponents.RemoveAll([&](UPrimitiveComponent* Component) { return AllImposters.Contains(Component); });
+		// Instances won't be merged in the HLOD mesh
+		AllComponents.RemoveAll([&](UPrimitiveComponent* Component) { return AllInstances.Contains(Component); });
 	}
 
 	if (AllComponents.Num() > 0)
@@ -583,56 +598,58 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 
 	// Add imposters
 	LODActor->ClearInstances();
-	if (AllImposters.Num() > 0)
+	if (AllInstances.Num() > 0)
 	{
-		struct FLODImposterBatch
+		struct FLODInstanceBatch
 		{
-			UStaticMesh*		StaticMesh;
-			TArray<FTransform>	Transforms;
+			UStaticMesh*					StaticMesh;
+			TArray<FTransform>				Transforms;
+			TArray<FCustomPrimitiveData>	CustomPrimitiveData;
 		};
 
-		// Get all meshes + transforms for all imposters type (per material)
-		TMap<FHLODInstancingKey, FLODImposterBatch> ImposterBatches;
-		for (UStaticMeshComponent* Imposter : AllImposters)
+		// Get all meshes + transforms for all instances type (per material)
+		TMap<FHLODInstancingKey, FLODInstanceBatch> InstancesBatches;
+		for (UStaticMeshComponent* SMC : AllInstances)
 		{
-			UStaticMesh* StaticMesh = Imposter->GetStaticMesh();
+			UStaticMesh* StaticMesh = SMC->GetStaticMesh();
 			check(StaticMesh);
 
-			UMaterialInterface* ImposterMaterial = GetImposterMaterial(Imposter);
+			UMaterialInterface* InstanceMaterial = GetImposterMaterial(SMC);
 
-			FHLODInstancingKey Key(Imposter->GetStaticMesh(), ImposterMaterial);
+			FHLODInstancingKey Key(SMC->GetStaticMesh(), InstanceMaterial);
 			check(Key.IsValid());
 
-			FLODImposterBatch& LODImposterBatch = ImposterBatches.FindOrAdd(Key);
+			FLODInstanceBatch& LODInstanceBatch = InstancesBatches.FindOrAdd(Key);
 
 			// If we have an ISMC, ensure we include all its instances
-			if (UInstancedStaticMeshComponent* InstancedSMC = Cast<UInstancedStaticMeshComponent>(Imposter))
+			if (UInstancedStaticMeshComponent* InstancedSMC = Cast<UInstancedStaticMeshComponent>(SMC))
 			{
 				FTransform ActorTransformWS = InstancedSMC->GetOwner()->GetActorTransform();
 
-				LODImposterBatch.Transforms.Reserve(LODImposterBatch.Transforms.Num() + InstancedSMC->GetInstanceCount());
+				LODInstanceBatch.Transforms.Reserve(LODInstanceBatch.Transforms.Num() + InstancedSMC->GetInstanceCount());
 				for (const FInstancedStaticMeshInstanceData& InstanceData : InstancedSMC->PerInstanceSMData)
 				{
 					FTransform InstanceTransformWS = FTransform(InstanceData.Transform) * ActorTransformWS;
-					LODImposterBatch.Transforms.Add(InstanceTransformWS);
+					LODInstanceBatch.Transforms.Add(InstanceTransformWS);
 				}
 			}
 			else
 			{
-				LODImposterBatch.Transforms.Add(Imposter->GetOwner()->GetActorTransform());
+				LODInstanceBatch.Transforms.Add(SMC->GetOwner()->GetActorTransform());
+				LODInstanceBatch.CustomPrimitiveData.Add(SMC->GetCustomPrimitiveData());
 			}
 
 			// The static mesh hasn't been created yet, do it.
-			if (LODImposterBatch.StaticMesh == nullptr)
+			if (LODInstanceBatch.StaticMesh == nullptr)
 			{
-				LODImposterBatch.StaticMesh = CreateImposterStaticMesh(Imposter, LODSetup.ProxySetting);
+				LODInstanceBatch.StaticMesh = CreateImposterStaticMesh(SMC, LODSetup.ProxySetting);
 			}
 		}
 
 		// Add imposters to the LODActor
-		for (const auto& ImposterBatch : ImposterBatches)
+		for (const auto& ImposterBatch : InstancesBatches)
 		{
-			LODActor->AddInstances(ImposterBatch.Value.StaticMesh, ImposterBatch.Key.Material, ImposterBatch.Value.Transforms);
+			LODActor->AddInstances(ImposterBatch.Value.StaticMesh, ImposterBatch.Key.Material, ImposterBatch.Value.Transforms, ImposterBatch.Value.CustomPrimitiveData);
 		}
 	}
 
@@ -641,10 +658,8 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UPackage* AssetsOuter, const FHierarchicalSimplification& LODSetup)
 {
-	UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial"), NULL, LOAD_None, NULL);
-	check(BaseMaterial);
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return BuildStaticMeshForLODActor(LODActor, AssetsOuter, LODSetup, BaseMaterial);
+	return BuildStaticMeshForLODActor(LODActor, AssetsOuter, LODSetup, GEngine->DefaultHLODFlattenMaterial);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
@@ -750,7 +765,6 @@ void FHierarchicalLODUtilities::DestroyCluster(ALODActor* InActor)
 
 	const FScopedTransaction Transaction(LOCTEXT("UndoAction_DeleteCluster", "Deleting a (invalid) Cluster"));
 	Actor->Modify(bShouldDirtyLevel);
-	World->Modify(bShouldDirtyLevel);
 
 	UHLODProxy* HLODProxy = InActor->GetProxy();
 
@@ -768,17 +782,11 @@ void FHierarchicalLODUtilities::DestroyCluster(ALODActor* InActor)
 		InActor->RemoveSubActor(SubActor);
 	}
 
-	World->DestroyActor(InActor);
+	World->DestroyActor(InActor, false);
 
 	if (ParentLOD != nullptr && !ParentLOD->HasAnySubActors())
 	{
 		DestroyCluster(ParentLOD);
-	}
-
-	// Update the HLOD proxy so that it's content reflect any change to the level
-	if (HLODProxy)
-	{
-		HLODProxy->Clean();
 	}
 }
 
@@ -792,7 +800,7 @@ ALODActor* FHierarchicalLODUtilities::CreateNewClusterActor(UWorld* InWorld, con
 	// Check incoming data
 	check(InWorld != nullptr && WorldSettings != nullptr && InLODLevel >= 0);
 	const TArray<struct FHierarchicalSimplification>& HierarchicalLODSetups = InWorld->GetWorldSettings()->GetHierarchicalLODSetup();
-	if (!WorldSettings->bEnableHierarchicalLODSystem || HierarchicalLODSetups.Num() == 0 || HierarchicalLODSetups.Num() < InLODLevel)
+	if (HierarchicalLODSetups.Num() == 0 || HierarchicalLODSetups.Num() < InLODLevel)
 	{
 		return nullptr;
 	}
@@ -817,7 +825,6 @@ ALODActor* FHierarchicalLODUtilities::CreateNewClusterFromActors(UWorld* InWorld
 	checkf(InWorld != nullptr, TEXT("Invalid world"));
 	checkf(InActors.Num() > 0, TEXT("Zero number of sub actors"));
 	checkf(WorldSettings != nullptr, TEXT("Invalid world settings"));
-	checkf(WorldSettings->bEnableHierarchicalLODSystem, TEXT("Hierarchical LOD system is disabled"));
 
 	const bool bWasWorldPackageDirty = InWorld->GetOutermost()->IsDirty();
 
@@ -1109,7 +1116,7 @@ int32 FHierarchicalLODUtilities::GetLODLevelForScreenSize(const UStaticMeshCompo
 	checkf(RenderData != nullptr, TEXT("StaticMesh in StaticMeshComponent %s contains invalid render data"), *StaticMeshComponent->GetName());
 	checkf(StaticMeshComponent->GetStaticMesh()->GetNumSourceModels() > 0, TEXT("StaticMesh in StaticMeshComponent %s contains no SourceModels"), *StaticMeshComponent->GetName());
 
-	return ComputeStaticMeshLODLevel(StaticMeshComponent->GetStaticMesh()->GetSourceModels(), RenderData, ScreenSize);
+	return ComputeStaticMeshLODLevel(const_cast<const UStaticMesh*>(ToRawPtr(StaticMeshComponent->GetStaticMesh()))->GetSourceModels(), RenderData, ScreenSize);
 }
 
 AHierarchicalLODVolume* FHierarchicalLODUtilities::CreateVolumeForLODActor(ALODActor* InLODActor, UWorld* InWorld)

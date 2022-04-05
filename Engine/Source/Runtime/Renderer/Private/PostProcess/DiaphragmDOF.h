@@ -12,7 +12,7 @@
 
 class FViewInfo;
 class FSceneTextureParameters;
-class FSeparateTranslucencyTextures;
+struct FTranslucencyPassResources;
 struct FTemporalAAHistory;
 
 
@@ -23,7 +23,7 @@ namespace DiaphragmDOF
 bool IsEnabled(const FViewInfo& View);
 
 float ComputeFocalLengthFromFov(const FSceneView& View);
-FVector4 CircleDofHalfCoc(const FViewInfo& View);
+FVector4f CircleDofHalfCoc(const FViewInfo& View);
 
 /** Physically based circle of confusion computation model. */
 struct FPhysicalCocModel
@@ -119,11 +119,7 @@ struct FBokehModel
 inline bool IsSupported(const FStaticShaderPlatform ShaderPlatform)
 {
 	// Only compile diaphragm DOF on platform it has been tested to ensure this is not blocking anyone else.
-	return 
-		ShaderPlatform == SP_PCD3D_SM5 ||
-		IsVulkanSM5Platform(ShaderPlatform) ||
-		IsMetalSM5Platform(ShaderPlatform) ||
-		FDataDrivenShaderPlatformInfo::GetSupportsDiaphragmDOF(ShaderPlatform);
+	return FDataDrivenShaderPlatformInfo::GetSupportsDiaphragmDOF(ShaderPlatform);
 }
 
 
@@ -133,6 +129,6 @@ RENDERER_API FRDGTextureRef AddPasses(
 	const FSceneTextureParameters& SceneTextures,
 	const FViewInfo& View,
 	FRDGTextureRef InputSceneColor,
-	const FSeparateTranslucencyTextures& SeparateTranslucencyTextures);
+	const FTranslucencyPassResources& TranslucencyViewResources);
 
 } // namespace DiaphragmDOF

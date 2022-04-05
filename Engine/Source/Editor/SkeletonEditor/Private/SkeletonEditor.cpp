@@ -4,6 +4,7 @@
 #include "Modules/ModuleManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Animation/DebugSkelMeshComponent.h"
+#include "Toolkits/AssetEditorToolkit.h"
 #include "AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Editor/EditorEngine.h"
@@ -13,6 +14,7 @@
 #include "IPersonaToolkit.h"
 #include "PersonaModule.h"
 #include "SkeletonEditorMode.h"
+#include "IAnimationSequenceBrowser.h"
 #include "IPersonaPreviewScene.h"
 #include "SkeletonEditorCommands.h"
 #include "IAssetFamily.h"
@@ -20,6 +22,7 @@
 #include "IEditableSkeleton.h"
 #include "ISkeletonTreeItem.h"
 #include "Algo/Transform.h"
+#include "PersonaToolMenuContext.h"
 
 const FName SkeletonEditorAppIdentifier = FName(TEXT("SkeletonEditorApp"));
 
@@ -28,6 +31,7 @@ const FName SkeletonEditorModes::SkeletonEditorMode(TEXT("SkeletonEditorMode"));
 const FName SkeletonEditorTabs::DetailsTab(TEXT("DetailsTab"));
 const FName SkeletonEditorTabs::SkeletonTreeTab(TEXT("SkeletonTreeView"));
 const FName SkeletonEditorTabs::ViewportTab(TEXT("Viewport"));
+const FName SkeletonEditorTabs::AssetBrowserTab(TEXT("SequenceBrowser"));
 const FName SkeletonEditorTabs::AnimNotifiesTab(TEXT("SkeletonAnimNotifies"));
 const FName SkeletonEditorTabs::CurveNamesTab(TEXT("AnimCurveViewerTab"));
 const FName SkeletonEditorTabs::AdvancedPreviewTab(TEXT("AdvancedPreviewTab"));
@@ -54,6 +58,16 @@ FSkeletonEditor::~FSkeletonEditor()
 	{
 		Editor->UnregisterForUndo(this);
 	}
+	if (PersonaToolkit.IsValid())
+	{
+		constexpr bool bSetPreviewMeshInAsset = false;
+		PersonaToolkit->SetPreviewMesh(nullptr, bSetPreviewMeshInAsset);
+	}
+}
+
+void FSkeletonEditor::HandleOpenNewAsset(UObject* InNewAsset)
+{
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(InNewAsset);
 }
 
 void FSkeletonEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -125,6 +139,16 @@ FLinearColor FSkeletonEditor::GetWorldCentricTabColorScale() const
 	return FLinearColor(0.3f, 0.2f, 0.5f, 0.5f);
 }
 
+void FSkeletonEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
+{
+	FAssetEditorToolkit::InitToolMenuContext(MenuContext);
+
+	UPersonaToolMenuContext* Context = NewObject<UPersonaToolMenuContext>();
+	Context->SetToolkit(GetPersonaToolkit());
+
+	MenuContext.AddObject(Context);
+}
+
 void FSkeletonEditor::BindCommands()
 {
 	FSkeletonEditorCommands::Register();
@@ -190,7 +214,7 @@ void FSkeletonEditor::ExtendToolbar()
 			ToolbarBuilder.BeginSection("Skeleton");
 			{
 				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().AnimNotifyWindow);
-				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().RetargetManager, NAME_None, LOCTEXT("Toolbar_RetargetManager", "Retarget Manager"));
+				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().RetargetManager, NAME_None, LOCTEXT("Toolbar_RetargetSources", "Retarget Sources"));
 				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().ImportMesh);
 			}
 			ToolbarBuilder.EndSection();
@@ -328,6 +352,16 @@ void FSkeletonEditor::OnImportAsset()
 void FSkeletonEditor::HandleDetailsCreated(const TSharedRef<IDetailsView>& InDetailsView)
 {
 	DetailsView = InDetailsView;
+}
+
+void FSkeletonEditor::HandleAnimationSequenceBrowserCreated(const TSharedRef<IAnimationSequenceBrowser>& InSequenceBrowser)
+{
+	SequenceBrowser = InSequenceBrowser;
+}
+
+IAnimationSequenceBrowser* FSkeletonEditor::GetAssetBrowser() const
+{
+	return SequenceBrowser.Pin().Get();
 }
 
 #undef LOCTEXT_NAMESPACE

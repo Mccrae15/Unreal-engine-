@@ -228,9 +228,12 @@ class FUNCTIONALTESTING_API AFunctionalTest : public AActor
 public:
 	AFunctionalTest(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+	UPROPERTY(BlueprintReadOnly, Category = "Functional Testing")
+	FString TestLabel;
+
 private:
 	UPROPERTY()
-	UBillboardComponent* SpriteComponent;
+	TObjectPtr<UBillboardComponent> SpriteComponent;
 
 protected:
 	/**
@@ -272,7 +275,7 @@ protected:
 	 * way to observe the test from a different location than you place the functional test actor.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Functional Testing")
-	AActor* ObservationPoint;
+	TObjectPtr<AActor> ObservationPoint;
 
 	/**
 	 * A random number stream that you can use during testing.  This number stream will be consistent
@@ -321,16 +324,16 @@ public:
 	FFunctionalTestEventSignature OnTestFinished;
 
 	UPROPERTY(Transient)
-	TArray<AActor*> AutoDestroyActors;
+	TArray<TObjectPtr<AActor>> AutoDestroyActors;
 	
 	FString FailureMessage;
 	
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	class UFuncTestRenderingComponent* RenderComp;
+	TObjectPtr<class UFuncTestRenderingComponent> RenderComp;
 
 	UPROPERTY()
-	class UTextRenderComponent* TestName;
+	TObjectPtr<class UTextRenderComponent> TestName;
 #endif // WITH_EDITORONLY_DATA
 
 	/** List of causes we need a re-run. */
@@ -376,6 +379,13 @@ public:
 	virtual bool AssertValue_Float(float Actual, EComparisonMethod ShouldBe, float Expected, const FString& What, const UObject* ContextObject = nullptr);
 
 	/**
+	 * Assert on a relationship between two doubles.
+	 * @param What	A name to use in the message if the assert fails (What: expected {Actual} to be <ShouldBe> {Expected} for context '')
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Asserts", DisplayName = "Assert Value (Double)", meta = (HidePin = "ContextObject", DefaultToSelf = "ContextObject"))
+	bool AssertValue_Double(double Actual, EComparisonMethod ShouldBe, double Expected, const FString& What, const UObject* ContextObject = nullptr);
+
+	/**
 	 * Assert on a relationship between two DateTimes.
 	 * @param What	A name to use in the message if the assert fails (What: expected {Actual} to be <ShouldBe> {Expected} for context '')
 	 */
@@ -395,6 +405,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Asserts", DisplayName = "Assert Equal (Float)", meta = ( HidePin = "ContextObject", DefaultToSelf = "ContextObject"))
 	virtual bool AssertEqual_Float(const float Actual, const float Expected, const FString& What, const float Tolerance = 1.e-4, const UObject* ContextObject = nullptr);
+
+	/**
+	 * Assert that two double are equal within tolerance between two doubles.
+	 * @param What	A name to use in the message if the assert fails (What: expected {Actual} to be Equal To {Expected} within Tolerance for context '')
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Asserts", DisplayName = "Assert Equal (Double)", meta = (HidePin = "ContextObject", DefaultToSelf = "ContextObject"))
+	bool AssertEqual_Double(const double Actual, const double Expected, const FString& What, const double Tolerance = 1.e-4, const UObject* ContextObject = nullptr);
 
 	/**
 	* Assert that two bools are equal
@@ -511,7 +528,7 @@ public:
 public:
 
 	/** Used by debug drawing to gather actors this test is using and point at them on the level to better understand test's setup */
-	UFUNCTION(BlueprintImplementableEvent, Category="Functional Testing")
+	UFUNCTION(BlueprintImplementableEvent, CallInEditor, Category="Functional Testing")
 	TArray<AActor*> DebugGatherRelevantActors() const;
 
 	virtual void GatherRelevantActors(TArray<AActor*>& OutActors) const;

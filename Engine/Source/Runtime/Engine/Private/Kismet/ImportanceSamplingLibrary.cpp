@@ -4,6 +4,7 @@
 #include "Math/Sobol.h"
 #include "Math/UnrealMathUtility.h"
 #include "Engine/Texture2D.h"
+#include "TextureCompiler.h"
 #include "UObject/Stack.h"
 #include "UObject/NoExportTypes.h"
 
@@ -60,7 +61,7 @@ float FImportanceTexture::ImportanceWeight(FColor Texel, TEnumAsByte<EImportance
 	FLinearColor LinearTexel = (Texture.IsValid() && Texture->SRGB) ? FLinearColor(Texel) : Texel.ReinterpretAsLinear();
 
 	switch (WeightingFunc) {
-	case EImportanceWeight::Luminance:	return LinearTexel.ComputeLuminance();
+	case EImportanceWeight::Luminance:	return LinearTexel.GetLuminance();
 	case EImportanceWeight::Red:		return LinearTexel.R;
 	case EImportanceWeight::Green:		return LinearTexel.G;
 	case EImportanceWeight::Blue:		return LinearTexel.B;
@@ -71,6 +72,15 @@ float FImportanceTexture::ImportanceWeight(FColor Texel, TEnumAsByte<EImportance
 
 void FImportanceTexture::Initialize(UTexture2D *SourceTexture, TEnumAsByte<EImportanceWeight::Type> WeightingFunc)
 {
+#if WITH_EDITOR
+	// For now, this doesn't support being refreshed once the source texture compilation is done.
+	// So force it to finish its compilation if it is not yet done to avoid getting the default's texture data.
+	if (SourceTexture && SourceTexture->IsCompiling())
+	{
+		FTextureCompilingManager::Get().FinishCompilation({ SourceTexture });
+	}
+#endif
+
 	if (!SourceTexture || SourceTexture->GetPixelFormat() != EPixelFormat::PF_B8G8R8A8)
 	{
 		Texture = 0;

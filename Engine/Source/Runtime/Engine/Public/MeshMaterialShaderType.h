@@ -87,8 +87,8 @@ public:
 		FSharedShaderCompilerEnvironment* MaterialEnvironment,
 		const FVertexFactoryType* VertexFactoryType,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
-		FString DebugDescription,
-		FString DebugExtension
+		const TCHAR* DebugDescription,
+		const TCHAR* DebugExtension
 		) const;
 
 	static void BeginCompileShaderPipeline(
@@ -102,8 +102,8 @@ public:
 		const FVertexFactoryType* VertexFactoryType,
 		const FShaderPipelineType* ShaderPipeline,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
-		FString DebugDescription,
-		FString DebugExtension
+		const TCHAR* DebugDescription,
+		const TCHAR* DebugExtension
 		);
 
 	/**
@@ -128,7 +128,9 @@ public:
 	 */
 	bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, int32 PermutationId, EShaderPermutationFlags Flags) const;
 
-	static bool ShouldCompileVertexFactoryPermutation(const FVertexFactoryType* VertexFactoryType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, EShaderPermutationFlags Flags);
+	static bool ShouldCompileVertexFactoryPermutation(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, const FShaderType* ShaderType, EShaderPermutationFlags Flags);
+
+	static bool ShouldCompileVertexFactoryPipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, EShaderPermutationFlags Flags);
 
 	static bool ShouldCompilePipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, EShaderPermutationFlags Flags);
 

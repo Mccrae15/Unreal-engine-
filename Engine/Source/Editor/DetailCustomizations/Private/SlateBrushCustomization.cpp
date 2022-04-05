@@ -776,8 +776,8 @@ private:
 	 */
 	void UpdateOverlayAlignment()
 	{
-		OverlaySlot->HAlign( HorizontalAlignment );
-		OverlaySlot->VAlign( VerticalAlignment );
+		OverlaySlot->SetHorizontalAlignment( HorizontalAlignment );
+		OverlaySlot->SetVerticalAlignment( VerticalAlignment );
 	}
 
 	/**
@@ -1117,10 +1117,11 @@ class SBrushResourceObjectBox : public SCompoundWidget
 	
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, IStructCustomizationUtils* StructCustomizationUtils, TSharedPtr<IPropertyHandle> InResourceObjectProperty, TSharedPtr<IPropertyHandle> InImageSizeProperty)
+	void Construct(const FArguments& InArgs, IStructCustomizationUtils* StructCustomizationUtils, TSharedPtr<IPropertyHandle> InResourceObjectProperty, TSharedPtr<IPropertyHandle> InImageSizeProperty, TSharedPtr<IPropertyHandle> InDrawAsProperty)
 	{
 		ResourceObjectProperty = InResourceObjectProperty;
 		ImageSizeProperty = InImageSizeProperty;
+		DrawAsProperty = InDrawAsProperty;
 
 		FSimpleDelegate OnBrushResourceChangedDelegate = FSimpleDelegate::CreateSP(this, &SBrushResourceObjectBox::OnBrushResourceChanged);
 		ResourceObjectProperty->SetOnPropertyValueChanged(OnBrushResourceChangedDelegate);
@@ -1180,8 +1181,10 @@ private:
 		FPropertyAccess::Result Result = ResourceObjectProperty->GetValue(ResourceObject);
 		if ( Result == FPropertyAccess::Success )
 		{
+			TSharedPtr<IPropertyHandle> BrushHandle = ResourceObjectProperty->GetParentHandle();
+
 			TArray<void*> RawBrushData;
-			ResourceObjectProperty->GetParentHandle()->AccessRawData(RawBrushData);
+			BrushHandle->AccessRawData(RawBrushData);
 			for (int32 BrushIndex = 0; BrushIndex < RawBrushData.Num(); BrushIndex++)
 			{
 				FSlateBrush* TemporaryBrush = static_cast<FSlateBrush*>(RawBrushData[BrushIndex]);
@@ -1209,7 +1212,26 @@ private:
 				CachedTextureSize = AtlasedTextureObject->GetSlateAtlasData().GetSourceDimensions();
 			}
 
+			// Update the image size to match that of the incoming new texture.
+			// TODO: Should we always do this?  Or should we avoid doing it if there's already some 'set value'
+			// problem is we don't have a way to track that right now.
 			ImageSizeProperty->SetValue(CachedTextureSize);
+
+			// When you assign a resource object, if the current draw type is 'None' we go ahead and update it to 'Image'.
+			if (ResourceObject)
+			{
+				TArray<FString> OutPerObjectValues;
+				DrawAsProperty->GetPerObjectValues(OutPerObjectValues);
+
+				TArray<FString> NewPerObjectValues;
+				for (int32 ObjectIndex = 0; ObjectIndex < OutPerObjectValues.Num(); ObjectIndex++)
+				{
+					FString& ExistingValue = OutPerObjectValues[ObjectIndex];
+					NewPerObjectValues.Add(ExistingValue == TEXT("NoDrawType") ? TEXT("Image") : ExistingValue);
+				}
+
+				DrawAsProperty->SetPerObjectValues(NewPerObjectValues);
+			}
 		}
 	}
 
@@ -1278,6 +1300,7 @@ private:
 private:
 	TSharedPtr<IPropertyHandle> ResourceObjectProperty;
 	TSharedPtr<IPropertyHandle> ImageSizeProperty;
+	TSharedPtr<IPropertyHandle> DrawAsProperty;
 	TSharedPtr<SBrushResourceError> ResourceError;
 	TSharedPtr<SHyperlink> ChangeDomainLink;
 	TSharedPtr<STextBlock> IsEngineMaterialError;
@@ -1322,6 +1345,7 @@ void FSlateBrushStructCustomization::CustomizeChildren( TSharedRef<IPropertyHand
 	TSharedPtr<IPropertyHandle> TilingProperty = StructPropertyHandle->GetChildHandle( TEXT("Tiling") );
 	TSharedPtr<IPropertyHandle> MarginProperty = StructPropertyHandle->GetChildHandle( TEXT("Margin") );
 	TSharedPtr<IPropertyHandle> TintProperty = StructPropertyHandle->GetChildHandle( TEXT("TintColor") );
+	TSharedPtr<IPropertyHandle> OutlineSettingsProperty = StructPropertyHandle->GetChildHandle(TEXT("OutlineSettings"));
 	ResourceObjectProperty = StructPropertyHandle->GetChildHandle( TEXT("ResourceObject") );
 	
 	FDetailWidgetRow& ResourceObjectRow = StructBuilder.AddProperty(ResourceObjectProperty.ToSharedRef()).CustomWidget();
@@ -1335,7 +1359,7 @@ void FSlateBrushStructCustomization::CustomizeChildren( TSharedRef<IPropertyHand
 		.MinDesiredWidth(250.0f)
 		.MaxDesiredWidth(0.0f)
 		[
-			SNew(SBrushResourceObjectBox, &StructCustomizationUtils, ResourceObjectProperty, ImageSizeProperty)
+			SNew(SBrushResourceObjectBox, &StructCustomizationUtils, ResourceObjectProperty, ImageSizeProperty, DrawAsProperty)
 		];
 
 	// Add the image size property with custom reset delegates that also affect the child properties (the components)
@@ -1346,8 +1370,10 @@ void FSlateBrushStructCustomization::CustomizeChildren( TSharedRef<IPropertyHand
 		FResetToDefaultHandler::CreateSP(this, &FSlateBrushStructCustomization::OnImageSizeResetToDefault),
 		bOverrideDefaultOnVectorChildren));
 
-	StructBuilder.AddProperty(TintProperty.ToSharedRef());
+	StructBuilder.AddProperty( TintProperty.ToSharedRef() );
 	StructBuilder.AddProperty( DrawAsProperty.ToSharedRef() );
+	StructBuilder.AddProperty( OutlineSettingsProperty.ToSharedRef() )
+	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP( this, &FSlateBrushStructCustomization::GetOutlineSettingsPropertyVisibility ) ) );
 	StructBuilder.AddProperty( TilingProperty.ToSharedRef() )
 	.Visibility( TAttribute<EVisibility>::Create( TAttribute<EVisibility>::FGetter::CreateSP( this, &FSlateBrushStructCustomization::GetTilingPropertyVisibility ) ) );
 	StructBuilder.AddProperty( MarginProperty.ToSharedRef() )
@@ -1398,6 +1424,14 @@ void FSlateBrushStructCustomization::CustomizeChildren( TSharedRef<IPropertyHand
 				];
 		}
 	}
+}
+
+EVisibility FSlateBrushStructCustomization::GetOutlineSettingsPropertyVisibility() const
+{
+	uint8 DrawAsType;
+	FPropertyAccess::Result Result = DrawAsProperty->GetValue(DrawAsType);
+
+	return (Result == FPropertyAccess::MultipleValues || DrawAsType == ESlateBrushDrawType::RoundedBox) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility FSlateBrushStructCustomization::GetTilingPropertyVisibility() const

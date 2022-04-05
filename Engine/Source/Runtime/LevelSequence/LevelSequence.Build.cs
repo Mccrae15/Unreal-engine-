@@ -32,6 +32,7 @@ public class LevelSequence : ModuleRules
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"ActorPickerMode",
+					"EditorFramework",
 					"PropertyEditor",
 					"UnrealEd"
 				}

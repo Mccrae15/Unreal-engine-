@@ -16,6 +16,8 @@ uint	ParticleDataIntStride;
 uint	CPUNumInstances;
 uint	InstanceCountOffset;
 
+float3	SystemLWCTile;
+
 uint	PositionDataOffset;
 uint	RotationDataOffset;
 uint	ScaleDataOffset;
@@ -30,15 +32,18 @@ float3	DefaultPosition;
 float4	DefaultRotation;
 float3	DefaultScale;
 float3	MeshScale;
+float4	MeshRotation;
 
 float4x4	LocalTransform;
 
 Buffer<float>	ParticleDataFloatBuffer;
 //Buffer<half>	ParticleDataHalfBuffer;
-Buffer<int>	ParticleDataIntBuffer;
+Buffer<int>		ParticleDataIntBuffer;
 Buffer<uint>	GPUInstanceCountBuffer;
 
-RWStructuredBuffer<float3x4> TLASTransforms;
+// Transforms are float3x4 row-major matrices stored as 3 float4
+// because of FXC matrix packing issues when using StructuredBuffer<float3x4>
+RWStructuredBuffer<float4> TLASTransforms;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Helper function for buffers
@@ -70,6 +75,10 @@ float4 SafeGetVec4(int RegisterIndex, uint InstanceID, float4 DefaultValue)
 #define THREADGROUP_SIZE 1
 #endif
 
+// TODO: This doesn't take a lot of features into account that are needed to solve for a Niagara mesh's transform.
+// See NiagaraCalculateMeshParticleTransforms in NiagaraMeshParticleUtils.ush for exactly what all goes into it.
+// In an upcoming update, this shader should be deprecated and instead, RayTracing should be getting transforms
+// from GPU Scene so this work doesn't have to be duplicated.
 [numthreads(THREADGROUP_SIZE,1,1)]
 void NiagaraGPURayTracingTransformsCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -84,8 +93,10 @@ void NiagaraGPURayTracingTransformsCS(uint3 DispatchThreadId : SV_DispatchThread
 	float4x4 InstanceTransformTransposed = 0;
 	if (InstanceIndex < GPUNumInstances)
 	{
-		float3 InstancePosition = SafeGetVec3(PositionDataOffset, InstanceIndex, DefaultPosition);
-		float4 InstanceRotation = SafeGetVec4(RotationDataOffset, InstanceIndex, DefaultRotation);
+		float3 InstanceSimPosition = SafeGetVec3(PositionDataOffset, InstanceIndex, DefaultPosition);
+		// LWC_TODO: Precision loss
+		float3 InstancePosition = bLocalSpace ? InstanceSimPosition : LWCHackToFloat(MakeLWCVector3(SystemLWCTile, InstanceSimPosition));
+		float4 InstanceRotation = NiagaraQuatMul(SafeGetVec4(RotationDataOffset, InstanceIndex, DefaultRotation), MeshRotation);
 		float3 InstanceScale    = SafeGetVec3(ScaleDataOffset, InstanceIndex, DefaultScale) * MeshScale;
 
 		float4x4 InstanceTransform = NiagaraComposeTransformMatrix(InstanceScale, NiagaraQuatTo3x3(InstanceRotation), InstancePosition);
@@ -105,13 +116,17 @@ void NiagaraGPURayTracingTransformsCS(uint3 DispatchThreadId : SV_DispatchThread
 		{
 			bInstanceValid &= GetInt(MeshIndexOffset, InstanceIndex) == MeshIndexValue;
 		}
+		else
+		{
+			bInstanceValid &= MeshIndexValue == 0;
+		}
 
 		if ( bInstanceValid )
 		{
 			InstanceTransformTransposed = transpose(InstanceTransform);
 		}
 	}
-	TLASTransforms[InstanceIndex][0] = InstanceTransformTransposed[0];
-	TLASTransforms[InstanceIndex][1] = InstanceTransformTransposed[1];
-	TLASTransforms[InstanceIndex][2] = InstanceTransformTransposed[2];
+	TLASTransforms[InstanceIndex * 3 + 0] = InstanceTransformTransposed[0];
+	TLASTransforms[InstanceIndex * 3 + 1] = InstanceTransformTransposed[1];
+	TLASTransforms[InstanceIndex * 3 + 2] = InstanceTransformTransposed[2];
 }

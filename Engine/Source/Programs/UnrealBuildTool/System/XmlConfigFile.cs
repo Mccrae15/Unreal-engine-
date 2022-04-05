@@ -2,12 +2,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Schema;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
 
 namespace UnrealBuildTool
@@ -35,7 +36,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Interface to the LineInfo on the active XmlReader
 		/// </summary>
-		IXmlLineInfo LineInfo;
+		IXmlLineInfo LineInfo = null!;
 
 		/// <summary>
 		/// Set to true if the reader encounters an error
@@ -65,7 +66,7 @@ namespace UnrealBuildTool
 		/// <param name="Schema">The schema to validate against</param>
 		/// <param name="OutConfigFile">If successful, the document that was read</param>
 		/// <returns>True if the document could be read, false otherwise</returns>
-		public static bool TryRead(FileReference File, XmlSchema Schema, out XmlConfigFile OutConfigFile)
+		public static bool TryRead(FileReference File, XmlSchema Schema, [NotNullWhen(true)] out XmlConfigFile? OutConfigFile)
 		{
 			XmlConfigFile ConfigFile = new XmlConfigFile(File);
 
@@ -86,7 +87,7 @@ namespace UnrealBuildTool
 				{
 					if (!ConfigFile.bHasErrors)
 					{
-						Log.TraceError(File, Ex.LineNumber, "{0}", Ex.Message);
+						Log.TraceErrorTask(File, Ex.LineNumber, "{0}", Ex.Message);
 						ConfigFile.bHasErrors = true;
 					}
 				}
@@ -124,7 +125,7 @@ namespace UnrealBuildTool
 		/// <param name="Args">Standard argument for ValidationEventHandler</param>
 		void ValidationEvent(object Sender, ValidationEventArgs Args)
 		{
-			Log.TraceWarning(File, Args.Exception.LineNumber, "{0}", Args.Message);
+			Log.TraceWarningTask(File, Args.Exception.LineNumber, "{0}", Args.Message);
 		}
 	}
 

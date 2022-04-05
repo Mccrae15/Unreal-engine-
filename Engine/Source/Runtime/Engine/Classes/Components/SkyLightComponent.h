@@ -88,6 +88,13 @@ enum ESkyLightSourceType
 	SLS_MAX,
 };
 
+enum class ESkyLightCaptureStatus
+{
+	SLCS_Uninitialized,
+	SLCS_CapturedButIncomplete,
+	SLCS_CapturedAndComplete,
+};
+
 UCLASS(Blueprintable, ClassGroup=Lights, HideCategories=(Trigger,Activation,"Components|Activation",Physics), meta=(BlueprintSpawnableComponent))
 class ENGINE_API USkyLightComponent : public ULightComponentBase
 {
@@ -104,7 +111,7 @@ class ENGINE_API USkyLightComponent : public ULightComponentBase
 
 	/** Cubemap to use for sky lighting if SourceType is set to SLS_SpecifiedCubemap. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light)
-	class UTextureCube* Cubemap;
+	TObjectPtr<class UTextureCube> Cubemap;
 
 	/** Angle to rotate the source cubemap when SourceType is set to SLS_SpecifiedCubemap. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta=(UIMin = "0", UIMax = "360"))
@@ -302,6 +309,13 @@ protected:
 
 	bool bHasEverCaptured;
 
+#if WITH_EDITOR
+	// In an attempt to get valid lighting data as soon as possible in a level, we will always trigger a skylight capture at creation.
+	// And then, a soon as the world is finally loaded, the final capture will be taken.
+	ESkyLightCaptureStatus CaptureStatus;
+	float SecondsSinceLastCapture;
+#endif
+
 	TRefCountPtr<FSkyTextureCubeResource> ProcessedSkyTexture;
 	FSHVectorRGB3 IrradianceEnvironmentMap;
 	float AverageBrightness=0.0f;
@@ -310,7 +324,7 @@ protected:
 	float BlendFraction;
 
 	UPROPERTY(transient)
-	class UTextureCube* BlendDestinationCubemap;
+	TObjectPtr<class UTextureCube> BlendDestinationCubemap;
 	TRefCountPtr<FSkyTextureCubeResource> BlendDestinationProcessedSkyTexture;
 	FSHVectorRGB3 BlendDestinationIrradianceEnvironmentMap;
 	float BlendDestinationAverageBrightness;

@@ -7,8 +7,12 @@
 #include "Chaos/SegmentMesh.h"
 #include "Containers/ContainersFwd.h"
 
+#include "AABBTree.h"
+
 namespace Chaos
 {
+	template<typename T> struct TTriangleCollisionPoint;
+
 	class FTriangleMesh
 	{
 	public:
@@ -137,22 +141,25 @@ namespace Chaos
 		/** The GetFaceNormals functions assume Counter Clockwise triangle windings in a Left Handed coordinate system
 			If this is not the case the returned face normals may be inverted
 		*/
-		CHAOS_API TArray<FVec3> GetFaceNormals(const TConstArrayView<FVec3>& Points, const bool ReturnEmptyOnError = true) const;
-		CHAOS_API void GetFaceNormals(TArray<FVec3>& Normals, const TConstArrayView<FVec3>& Points, const bool ReturnEmptyOnError = true) const;
+		template <typename T>
+		TArray<TVec3<T>> GetFaceNormals(const TConstArrayView<TVec3<T>>& Points, const bool ReturnEmptyOnError = true) const;
+		template <typename T>
+		void GetFaceNormals(TArray<TVec3<T>>& Normals, const TConstArrayView<TVec3<T>>& Points, const bool ReturnEmptyOnError = true) const;
 		FORCEINLINE TArray<FVec3> GetFaceNormals(const FParticles& InParticles, const bool ReturnEmptyOnError = true) const
-		{ return GetFaceNormals(InParticles.X(), ReturnEmptyOnError); }
+		{ return GetFaceNormals(TConstArrayView<FVec3>(InParticles.X()), ReturnEmptyOnError); }
 
 		CHAOS_API TArray<FVec3> GetPointNormals(const TConstArrayView<FVec3>& points, const bool ReturnEmptyOnError = true);
 		FORCEINLINE TArray<FVec3> GetPointNormals(const FParticles& InParticles, const bool ReturnEmptyOnError = true)
-		{ return GetPointNormals(InParticles.X(), ReturnEmptyOnError); }
-
+		{ return GetPointNormals(TConstArrayView<FVec3>(InParticles.X()), ReturnEmptyOnError); }
+		
 		CHAOS_API void GetPointNormals(TArrayView<FVec3> PointNormals, const TConstArrayView<FVec3>& FaceNormals, const bool bUseGlobalArray);
 		/** \brief Get per-point normals. 
 		 * This const version of this function requires \c GetPointToTriangleMap() 
 		 * to be called prior to invoking this function. 
 		 * @param bUseGlobalArray When true, fill the array from the StartIdx to StartIdx + NumIndices - 1 positions, otherwise fill the array from the 0 to NumIndices - 1 positions.
 		 */
-		CHAOS_API void GetPointNormals(TArrayView<FVec3> PointNormals, const TConstArrayView<FVec3>& FaceNormals, const bool bUseGlobalArray) const;
+		template <typename T>
+		void GetPointNormals(TArrayView<TVec3<T>> PointNormals, const TConstArrayView<TVec3<T>>& FaceNormals, const bool bUseGlobalArray) const;
 
 		static CHAOS_API FTriangleMesh GetConvexHullFromParticles(const TConstArrayView<FVec3>& points);
 		/** Deprecated. Use TArrayView version. */
@@ -227,14 +234,15 @@ namespace Chaos
 		CHAOS_API void RemoveDuplicateElements();
 		CHAOS_API void RemoveDegenerateElements();
 
-		static FORCEINLINE void InitEquilateralTriangleXY(FTriangleMesh& TriMesh, FParticles& Particles)
+		template <typename T>
+		static FORCEINLINE void InitEquilateralTriangleXY(FTriangleMesh& TriMesh, TParticles<T, 3>& Particles)
 		{
 			const int32 Idx = Particles.Size();
 			Particles.AddParticles(3);
 			// Left handed
-			Particles.X(Idx + 0) = FVec3(0., 0.8083, 0.);
-			Particles.X(Idx + 1) = FVec3(0.7, -0.4041, 0.);
-			Particles.X(Idx + 2) = FVec3(-0.7, -0.4041, 0.);
+			Particles.X(Idx + 0) = FVec3((T)0., (T)0.8083, (T)0.);
+			Particles.X(Idx + 1) = FVec3((T)0.7, (T)-0.4041, (T)0.);
+			Particles.X(Idx + 2) = FVec3((T)-0.7, (T)-0.4041, (T)0.);
 
 			TArray<TVec3<int32>> Elements;
 			Elements.SetNum(1);
@@ -242,14 +250,15 @@ namespace Chaos
 
 			TriMesh.Init(MoveTemp(Elements));
 		}
-		static FORCEINLINE void InitEquilateralTriangleYZ(FTriangleMesh& TriMesh, FParticles& Particles)
+		template <typename T>
+		static FORCEINLINE void InitEquilateralTriangleYZ(FTriangleMesh& TriMesh, TParticles<T, 3>& Particles)
 		{
 			const int32 Idx = Particles.Size();
 			Particles.AddParticles(3);
 			// Left handed
-			Particles.X(Idx + 0) = FVec3(0., 0., 0.8083);
-			Particles.X(Idx + 1) = FVec3(0., 0.7, -0.4041);
-			Particles.X(Idx + 2) = FVec3(0., -0.7, -0.4041);
+			Particles.X(Idx + 0) = FVec3((T)0., (T)0., (T)0.8083);
+			Particles.X(Idx + 1) = FVec3((T)0., (T)0.7, (T)-0.4041);
+			Particles.X(Idx + 2) = FVec3((T)0., (T)-0.7, (T)-0.4041);
 
 			TArray<TVec3<int32>> Elements;
 			Elements.SetNum(1);
@@ -257,6 +266,17 @@ namespace Chaos
 
 			TriMesh.Init(MoveTemp(Elements));
 		}
+
+		template<typename T>
+		using TBVHType = TAABBTree<int32, TAABBTreeLeafArray<int32, /*bComputeBounds=*/false, T>, /*bMutable=*/true, T>;
+
+		template<typename T>
+		CHAOS_API void BuildBVH(const TConstArrayView<TVec3<T>>& Points, TBVHType<T>& BVH) const;
+
+		// NOTE: This method assumes the BVH has already been built/fitted to Points.
+		template<typename T>
+		CHAOS_API bool PointProximityQuery(const TBVHType<T>& BVH, const TConstArrayView<TVec3<T>>& Points, const int32 PointIndex, const TVec3<T>& PointPosition, const T PointThickness, const T ThisThickness, 
+			TFunctionRef<bool (const int32 PointIndex, const int32 TriangleIndex)> BroadphaseTest, TArray<TTriangleCollisionPoint<T>>& Result) const;
 		
 	private:
 		CHAOS_API void InitHelper(const int32 StartIdx, const int32 EndIdx, const bool CullDegenerateElements=true);

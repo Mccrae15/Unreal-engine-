@@ -27,6 +27,17 @@ const FName UNiagaraDataInterfaceAudioPlayer::SetPersistentAudioIntegerParamName
 const FName UNiagaraDataInterfaceAudioPlayer::SetPersistentAudioFloatParamName(TEXT("SetFloatParameter"));
 const FName UNiagaraDataInterfaceAudioPlayer::PausePersistentAudioName(TEXT("SetPaused"));
 
+struct FNiagaraAudioPlayerDIFunctionVersion
+{
+	enum Type
+	{
+		InitialVersion = 0,
+		LWCConversion = 1,
+
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+};
 
 /**
 Async task to play the audio on the game thread and isolate from the niagara tick
@@ -61,7 +72,7 @@ public:
 			UE_LOG(LogNiagara, Warning, TEXT("Invalid world reference in audio player DI, skipping play"));
 			return;
 		}
-
+		
 		USoundBase* Sound = WeakSound.Get();
 		if (Sound == nullptr)
 		{
@@ -87,6 +98,28 @@ UNiagaraDataInterfaceAudioPlayer::UNiagaraDataInterfaceAudioPlayer(FObjectInitia
 	MaxPlaysPerTick = 10;
 }
 
+#if WITH_EDITORONLY_DATA
+bool UNiagaraDataInterfaceAudioPlayer::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
+{
+	// always upgrade to the latest version
+	if (FunctionSignature.FunctionVersion < FNiagaraAudioPlayerDIFunctionVersion::LatestVersion)
+	{
+		TArray<FNiagaraFunctionSignature> AllFunctions;
+		GetFunctions(AllFunctions);
+		for (const FNiagaraFunctionSignature& Sig : AllFunctions)
+		{
+			if (FunctionSignature.Name == Sig.Name)
+			{
+				FunctionSignature = Sig;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+#endif
+
 void UNiagaraDataInterfaceAudioPlayer::PostInitProperties()
 {
 	Super::PostInitProperties();
@@ -101,11 +134,15 @@ void UNiagaraDataInterfaceAudioPlayer::PostInitProperties()
 bool UNiagaraDataInterfaceAudioPlayer::InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)
 {
 	FAudioPlayerInterface_InstanceData* PIData = new (PerInstanceData) FAudioPlayerInterface_InstanceData;
+	PIData->LWCConverter = SystemInstance->GetLWCConverter();
 	if (bLimitPlaysPerTick)
 	{
 		PIData->MaxPlaysPerTick = MaxPlaysPerTick;
 	}
 	PIData->bStopWhenComponentIsDestroyed = bStopWhenComponentIsDestroyed;
+#if WITH_EDITORONLY_DATA
+	PIData->bOnlyActiveDuringGameplay = bOnlyActiveDuringGameplay;
+#endif
 	return true;
 }
 
@@ -152,6 +189,17 @@ bool UNiagaraDataInterfaceAudioPlayer::PerInstanceTickPostSimulate(void* PerInst
 {
 	FAudioPlayerInterface_InstanceData* PIData = (FAudioPlayerInterface_InstanceData*) PerInstanceData;
 	UNiagaraSystem* System = SystemInstance->GetSystem();
+	UWorld* World = SystemInstance->GetWorldManager()->GetWorld();
+
+#if WITH_EDITORONLY_DATA
+	if (World->HasBegunPlay() == false && PIData->bOnlyActiveDuringGameplay)
+	{
+		PIData->PlayAudioQueue.Empty();
+		PIData->PersistentAudioMapping.Empty();
+		return false;
+	}
+#endif
+	
 	if (!PIData->PlayAudioQueue.IsEmpty() && System)
 	{
 		//Drain the queue into an array here
@@ -167,7 +215,8 @@ bool UNiagaraDataInterfaceAudioPlayer::PerInstanceTickPostSimulate(void* PerInst
 				break;
 			}
 		}
-		TGraphTask<FNiagaraAudioPlayerAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(PIData->SoundToPlay, PIData->Attenuation, PIData->Concurrency, Data, SystemInstance->GetWorldManager()->GetWorld());
+		
+		TGraphTask<FNiagaraAudioPlayerAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(PIData->SoundToPlay, PIData->Attenuation, PIData->Concurrency, Data, World);
 	}
 
 	if (!PIData->bHadPersistentAudioUpdateThisTick)
@@ -222,15 +271,15 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = PlayAudioName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "PlayAudioDIFunctionDescription", "This function plays a sound at the given location after the simulation has ticked.");
-	Sig.ExperimentalMessage = NSLOCTEXT("Niagara", "PlayAudioDIFunctionExperimental", "The return value of the audio function call currently needs to be wired to a particle parameter, because otherwise it will be removed by the compiler.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
 	Sig.bSupportsGPU = false;
-	Sig.bExperimental = true;
+	Sig.bRequiresExecPin = true;
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Audio interface")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Play Audio")));
-	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("PositionWS")));
+	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("PositionWS")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("RotationWS")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("VolumeFactor")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("PitchFactor")));
@@ -242,6 +291,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = PlayPersistentAudioName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "PlayPersistentAudioDIFunctionDescription", "This function plays a sound at the given location after the simulation has ticked. The returned handle can be used to control the sound in subsequent ticks.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -250,7 +300,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Audio Interface")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Play Audio")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Existing Audio Handle")));
-	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position WS")));
+	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Position WS")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Rotation WS")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Volume Factor")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Pitch Factor")));
@@ -264,6 +314,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioBoolParamName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioBoolParamFunctionDescription", "If an active audio effect can be found for the given handle then the given sound cue parameter will be set on it.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -279,6 +330,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioIntegerParamName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioIntegerParamFunctionDescription", "If an active audio effect can be found for the given handle then the given sound cue parameter will be set on it.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -294,6 +346,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioFloatParamName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioFloatParamFunctionDescription", "If an active audio effect can be found for the given handle then the given sound cue parameter will be set on it.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -309,6 +362,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioVolumeName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioVolumeFunctionDescription", "If an active audio effect can be found for the given handle then the this will adjusts its volume multiplier.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -323,6 +377,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioPitchName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioPitchFunctionDescription", "If an active audio effect can be found for the given handle then the this will adjusts its pitch multiplier.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -337,6 +392,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = SetPersistentAudioLocationName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioLocationFunctionDescription", "If an active audio effect can be found for the given handle then the this will adjusts its world position.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -344,13 +400,14 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.bRequiresExecPin = true;
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Audio Interface")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Audio Handle")));
-	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position WS")));
+	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Position WS")));
 	OutFunctions.Add(Sig);
 
 	Sig = FNiagaraFunctionSignature();
 	Sig.Name = SetPersistentAudioRotationName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioRotationFunctionDescription", "If an active audio effect can be found for the given handle then the this will adjusts its rotation in the world.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -365,6 +422,7 @@ void UNiagaraDataInterfaceAudioPlayer::GetFunctions(TArray<FNiagaraFunctionSigna
 	Sig.Name = PausePersistentAudioName;
 #if WITH_EDITORONLY_DATA
 	Sig.Description = NSLOCTEXT("Niagara", "SetPersistentAudioPausedDescription", "If an active audio effect can be found for the given handle then the this will either pause or unpause the effect.");
+	Sig.FunctionVersion = FNiagaraAudioPlayerDIFunctionVersion::LatestVersion;
 #endif
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
@@ -430,11 +488,11 @@ void UNiagaraDataInterfaceAudioPlayer::GetVMExternalFunction(const FVMExternalFu
 	}
 	else
 	{
-		UE_LOG(LogNiagara, Error, TEXT("Could not find data interface external function. Expected Name: %s  Actual Name: %s"), *PlayAudioName.ToString(), *BindingInfo.Name.ToString());
+		UE_LOG(LogNiagara, Display, TEXT("Could not find data interface external function in %s. Expected Name: %s  Actual Name: %s"), *GetPathNameSafe(this), *PlayAudioName.ToString(), *BindingInfo.Name.ToString());
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::SetParameterBool(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::SetParameterBool(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -444,7 +502,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterBool(FVectorVMContext& Contex
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		int32 NameIndex = NameIndexParam.GetAndAdvance();
@@ -467,7 +525,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterBool(FVectorVMContext& Contex
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::SetParameterInteger(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::SetParameterInteger(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -477,7 +535,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterInteger(FVectorVMContext& Con
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		int32 NameIndex = NameIndexParam.GetAndAdvance();
@@ -500,7 +558,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterInteger(FVectorVMContext& Con
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::SetParameterFloat(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::SetParameterFloat(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -510,7 +568,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterFloat(FVectorVMContext& Conte
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		int32 NameIndex = NameIndexParam.GetAndAdvance();
@@ -533,7 +591,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetParameterFloat(FVectorVMContext& Conte
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::UpdateVolume(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::UpdateVolume(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -542,7 +600,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdateVolume(FVectorVMContext& Context)
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		float Volume = VolumeParam.GetAndAdvance();
@@ -563,7 +621,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdateVolume(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::UpdatePitch(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::UpdatePitch(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -572,7 +630,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdatePitch(FVectorVMContext& Context)
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		float Pitch = PitchParam.GetAndAdvance();
@@ -593,19 +651,19 @@ void UNiagaraDataInterfaceAudioPlayer::UpdatePitch(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::UpdateLocation(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::UpdateLocation(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
 	FNDIInputParam<int32> AudioHandleInParam(Context);
-	FNDIInputParam<FVector> LocationParam(Context);
+	FNDIInputParam<FVector3f> LocationParam(Context);
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
-		FVector Location = LocationParam.GetAndAdvance();
+		FVector Location = InstData->LWCConverter.ConvertSimulationVectorToWorld(LocationParam.GetAndAdvance());
 
 		if (Handle > 0)
 		{
@@ -623,19 +681,19 @@ void UNiagaraDataInterfaceAudioPlayer::UpdateLocation(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::UpdateRotation(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::UpdateRotation(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
 	FNDIInputParam<int32> AudioHandleInParam(Context);
-	FNDIInputParam<FVector> RotationParam(Context);
+	FNDIInputParam<FVector3f> RotationParam(Context);
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
-		FVector Rotation = RotationParam.GetAndAdvance();
+		FVector3f Rotation = RotationParam.GetAndAdvance();
 
 		if (Handle > 0)
 		{
@@ -654,7 +712,7 @@ void UNiagaraDataInterfaceAudioPlayer::UpdateRotation(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::SetPausedState(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::SetPausedState(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -663,7 +721,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetPausedState(FVectorVMContext& Context)
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
 		bool IsPaused = PausedParam.GetAndAdvance();
@@ -684,7 +742,7 @@ void UNiagaraDataInterfaceAudioPlayer::SetPausedState(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::PlayOneShotAudio(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::PlayOneShotAudio(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
@@ -707,11 +765,12 @@ void UNiagaraDataInterfaceAudioPlayer::PlayOneShotAudio(FVectorVMContext& Contex
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 	bool ValidSoundData = InstData->SoundToPlay.IsValid();
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		FNiagaraBool ShouldPlay = PlayDataParam.GetAndAdvance();
 		FAudioParticleData Data;
-		Data.Position = FVector(PositionParamX.GetAndAdvance(), PositionParamY.GetAndAdvance(), PositionParamZ.GetAndAdvance());
+		FNiagaraPosition SimulationPosition(PositionParamX.GetAndAdvance(), PositionParamY.GetAndAdvance(), PositionParamZ.GetAndAdvance());
+		Data.Position = InstData->LWCConverter.ConvertSimulationPositionToWorld(SimulationPosition);
 		Data.Rotation = FRotator(RotationParamX.GetAndAdvance(), RotationParamY.GetAndAdvance(), RotationParamZ.GetAndAdvance());
 		Data.Volume = VolumeParam.GetAndAdvance();
 		Data.Pitch = PitchParam.GetAndAdvance();
@@ -726,14 +785,14 @@ void UNiagaraDataInterfaceAudioPlayer::PlayOneShotAudio(FVectorVMContext& Contex
 	}
 }
 
-void UNiagaraDataInterfaceAudioPlayer::PlayPersistentAudio(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioPlayer::PlayPersistentAudio(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FAudioPlayerInterface_InstanceData> InstData(Context);
 
 	FNDIInputParam<FNiagaraBool> PlayAudioParam(Context);
 	FNDIInputParam<int32> AudioHandleInParam(Context);
-	FNDIInputParam<FVector> PositionParam(Context);
-	FNDIInputParam<FVector> RotationParam(Context);
+	FNDIInputParam<FVector3f> PositionParam(Context);
+	FNDIInputParam<FVector3f> RotationParam(Context);
 	FNDIInputParam<float> VolumeParam(Context);
 	FNDIInputParam<float> PitchParam(Context);
 	FNDIInputParam<float> StartTimeParam(Context);
@@ -745,12 +804,12 @@ void UNiagaraDataInterfaceAudioPlayer::PlayPersistentAudio(FVectorVMContext& Con
 	checkfSlow(InstData.Get(), TEXT("Audio player interface has invalid instance data. %s"), *GetPathName());
 
 	InstData->bHadPersistentAudioUpdateThisTick = true;
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		bool ShouldPlay = PlayAudioParam.GetAndAdvance();
 		int32 Handle = AudioHandleInParam.GetAndAdvance();
-		FVector Position = PositionParam.GetAndAdvance();
-		FVector InRot = RotationParam.GetAndAdvance();
+		FVector Position = InstData->LWCConverter.ConvertSimulationVectorToWorld(PositionParam.GetAndAdvance());
+		FVector3f InRot = RotationParam.GetAndAdvance();
 		FRotator Rotation = FRotator(InRot.X, InRot.Y, InRot.Z);
 		float Volume = VolumeParam.GetAndAdvance();
 		float Pitch = PitchParam.GetAndAdvance();
@@ -829,5 +888,8 @@ bool UNiagaraDataInterfaceAudioPlayer::CopyToInternal(UNiagaraDataInterface* Des
 	OtherTyped->MaxPlaysPerTick = MaxPlaysPerTick;
 	OtherTyped->ParameterNames = ParameterNames;
 	OtherTyped->bStopWhenComponentIsDestroyed = bStopWhenComponentIsDestroyed;
+#if WITH_EDITORONLY_DATA
+	OtherTyped->bOnlyActiveDuringGameplay = bOnlyActiveDuringGameplay;
+#endif
 	return true;
 }

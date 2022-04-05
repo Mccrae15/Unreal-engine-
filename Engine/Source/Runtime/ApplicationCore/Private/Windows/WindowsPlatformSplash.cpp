@@ -19,6 +19,7 @@
 #include "Stats/Stats.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
+#include "Windows/WindowsApplication.h"
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Misc/EngineBuildSettings.h"
@@ -26,7 +27,6 @@
 THIRD_PARTY_INCLUDES_START
 #pragma warning(push)
 #pragma warning(disable:4005)
-#include <d2d1.h>
 #include <strsafe.h>
 #include <wincodec.h>
 #pragma warning(pop)
@@ -96,11 +96,6 @@ LRESULT CALLBACK SplashScreenWindowProc(HWND hWnd, uint32 message, WPARAM wParam
 							}
 
 							// Alignment
-							if ( CurTypeIndex == SplashTextType::GameName )
-							{
-								SetTextAlign( hdc, TA_RIGHT | TA_TOP | TA_NOUPDATECP );
-							}
-							else
 							{
 								SetTextAlign( hdc, TA_LEFT | TA_TOP | TA_NOUPDATECP );
 							}
@@ -112,7 +107,7 @@ LRESULT CALLBACK SplashScreenWindowProc(HWND hWnd, uint32 message, WPARAM wParam
 							GetClientRect( hWnd, &ClientRect );
 
 							// Draw background text passes
-							const int32 NumBGPasses = 8;
+					/*		const int32 NumBGPasses = 1;
 							for( int32 CurBGPass = 0; CurBGPass < NumBGPasses; ++CurBGPass )
 							{
 								int32 BGXOffset, BGYOffset;
@@ -136,24 +131,24 @@ LRESULT CALLBACK SplashScreenWindowProc(HWND hWnd, uint32 message, WPARAM wParam
 									TextRect.top + BGYOffset,
 									*SplashText.ToString(),
 									SplashText.ToString().Len() );
-							}
+							}*/
 							
 							// Draw foreground text pass
 							if( CurTypeIndex == SplashTextType::StartupProgress )
 							{
-								SetTextColor( hdc, RGB( 200, 200, 200 ) );
+								SetTextColor( hdc, RGB(160, 160, 160) );
 							}
 							else if( CurTypeIndex == SplashTextType::VersionInfo1 )
 							{
-								SetTextColor( hdc, RGB( 240, 240, 240 ) );
+								SetTextColor( hdc, RGB(160, 160, 160) );
 							}
 							else if ( CurTypeIndex == SplashTextType::GameName )
 							{
-								SetTextColor(hdc, RGB(240, 240, 240));
+								SetTextColor(hdc, RGB(255, 255, 255));
 							}
 							else
 							{
-								SetTextColor( hdc, RGB( 160, 160, 160 ) );
+								SetTextColor( hdc, RGB(160, 160, 160) );
 							}
 
 							TextOut(
@@ -413,15 +408,12 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 	{
 		BITMAP bm;
 		GetObjectW(GSplashScreenBitmap, sizeof(bm), &bm);
-
-		const int32 BorderWidth = GetSystemMetrics(SM_CXBORDER);
-		const int32 BorderHeight = GetSystemMetrics(SM_CYBORDER);
-		const int32 WindowWidth = bm.bmWidth + BorderWidth;
-		const int32 WindowHeight = bm.bmHeight + BorderHeight;
+		const int32 WindowWidth = bm.bmWidth;
+		const int32 WindowHeight = bm.bmHeight;
 		int32 ScreenPosX = (GetSystemMetrics(SM_CXSCREEN) - WindowWidth) / 2;
 		int32 ScreenPosY = (GetSystemMetrics(SM_CYSCREEN) - WindowHeight) / 2;
 
-		const bool bAllowFading = true;
+		const bool bAllowFading = false;
 
 		// Force the editor splash screen to show up in the taskbar and alt-tab lists
 		uint32 dwWindowStyle = (GIsEditor ? WS_EX_APPWINDOW : 0) | WS_EX_TOOLWINDOW;
@@ -434,7 +426,7 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 			dwWindowStyle,
 			wc.lpszClassName, 
 			TEXT("SplashScreen"),
-			WS_BORDER|WS_POPUP,
+			WS_POPUP,
 			ScreenPosX,
 			ScreenPosY,
 			WindowWidth,
@@ -460,8 +452,9 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 				LOGFONT MyFont;
 				FMemory::Memzero( &MyFont, sizeof( MyFont ) );
 				GetObjectW( SystemFontHandle, sizeof( MyFont ), &MyFont );
-				MyFont.lfHeight = 10;
-				// MyFont.lfQuality = ANTIALIASED_QUALITY;
+				MyFont.lfHeight = 11;
+				MyFont.lfQuality = CLEARTYPE_QUALITY;
+				//StringCchCopy(MyFont.lfFaceName, LF_FACESIZE, TEXT("Roboto"));
 				GSplashScreenSmallTextFontHandle = CreateFontIndirect( &MyFont );
 				if( GSplashScreenSmallTextFontHandle == NULL )
 				{
@@ -476,7 +469,8 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 				FMemory::Memzero( &MyFont, sizeof( MyFont ) );
 				GetObjectW( SystemFontHandle, sizeof( MyFont ), &MyFont );
 				MyFont.lfHeight = 12;
-				// MyFont.lfQuality = ANTIALIASED_QUALITY;
+				MyFont.lfQuality = CLEARTYPE_QUALITY;
+			//	StringCchCopy(MyFont.lfFaceName, LF_FACESIZE, TEXT("Roboto"));
 				GSplashScreenNormalTextFontHandle = CreateFontIndirect( &MyFont );
 				if( GSplashScreenNormalTextFontHandle == NULL )
 				{
@@ -490,10 +484,10 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 				LOGFONT MyFont;
 				FMemory::Memzero(&MyFont, sizeof( MyFont ));
 				GetObjectW(SystemFontHandle, sizeof( MyFont ), &MyFont);
-				MyFont.lfHeight = 40;
+				MyFont.lfHeight = GIsEditor ? 18 : 28;
 				MyFont.lfWeight = FW_BOLD;
-				MyFont.lfQuality = ANTIALIASED_QUALITY;
-				StringCchCopy(MyFont.lfFaceName, LF_FACESIZE, TEXT("Verdana"));
+				MyFont.lfQuality = CLEARTYPE_QUALITY;
+			//	StringCchCopy(MyFont.lfFaceName, LF_FACESIZE, TEXT("Roboto"));
 				GSplashScreenTitleTextFontHandle = CreateFontIndirect(&MyFont);
 				if ( GSplashScreenTitleTextFontHandle == NULL )
 				{
@@ -504,29 +498,32 @@ uint32 WINAPI StartSplashScreenThread( LPVOID unused )
 		}
 
 		// Setup bounds for game name
-		GSplashScreenTextRects[ SplashTextType::GameName ].top = 10;
-		GSplashScreenTextRects[ SplashTextType::GameName ].bottom = 60;
-		GSplashScreenTextRects[ SplashTextType::GameName ].left = bm.bmWidth - 12;
-		GSplashScreenTextRects[ SplashTextType::GameName ].right = 12;
+
+		if (GIsEditor)
+		{
+			GSplashScreenTextRects[SplashTextType::GameName].top = bm.bmHeight - 60;
+			GSplashScreenTextRects[SplashTextType::GameName].bottom = bm.bmHeight - 45;
+			GSplashScreenTextRects[SplashTextType::GameName].left = 10;
+			GSplashScreenTextRects[SplashTextType::GameName].right = bm.bmWidth - 20;
+		}
+		else
+		{
+			GSplashScreenTextRects[SplashTextType::GameName].top = bm.bmHeight - 45;
+			GSplashScreenTextRects[SplashTextType::GameName].bottom = bm.bmHeight - 6;
+			GSplashScreenTextRects[SplashTextType::GameName].left = 10;
+			GSplashScreenTextRects[SplashTextType::GameName].right = bm.bmWidth - 20;
+		}
 		
 		// Setup bounds for version info text 1
-		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].top = bm.bmHeight - 60;
-		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].bottom = bm.bmHeight - 40;
+		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].top = bm.bmHeight - 40;
+		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].bottom = bm.bmHeight - 20;
 		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].left = 10;
 		GSplashScreenTextRects[ SplashTextType::VersionInfo1 ].right = bm.bmWidth - 20;
 
 		// Setup bounds for copyright info text
-		if( GIsEditor )
-		{
-			GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].top = bm.bmHeight - 44;
-			GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].bottom = bm.bmHeight - 34;
-		}
-		else
-		{
-			GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].top = bm.bmHeight - 16;
-			GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].bottom = bm.bmHeight - 6;
-		}
-		GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].left = 10;
+		GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].top = bm.bmHeight - 16;
+		GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].bottom = bm.bmHeight - 6;
+		GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].left = bm.bmWidth - 180;
 		GSplashScreenTextRects[ SplashTextType::CopyrightInfo ].right = bm.bmWidth - 20;
 
 		// Setup bounds for startup progress text
@@ -611,7 +608,7 @@ void FWindowsPlatformSplash::Show()
 	{
 		const FText GameName = FText::FromString( FApp::GetProjectName() );
 
-		const TCHAR* SplashImage = GIsEditor ? ( GameName.IsEmpty() ? TEXT("EdSplashDefault") : TEXT("EdSplash") ) : ( GameName.IsEmpty() ? TEXT("SplashDefault") : TEXT("Splash") );
+		const TCHAR* SplashImage = GIsEditor ?  TEXT("EdSplash") : TEXT("Splash");
 
 		// make sure a splash was found
 		FString SplashPath;
@@ -619,11 +616,7 @@ void FWindowsPlatformSplash::Show()
 		if ( GetSplashPath(SplashImage, SplashPath, IsCustom ) == true )
 		{
 			// Don't set the game name if the splash screen is custom.
-			if ( !IsCustom )
-			{
-				StartSetSplashText(SplashTextType::GameName, *GameName.ToString());
-			}
-
+		
 			// In the editor, we'll display loading info
 			if( GIsEditor )
 			{
@@ -637,20 +630,19 @@ void FWindowsPlatformSplash::Show()
 				{
 					const FText Version = FText::FromString( FEngineVersion::Current().ToString( FEngineBuildSettings::IsPerforceBuild() ? EVersionComponent::Branch : EVersionComponent::Patch ) );
 
-					FText VersionInfo;
 					FText AppName;
+					FText VersionInfo = FText::Format(NSLOCTEXT("UnrealEd", "UnrealEdTitleWithVersion_F", "Unreal Editor {0}"), Version);
 					if( GameName.IsEmpty() )
 					{
-						VersionInfo = FText::Format( NSLOCTEXT( "UnrealEd", "UnrealEdTitleWithVersionNoGameName_F", "Unreal Editor {0}" ), Version );
 						AppName = NSLOCTEXT( "UnrealEd", "UnrealEdTitleNoGameName_F", "Unreal Editor" );
 					}
 					else
 					{
-						VersionInfo = FText::Format( NSLOCTEXT( "UnrealEd", "UnrealEdTitleWithVersion_F", "Unreal Editor {0}  -  {1}" ), Version, GameName );
 						AppName = FText::Format( NSLOCTEXT( "UnrealEd", "UnrealEdTitle_F", "Unreal Editor - {0}" ), GameName );
 					}
 
-					StartSetSplashText( SplashTextType::VersionInfo1, *VersionInfo.ToString() );
+					StartSetSplashText(SplashTextType::GameName, *AppName.ToString());
+					StartSetSplashText(SplashTextType::VersionInfo1, *VersionInfo.ToString());
 
 					// Change the window text (which will be displayed in the taskbar)
 					GSplashScreenAppName = AppName;
@@ -662,7 +654,10 @@ void FWindowsPlatformSplash::Show()
 					StartSetSplashText( SplashTextType::CopyrightInfo, *CopyrightInfo );
 				}
 			}
-
+			else if(!IsCustom)
+			{
+				StartSetSplashText(SplashTextType::GameName, *GameName.ToString());
+			}
 			// Spawn a window to receive the Z-order swap when the splashscreen is destroyed.
 			// This will prevent the main window from being sent to the background when the splash window closes.
 			GSplashScreenGuard = CreateWindow(
@@ -697,6 +692,7 @@ void FWindowsPlatformSplash::Hide()
 {
 	if(GSplashScreenThread)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FWindowsPlatformSplash::Hide);
 		if(GSplashScreenWnd)
 		{
 			// Send message to splash screen window to destroy itself
@@ -726,12 +722,20 @@ bool FWindowsPlatformSplash::IsShown()
 	return (GSplashScreenThread != nullptr);
 }
 
-/**
- * Sets the text displayed on the splash screen (for startup/loading progress)
- *
- * @param	InType		Type of text to change
- * @param	InText		Text to display
- */
+void FWindowsPlatformSplash::SetProgress(int ProgressPercent)
+{
+	extern FWindowsApplication* WindowsApplication;
+
+	if (ProgressPercent == 100)
+	{
+		WindowsApplication->GetTaskbarList()->SetProgressState(GSplashScreenWnd, ETaskbarProgressState::NoProgress);
+	}
+	else
+	{
+		WindowsApplication->GetTaskbarList()->SetProgressValue(GSplashScreenWnd, ProgressPercent, 100);
+	}
+}
+
 void FWindowsPlatformSplash::SetSplashText( const SplashTextType::Type InType, const TCHAR* InText )
 {
 	// We only want to bother drawing startup progress in the editor, since this information is

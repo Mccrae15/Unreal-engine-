@@ -6,9 +6,8 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Xml;
-using Tools.DotNETCommon;
-using Microsoft.Win32;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -62,24 +61,42 @@ namespace UnrealBuildTool
 		/// Manual override for the provision to use. Should be a full path.
 		/// </summary>
 		[CommandLine("-ImportProvision=")]
-		public string ImportProvision = null;
+		public string? ImportProvision = null;
 
 		/// <summary>
 		/// Imports the given certificate (inc private key) into a temporary keychain before signing.
 		/// </summary>
 		[CommandLine("-ImportCertificate=")]
-		public string ImportCertificate = null;
+		public string? ImportCertificate = null;
 
 		/// <summary>
 		/// Password for the imported certificate
 		/// </summary>
 		[CommandLine("-ImportCertificatePassword=")]
-		public string ImportCertificatePassword = null;
+		public string? ImportCertificatePassword = null;
 
 		/// <summary>
 		/// Cached project settings for the target (set in ResetTarget)
 		/// </summary>
-		public IOSProjectSettings ProjectSettings = null;
+		public IOSProjectSettings? ProjectSettings = null;
+
+		/// <summary>
+		/// Enables address sanitizer (ASan)
+		/// </summary>
+		[CommandLine("-EnableASan")]
+		public bool bEnableAddressSanitizer = false;
+
+		/// <summary>
+		/// Enables thread sanitizer (TSan)
+		/// </summary>
+		[CommandLine("-EnableTSan")]
+		public bool bEnableThreadSanitizer = false;
+
+		/// <summary>
+		/// Enables undefined behavior sanitizer (UBSan)
+		/// </summary>
+		[CommandLine("-EnableUBSan")]
+		public bool bEnableUndefinedBehaviorSanitizer = false;
 	}
 
 	/// <summary>
@@ -105,9 +122,7 @@ namespace UnrealBuildTool
 		/// Accessors for fields on the inner TargetRules instance
 		/// </summary>
 		#region Read-only accessor properties 
-#if !__MonoCS__
 #pragma warning disable CS1591
-#endif
 		public bool bStripSymbols
 		{
 			get { return Inner.bStripSymbols; }
@@ -115,7 +130,7 @@ namespace UnrealBuildTool
 			
 		public bool bShipForBitcode
 		{
-			get { return Inner.ProjectSettings.bShipForBitcode; }
+			get { return Inner.ProjectSettings!.bShipForBitcode; }
 		}
 
 		public bool bGenerateFrameworkWrapperProject
@@ -143,29 +158,42 @@ namespace UnrealBuildTool
 			get { return Inner.bForDistribution; }
 		}
 
-		public string ImportProvision
+		public string? ImportProvision
 		{
 			get { return Inner.ImportProvision; }
 		}
 
-		public string ImportCertificate
+		public string? ImportCertificate
 		{
 			get { return Inner.ImportCertificate; }
 		}
 
-		public string ImportCertificatePassword
+		public string? ImportCertificatePassword
 		{
 			get { return Inner.ImportCertificatePassword; }
 		}
 
 		public float RuntimeVersion
 		{
-			get { return float.Parse(Inner.ProjectSettings.RuntimeVersion, System.Globalization.CultureInfo.InvariantCulture); }
+			get { return float.Parse(Inner.ProjectSettings!.RuntimeVersion, System.Globalization.CultureInfo.InvariantCulture); }
 		}
-		
-#if !__MonoCS__
+
+		public bool bEnableAddressSanitizer
+		{
+			get { return Inner.bEnableAddressSanitizer; }
+		}
+
+		public bool bEnableThreadSanitizer
+		{
+			get { return Inner.bEnableThreadSanitizer; }
+		}
+
+		public bool bEnableUndefinedBehaviorSanitizer
+		{
+			get { return Inner.bEnableUndefinedBehaviorSanitizer; }
+		}
+
 #pragma warning restore CS1591
-#endif
 		#endregion
 	}
 
@@ -177,7 +205,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The cached project file location
 		/// </summary>
-		public readonly FileReference ProjectFile;
+		public readonly FileReference? ProjectFile;
 
 		/// <summary>
 		/// Whether to build the iOS project as a framework.
@@ -216,7 +244,7 @@ namespace UnrealBuildTool
         /// The minimum supported version
         /// </summary>
         [ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "MinimumiOSVersion")]
-		private readonly string MinimumIOSVersion = null;
+		private readonly string? MinimumIOSVersion = null;
 
 		/// <summary>
 		/// Whether to support iPhone
@@ -346,14 +374,12 @@ namespace UnrealBuildTool
 			{
 				switch (MinimumIOSVersion)
 				{
-					case "IOS_12":
-						return "12.0";
-					case "IOS_13":
-						return "13.0";
 					case "IOS_14":
 						return "14.0";
+					case "IOS_15":
+						return "15.0";
 					default:
-						return "12.0";
+						return "14.0";
 				}
 			}
 		}
@@ -385,7 +411,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file to read settings for</param>
 		/// <param name="Bundle">Bundle identifier needed when project file is empty</param>
-		public IOSProjectSettings(FileReference ProjectFile, string Bundle) 
+		public IOSProjectSettings(FileReference? ProjectFile, string? Bundle) 
 			: this(ProjectFile, UnrealTargetPlatform.IOS, Bundle)
 		{
 		}
@@ -396,7 +422,7 @@ namespace UnrealBuildTool
 		/// <param name="ProjectFile">The project file to read settings for</param>
 		/// <param name="Platform">The platform to read settings for</param>
 		/// <param name="Bundle">Bundle identifier needed when project file is empty</param>
-		protected IOSProjectSettings(FileReference ProjectFile, UnrealTargetPlatform Platform, string Bundle)
+		protected IOSProjectSettings(FileReference? ProjectFile, UnrealTargetPlatform Platform, string? Bundle)
 		{
 			this.ProjectFile = ProjectFile;
 			ConfigCache.ReadSettings(DirectoryReference.FromFile(ProjectFile), Platform, this);
@@ -404,7 +430,7 @@ namespace UnrealBuildTool
 			{
 				BundleIdentifier = Bundle;
 			}
-			BundleIdentifier = BundleIdentifier.Replace("[PROJECT_NAME]", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game")).Replace("_", "");
+			BundleIdentifier = BundleIdentifier.Replace("[PROJECT_NAME]", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame")).Replace("_", "");
 		}
 	}
 
@@ -413,17 +439,17 @@ namespace UnrealBuildTool
 	/// </summary>
     class IOSProvisioningData
     {
-		public string SigningCertificate;
-		public FileReference MobileProvisionFile;
-        public string MobileProvisionUUID;
-        public string MobileProvisionName;
-        public string TeamUUID;
-		public string BundleIdentifier;
+		public string? SigningCertificate;
+		public FileReference? MobileProvisionFile;
+        public string? MobileProvisionUUID;
+        public string? MobileProvisionName;
+        public string? TeamUUID;
+		public string? BundleIdentifier;
 		public bool bHaveCertificate = false;
 
-		public string MobileProvision
+		public string? MobileProvision
 		{
-			get { return (MobileProvisionFile == null)? null : MobileProvisionFile.GetFileName(); }
+			get => MobileProvisionFile?.GetFileName();
 		}
 
 		public IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution)
@@ -434,10 +460,10 @@ namespace UnrealBuildTool
 		protected IOSProvisioningData(IOSProjectSettings ProjectSettings, bool bIsTVOS, bool bForDistribtion)
 		{
             SigningCertificate = ProjectSettings.SigningCertificate;
-            string MobileProvision = ProjectSettings.MobileProvision;
+            string? MobileProvision = ProjectSettings.MobileProvision;
 
-			FileReference ProjectFile = ProjectSettings.ProjectFile;
-			FileReference IPhonePackager = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Binaries/DotNET/IOS/IPhonePackager.exe");
+			FileReference? ProjectFile = ProjectSettings.ProjectFile;
+			FileReference IPhonePackager = FileReference.Combine(Unreal.EngineDirectory, "Binaries/DotNET/IOS/IPhonePackager.exe");
 
 			if (!string.IsNullOrEmpty(SigningCertificate))
             {
@@ -446,13 +472,13 @@ namespace UnrealBuildTool
 
 				string IPPCmd = "certificates " + ((ProjectFile != null) ? ("\"" + ProjectFile.ToString() + "\"") : "Engine") + " -bundlename " + ProjectSettings.BundleIdentifier + (bForDistribtion ? " -distribution" : "");
 				
-				IPPProcess.StartInfo.WorkingDirectory = UnrealBuildTool.EngineDirectory.ToString();
+				IPPProcess.StartInfo.WorkingDirectory = Unreal.EngineDirectory.ToString();
 				IPPProcess.OutputDataReceived += new DataReceivedEventHandler(IPPDataReceivedHandler);
 				IPPProcess.ErrorDataReceived += new DataReceivedEventHandler(IPPDataReceivedHandler);
 
 				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
                 {
-                    IPPProcess.StartInfo.FileName = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
+                    IPPProcess.StartInfo.FileName = FileReference.Combine(Unreal.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
 					IPPProcess.StartInfo.Arguments = string.Format("\"{0}\" {1}", IPhonePackager ,IPPCmd);
 				}
                 else
@@ -475,11 +501,11 @@ namespace UnrealBuildTool
 				DirectoryReference MobileProvisionDir;
 				if(BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 				{
-					MobileProvisionDir = DirectoryReference.Combine(new DirectoryReference(Environment.GetEnvironmentVariable("HOME")), "Library", "MobileDevice", "Provisioning Profiles");
+					MobileProvisionDir = DirectoryReference.Combine(new DirectoryReference(Environment.GetEnvironmentVariable("HOME")!), "Library", "MobileDevice", "Provisioning Profiles");
 				}
 				else
 				{
-					MobileProvisionDir = DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.LocalApplicationData), "Apple Computer", "MobileDevice", "Provisioning Profiles");
+					MobileProvisionDir = DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.LocalApplicationData)!, "Apple Computer", "MobileDevice", "Provisioning Profiles");
 				}
 
 				FileReference PossibleMobileProvisionFile = FileReference.Combine(MobileProvisionDir, MobileProvision);
@@ -495,18 +521,18 @@ namespace UnrealBuildTool
                 SigningCertificate = "";
                 MobileProvision = "";
 				MobileProvisionFile = null;
-                Log.TraceLog("Provision not specified or not found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game") + ", searching for compatible match...");
+                Log.TraceInformation("Provision not specified or not found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame") + ", searching for compatible match...");
                 Process IPPProcess = new Process();
 
 				IPPProcess.OutputDataReceived += new DataReceivedEventHandler(IPPDataReceivedHandler);
 				IPPProcess.ErrorDataReceived += new DataReceivedEventHandler(IPPDataReceivedHandler);
-				IPPProcess.StartInfo.WorkingDirectory = UnrealBuildTool.EngineDirectory.ToString();
+				IPPProcess.StartInfo.WorkingDirectory = Unreal.EngineDirectory.ToString();
 
 				string IPPCmd = "signing_match " + ((ProjectFile != null) ? ("\"" + ProjectFile.ToString() + "\"") : "Engine") + " -bundlename " + ProjectSettings.BundleIdentifier + (bIsTVOS ? " -tvos" : "") + (bForDistribtion ? " -distribution" : "");
 
 				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 				{
-					IPPProcess.StartInfo.FileName = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
+					IPPProcess.StartInfo.FileName = FileReference.Combine(Unreal.EngineDirectory, "Build/BatchFiles/Mac/RunMono.sh").FullName;
 					IPPProcess.StartInfo.Arguments = string.Format("\"{0}\" {1}", IPhonePackager, IPPCmd);
 				}
 				else
@@ -520,7 +546,7 @@ namespace UnrealBuildTool
 				Utils.RunLocalProcess(IPPProcess);
 				if(MobileProvisionFile != null)
 				{
-					Log.TraceLog("Provision found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game") + ", Provision: " + MobileProvisionFile + " Certificate: " + SigningCertificate);
+					Log.TraceInformation("Provision found for " + ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UnrealGame") + ", Provision: " + MobileProvisionFile + " Certificate: " + SigningCertificate);
 				}
             }
 
@@ -530,11 +556,11 @@ namespace UnrealBuildTool
             // read the provision to get the UUID
 			if(MobileProvisionFile == null)
 			{
-				Log.TraceLog("No matching provision file was discovered for {0}. Please ensure you have a compatible provision installed.", ProjectFile);
+				Log.TraceInformation("No matching provision file was discovered for {0}. Please ensure you have a compatible provision installed.", ProjectFile);
 			}
 			else if(!FileReference.Exists(MobileProvisionFile))
 			{
-				Log.TraceLog("Selected mobile provision for {0} ({1}) was not found. Please ensure you have a compatible provision installed.", ProjectFile, MobileProvisionFile);
+				Log.TraceInformation("Selected mobile provision for {0} ({1}) was not found. Please ensure you have a compatible provision installed.", ProjectFile, MobileProvisionFile);
 			}
 			else
             {
@@ -597,7 +623,7 @@ namespace UnrealBuildTool
 						if (idx > 0)
 						{
 							idx += "<string>".Length;
-							String FullID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
+							string FullID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
 							BundleIdentifier = FullID.Substring(FullID.IndexOf('.') + 1);
 						}
 					}
@@ -617,7 +643,7 @@ namespace UnrealBuildTool
 				{
 					MobileProvision = null;
 					SigningCertificate = null;
-					Log.TraceLog("Failed to parse the mobile provisioning profile.");
+					Log.TraceInformation("Failed to parse the mobile provisioning profile.");
 				}
             }
 		}
@@ -626,8 +652,17 @@ namespace UnrealBuildTool
         {
             if ((Line != null) && (Line.Data != null))
             {
-				Log.TraceLog("{0}", Line.Data);
-                if (!string.IsNullOrEmpty(SigningCertificate))
+				if (Line.Data.StartsWith("IPP WARNING:"))
+				{
+					// Don't output IPP warnings to the console as they may not be warnings relevant to the build and could cause build failures.
+					Log.TraceLog("{0}", Line.Data);
+				}
+				else
+				{
+					Log.TraceInformation("{0}", Line.Data);
+				}
+
+				if (!string.IsNullOrEmpty(SigningCertificate))
                 {
                     if (Line.Data.Contains("CERTIFICATE-") && Line.Data.Contains(SigningCertificate))
                     {
@@ -655,7 +690,6 @@ namespace UnrealBuildTool
 
 	class IOSPlatform : UEBuildPlatform
 	{
-		IOSPlatformSDK SDK;
 		List<IOSProjectSettings> CachedProjectSettings = new List<IOSProjectSettings>();
 		List<IOSProjectSettings> CachedProjectSettingsByBundle = new List<IOSProjectSettings>();
 		Dictionary<string, IOSProvisioningData> ProvisionCache = new Dictionary<string, IOSProvisioningData>();
@@ -663,19 +697,18 @@ namespace UnrealBuildTool
 		// by default, use an empty architecture (which is really just a modifer to the platform for some paths/names)
 		public static string IOSArchitecture = "";
 
-		public IOSPlatform(IOSPlatformSDK InSDK)
+		public IOSPlatform(UEBuildPlatformSDK InSDK)
 			: this(InSDK, UnrealTargetPlatform.IOS)
 		{
 		}
 
-		protected IOSPlatform(IOSPlatformSDK InSDK, UnrealTargetPlatform TargetPlatform)
-			: base(TargetPlatform)
+		protected IOSPlatform(UEBuildPlatformSDK InSDK, UnrealTargetPlatform TargetPlatform)
+			: base(TargetPlatform, InSDK)
 		{
-			SDK = InSDK;
 		}
 
 		// The current architecture - affects everything about how UBT operates on IOS
-		public override string GetDefaultArchitecture(FileReference ProjectFile)
+		public override string GetDefaultArchitecture(FileReference? ProjectFile)
 		{
 			return IOSArchitecture;
 		}
@@ -685,7 +718,7 @@ namespace UnrealBuildTool
 			return IOSArchitecture;
 		}
 
-		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference ProjectFile, ReadOnlyTargetRules Target)
+		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference? ProjectFile, ReadOnlyTargetRules Target)
 		{
 			List<FileReference> BinaryPaths = new List<FileReference>();
 			if(Target.bShouldCompileAsDLL)
@@ -737,6 +770,7 @@ namespace UnrealBuildTool
 			{
 				Target.GlobalDefinitions.Add("HAS_METAL=1");
 				Target.ExtraModuleNames.Add("MetalRHI");
+				Target.ExtraModuleNames.Add("AGXRHI");
 			}
 			else
 			{
@@ -763,16 +797,21 @@ namespace UnrealBuildTool
 			Target.bCheckSystemHeadersForModification = false;
 		}
 
-		public override SDKStatus HasRequiredSDKsInstalled()
+		/// <summary>
+		/// Allows the platform to override whether the architecture name should be appended to the name of binaries.
+		/// </summary>
+		/// <returns>True if the architecture name should be appended to the binary</returns>
+		public override bool RequiresArchitectureSuffix()
 		{
-			return SDK.HasRequiredSDKsInstalled();
+			// Any -architecture argument passed to UBT only affects the contents of the binaries, not their naming
+			return false;
 		}
 
 		/// <summary>
 		/// Determines if the given name is a build product for a target.
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <returns>True if the string matches the name of a build product, false otherwise</returns>
 		public override bool IsBuildProduct(string FileName, string[] NamePrefixes, string[] NameSuffixes)
@@ -804,19 +843,9 @@ namespace UnrealBuildTool
 			return base.GetBinaryExtension(InBinaryType);
 		}
 
-		/// <summary>
-		/// Allows the platform to override whether the architecture name should be appended to the name of binaries.
-		/// </summary>
-		/// <returns>True if the architecture name should be appended to the binary</returns>
-		public override bool RequiresArchitectureSuffix()
+		public IOSProjectSettings ReadProjectSettings(FileReference? ProjectFile, string? Bundle = "")
 		{
-			// Any -architecture argument passed to UBT only affects the contents of the binaries, not their naming
-			return false;
-		}
-		
-		public IOSProjectSettings ReadProjectSettings(FileReference ProjectFile, string Bundle = "")
-		{
-			IOSProjectSettings ProjectSettings = null;
+			IOSProjectSettings? ProjectSettings = null;
 
 			// Use separate lists to prevent an overridden Bundle id polluting the standard project file. 
 			bool bCacheByBundle = !string.IsNullOrEmpty(Bundle);
@@ -844,12 +873,12 @@ namespace UnrealBuildTool
 			return ProjectSettings;
 		}
 
-		protected virtual IOSProjectSettings CreateProjectSettings(FileReference ProjectFile, string Bundle)
+		protected virtual IOSProjectSettings CreateProjectSettings(FileReference? ProjectFile, string? Bundle)
 		{
 			return new IOSProjectSettings(ProjectFile, Bundle);
 		}
 
-		public IOSProvisioningData ReadProvisioningData(FileReference ProjectFile, bool bForDistribution = false, string Bundle = "")
+		public IOSProvisioningData ReadProvisioningData(FileReference? ProjectFile, bool bForDistribution = false, string? Bundle = "")
 		{
 			IOSProjectSettings ProjectSettings = ReadProjectSettings(ProjectFile, Bundle);
 			return ReadProvisioningData(ProjectSettings, bForDistribution);
@@ -859,7 +888,7 @@ namespace UnrealBuildTool
         {
 			string ProvisionKey = ProjectSettings.BundleIdentifier + " " + bForDistribution.ToString();
 
-            IOSProvisioningData ProvisioningData;
+            IOSProvisioningData? ProvisioningData;
 			if(!ProvisionCache.TryGetValue(ProvisionKey, out ProvisioningData))
             {
 				ProvisioningData = CreateProvisioningData(ProjectSettings, bForDistribution);
@@ -898,11 +927,6 @@ namespace UnrealBuildTool
 			return false;
 		}
 
-		public override bool CanUseDistcc()
-		{
-			return true;
-		}
-		
 		public override bool CanUseFASTBuild()
 		{
 			return true;
@@ -984,7 +1008,13 @@ namespace UnrealBuildTool
 		/// <param name="Target">The target being build</param>
 		public override void ModifyModuleRulesForOtherPlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
 		{
-			if ((Target.Platform == UnrealTargetPlatform.Win32) || (Target.Platform == UnrealTargetPlatform.Win64) || (Target.Platform == UnrealTargetPlatform.Mac))
+			// don't do any target platform stuff if SDK is not available
+			if (!UEBuildPlatform.IsPlatformAvailableForTarget(Platform, Target))
+			{
+				return;
+			}
+
+			if ((Target.Platform == UnrealTargetPlatform.Win64) || (Target.Platform == UnrealTargetPlatform.Mac))
 			{
 				bool bBuildShaderFormats = Target.bForceBuildShaderFormats;
 				if (!Target.bBuildRequiresCookedData)
@@ -1000,7 +1030,6 @@ namespace UnrealBuildTool
 					else if (ModuleName == "TargetPlatform")
 					{
 						bBuildShaderFormats = true;
-						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatPVR");
 						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatASTC");
 						Rules.DynamicallyLoadedModuleNames.Add("TextureFormatETC2");
 						if (Target.bBuildDeveloperTools && Target.bCompileAgainstEngine)
@@ -1024,6 +1053,31 @@ namespace UnrealBuildTool
 						Rules.DynamicallyLoadedModuleNames.Add("MetalShaderFormat");
 					}
 				}
+
+				if (ModuleName == "UnrealEd")
+				{
+					Rules.DynamicallyLoadedModuleNames.Add("IOSPlatformEditor");
+				}
+			}
+		}
+
+		public override void ModifyModuleRulesForActivePlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
+		{
+			if (ModuleName == "Launch")
+			{
+				Rules.PrivateDependencyModuleNames.AddRange(new string[] {
+					"AudioMixerAudioUnit",
+					"IOSAudio",
+					"LaunchDaemonMessages",
+				});
+
+				Rules.DynamicallyLoadedModuleNames.AddRange(new string[] {
+					"IOSLocalNotification",
+					"IOSRuntimeSettings",
+				});
+
+				// needed for Metal layer
+				Rules.PublicFrameworks.Add("QuartzCore");
 			}
 		}
 
@@ -1117,7 +1171,7 @@ namespace UnrealBuildTool
 			int IntPart = (int)TargetFloat;
 			int FracPart = (int)((TargetFloat - IntPart) * 10);
 			int TargetNum = IntPart * 10000 + FracPart * 100;
-			CompileEnvironment.Definitions.Add("MINIMUM_UE4_COMPILED_IOS_VERSION=" + TargetNum);
+			CompileEnvironment.Definitions.Add("MINIMUM_UE_COMPILED_IOS_VERSION=" + TargetNum);
 
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("GameKit"));
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("StoreKit"));
@@ -1145,8 +1199,22 @@ namespace UnrealBuildTool
 		/// <returns>New toolchain instance.</returns>
 		public override UEToolChain CreateToolChain(ReadOnlyTargetRules Target)
 		{
+			IOSToolChainOptions Options = IOSToolChainOptions.None;
+			if (Target.IOSPlatform.bEnableAddressSanitizer)
+			{
+				Options |= IOSToolChainOptions.EnableAddressSanitizer;
+			}
+			if (Target.IOSPlatform.bEnableThreadSanitizer)
+			{
+				Options |= IOSToolChainOptions.EnableThreadSanitizer;
+			}
+			if (Target.IOSPlatform.bEnableUndefinedBehaviorSanitizer)
+			{
+				Options |= IOSToolChainOptions.EnableUndefinedBehaviorSanitizer;
+			}
+
 			IOSProjectSettings ProjectSettings = ReadProjectSettings(Target.ProjectFile);
-			return new IOSToolChain(Target, ProjectSettings);
+			return new IOSToolChain(Target, ProjectSettings, Options);
 		}
 
 		/// <summary>
@@ -1166,68 +1234,6 @@ namespace UnrealBuildTool
 		}
 	}
 
-	class IOSPlatformSDK : UEBuildPlatformSDK
-	{
-		protected override SDKStatus HasRequiredManualSDKInternal()
-		{
-			if (!Utils.IsRunningOnMono)
-			{
-				// check to see if iTunes is installed
-				string dllPath = Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "iTunesMobileDeviceDLL", null) as string;
-				if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
-				{
-					dllPath = Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "MobileDeviceDLL", null) as string;
-					if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
-					{
-						// iTunes >= 12.7 doesn't have a key specifying the 32-bit DLL but it does have a ASMapiInterfaceDLL key and MobileDevice.dll is in usually in the same directory
-						dllPath = Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Apple Inc.\\Apple Mobile Device Support\\Shared", "ASMapiInterfaceDLL", null) as string;
-						dllPath = String.IsNullOrEmpty(dllPath) ? null : dllPath.Substring(0, dllPath.LastIndexOf('\\') + 1) + "MobileDevice.dll";
-
-						if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
-						{
-							dllPath = FindWindowsStoreITunesDLL();
-						}
-
-						if (String.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
-						{
-							return SDKStatus.Invalid;
-						}
-					}
-				}
-			}
-			return SDKStatus.Valid;
-		}
-
-		static string FindWindowsStoreITunesDLL()
-		{
-			string InstallPath = null;
-
-			string PackagesKeyName = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\PackageRepository\\Packages";
-
-			RegistryKey PackagesKey = Registry.LocalMachine.OpenSubKey(PackagesKeyName);
-			if (PackagesKey != null)
-			{
-				string[] PackageSubKeyNames = PackagesKey.GetSubKeyNames();
-
-				foreach (string PackageSubKeyName in PackageSubKeyNames)
-				{
-					if (PackageSubKeyName.Contains("AppleInc.iTunes") && (PackageSubKeyName.Contains("_x64") || PackageSubKeyName.Contains("_x86")))
-					{
-						string FullPackageSubKeyName = PackagesKeyName + "\\" + PackageSubKeyName;
-
-						RegistryKey iTunesKey = Registry.LocalMachine.OpenSubKey(FullPackageSubKeyName);
-						if (iTunesKey != null)
-						{
-							InstallPath = (string)iTunesKey.GetValue("Path") + "\\AMDS32\\MobileDevice.dll";
-							break;
-						}
-					}
-				}
-			}
-
-			return InstallPath;
-		}
-	}
 
 	class IOSPlatformFactory : UEBuildPlatformFactory
 	{
@@ -1241,8 +1247,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		public override void RegisterBuildPlatforms()
 		{
-			IOSPlatformSDK SDK = new IOSPlatformSDK();
-			SDK.ManageAndValidateSDK();
+			ApplePlatformSDK SDK = new IOSPlatformSDK();
 
 			// Register this build platform for IOS
 			UEBuildPlatform.RegisterBuildPlatform(new IOSPlatform(SDK));

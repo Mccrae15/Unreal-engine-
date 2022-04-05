@@ -23,7 +23,7 @@ class ENGINE_API AStaticMeshActor : public AActor
 
 private:
 	UPROPERTY(Category = StaticMeshActor, VisibleAnywhere, BlueprintReadOnly, meta = (ExposeFunctionCategories = "Mesh,Rendering,Physics,Components|StaticMesh", AllowPrivateAccess = "true"))
-	class UStaticMeshComponent* StaticMeshComponent;
+	TObjectPtr<class UStaticMeshComponent> StaticMeshComponent;
 
 protected:
 	virtual void BeginPlay() override;
@@ -33,6 +33,7 @@ public:
 	UPROPERTY(Category=Actor, EditAnywhere, AdvancedDisplay)
 	bool bStaticMeshReplicateMovement;
 
+	UE_DEPRECATED(5.0, "Unused property. The actor will use the DefaultGeometryGatheringMode set in FNavigationOctree (see virtual ENavDataGatheringMode GetGeometryGatheringMode()).")
 	UPROPERTY(EditAnywhere, Category = Navigation, AdvancedDisplay)
 	ENavDataGatheringMode NavigationGeometryGatheringMode;
 

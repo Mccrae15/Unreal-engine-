@@ -24,6 +24,7 @@
 #include "Widgets/Docking/SDockTab.h"
 
 #include "ExtractSprites/SPaperExtractSpritesDialog.h"
+#include "EditorModeManager.h"
 
 #define LOCTEXT_NAMESPACE "SpriteEditor"
 
@@ -395,18 +396,11 @@ void FSpriteEditor::InitSpriteEditor(const EToolkitMode::Type Mode, const TShare
 	SpriteListPtr = SNew(SSpriteList, SpriteEditorPtr);
 
 	// Default layout
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_SpriteEditor_Layout_v6")
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_SpriteEditor_Layout_v7")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -483,7 +477,7 @@ FString FSpriteEditor::GetWorldCentricTabPrefix() const
 
 FString FSpriteEditor::GetDocumentationLink() const
 {
-	return TEXT("Engine/Paper2D/SpriteEditor");
+	return TEXT("AnimatingObjects/Paper2D/Sprites");
 }
 
 void FSpriteEditor::OnToolkitHostingStarted(const TSharedRef<class IToolkit>& Toolkit)
@@ -571,6 +565,16 @@ void FSpriteEditor::ExtendToolbar()
 	AddToolbarExtender(Paper2DEditorModule->GetSpriteEditorToolBarExtensibilityManager()->GetAllExtenders());
 }
 
+void FSpriteEditor::CreateEditorModeManager()
+{
+	check(ViewportPtr.IsValid());
+	TSharedPtr<FEditorViewportClient> ViewportClient = ViewportPtr->GetViewportClient();
+	check(ViewportClient.IsValid());
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	ViewportClient->TakeOwnershipOfModeManager(EditorModeManager);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 void FSpriteEditor::SetSpriteBeingEdited(UPaperSprite* NewSprite)
 {
 	if ((NewSprite != SpriteBeingEdited) && (NewSprite != nullptr))
@@ -597,7 +601,7 @@ ESpriteEditorMode::Type FSpriteEditor::GetCurrentMode() const
 
 void FSpriteEditor::CreateModeToolbarWidgets(FToolBarBuilder& IgnoredBuilder)
 {
-	FToolBarBuilder ToolbarBuilder(ViewportPtr->GetCommandList(), FMultiBoxCustomization::None);
+	FSlimHorizontalToolBarBuilder ToolbarBuilder(ViewportPtr->GetCommandList(), FMultiBoxCustomization::None);
 	ToolbarBuilder.AddToolBarButton(FSpriteEditorCommands::Get().EnterViewMode);
 	ToolbarBuilder.AddToolBarButton(FSpriteEditorCommands::Get().EnterSourceRegionEditMode);
 	ToolbarBuilder.AddToolBarButton(FSpriteEditorCommands::Get().EnterCollisionEditMode);

@@ -125,6 +125,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
 	static FString GetMapPackageName(UMoviePipelineExecutorJob* InJob);
 
+	/** Loads the specified manifest file and converts it into an UMoviePipelineQueue. Use in combination with SaveQueueToManifestFile. */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	static class UMoviePipelineQueue* LoadManifestFileFromString(const FString& InManifestFilePath);
+
 	/** Scan the provided sequence in the job to see which camera cut sections we would try to render and update the job's shotlist. */
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
 	static void UpdateJobShotListFromSequence(ULevelSequence* InSequence, UMoviePipelineExecutorJob* InJob, bool& bShotsChanged);
@@ -140,5 +144,15 @@ public:
 	/** Allows access to a setting of provided type for specific shot. */
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
 	static UMoviePipelineSetting* FindOrGetDefaultSettingForShot(TSubclassOf<UMoviePipelineSetting> InSettingType, const UMoviePipelineMasterConfig* InMasterConfig, const UMoviePipelineExecutorShot* InShot);
+
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
+	static ULevelSequence* GetCurrentSequence(const UMoviePipeline* InMoviePipeline);
+
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
+	static UMoviePipelineExecutorShot* GetCurrentExecutorShot(const UMoviePipeline* InMoviePipeline);
+
+	/** Get a string to represent the Changelist Number for the burn in. This can be driven by a Modular Feature if you want to permanently replace it with different information. */
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
+	static FText GetMoviePipelineEngineChangelistLabel(const UMoviePipeline* InMoviePipeline);
 
 };

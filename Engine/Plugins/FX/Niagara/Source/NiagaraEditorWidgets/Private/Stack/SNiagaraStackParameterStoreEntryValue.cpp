@@ -3,21 +3,17 @@
 #include "Stack/SNiagaraStackParameterStoreEntryValue.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorWidgetsStyle.h"
-#include "NiagaraEditorStyle.h"
 #include "INiagaraEditorTypeUtilities.h"
 #include "SNiagaraParameterEditor.h"
 #include "ViewModels/Stack/NiagaraStackParameterStoreEntry.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "PropertyEditorModule.h"
 #include "IStructureDetailsView.h"
 #include "Modules/ModuleManager.h"
-#include "PropertyEditorModule.h"
 #include "PropertyCustomizationHelpers.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackParameterStoreEntryValue"
@@ -164,8 +160,13 @@ TSharedRef<SWidget> SNiagaraStackParameterStoreEntryValue::ConstructValueStructW
 		{
 			FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
+			FDetailsViewArgs DetailsViewArgs;
+			DetailsViewArgs.bAllowSearch = false;
+			DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+			DetailsViewArgs.bHideSelectionTip = true;
+
 			TSharedRef<IStructureDetailsView> StructureDetailsView = PropertyEditorModule.CreateStructureDetailView(
-				FDetailsViewArgs(false, false, false, FDetailsViewArgs::HideNameArea, true),
+				DetailsViewArgs,
 				FStructureDetailsViewArgs(),
 				nullptr);
 
@@ -203,6 +204,22 @@ TSharedRef<SWidget> SNiagaraStackParameterStoreEntryValue::ConstructValueStructW
 				.ObjectPath_Raw(this, &SNiagaraStackParameterStoreEntryValue::GetCurrentAssetPath)
 				.AllowedClass(UTexture::StaticClass())
 				.OnObjectChanged_Raw(this, &SNiagaraStackParameterStoreEntryValue::OnAssetSelectedFromPicker, UTexture::StaticClass())
+				.AllowClear(false)
+				.DisplayUseSelected(true)
+				.DisplayBrowse(true)
+				.DisplayThumbnail(true)
+				.NewAssetFactories(TArray<UFactory*>());
+
+		}
+		else if (StackEntry->GetInputType().GetClass()->IsChildOf(UStaticMesh::StaticClass()))
+		{
+			TArray<const UClass*> AllowedClasses;
+			AllowedClasses.Add(UStaticMesh::StaticClass());
+
+			return SNew(SObjectPropertyEntryBox)
+				.ObjectPath_Raw(this, &SNiagaraStackParameterStoreEntryValue::GetCurrentAssetPath)
+				.AllowedClass(UStaticMesh::StaticClass())
+				.OnObjectChanged_Raw(this, &SNiagaraStackParameterStoreEntryValue::OnAssetSelectedFromPicker, UStaticMesh::StaticClass())
 				.AllowClear(false)
 				.DisplayUseSelected(true)
 				.DisplayBrowse(true)

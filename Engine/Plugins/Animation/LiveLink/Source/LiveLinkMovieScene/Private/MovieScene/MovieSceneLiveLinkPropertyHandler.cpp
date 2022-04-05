@@ -14,14 +14,14 @@ namespace LiveLinkPropertyHandlerUtils
 {
 	void FillVectorInterpolated(const FFrameTime& InFrameTime, int32& InOutStartIndex, const TArray<FMovieSceneFloatChannel>& InSourceChannels, FVector& OutVector)
 	{
-		FVector TempVector;
+		FVector3f TempVector;
 
 		for (int32 i = 0; i < 3; ++i)
 		{
 			InSourceChannels[InOutStartIndex++].Evaluate(InFrameTime, TempVector[i]);
 		}
 
-		OutVector = TempVector;
+		OutVector = (FVector)TempVector;
 	}
 
 	void FillVector(int32 InKeyIndex, int32& InOutStartIndex, const TArray<FMovieSceneFloatChannel>& InSourceChannels, FVector& OutVector)

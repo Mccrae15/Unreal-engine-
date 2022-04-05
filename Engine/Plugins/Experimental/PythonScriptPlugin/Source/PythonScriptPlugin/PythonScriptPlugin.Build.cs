@@ -19,6 +19,7 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"Analytics",
 					"AssetRegistry",
+					"EditorStyle",
 					"Projects",
 					"Python3",
 					"Slate",
@@ -44,6 +45,7 @@ namespace UnrealBuildTool.Rules
 						"DesktopPlatform",
 						"EditorStyle",
 						"LevelEditor",
+						"EditorFramework",
 						"UnrealEd",
 						"EditorSubsystem",
 						"BlueprintGraph",

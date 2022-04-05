@@ -11,19 +11,21 @@ class UGerstnerWaterWaves;
 
 struct FWaveGPUResources
 {
-	FStructuredBufferRHIRef DataBuffer;
+	FBufferRHIRef DataBuffer;
 	FShaderResourceViewRHIRef DataSRV;
 
-	FStructuredBufferRHIRef IndirectionBuffer;
+	FBufferRHIRef IndirectionBuffer;
 	FShaderResourceViewRHIRef IndirectionSRV;
 };
 
 class FGerstnerWaterWaveViewExtension : public FWorldSceneViewExtension
 {
 public:
-
 	FGerstnerWaterWaveViewExtension(const FAutoRegister& AutoReg, UWorld* InWorld);
 	~FGerstnerWaterWaveViewExtension();
+
+	void Initialize();
+	void Deinitialize();
 
 	// FSceneViewExtensionBase implementation : 
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
@@ -31,8 +33,6 @@ public:
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override {}
 	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
-	
-	TArray<const AWaterBody*>* WaterBodies = nullptr;
 
 	bool bRebuildGPUData = false;
 

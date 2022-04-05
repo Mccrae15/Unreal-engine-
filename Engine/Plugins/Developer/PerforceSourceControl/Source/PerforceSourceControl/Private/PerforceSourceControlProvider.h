@@ -8,6 +8,7 @@
 #include "ISourceControlProvider.h"
 #include "IPerforceSourceControlWorker.h"
 #include "PerforceSourceControlState.h"
+#include "PerforceSourceControlChangelistState.h"
 
 class FPerforceSourceControlCommand;
 
@@ -34,21 +35,29 @@ public:
 	virtual bool QueryStateBranchConfig(const FString& ConfigSrc, const FString& ConfigDest) override;
 	virtual void RegisterStateBranches(const TArray<FString>& BranchNames, const FString& ContentRootIn) override;
 	virtual int32 GetStateBranchIndex(const FString& BranchName) const override;
-	virtual ECommandResult::Type GetState( const TArray<FString>& InFiles, TArray< TSharedRef<ISourceControlState, ESPMode::ThreadSafe> >& OutState, EStateCacheUsage::Type InStateCacheUsage ) override;
+	virtual ECommandResult::Type GetState( const TArray<FString>& InFiles, TArray<FSourceControlStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage ) override;
+	virtual ECommandResult::Type GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage) override;
 	virtual TArray<FSourceControlStateRef> GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const override;
 	virtual FDelegateHandle RegisterSourceControlStateChanged_Handle( const FSourceControlStateChanged::FDelegate& SourceControlStateChanged ) override;
 	virtual void UnregisterSourceControlStateChanged_Handle( FDelegateHandle Handle ) override;
-	virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() ) override;
-	virtual bool CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const override;
-	virtual void CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) override;
+	virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() ) override;
+	virtual bool CanCancelOperation( const FSourceControlOperationRef& InOperation ) const override;
+	virtual void CancelOperation( const FSourceControlOperationRef& InOperation ) override;
 	virtual bool UsesLocalReadOnlyState() const override;
 	virtual bool UsesChangelists() const override;
 	virtual bool UsesCheckout() const override;
 	virtual void Tick() override;
 	virtual TArray< TSharedRef<class ISourceControlLabel> > GetLabels( const FString& InMatchingSpec ) const override;
+	virtual TArray<FSourceControlChangelistRef> GetChangelists( EStateCacheUsage::Type InStateCacheUsage ) override;
+
+	virtual bool TryToDownloadFileFromBackgroundThread(const TSharedRef<class FDownloadFile>& InOperation, const TArray<FString>& InFiles) override;
+	virtual ECommandResult::Type SwitchWorkspace(FStringView NewWorkspaceName, FSourceControlResultInfo& OutResultInfo, FString* OutOldWorkspaceName) override;
+
 #if SOURCE_CONTROL_WITH_SLATE
 	virtual TSharedRef<class SWidget> MakeSettingsWidget() const override;
 #endif
+
+	using ISourceControlProvider::Execute;
 
 	/**
 	 * Register a worker with the provider.
@@ -83,6 +92,9 @@ public:
 	/** Helper function used to update state cache */
 	TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> GetStateInternal(const FString& InFilename);
 
+	/** Helper function used to update changelists state cache */
+	TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> GetStateInternal(const FPerforceSourceControlChangelist& InChangelist);
+
 	/**
 	 * Connects to the source control server if the persistent connection is not already established.
 	 *
@@ -98,6 +110,12 @@ public:
 
 	/** Remove a named file from the state cache */
 	bool RemoveFileFromCache(const FString& Filename);
+
+	/** Remove a changelist from the state cache */
+	bool RemoveChangelistFromCache(const FPerforceSourceControlChangelist& Changelist);
+
+	/** Returns a list of changelists from the cache based on a given predicate */
+	TArray<FSourceControlChangelistStateRef> GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlChangelistStateRef&)> Predicate) const;
 
 private:
 
@@ -151,6 +169,7 @@ private:
 
 	/** State cache */
 	TMap<FString, TSharedRef<class FPerforceSourceControlState, ESPMode::ThreadSafe> > StateCache;
+	TMap<FPerforceSourceControlChangelist, TSharedRef<class FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> > ChangelistsStateCache;
 
 	/** The currently registered source control operations */
 	TMap<FName, FGetPerforceSourceControlWorker> WorkersMap;

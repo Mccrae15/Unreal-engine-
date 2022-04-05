@@ -26,14 +26,15 @@
 #include "EngineUtils.h"
 #include "ICompElementManager.h"
 #include "Input/Events.h"
+#include "Kismet/KismetRenderingLibrary.h"
 #include "LensFile.h"
 #include "LiveLinkCameraController.h"
 #include "LiveLinkComponentController.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "MediaPlayer.h"
-#include "MediaTexture.h"
 #include "MediaSource.h"
+#include "MediaTexture.h"
 #include "Misc/MessageDialog.h"
 #include "Models/SphericalLensModel.h"
 #include "Modules/ModuleManager.h"
@@ -49,10 +50,6 @@
 
 #if WITH_OPENCV
 #include "OpenCVHelper.h"
-OPENCV_INCLUDES_START
-#undef check 
-#include "opencv2/opencv.hpp"
-OPENCV_INCLUDES_END
 #endif
 
 
@@ -87,7 +84,7 @@ namespace CameraCalibrationStepsController
 
 		for (const ULiveLinkComponentController* LLComponentController : LLComponentControllers)
 		{
-			for (const TPair<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*> Pair : LLComponentController->ControllerMap)
+			for (const TPair<TSubclassOf<ULiveLinkRole>, TObjectPtr<ULiveLinkControllerBase>> Pair : LLComponentController->ControllerMap)
 			{
 				if (ULiveLinkCameraController* CameraController = Cast<ULiveLinkCameraController>(Pair.Value))
 				{
@@ -108,12 +105,13 @@ namespace CameraCalibrationStepsController
 
 FCameraCalibrationStepsController::FCameraCalibrationStepsController(TWeakPtr<FCameraCalibrationToolkit> InCameraCalibrationToolkit, ULensFile* InLensFile)
 	: CameraCalibrationToolkit(InCameraCalibrationToolkit)
+	, RenderTargetSize(FIntPoint(1920, 1080))
 	, LensFile(TWeakObjectPtr<ULensFile>(InLensFile))
 {
 	check(CameraCalibrationToolkit.IsValid());
 	check(LensFile.IsValid());
 
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateRaw(this, &FCameraCalibrationStepsController::OnTick), 0.0f);
 }
 
@@ -121,7 +119,7 @@ FCameraCalibrationStepsController::~FCameraCalibrationStepsController()
 {
 	if (TickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 	}
 
 	Cleanup();
@@ -150,7 +148,8 @@ void FCameraCalibrationStepsController::CreateSteps()
 		UCameraCalibrationStep* const Step = NewObject<UCameraCalibrationStep>(
 			GetTransientPackage(),
 			StepClass,
-			MakeUniqueObjectName(GetTransientPackage(), StepClass));
+			MakeUniqueObjectName(GetTransientPackage(), StepClass),
+			RF_Transactional);
 
 		check(Step);
 
@@ -328,6 +327,11 @@ UWorld* FCameraCalibrationStepsController::GetWorld() const
 UTextureRenderTarget2D* FCameraCalibrationStepsController::GetRenderTarget() const
 {
 	return RenderTarget.Get();
+}
+
+FIntPoint FCameraCalibrationStepsController::GetCompRenderTargetSize() const
+{
+	return RenderTargetSize;
 }
 
 void FCameraCalibrationStepsController::CreateComp()
@@ -554,6 +558,10 @@ void FCameraCalibrationStepsController::CreateComp()
 	MaterialPass->SetParameterMapping(TEXT("CG"), *CGLayer->GetActorLabel());
 	MaterialPass->SetParameterMapping(TEXT("MediaPlate"), *MediaPlate->GetActorLabel());
 
+	// Create new overlay transform passes
+	CreateOverlayPass(TEXT("Calibration Step Overlay"), ToolOverlayPass, ToolOverlayRenderTarget);
+	CreateOverlayPass(TEXT("User Selected Overlay"), UserOverlayPass, UserOverlayRenderTarget);
+
 	URenderTargetCompositingOutput* RTOutput = Cast<URenderTargetCompositingOutput>(Comp->CreateNewOutputPass(
 		TEXT("SimulcamCalOutput"),
 		URenderTargetCompositingOutput::StaticClass())
@@ -581,8 +589,8 @@ void FCameraCalibrationStepsController::CreateComp()
 
 	RenderTarget->RenderTargetFormat = RTF_RGBA16f;
 	RenderTarget->ClearColor = FLinearColor::Black;
-	RenderTarget->bAutoGenerateMips = true;
-	RenderTarget->InitAutoFormat(1920, 1080);
+	RenderTarget->bAutoGenerateMips = false;
+	RenderTarget->InitAutoFormat(RenderTargetSize.X, RenderTargetSize.Y);
 	RenderTarget->UpdateResourceImmediate(true);
 
 	// Assign the RT to the compositing output
@@ -596,6 +604,106 @@ void FCameraCalibrationStepsController::CreateComp()
 	else
 	{
 		SetCamera(Comp->FindTargetCamera());
+	}
+}
+
+UCompositingElementMaterialPass* FCameraCalibrationStepsController::GetOverlayMaterialPass(EOverlayPassType OverlayPassType) const
+{
+	if (OverlayPassType == EOverlayPassType::ToolOverlay)
+	{
+		return ToolOverlayPass.Get();
+	}
+	else if (OverlayPassType == EOverlayPassType::UserOverlay)
+	{
+		return UserOverlayPass.Get();
+	}
+
+	return nullptr;
+}
+
+UTextureRenderTarget2D* FCameraCalibrationStepsController::GetOverlayRenderTarget(EOverlayPassType OverlayPassType) const
+{
+	if (OverlayPassType == EOverlayPassType::ToolOverlay)
+	{
+		return ToolOverlayRenderTarget.Get();
+	}
+	else if (OverlayPassType == EOverlayPassType::UserOverlay)
+	{
+		return UserOverlayRenderTarget.Get();
+	}
+
+	return nullptr;
+}
+
+UMaterialInterface* FCameraCalibrationStepsController::GetOverlayMaterial(EOverlayPassType OverlayPassType) const
+{
+	if (OverlayPassType == EOverlayPassType::ToolOverlay)
+	{
+		return ToolOverlayMaterial.Get();
+	}
+	else if (OverlayPassType == EOverlayPassType::UserOverlay)
+	{
+		return UserOverlayMaterial.Get();
+	}
+
+	return nullptr;
+}
+
+bool FCameraCalibrationStepsController::IsOverlayEnabled(EOverlayPassType OverlayPassType) const
+{
+	if (UCompositingElementMaterialPass* OverlayPass = GetOverlayMaterialPass(OverlayPassType))
+	{
+		return OverlayPass->IsPassEnabled();
+	}
+
+	return false;
+}
+
+void FCameraCalibrationStepsController::SetOverlayEnabled(const bool bEnabled, EOverlayPassType OverlayPassType)
+{
+	if (UCompositingElementMaterialPass* OverlayPass = GetOverlayMaterialPass(OverlayPassType))
+	{
+		OverlayPass->SetPassEnabled(bEnabled);
+	}
+}
+
+void FCameraCalibrationStepsController::SetOverlayMaterial(UMaterialInterface* InOverlay, bool bShowOverlay, EOverlayPassType OverlayPassType)
+{
+ 	if (OverlayPassType == EOverlayPassType::ToolOverlay)
+ 	{
+		ToolOverlayMaterial = InOverlay;
+	}
+ 	else if (OverlayPassType == EOverlayPassType::UserOverlay)
+ 	{
+		UserOverlayMaterial = InOverlay;
+	}
+
+	// If the overlay is non-null, refresh the overlay and enable/disable the overlay as necessary
+	if (InOverlay)
+	{
+		RefreshOverlay(OverlayPassType);
+		SetOverlayEnabled(bShowOverlay, OverlayPassType);
+	}
+	else
+	{
+		// Disable the overlay pass if the input overlay is null
+		SetOverlayEnabled(false, OverlayPassType);
+	}
+}
+
+void FCameraCalibrationStepsController::RefreshOverlay(EOverlayPassType OverlayPassType)
+{
+	if (UCompositingElementMaterialPass* OverlayPass = GetOverlayMaterialPass(OverlayPassType))
+	{
+		if (UTextureRenderTarget2D* OverlayRenderTarget = GetOverlayRenderTarget(OverlayPassType))
+		{
+			if (UMaterialInterface* OverlayMaterial = GetOverlayMaterial(OverlayPassType))
+			{
+				// Clear the overlay render target and draw to it again using the current overlay material
+				UKismetRenderingLibrary::ClearRenderTarget2D(OverlayPass, OverlayRenderTarget, FLinearColor::Transparent);
+				UKismetRenderingLibrary::DrawMaterialToRenderTarget(OverlayPass, OverlayRenderTarget, OverlayMaterial);
+			}
+		}
 	}
 }
 
@@ -633,14 +741,55 @@ void FCameraCalibrationStepsController::CreateMediaPlateOutput()
 	
 	MediaPlateRenderTarget->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
 	MediaPlateRenderTarget->ClearColor = FLinearColor::Black;
-	MediaPlateRenderTarget->bAutoGenerateMips = true;
-	MediaPlateRenderTarget->InitAutoFormat(1920, 1080);
+	MediaPlateRenderTarget->bAutoGenerateMips = false;
+	MediaPlateRenderTarget->InitAutoFormat(RenderTargetSize.X, RenderTargetSize.Y);
 	MediaPlateRenderTarget->UpdateResourceImmediate(true);
 
 	// Assign the RT to the compositing output
 	RTOutput->RenderTarget = MediaPlateRenderTarget.Get();
 }
 
+void FCameraCalibrationStepsController::CreateOverlayPass(FName PassName, TWeakObjectPtr<UCompositingElementMaterialPass>& OverlayPass, TWeakObjectPtr<UTextureRenderTarget2D>& OverlayRenderTarget)
+{
+	// Create new overlay transform pass
+	OverlayPass = CastChecked<UCompositingElementMaterialPass>(
+		Comp->CreateNewTransformPass(PassName, UCompositingElementMaterialPass::StaticClass())
+		);
+
+	if (!OverlayPass.IsValid())
+	{
+		UE_LOG(LogCameraCalibrationEditor, Warning, TEXT("Failed to create 'Overlay' UCompositingElementMaterialPass"));
+		Cleanup();
+		return;
+	}
+
+	if (UMaterialInterface* OverlayBaseMaterial = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), NULL, TEXT("/CameraCalibration/Materials/M_OverlayBase.M_OverlayBase"))))
+	{
+		OverlayPass->SetMaterialInterface(OverlayBaseMaterial);
+	}
+
+	OverlayPass->SetPassEnabled(false);
+
+	OverlayRenderTarget = NewObject<UTextureRenderTarget2D>(
+		GetTransientPackage(),
+		MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass())
+		);
+
+	if (!OverlayRenderTarget.IsValid())
+	{
+		UE_LOG(LogCameraCalibrationEditor, Warning, TEXT("Failed to create UTextureRenderTarget2D for the OverlayPass"));
+		Cleanup();
+		return;
+	}
+
+	OverlayRenderTarget->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
+	OverlayRenderTarget->ClearColor = FLinearColor::Black;
+	OverlayRenderTarget->bAutoGenerateMips = false;
+	OverlayRenderTarget->InitAutoFormat(RenderTargetSize.X, RenderTargetSize.Y);
+	OverlayRenderTarget->UpdateResourceImmediate(true);
+
+	OverlayPass->Material.SetTextureOverride(FName(TEXT("OverlayTexture")), OverlayRenderTarget.Get());
+}
 
 float FCameraCalibrationStepsController::GetWiperWeight() const
 {
@@ -771,6 +920,22 @@ void FCameraCalibrationStepsController::OnSimulcamViewportClicked(const FGeometr
 		TogglePlay();
 		return;
 	}
+}
+
+bool FCameraCalibrationStepsController::OnSimulcamViewportInputKey(const FKey& InKey, const EInputEvent& InEvent)
+{
+	bool bStepHandled = false;
+
+	for (TStrongObjectPtr<UCameraCalibrationStep>& Step : CalibrationSteps)
+	{
+		if (Step.IsValid() && Step->IsActive())
+		{
+			bStepHandled |= Step->OnViewportInputKey(InKey, InEvent);
+			break;
+		}
+	}
+
+	return bStepHandled;
 }
 
 ULiveLinkCameraController* FCameraCalibrationStepsController::FindLiveLinkCameraController() const
@@ -979,7 +1144,7 @@ void FCameraCalibrationStepsController::FindMediaSourceUrls(TArray<TSharedPtr<FS
 	{
 		if (const UMediaSource* MediaSource = MediaProfile->GetMediaSource(MediaSourceIdx))
 		{
-			OutMediaSourceUrls.Add(MakeShareable(new FString(MediaSource->GetUrl())));
+			OutMediaSourceUrls.Add(MakeShared<FString>(MediaSource->GetUrl()));
 		}
 	}
 }
@@ -1003,6 +1168,9 @@ void FCameraCalibrationStepsController::SelectStep(const FName& Name)
 			if (Name == Step->FriendlyName())
 			{
 				Step->Activate();
+
+				// Switch the overlay material for the tool overlay pass to the material used by the step being selected (and enable if needed)
+				SetOverlayMaterial(Step->GetOverlayMID(), Step->IsOverlayEnabled(), EOverlayPassType::ToolOverlay);
 			}
 			else
 			{

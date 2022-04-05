@@ -8,9 +8,11 @@
 
 class FExtender;
 class UToolMenu;
+class UTypedElementSelectionSet;
 struct FToolMenuContext;
 class SLevelEditor;
 class SWidget;
+struct FToolMenuSection;
 
 /**
  * Context menu construction class 
@@ -24,8 +26,9 @@ public:
 	 * Summons the level viewport context menu
 	 * @param	LevelEditor		The level editor using this menu.
 	 * @param	ContextType		The context we should use to specialize this menu
+	 * @param	HitProxyActor	The hitproxy actor in the case the ContextType is Viewport
 	 */
-	static void SummonMenu( const TSharedRef< class SLevelEditor >& LevelEditor, ELevelEditorMenuContext ContextType );
+	static void SummonMenu( const TSharedRef< class SLevelEditor >& LevelEditor, ELevelEditorMenuContext ContextType, const FTypedElementHandle& HitProxyElement = FTypedElementHandle());
 
 	/**
 	 * Summons the viewport view option menu
@@ -39,9 +42,10 @@ public:
 	 * @param	LevelEditor		The level editor using this menu.
 	 * @param	ContextType		The context we should use to specialize this menu
 	 * @param	Extender		Allows extension of this menu based on context.
+	 * @param	HitProxyActor	The hitproxy actor in the case the ContextType is Viewport
 	 * @return	Widget for this context menu
 	 */
-	static TSharedPtr< SWidget > BuildMenuWidget(TWeakPtr< SLevelEditor > LevelEditor, ELevelEditorMenuContext ContextType, TSharedPtr<FExtender> Extender = TSharedPtr<FExtender>());
+	static TSharedRef< SWidget > BuildMenuWidget(TWeakPtr< ILevelEditor > LevelEditor, ELevelEditorMenuContext ContextType, TSharedPtr<FExtender> Extender = TSharedPtr<FExtender>(), const FTypedElementHandle& HitProxyElement = FTypedElementHandle());
 
 	/**
 	 * Populates the specified menu builder for the context menu that can be inserted into a pop-up window
@@ -50,21 +54,32 @@ public:
 	 * @param	LevelEditor		The level editor using this menu.
 	 * @param	ContextType		The context we should use to specialize this menu
 	 * @param	Extender		Allows extension of this menu based on context.
+	 * @param	HitProxyActor	The hitproxy actor in the case the ContextType is Viewport
 	 */
-	static UToolMenu* GenerateMenu(TWeakPtr< SLevelEditor > LevelEditor, ELevelEditorMenuContext ContextType, TSharedPtr<FExtender> Extender = TSharedPtr<FExtender>());
+	static UToolMenu* GenerateMenu(TWeakPtr< ILevelEditor > LevelEditor, ELevelEditorMenuContext ContextType, TSharedPtr<FExtender> Extender = TSharedPtr<FExtender>(), const FTypedElementHandle& HitProxyElement = FTypedElementHandle());
 
 	/* Adds required information to Context for build menu based on current selection */
-	static FName InitMenuContext(FToolMenuContext& Context, TWeakPtr<SLevelEditor> LevelEditor, ELevelEditorMenuContext ContextType);
+	static FName InitMenuContext(FToolMenuContext& Context, TWeakPtr<ILevelEditor> LevelEditor, ELevelEditorMenuContext ContextType, const FTypedElementHandle& HitProxyElement = FTypedElementHandle());
 
 	/* Returns name of menu to display based on current selection */
-	static FName GetContextMenuName(ELevelEditorMenuContext ContextType);
+	static FName GetContextMenuName(ELevelEditorMenuContext ContextType, const UTypedElementSelectionSet* InSelectionSet);
+
+	/* Returns a user-readable title for the menu to display; the title can be displayed in UI like the menu bar */
+	static FText GetContextMenuTitle(ELevelEditorMenuContext ContextType, const UTypedElementSelectionSet* InSelectionSet);
+
+	/* Returns a user-readable tooltip describing the menu to display */
+	static FText GetContextMenuToolTip(ELevelEditorMenuContext ContextType, const UTypedElementSelectionSet* InSelectionSet);
 
 private:
 
 	static void RegisterComponentContextMenu();
 	static void RegisterActorContextMenu();
+	static void RegisterElementContextMenu();
 	static void RegisterSceneOutlinerContextMenu();
+	static void RegisterMenuBarEmptyContextMenu();
 	static void RegisterEmptySelectionContextMenu();
+
+	static void AddPlayFromHereSubMenu(FToolMenuSection& Section);
 
 	/**
 	 * Builds the actor group menu
@@ -72,5 +87,5 @@ private:
 	 * @param Menu		The menu to add items to.
 	 * @param SelectedActorInfo	Information about the selected actors.
 	 */
-	static void BuildGroupMenu(UToolMenu* Menu, const struct FSelectedActorInfo& SelectedActorInfo);
+	static void BuildGroupMenu(FToolMenuSection& Section, const struct FSelectedActorInfo& SelectedActorInfo);
 };

@@ -40,7 +40,7 @@ void ACameraActor::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if ((Ar.UE4Ver() < VER_UE4_CAMERA_ACTOR_USING_CAMERA_COMPONENT) && Ar.IsLoading())
+	if ((Ar.UEVer() < VER_UE4_CAMERA_ACTOR_USING_CAMERA_COMPONENT) && Ar.IsLoading())
 	{
 		CameraComponent->bConstrainAspectRatio = bConstrainAspectRatio_DEPRECATED;
 		CameraComponent->ProjectionMode = ECameraProjectionMode::Perspective;
@@ -60,13 +60,13 @@ void ACameraActor::PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph
 
 	Super::PostLoadSubobjects(OuterInstanceGraph);
 	
-	if (GetLinkerUE4Version() < VER_UE4_CAMERA_ACTOR_USING_CAMERA_COMPONENT)
+	if (GetLinkerUEVersion() < VER_UE4_CAMERA_ACTOR_USING_CAMERA_COMPONENT)
 	{
 		CameraComponent->SetupAttachment(OldAttachParent, OldSocketName);
 		OldRoot->SetupAttachment(nullptr);
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_CAMERA_COMPONENT_ATTACH_TO_ROOT)
+	if (GetLinkerUEVersion() < VER_UE4_CAMERA_COMPONENT_ATTACH_TO_ROOT)
 	{
 		RootComponent = SceneComponent;
 		if (OldAttachParent != SceneComponent)

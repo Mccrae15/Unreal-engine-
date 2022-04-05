@@ -9,6 +9,7 @@ NiagaraGPUSortInfo.h: GPU particle sorting helper
 #include "RHI.h"
 #include "RHIResources.h"
 #include "GPUSortManager.h"
+#include "NiagaraCommon.h"
 #include "NiagaraGPUSortInfo.generated.h"
 
 UENUM()
@@ -20,9 +21,15 @@ enum class ENiagaraSortMode : uint8
 	ViewDepth,
 	/** Sort by distance to the camera's origin.*/
 	ViewDistance,
-	/** Custom sorting according to a per particle attribute. Which attribute is defined by the renderer's CustomSortingBinding which defaults to Particles.NormalizedAge. Lower values are rendered before higher values. */
+	/**
+	Sort according to particles CustomSortingBinding (defaults to Particles.NormalizedAge).
+	Lower values will be sorted before higher values, i.e. 1 would draw on top of 0.
+	*/
 	CustomAscending,
-	/** Custom sorting according to a per particle attribute. Which attribute is defined by the renderer's CustomSortingBinding which defaults to Particles.NormalizedAge. Higher values are rendered before lower values. */
+	/**
+	Sort according to particles CustomSortingBinding (defaults to Particles.NormalizedAge).
+	Higher values will be sorted before lower values, i.e. 0 would draw on top of 1.
+	*/
 	CustomDecending,
 };
 
@@ -61,7 +68,8 @@ struct FNiagaraGPUSortInfo
 	int32 MeshIndex = 0;
 	FSphere LocalBSphere = FSphere(0);
 	FVector CullingWorldSpaceOffset = FVector(0, 0, 0);
-	FVector2D DistanceCullRange { 0.0f, FLT_MAX };
+	FVector3f SystemLWCTile = FVector3f(0, 0, 0);
+	FVector2f DistanceCullRange { 0.0f, FLT_MAX };
 	TArray<FPlane, TFixedAllocator<MaxCullPlanes>> CullPlanes;
 
 	// The GPUSortManager bindings for this sort task.
@@ -70,10 +78,11 @@ struct FNiagaraGPUSortInfo
 	EGPUSortFlags SortFlags = EGPUSortFlags::None;
 
 	// Set the SortFlags based on the emitter and material constraints.
-	FORCEINLINE void SetSortFlags(bool bHighPrecisionKeys, bool bTranslucentMaterial)
+	FORCEINLINE void SetSortFlags(bool bHighPrecisionKeys, ENiagaraGpuComputeTickStage::Type ReadyTickStage)
 	{
-		SortFlags = EGPUSortFlags::KeyGenAfterPreRender | EGPUSortFlags::ValuesAsInt32 | 
+		SortFlags =
+			EGPUSortFlags::ValuesAsInt32 | 
 			(bHighPrecisionKeys ? EGPUSortFlags::HighPrecisionKeys : EGPUSortFlags::LowPrecisionKeys) |
-			(bTranslucentMaterial ? EGPUSortFlags::AnySortLocation : EGPUSortFlags::SortAfterPreRender);
+			(ReadyTickStage == ENiagaraGpuComputeTickStage::PostOpaqueRender ? EGPUSortFlags::SortAfterPostRenderOpaque | EGPUSortFlags::KeyGenAfterPostRenderOpaque : EGPUSortFlags::SortAfterPreRender | EGPUSortFlags::KeyGenAfterPreRender);
 	}
 };

@@ -47,22 +47,11 @@
 			]
 		},
 		{
-			"Name": "StaticMeshEditorExtension",
-			"Enabled": true
-		},
-		{
 			"Name": "DatasmithGLTFImporter",
 			"Enabled": true
 		},
 		{
 			"Name": "AxFImporter",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64"
-			]
-		},
-		{
-			"Name": "HoloLensAR",
 			"Enabled": true,
 			"SupportedTargetPlatforms": [
 				"Win64"

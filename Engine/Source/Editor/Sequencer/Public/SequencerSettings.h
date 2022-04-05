@@ -168,6 +168,16 @@ public:
 	/** Sets whether or not to snap the play time to keys while scrubbing. */
 	void SetSnapPlayTimeToKeys(bool InbSnapPlayTimeToKeys);
 
+	/** Gets whether or not to snap the play time to section bounds while scrubbing. */
+	bool GetSnapPlayTimeToSections() const;
+	/** Sets whether or not to snap the play time to section bounds while scrubbing. */
+	void SetSnapPlayTimeToSections(bool InbSnapPlayTimeToSections);
+
+	/** Gets whether or not to snap the play time to markers while scrubbing. */
+	bool GetSnapPlayTimeToMarkers() const;
+	/** Sets whether or not to snap the play time to markers while scrubbing. */
+	void SetSnapPlayTimeToMarkers(bool InbSnapPlayTimeToMarkers);
+
 	/** Gets whether or not to snap the play time to the interval while scrubbing. */
 	bool GetSnapPlayTimeToInterval() const;
 	/** Sets whether or not to snap the play time to the interval while scrubbing. */
@@ -274,6 +284,20 @@ public:
 	/** Set whether to show channel colors */
 	void SetShowChannelColors(bool bInShowChannelColors);
 
+	/** @return Whether the given channel has curve extents */
+	bool HasKeyAreaCurveExtents(const FString& ChannelName) const;
+	/** @ Remove curve extents for the given channel */
+	void RemoveKeyAreaCurveExtents(const FString& ChannelName);
+	/** @return Get the key area curve extents for the given channel */
+	void GetKeyAreaCurveExtents(const FString& ChannelName, float& InMin, float& InMax) const;
+	/** Set the key area curve extents for the given channel */
+	void SetKeyAreaCurveExtents(const FString& ChannelName, float InMin, float InMax);
+
+	/** @return The key area height when showing curves */
+	float GetKeyAreaHeightWithCurves() const;
+	/** Set the key area height when showing curves */
+	void SetKeyAreaHeightWithCurves(float InKeyAreaHeightWithCurves);
+
 	/** @return The tolerance to use when reducing keys */
 	float GetReduceKeysTolerance() const;
 	/** Set the tolerance to use when reducing keys */
@@ -335,11 +359,6 @@ public:
 	void SetCompileDirectorOnEvaluate(bool bInCompileDirectorOnEvaluate);
 
 	uint32 GetTrajectoryPathCap() const { return TrajectoryPathCap; }
-
-	/** Gets whether to show the sequencer outliner info column */
-	bool GetShowOutlinerInfoColumn() const;
-	/** Sets whether to show the sequencer outliner info column */
-	void SetShowOutlinerInfoColumn(bool bInShowOutlinerInfoColumn);
 
 	FOnLoopStateChanged& GetOnLoopStateChanged();
 
@@ -411,9 +430,17 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bSnapKeysAndSectionsToPlayRange;
 
-	/** Enable or disable snapping the current time to keys of the selected track while scrubbing. */
+	/** Enable or disable snapping the current time to keys while scrubbing. */
 	UPROPERTY( config, EditAnywhere, Category=Snapping )
 	bool bSnapPlayTimeToKeys;
+
+	/** Enable or disable snapping the current time to section bounds while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	bool bSnapPlayTimeToSections;
+
+	/** Enable or disable snapping the current time to markers while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	bool bSnapPlayTimeToMarkers;
 
 	/** Enable or disable snapping the current time to the time snapping interval while scrubbing. */
 	UPROPERTY( config, EditAnywhere, Category=Snapping )
@@ -497,6 +524,14 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bShowChannelColors;
 
+	/** The key area curve extents, stored per channel name */
+	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	FString KeyAreaCurveExtents;
+
+	/** The key area height when showing curves */
+	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	float KeyAreaHeightWithCurves;
+
 	/** The tolerance to use when reducing keys */
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	float ReduceKeysTolerance;
@@ -540,10 +575,6 @@ protected:
 	/** Specifies the maximum number of keys to draw when rendering trajectories in viewports */
 	UPROPERTY(config, EditAnywhere, Category = General)
 	uint32 TrajectoryPathCap;
-
-	/** Whether to show the sequencer outliner info column */
-	UPROPERTY(config, EditAnywhere, Category = General)
-	bool bShowOutlinerInfoColumn;
 
 	/** What format do we display time in to the user? */
 	UPROPERTY(config, EditAnywhere, Category=General)

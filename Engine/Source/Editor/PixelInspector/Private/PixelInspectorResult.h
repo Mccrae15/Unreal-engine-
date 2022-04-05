@@ -17,6 +17,7 @@
 #define PIXEL_INSPECTOR_SHADINGMODELID_EYE 9
 #define PIXEL_INSPECTOR_SHADINGMODELID_SINGLELAYERWATER 10
 #define PIXEL_INSPECTOR_SHADINGMODELID_THIN_TRANSLUCENT 11
+#define PIXEL_INSPECTOR_SHADINGMODELID_STRATA 12
 #define PIXEL_INSPECTOR_SHADINGMODELID_MASK 0xF
 
 namespace PixelInspector
@@ -48,7 +49,7 @@ namespace PixelInspector
 			AmbientOcclusion = 0.0f;
 
 			//Custom Data
-			SubSurfaceColor = FVector(0.0f);
+			SubSurfaceColor = FVector3f(0.0f);
 			Opacity = 0.0f;
 			ClearCoat = 0.0f;
 			ClearCoatRoughness = 0.0f;
@@ -65,7 +66,7 @@ namespace PixelInspector
 
 
 		//////////////////////////////////////////////////////////////////////////
-		// PreExposure used to render this frame. See "r.UsePreExposure"
+		// PreExposure used to render this frame.
 		float PreExposure;
 		float OneOverPreExposure;
 
@@ -135,7 +136,7 @@ namespace PixelInspector
 		void DecodeFinalColor(TArray<FLinearColor> &BufferFinalColorValue, float InGamma, bool bHasAlphaChannel);
 		void DecodeSceneColor(TArray<FLinearColor> &BufferSceneColorValue);
 		void DecodeDepth(TArray<FLinearColor> &BufferDepthValue);
-		void DecodeHDR(TArray<FLinearColor> &BufferHDRValue);
+		void DecodeHDR(TArray<FLinearColor> &BufferHDRValue, bool bHasAlphaChannel);
 
 		void DecodeBufferData(TArray<FColor> &BufferAValue, TArray<FColor> &BufferBCDEValue, bool AllowStaticLighting);
 		void DecodeBufferData(TArray<FLinearColor> &BufferAValue, TArray<FColor> &BufferBCDEValue, bool AllowStaticLighting);

@@ -10,7 +10,7 @@
 /**
  * Implements an Actor for exponential height fog.
  */
-UCLASS(showcategories=(Movement, Rendering, "Utilities|Transformation"), ClassGroup=Fog, MinimalAPI)
+UCLASS(showcategories=(Movement, Rendering, Transformation, DataLayers), ClassGroup=Fog, MinimalAPI)
 class AExponentialHeightFog
 	: public AInfo
 {
@@ -21,9 +21,12 @@ class AExponentialHeightFog
 private:
 	/** @todo document */
 	UPROPERTY(Category = ExponentialHeightFog, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	class UExponentialHeightFogComponent* Component;
+	TObjectPtr<class UExponentialHeightFogComponent> Component;
 
 public:
+#if WITH_EDITOR
+	virtual bool SupportsDataLayer() const override { return true; }
+#endif
 
 	/** replicated copy of ExponentialHeightFogComponent's bEnabled property */
 	UPROPERTY(replicatedUsing=OnRep_bEnabled)

@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "CoreMinimal.h"
+#include "Hash/Blake3.h"
 #include "Misc/AsciiSet.h"
 #include "Misc/Guid.h"
 #include "Misc/StringBuilder.h"
@@ -20,6 +21,7 @@
 #include "UObject/CoreRedirects.h"
 #include "UObject/SoftObjectPath.h"
 #include "Math/Box2D.h"
+#include "Math/InterpCurvePoint.h"
 #include "UObject/ReleaseObjectVersion.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
@@ -28,10 +30,10 @@
 DEFINE_LOG_CATEGORY(LogProperty);
 
 // List the core ones here as they have already been included (and can be used without CoreUObject!)
-template<>
-struct TStructOpsTypeTraits<FVector> : public TStructOpsTypeTraitsBase2<FVector>
+template<typename T>
+struct TVector3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
-	enum 
+	enum
 	{
 		WithIdenticalViaEquality = true,
 		WithNoInitConstructor = true,
@@ -39,9 +41,14 @@ struct TStructOpsTypeTraits<FVector> : public TStructOpsTypeTraitsBase2<FVector>
 		WithNetSerializer = true,
 		WithNetSharedSerialization = true,
 		WithStructuredSerializer = true,
+		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Vector);
+template<> struct TStructOpsTypeTraits<FVector3f> : public TVector3StructOpsTypeTraits<FVector3f> {};
+template<> struct TStructOpsTypeTraits<FVector3d> : public TVector3StructOpsTypeTraits<FVector3d> {};
+IMPLEMENT_STRUCT(Vector3f);
+IMPLEMENT_STRUCT(Vector3d);
+IMPLEMENT_STRUCT(Vector);	// Aliased
 
 template<>
 struct TStructOpsTypeTraits<FIntPoint> : public TStructOpsTypeTraitsBase2<FIntPoint>
@@ -69,8 +76,8 @@ struct TStructOpsTypeTraits<FIntVector> : public TStructOpsTypeTraitsBase2<FIntV
 };
 IMPLEMENT_STRUCT(IntVector);
 
-template<>
-struct TStructOpsTypeTraits<FVector2D> : public TStructOpsTypeTraitsBase2<FVector2D>
+template<typename T>
+struct TVector2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum 
 	{
@@ -80,12 +87,17 @@ struct TStructOpsTypeTraits<FVector2D> : public TStructOpsTypeTraitsBase2<FVecto
 		WithNetSerializer = true,
 		WithNetSharedSerialization = true,
 		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
+template<> struct TStructOpsTypeTraits<FVector2f> : public TVector2StructOpsTypeTraits<FVector2f> {};
+template<> struct TStructOpsTypeTraits<FVector2d> : public TVector2StructOpsTypeTraits<FVector2d> {};
+IMPLEMENT_STRUCT(Vector2f);
+IMPLEMENT_STRUCT(Vector2d);
 IMPLEMENT_STRUCT(Vector2D);
 
-template<>
-struct TStructOpsTypeTraits<FVector4> : public TStructOpsTypeTraitsBase2<FVector4>
+template<typename T>
+struct TVector4StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum 
 	{
@@ -93,67 +105,58 @@ struct TStructOpsTypeTraits<FVector4> : public TStructOpsTypeTraitsBase2<FVector
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
 		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Vector4);
+template<> struct TStructOpsTypeTraits<FVector4f> : public TVector4StructOpsTypeTraits<FVector4f> {};
+template<> struct TStructOpsTypeTraits<FVector4d> : public TVector4StructOpsTypeTraits<FVector4d> {};
+IMPLEMENT_STRUCT(Vector4f);
+IMPLEMENT_STRUCT(Vector4d);
+IMPLEMENT_STRUCT(Vector4);	// Aliased
 
-template<>
-struct TStructOpsTypeTraits<FPlane> : public TStructOpsTypeTraitsBase2<FPlane>
-{
-	enum 
-	{
-		WithIdenticalViaEquality = true,
-		WithNoInitConstructor = true,
-		WithZeroConstructor = true,
-		WithNetSerializer = true,
-		WithNetSharedSerialization = true,
-		WithSerializer = true,
-	};
-};
-IMPLEMENT_STRUCT(Plane);
-
-template<>
-struct TStructOpsTypeTraits<FRotator> : public TStructOpsTypeTraitsBase2<FRotator>
-{
-	enum 
-	{
-		WithIdenticalViaEquality = true,
-		WithNoInitConstructor = true,
-		WithZeroConstructor = true,
-		WithNetSerializer = true,
-		WithNetSharedSerialization = true,
-		WithSerializer = true,
-	};
-};
-IMPLEMENT_STRUCT(Rotator);
-
-template<>
-struct TStructOpsTypeTraits<FBox> : public TStructOpsTypeTraitsBase2<FBox>
-{
-	enum 
-	{
-		WithIdenticalViaEquality = true,
-		WithNoInitConstructor = true,
-		WithZeroConstructor = true,
-		WithSerializer = true,
-	};
-};
-IMPLEMENT_STRUCT(Box);
-
-template<>
-struct TStructOpsTypeTraits<FBox2D> : public TStructOpsTypeTraitsBase2<FBox2D>
+template<typename T>
+struct TPlaneStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum
 	{
 		WithIdenticalViaEquality = true,
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
+		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Box2D);
+template<> struct TStructOpsTypeTraits<FPlane4f> : public TPlaneStructOpsTypeTraits<FPlane4f> {};
+template<> struct TStructOpsTypeTraits<FPlane4d> : public TPlaneStructOpsTypeTraits<FPlane4d> {};
+IMPLEMENT_STRUCT(Plane4f);
+IMPLEMENT_STRUCT(Plane4d);
+IMPLEMENT_STRUCT(Plane);	// Aliased
 
-template<>
-struct TStructOpsTypeTraits<FMatrix> : public TStructOpsTypeTraitsBase2<FMatrix>
+template<typename T>
+struct TRotatorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+		WithNoInitConstructor = true,
+		WithZeroConstructor = true,
+		WithNetSerializer = true,
+		WithNetSharedSerialization = true,
+		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
+	};
+};
+
+template<> struct TStructOpsTypeTraits<FRotator3f> : public TRotatorStructOpsTypeTraits<FRotator3f> {};
+template<> struct TStructOpsTypeTraits<FRotator3d> : public TRotatorStructOpsTypeTraits<FRotator3d> {};
+IMPLEMENT_STRUCT(Rotator3f);
+IMPLEMENT_STRUCT(Rotator3d);
+IMPLEMENT_STRUCT(Rotator);	// Aliased
+
+template<typename T>
+struct TBox3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum 
 	{
@@ -161,21 +164,67 @@ struct TStructOpsTypeTraits<FMatrix> : public TStructOpsTypeTraitsBase2<FMatrix>
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
 		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Matrix);
+template<> struct TStructOpsTypeTraits<FBox3f> : public TBox3StructOpsTypeTraits<FBox3f> {};
+template<> struct TStructOpsTypeTraits<FBox3d> : public TBox3StructOpsTypeTraits<FBox3d> {};
+IMPLEMENT_STRUCT(Box3f);
+IMPLEMENT_STRUCT(Box3d);
+IMPLEMENT_STRUCT(Box);		// Aliased
 
-template<>
-struct TStructOpsTypeTraits<FBoxSphereBounds> : public TStructOpsTypeTraitsBase2<FBoxSphereBounds>
+template<typename T>
+struct TBox2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
-	enum 
+	enum
 	{
 		WithIdenticalViaEquality = true,
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
+		WithSerializeFromMismatchedTag = true,		
 	};
 };
-IMPLEMENT_STRUCT(BoxSphereBounds);
+template<> struct TStructOpsTypeTraits<FBox2f> : public TBox2StructOpsTypeTraits<FBox2f> {};
+template<> struct TStructOpsTypeTraits<FBox2d> : public TBox2StructOpsTypeTraits<FBox2d> {};
+IMPLEMENT_STRUCT(Box2f);
+IMPLEMENT_STRUCT(Box2d);
+IMPLEMENT_STRUCT(Box2D);
+
+template<typename T>
+struct TMatrixStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+		WithNoInitConstructor = true,
+		WithZeroConstructor = true,
+		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
+	};
+};
+
+template<> struct TStructOpsTypeTraits<FMatrix44f> : public TMatrixStructOpsTypeTraits<FMatrix44f> {};
+template<> struct TStructOpsTypeTraits<FMatrix44d> : public TMatrixStructOpsTypeTraits<FMatrix44d> {};
+IMPLEMENT_STRUCT(Matrix44f);
+IMPLEMENT_STRUCT(Matrix44d);
+IMPLEMENT_STRUCT(Matrix);	// Aliased
+
+template<typename T>
+struct TBoxSphereBoundsStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+		WithNoInitConstructor = true,
+		WithZeroConstructor = true,
+		WithSerializeFromMismatchedTag = true,
+	};
+};
+template<> struct TStructOpsTypeTraits<FBoxSphereBounds3f> : public TBoxSphereBoundsStructOpsTypeTraits<FBoxSphereBounds3f> {};
+template<> struct TStructOpsTypeTraits<FBoxSphereBounds3d> : public TBoxSphereBoundsStructOpsTypeTraits<FBoxSphereBounds3d> {};
+IMPLEMENT_STRUCT(BoxSphereBounds3f);
+IMPLEMENT_STRUCT(BoxSphereBounds3d);
+IMPLEMENT_STRUCT(BoxSphereBounds);	// Aliased
 
 template<>
 struct TStructOpsTypeTraits<FOrientedBox> : public TStructOpsTypeTraitsBase2<FOrientedBox>
@@ -210,8 +259,8 @@ struct TStructOpsTypeTraits<FColor> : public TStructOpsTypeTraitsBase2<FColor>
 IMPLEMENT_STRUCT(Color);
 
 
-template<>
-struct TStructOpsTypeTraits<FQuat> : public TStructOpsTypeTraitsBase2<FQuat>
+template<typename T>
+struct TQuatStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum 
 	{
@@ -220,9 +269,15 @@ struct TStructOpsTypeTraits<FQuat> : public TStructOpsTypeTraitsBase2<FQuat>
 		WithNetSerializer = true,
 		WithNetSharedSerialization = true,
 		WithIdentical = true,
+		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Quat);
+template<> struct TStructOpsTypeTraits<FQuat4f> : public TQuatStructOpsTypeTraits<FQuat4f> {};
+template<> struct TStructOpsTypeTraits<FQuat4d> : public TQuatStructOpsTypeTraits<FQuat4d> {};
+IMPLEMENT_STRUCT(Quat4f);
+IMPLEMENT_STRUCT(Quat4d);
+IMPLEMENT_STRUCT(Quat);		// Aliased to one of FQuat4f/FQuat4d
 
 template<>
 struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwoVectors>
@@ -236,6 +291,66 @@ struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwo
 	};
 };
 IMPLEMENT_STRUCT(TwoVectors);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointFloat> : public TStructOpsTypeTraitsBase2<FInterpCurvePointFloat>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointFloat);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointVector2D> : public TStructOpsTypeTraitsBase2<FInterpCurvePointVector2D>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointVector2D);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointVector> : public TStructOpsTypeTraitsBase2<FInterpCurvePointVector>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointVector);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointQuat> : public TStructOpsTypeTraitsBase2<FInterpCurvePointQuat>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointQuat);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointTwoVectors> : public TStructOpsTypeTraitsBase2<FInterpCurvePointTwoVectors>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointTwoVectors);
+
+template<>
+struct TStructOpsTypeTraits<FInterpCurvePointLinearColor> : public TStructOpsTypeTraitsBase2<FInterpCurvePointLinearColor>
+{
+	enum
+	{
+		WithNoInitConstructor = true,
+	};
+};
+IMPLEMENT_STRUCT(InterpCurvePointLinearColor);
 
 template<>
 struct TStructOpsTypeTraits<FGuid> : public TStructOpsTypeTraitsBase2<FGuid>
@@ -252,15 +367,21 @@ struct TStructOpsTypeTraits<FGuid> : public TStructOpsTypeTraitsBase2<FGuid>
 };
 IMPLEMENT_STRUCT(Guid);
 
-template<>
-struct TStructOpsTypeTraits<FTransform> : public TStructOpsTypeTraitsBase2<FTransform>
+template<typename T>
+struct TTransformStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum
 	{
+		//WithSerializer = true,
 		WithIdentical = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(Transform);
+template<> struct TStructOpsTypeTraits<FTransform3f> : public TTransformStructOpsTypeTraits<FTransform3f> {};
+template<> struct TStructOpsTypeTraits<FTransform3d> : public TTransformStructOpsTypeTraits<FTransform3d> {};
+IMPLEMENT_STRUCT(Transform3f);
+IMPLEMENT_STRUCT(Transform3d);
+IMPLEMENT_STRUCT(Transform); // Aliased
 
 template<>
 struct TStructOpsTypeTraits<FRandomStream> : public TStructOpsTypeTraitsBase2<FRandomStream>
@@ -405,7 +526,7 @@ FORCEINLINE constexpr FStringView ParsePropertyToken(const TCHAR* Str, bool Dott
 	FAsciiSet CurrentNonTokenChars = DottedNames ? DottedNonTokenChars : RegularNonTokenChars;
 
 	const TCHAR* TokenEnd = FAsciiSet::FindFirstOrEnd(Str, CurrentNonTokenChars);
-	return FStringView(Str, TokenEnd - Str);
+	return FStringView(Str, UE_PTRDIFF_TO_INT32(TokenEnd - Str));
 }
 
 //
@@ -466,6 +587,98 @@ const TCHAR* FPropertyHelpers::ReadToken( const TCHAR* Buffer, FStringBuilderBas
 		}
 	}
 	return Buffer;
+}
+
+FString FGCStackSizeHelper::GetPropertyPath() const
+{
+	FString Result;
+	const FProperty* PreviousProperty = nullptr;
+	const TCHAR DelimiterChar = '.';
+
+	for (int32 PropertyIndex = 0; PropertyIndex < PropertyStack.Num(); ++PropertyIndex)
+	{
+		const FProperty* Property = PropertyStack[PropertyIndex];
+		check(Property);
+		if (PropertyIndex > 0)
+		{
+			if (Property->GetOwner<FProperty>() == PreviousProperty && Property->GetFName() == PreviousProperty->GetFName())
+			{
+				// Skipping inner properties (inside of containers) if their name matches their owner name - TArrayName.TArrayName doesn't have much value
+				// but we do want to keep TMapName.TMapName_Key
+				continue;
+			}
+			Result += DelimiterChar;
+		}
+		Result += Property->GetName();
+		PreviousProperty = Property;
+	}
+	return Result;
+}
+
+bool FGCStackSizeHelper::ConvertPathToProperties(UClass* ObjectClass, const FName& InPropertyPath, TArray<FProperty*>& OutProperties)
+{
+	const TCHAR DelimiterChar = '.';
+	FString PropertyNameOrPath = InPropertyPath.ToString();
+	int32 DelimiterIndex = -1;
+	bool bFullPathConstructed = true;
+
+	if (!PropertyNameOrPath.FindChar(DelimiterChar, DelimiterIndex))
+	{
+		// 99% of the time we're be dealing with just a single property
+		FProperty* FoundProperty = ObjectClass->FindPropertyByName(*PropertyNameOrPath);
+		if (FoundProperty)
+		{
+			OutProperties.Add(FoundProperty);
+		}
+		else
+		{
+			bFullPathConstructed = false;
+		}
+	}
+	else
+	{
+		// Try and find the first property as we can't start processing the rest of the path without it
+		FString PropertyName = PropertyNameOrPath.Left(DelimiterIndex);
+		FProperty* FoundProperty = ObjectClass->FindPropertyByName(*PropertyName);
+		if (FoundProperty)
+		{
+			OutProperties.Add(FoundProperty);
+
+			int32 StartIndex = DelimiterIndex + 1;
+			const TCHAR DelimiterStr[] = { DelimiterChar, '\0' };
+			do
+			{
+				// Determine the next property name
+				DelimiterIndex = PropertyNameOrPath.Find(DelimiterStr, ESearchCase::CaseSensitive, ESearchDir::FromStart, StartIndex);
+				PropertyName = PropertyNameOrPath.Mid(StartIndex, DelimiterIndex >= 0 ? (DelimiterIndex - StartIndex) : (PropertyNameOrPath.Len() - StartIndex));
+
+				if (FStructProperty* StructProp = CastField<FStructProperty>(FoundProperty))
+				{
+					// If the previous property was a struct property, the next one belongs to the struct the previous property represented
+					FoundProperty = StructProp->Struct->FindPropertyByName(*PropertyName);
+				}
+				else
+				{
+					// In all other case (though in reality it should only be a TMap) find the inner property
+					FoundProperty = CastField<FProperty>(FoundProperty->GetInnerFieldByName(*PropertyName));
+				}
+
+				if (FoundProperty)
+				{
+					OutProperties.Add(FoundProperty);
+				}
+				else
+				{
+					bFullPathConstructed = false;
+				}
+			} while (DelimiterIndex >= 0 && bFullPathConstructed);
+		}
+		else
+		{
+			bFullPathConstructed = false;
+		}
+	}
+	return bFullPathConstructed;
 }
 
 /*-----------------------------------------------------------------------------
@@ -895,6 +1108,16 @@ bool FProperty::SupportsNetSharedSerialization() const
 	return true;
 }
 
+#if WITH_EDITORONLY_DATA
+void FProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	AppendHash(Builder, NamePrivate);
+	Builder.Update(&ArrayDim, sizeof(ArrayDim));
+	AppendHash(Builder, GetID());
+}
+#endif
+
+
 //
 // Return whether the property should be exported.
 //
@@ -1117,7 +1340,7 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 	if (*Str)
 	{
 		// strip trailing whitespace
-		int32 Len = Str - Start;
+		int32 Len = UE_PTRDIFF_TO_INT32(Str - Start);
 		while (Len > 0 && Whitespaces.Contains(Start[Len - 1]))
 		{
 			--Len;

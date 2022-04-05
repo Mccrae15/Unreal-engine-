@@ -27,7 +27,8 @@ namespace ChaosTest
 		const FReal InitialSpeed = BoxHalfSize * 5 * Fps; // More than enough to tunnel
 		const FReal InitialPosition = BoxHalfSize * 2 + 30;
 		using TEvolution = FPBDRigidsEvolutionGBF;
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -48,9 +49,9 @@ namespace ChaosTest
 
 		Evolution.SetPhysicsMaterial(Dynamic, MakeSerializable(PhysicsMaterial));
 
-		const FReal Mass = 100000.0f;;
-		Dynamic->I() = FMatrix33(Mass, Mass, Mass);
-		Dynamic->InvI() = FMatrix33(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
+		const FRealSingle Mass = 100000.0f;;
+		Dynamic->I() = TVec3<FRealSingle>(Mass, Mass, Mass);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
 
 		// Positions and velocities
 		Static->X() = FVec3(0, 0, 0);
@@ -58,7 +59,7 @@ namespace ChaosTest
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
 
 		// The position of the static has changed and statics don't automatically update bounds, so update explicitly
-		Static->SetWorldSpaceInflatedBounds(SmallBox->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(Static->X(), Static->R())));
+		Static->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(Static->X(), Static->R()), FVec3(0));
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
@@ -87,7 +88,8 @@ namespace ChaosTest
 		const FReal BoxHalfSize = 50; // cm
 		const FReal InitialSpeed = BoxHalfSize * 5 * Fps; // More than enough to tunnel
 		using TEvolution = FPBDRigidsEvolutionGBF;
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -109,8 +111,8 @@ namespace ChaosTest
 		Evolution.SetPhysicsMaterial(Dynamic, MakeSerializable(PhysicsMaterial));
 
 		const FReal Mass = 100000.0f;;
-		Dynamic->I() = FMatrix33(Mass, Mass, Mass);
-		Dynamic->InvI() = FMatrix33(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
+		Dynamic->I() = TVec3<FRealSingle>(Mass, Mass, Mass);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
 
 		// Positions and velocities
 		Static->X() = FVec3(0, 0, 0);
@@ -118,7 +120,7 @@ namespace ChaosTest
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
 
 		// The position of the static has changed and statics don't automatically update bounds, so update explicitly
-		Static->SetWorldSpaceInflatedBounds(SmallBox->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(Static->X(), Static->R())));
+		Static->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(Static->X(), Static->R()), FVec3(0));
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
@@ -147,7 +149,8 @@ namespace ChaosTest
 		const FReal SphereRadius = 100; // cm
 		const FReal InitialSpeed = SphereRadius * 5 * Fps; // More than enough to tunnel
 		using TEvolution = FPBDRigidsEvolutionGBF;
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -171,8 +174,8 @@ namespace ChaosTest
 		Evolution.SetPhysicsMaterial(Dynamic, MakeSerializable(PhysicsMaterial));
 
 		const FReal Mass = 100000.0f;;
-		Dynamic->I() = FMatrix33(Mass, Mass, Mass);
-		Dynamic->InvI() = FMatrix33(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
+		Dynamic->I() = TVec3<FRealSingle>(Mass);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / Mass);
 
 		// Positions and velocities
 		Static->X() = FVec3(0, 0, 0);
@@ -181,7 +184,7 @@ namespace ChaosTest
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
 		
 		// The position of the static has changed and statics don't automatically update bounds, so update explicitly
-		Static->SetWorldSpaceInflatedBounds(Sphere->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(Static->X(), Static->R())));
+		Static->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(Static->X(), Static->R()), FVec3(0));
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
@@ -216,7 +219,8 @@ namespace ChaosTest
 		const FVec3 InitialVelocity = FVec3(-ContainerBoxHalfSize * Fps * 10, 0 ,0);
 
 		using TEvolution = FPBDRigidsEvolutionGBF;
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -252,8 +256,8 @@ namespace ChaosTest
 		Evolution.SetPhysicsMaterial(Dynamic, MakeSerializable(PhysicsMaterial));
 
 		const FReal Mass = 100000.0f;
-		Dynamic->I() = FMatrix33(Mass, Mass, Mass);
-		Dynamic->InvI() = FMatrix33(1.0f / Mass, 1.0f / Mass, 1.0f / Mass);
+		Dynamic->I() = TVec3<FRealSingle>(Mass);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / Mass);
 
 		// Positions and velocities
 		ContainerFaces[0]->X() = FVec3(ContainerBoxHalfSize, 0, 0);
@@ -266,18 +270,27 @@ namespace ChaosTest
 		Dynamic->X() = FVec3(0, 0, 0);
 
 		// The position of the static has changed and statics don't automatically update bounds, so update explicitly
-		ContainerFaces[0]->SetWorldSpaceInflatedBounds(ContainerFaceX->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[0]->X(), ContainerFaces[0]->R())));
-		ContainerFaces[1]->SetWorldSpaceInflatedBounds(ContainerFaceX->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[1]->X(), ContainerFaces[1]->R())));
-		ContainerFaces[2]->SetWorldSpaceInflatedBounds(ContainerFaceY->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[2]->X(), ContainerFaces[2]->R())));
-		ContainerFaces[3]->SetWorldSpaceInflatedBounds(ContainerFaceY->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[3]->X(), ContainerFaces[3]->R())));
-		ContainerFaces[4]->SetWorldSpaceInflatedBounds(ContainerFaceZ->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[4]->X(), ContainerFaces[4]->R())));
-		ContainerFaces[5]->SetWorldSpaceInflatedBounds(ContainerFaceZ->BoundingBox().TransformedAABB(TRigidTransform<FReal, 3>(ContainerFaces[5]->X(), ContainerFaces[5]->R())));
+		ContainerFaces[0]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[0]->X(), ContainerFaces[0]->R()), FVec3(0));
+		ContainerFaces[1]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[1]->X(), ContainerFaces[1]->R()), FVec3(0));
+		ContainerFaces[2]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[2]->X(), ContainerFaces[2]->R()), FVec3(0));
+		ContainerFaces[3]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[3]->X(), ContainerFaces[3]->R()), FVec3(0));
+		ContainerFaces[4]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[4]->X(), ContainerFaces[4]->R()), FVec3(0));
+		ContainerFaces[5]->UpdateWorldSpaceState(TRigidTransform<FReal, 3>(ContainerFaces[5]->X(), ContainerFaces[5]->R()), FVec3(0));
 
 		::ChaosTest::SetParticleSimDataToCollide({ Dynamic });
 		::ChaosTest::SetParticleSimDataToCollide({ ContainerFaces });
 
 		Dynamic->SetCCDEnabled(true);
 		Dynamic->SetGravityEnabled(false);
+
+		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
+		Evolution.DirtyParticle(*ContainerFaces[0]);
+		Evolution.DirtyParticle(*ContainerFaces[1]);
+		Evolution.DirtyParticle(*ContainerFaces[2]);
+		Evolution.DirtyParticle(*ContainerFaces[3]);
+		Evolution.DirtyParticle(*ContainerFaces[4]);
+		Evolution.DirtyParticle(*ContainerFaces[5]);
+		Evolution.DirtyParticle(*Dynamic);
 
 		Dynamic->V() = InitialVelocity;
 		///////////////////////////////////

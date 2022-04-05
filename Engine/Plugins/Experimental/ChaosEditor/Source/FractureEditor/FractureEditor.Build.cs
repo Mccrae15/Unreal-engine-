@@ -26,7 +26,9 @@ public class FractureEditor : ModuleRules
 			new string[]
 			{
 				"Core",
-                "Voronoi"
+                "Voronoi",
+				"InteractiveToolsFramework",
+				"EditorInteractiveToolsFramework"
 
 				// ... add other public dependencies that you statically link with here ...
 			}
@@ -42,12 +44,21 @@ public class FractureEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"EditorFramework",
+				"EditorScriptingUtilities",
+				"ToolMenus",
 				"UnrealEd",
 				"LevelEditor",
                 "GeometryCollectionEngine",
                 "GeometryCollectionEditor",
+				"ModelingComponents",
+				"GeometryCore",
+				"MeshDescription",
+				"StaticMeshDescription",
 				"PlanarCut",
-				"Chaos"
+				"Chaos",
+				"ToolWidgets",
+				"DeveloperSettings",
 
 				// ... add private dependencies that you statically link with here ...	
 			}

@@ -65,12 +65,11 @@ UMaterialEditorOptions::UMaterialEditorOptions(const FObjectInitializer& ObjectI
 UMaterialStatsOptions::UMaterialStatsOptions(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-#if PLATFORM_WINDOWS
-	//#todo-sm6
-	bPlatformUsed[/*GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 ? */SP_PCD3D_SM5/* : SP_PCD3D_SM4*/] = 1;
-#elif PLATFORM_IOS
-	bPlatformUsed[SP_METAL] = 1;
-#endif
+	uint32 CurrentlyUsedSP = static_cast<int32>(GMaxRHIShaderPlatform);
+	if (CurrentlyUsedSP < UE_ARRAY_COUNT(bPlatformUsed))
+	{
+		bPlatformUsed[CurrentlyUsedSP] = 1;
+	}
 
 	bMaterialQualityUsed[EMaterialQualityLevel::High] = 1;
 }
@@ -143,6 +142,8 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 	bTimelineDisplayCurveKeys = false;
 
 	TimelineEnabledSnaps = { "CompositeSegment", "MontageSection" };
+
+	bExpandTreeOnSelection = true;
 }
 
 void UPersonaOptions::SetShowGrid( bool bInShowGrid )
@@ -274,4 +275,11 @@ FAssetEditorOptions& UPersonaOptions::GetAssetEditorOptions(const FName& InConte
 	{
 		return *FoundOptions;
 	}
+}
+
+void UPersonaOptions::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	OnSettingsChange.Broadcast(this, PropertyChangedEvent.ChangeType);
 }

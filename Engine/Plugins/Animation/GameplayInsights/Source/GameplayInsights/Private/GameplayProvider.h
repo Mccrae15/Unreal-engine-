@@ -9,14 +9,14 @@
 #include "Containers/StringView.h"
 #include "Model/IntervalTimeline.h"
 
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 
 class FGameplayProvider : public IGameplayProvider
 {
 public:
 	static FName ProviderName;
 
-	FGameplayProvider(Trace::IAnalysisSession& InSession);
+	FGameplayProvider(TraceServices::IAnalysisSession& InSession);
 
 	/** IGameplayProvider interface */
 	virtual bool ReadObjectEventsTimeline(uint64 InObjectId, TFunctionRef<void(const ObjectEventsTimeline&)> Callback) const override;
@@ -24,6 +24,7 @@ public:
 	virtual bool ReadObjectPropertiesTimeline(uint64 InObjectId, TFunctionRef<void(const ObjectPropertiesTimeline&)> Callback) const override;
 	virtual void EnumerateObjectPropertyValues(uint64 InObjectId, const FObjectPropertiesMessage& InMessage, TFunctionRef<void(const FObjectPropertyValue&)> Callback) const override;
 	virtual void EnumerateObjects(TFunctionRef<void(const FObjectInfo&)> Callback) const override;
+	virtual void EnumerateObjects(double StartTime, double EndTime, TFunctionRef<void(const FObjectInfo&)> Callback) const override;
 	virtual const FClassInfo* FindClassInfo(uint64 InClassId) const override;
 	virtual const FClassInfo* FindClassInfo(const TCHAR* InClassPath) const override;
 	virtual const FObjectInfo* FindObjectInfo(uint64 InObjectId) const override;
@@ -35,6 +36,8 @@ public:
 	virtual const FObjectInfo& GetObjectInfo(uint64 InObjectId) const override;
 	virtual FOnObjectEndPlay& OnObjectEndPlay() override { return OnObjectEndPlayDelegate; }
 	virtual const TCHAR* GetPropertyName(uint32 InPropertyStringId) const override;
+	virtual const RecordingInfoTimeline* GetRecordingInfo(uint32 RecordingId) const override; 
+	virtual void ReadViewTimeline(TFunctionRef<void(const ViewTimeline&)> Callback) const override;
 
 	/** Add a class message */
 	void AppendClass(uint64 InClassId, uint64 InSuperId, const TCHAR* InClassName, const TCHAR* InClassPathName);
@@ -42,17 +45,29 @@ public:
 	/** Add an object message */
 	void AppendObject(uint64 InObjectId, uint64 InOuterId, uint64 InClassId, const TCHAR* InObjectName, const TCHAR* InObjectPathName);
 
+	/** Add an object create message */
+	void AppendObjectLifetimeBegin(uint64 InObjectId, double InTime);
+	
+	/** Add an object destroy message */
+	void AppendObjectLifetimeEnd(uint64 InObjectId, double InTime);	
+
 	/** Add an object event message */
 	void AppendObjectEvent(uint64 InObjectId, double InTime, const TCHAR* InEvent);
+	
+	/** Add a Controller Attach message */
+	void AppendPawnPossess(uint64 InControllerId, uint64 InPawnId, double InTime);
+
+	/** Add a view message */
+	void AppendView(uint64 InObjectId, double InTime, const FVector& InPosition, const FRotator& InRotation, float InFov, float InAspectRatio);
 
 	/** Add a world message */
 	void AppendWorld(uint64 InObjectId, int32 InPIEInstanceId, uint8 InType, uint8 InNetMode, bool bInIsSimulating);
 
+	/** Add a recording info message */
+	void AppendRecordingInfo(uint64 InWorldId, double InProfileTime, uint32 InRecordingIndex, uint32 InFrameIndex, double InElapsedTime);
+
 	/** Add a class property string ID message */
 	void AppendClassPropertyStringId(uint32 InStringId, const FStringView& InString);
-
-	/** Add a class property message */
-	void AppendClassProperty(uint64 InClassId, int32 InId, int32 InParentId, uint32 InTypeStringId, uint32 InKeyStringId);
 
 	/** Add a properties start message */
 	void AppendPropertiesStart(uint64 InObjectId, double InTime, uint64 InEventId);
@@ -61,7 +76,7 @@ public:
 	void AppendPropertiesEnd(uint64 InObjectId, double InTime);
 
 	/** Add a property value message */
-	void AppendPropertyValue(uint64 InObjectId, double InTime, uint64 InEventId, int32 InPropertyId, const FStringView& InValue);
+	void AppendPropertyValue(uint64 InObjectId, double InTime, uint64 InEventId, int32 InParentId, uint32 InTypeStringId, uint32 InKeyStringId, const FStringView& InValue);
 
 	/** Check whether we have any data */
 	bool HasAnyData() const;
@@ -69,8 +84,11 @@ public:
 	/** Check whether we have any object property data */
 	bool HasObjectProperties() const;
 
+	/** Search PawnPossession timeline to find the Controller Object Id for a Pawn (or 0 if none)*/
+	virtual uint64 FindPossessingController(uint64 Pawn, double Time) const override;
+
 private:
-	Trace::IAnalysisSession& Session;
+	TraceServices::IAnalysisSession& Session;
 
 	/** All class info, grow only for stable indices */
 	TArray<FClassInfo> ClassInfos;
@@ -94,18 +112,30 @@ private:
 	TMap<uint64, uint32> ObjectIdToEventTimelines;
 	TMap<uint64, uint32> ObjectIdToPropertiesStorage;
 
+	struct FPawnPossessMessage
+	{
+		uint64 ControllerId = 0;
+		uint64 PawnId = 0;
+	};
+	
+	struct FObjectExistsMessage
+	{
+		uint64 ObjectId = 0;
+	};
+
 	struct FObjectPropertiesStorage
 	{
 		double OpenStartTime;
 		uint64 OpenEventId;
 		FObjectPropertiesMessage OpenEvent;
-		TSharedPtr<Trace::TIntervalTimeline<FObjectPropertiesMessage>> Timeline;
+		TSharedPtr<TraceServices::TIntervalTimeline<FObjectPropertiesMessage>> Timeline;
 		TArray<FObjectPropertyValue> Values;
 	};
 
 	/** Message storage */
-	TArray<TSharedRef<Trace::TPointTimeline<FObjectEventMessage>>> EventTimelines;
+	TArray<TSharedRef<TraceServices::TPointTimeline<FObjectEventMessage>>> EventTimelines;
 	TArray<TSharedRef<FObjectPropertiesStorage>> PropertiesStorage;
+	TSharedPtr<TraceServices::TPointTimeline<FViewMessage>> ViewTimeline;
 
 	/** Map of class path name to ClassInfo index */
 	TMap<FStringView, int32> ClassPathNameToIndexMap;
@@ -118,6 +148,22 @@ private:
 
 	/** Map from string ID to stored string */
 	TMap<uint32, const TCHAR*> PropertyStrings;
+
+	/** Map of RecordingInfo Timelines by RecordingId - Each timeline is a mapping from Gameplay Elapsed time to Profiler Elapsed Time for one recording session */
+	TMap<uint32, TSharedRef<TraceServices::TPointTimeline<FRecordingInfoMessage>>> Recordings;
+
+	// Timeline containing intervals where a controller is attached to a pawn
+	TraceServices::TIntervalTimeline<FPawnPossessMessage> PawnPossession;
+	
+	// Timeline containing intervals where an object exists
+	TraceServices::TIntervalTimeline<FObjectExistsMessage> ObjectLifetimes;
+
+
+	// map from controller id to index in the PawnPossession timeline, for lookup when ending events
+	TMap<uint64, uint64> ActivePawnPossession;
+
+	// map from object id to index in ObjectLifetimes, for lookup when objects are destroyed
+	TMap<uint64, uint64> ActiveObjectLifetimes;
 
 	/** Whether we have any data */
 	bool bHasAnyData;

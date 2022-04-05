@@ -12,6 +12,7 @@
 #include "Templates/Atomic.h"
 #include "Trace/Trace.h"
 #include "Serialization/MemoryLayout.h"
+#include "Delegates/Delegate.h"
 
 class FRHICommandListImmediate;
 
@@ -67,7 +68,7 @@ extern RENDERCORE_API void AdvanceRenderingThreadStatsGT( bool bDiscardCallstack
 /**
  * Waits for the rendering thread to finish executing all pending rendering commands.  Should only be used from the game thread.
  */
-extern RENDERCORE_API void FlushRenderingCommands(bool bFlushDeferredDeletes = false);
+extern RENDERCORE_API void FlushRenderingCommands();
 
 extern RENDERCORE_API void FlushPendingDeleteRHIResources_GameThread();
 extern RENDERCORE_API void FlushPendingDeleteRHIResources_RenderThread();
@@ -77,6 +78,15 @@ extern RENDERCORE_API void TickRenderingTickables();
 extern RENDERCORE_API void StartRenderCommandFenceBundler();
 extern RENDERCORE_API void StopRenderCommandFenceBundler();
 
+class RENDERCORE_API FCoreRenderDelegates
+{
+public:
+	DECLARE_MULTICAST_DELEGATE(FOnFlushRenderingCommandsStart);
+	static FOnFlushRenderingCommandsStart OnFlushRenderingCommandsStart;
+
+	DECLARE_MULTICAST_DELEGATE(FOnFlushRenderingCommandsEnd);
+	static FOnFlushRenderingCommandsEnd OnFlushRenderingCommandsEnd;
+};
 ////////////////////////////////////
 // Render thread suspension
 ////////////////////////////////////
@@ -296,6 +306,7 @@ class FPendingCleanupObjects
 {
 	TArray<FDeferredCleanupInterface*> CleanupArray;
 public:
+	inline bool IsEmpty() const { return CleanupArray.IsEmpty(); }
 	FPendingCleanupObjects();
 	RENDERCORE_API ~FPendingCleanupObjects();
 };
@@ -349,3 +360,10 @@ public:
 private:
 	RenderCommandFunctionArray* RenderCommands;
 };
+
+DECLARE_MULTICAST_DELEGATE(FStopRenderingThread);
+using FStopRenderingThreadDelegate = FStopRenderingThread::FDelegate;
+
+extern RENDERCORE_API FDelegateHandle RegisterStopRenderingThreadDelegate(const FStopRenderingThreadDelegate& InDelegate);
+
+extern RENDERCORE_API void UnregisterStopRenderingThreadDelegate(FDelegateHandle InDelegateHandle);

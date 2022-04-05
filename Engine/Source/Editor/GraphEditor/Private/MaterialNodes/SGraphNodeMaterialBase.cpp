@@ -14,6 +14,7 @@
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
 #include "MaterialGraph/MaterialGraphNode.h"
+#include "MaterialGraph/MaterialGraphSchema.h"
 #include "GraphEditorSettings.h"
 #include "SGraphPanel.h"
 #include "TutorialMetaData.h"
@@ -223,7 +224,7 @@ void FPreviewElement::DrawRenderThread(FRHICommandListImmediate& RHICmdList, con
 			float CurrentTime = bIsRealtime ? (FApp::GetCurrentTime() - GStartTime) : 0.0f;
 			float DeltaTime = bIsRealtime ? FApp::GetDeltaTime() : 0.0f;
 
-			FCanvas Canvas(RenderTarget, NULL, CurrentTime, CurrentTime, DeltaTime, GMaxRHIFeatureLevel);
+			FCanvas Canvas(RenderTarget, NULL, FGameTime::CreateUndilated(CurrentTime, DeltaTime), GMaxRHIFeatureLevel);
 			{
 				Canvas.SetAllowedModes(0);
 				Canvas.SetRenderTargetRect(RenderTarget->GetViewRect());
@@ -278,8 +279,10 @@ void SGraphNodeMaterialBase::CreatePinWidgets()
 		
 			if ((bIsABreakAttrNode && CurPin->Direction == EGPD_Output) || (bIsAMakeAttrNode && CurPin->Direction == EGPD_Input))
 			{
-				int32 ResultNodeIndex = bIsAMakeAttrNode ? MaterialNode->GetInputIndex(CurPin) : MaterialNode->GetOutputIndex(CurPin);
-				bPinDesiresToBeHidden |= !MaterialGraph->MaterialInputs[ResultNodeIndex].IsVisiblePin(MaterialGraph->Material, true);
+				if (CurPin->PinType.PinCategory != UMaterialGraphSchema::PC_Exec)
+				{
+					bPinDesiresToBeHidden |= !MaterialGraph->MaterialInputs[CurPin->SourceIndex].IsVisiblePin(MaterialGraph->Material, true);
+				}
 			}
 		}
 
@@ -528,7 +531,7 @@ ECheckBoxState SGraphNodeMaterialBase::IsExpressionPreviewChecked() const
 
 const FSlateBrush* SGraphNodeMaterialBase::GetExpressionPreviewArrow() const
 {
-	return FEditorStyle::GetBrush(MaterialNode->MaterialExpression->bCollapsed ? TEXT("Kismet.TitleBarEditor.ArrowDown") : TEXT("Kismet.TitleBarEditor.ArrowUp"));
+	return FEditorStyle::GetBrush(MaterialNode->MaterialExpression->bCollapsed ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
 }
 
 void SGraphNodeMaterialBase::PopulateMetaTag(FGraphNodeMetaData* TagMeta) const

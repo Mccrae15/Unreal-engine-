@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Diagnostics;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Xml;
 using System.Text.RegularExpressions;
 
@@ -23,6 +23,8 @@ using Windows.ApplicationModel.Core;
 using System.Threading;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Tools.WindowsDevicePortal;
+using UnrealBuildBase;
+using AutomationScripts;
 
 namespace HoloLens.Automation
 {
@@ -188,7 +190,7 @@ namespace HoloLens.Automation
 						while (!LogReader.EndOfStream)
 						{
 							string LogLine = LogReader.ReadLine();
-							Log.WriteLine(1, SpewVerbosity, "{0} : {1}", LogName, LogLine);
+							Log.WriteLine(SpewVerbosity, "{0} : {1}", LogName, LogLine);
 						}
 					}
 				}
@@ -240,7 +242,7 @@ namespace HoloLens.Automation
 				{
 					if (EtwEvent["ProviderName"] == FriendlyName)
 					{
-						Log.WriteLine(1, GetLogVerbosityFromEventLevel(EtwEvent.Level), "{0} : {1}", FriendlyName, EtwEvent["StringMessage"].Trim('\"'));
+						Log.WriteLine(GetLogVerbosityFromEventLevel(EtwEvent.Level), "{0} : {1}", FriendlyName, EtwEvent["StringMessage"].Trim('\"'));
 					}
 				}
 			}
@@ -374,7 +376,7 @@ namespace HoloLens.Automation
 
 		}
 
-		public override void PreBuildAgenda(UE4Build Build, UE4Build.BuildAgenda Agenda, ProjectParams Params)
+		public override void PreBuildAgenda(UnrealBuild Build, UnrealBuild.BuildAgenda Agenda, ProjectParams Params)
 		{
 			if(ActualArchitectures.Length == 0)
 			{
@@ -393,7 +395,7 @@ namespace HoloLens.Automation
 
 					foreach (var Arch in ActualArchitectures)
 					{
-						Agenda.Targets.Add(new UE4Build.BuildTarget()
+						Agenda.Targets.Add(new UnrealBuild.BuildTarget()
 						{
 							TargetName = target,
 							Platform = UnrealTargetPlatform.HoloLens,
@@ -450,7 +452,7 @@ namespace HoloLens.Automation
 				foreach (string DeviceAddress in ProjParams.DeviceNames)
 				{
 					//We have to choose architecture of the device to run
-					WindowsArchitecture Arch = Environment.Is64BitOperatingSystem ? WindowsArchitecture.x64 : WindowsArchitecture.x86;
+					WindowsArchitecture Arch = WindowsArchitecture.x64;
 					if (!IsLocalDevice(DeviceAddress))
 					{
 						Arch = RemoteDeviceArchitecture(DeviceAddress, ProjParams);
@@ -509,8 +511,7 @@ namespace HoloLens.Automation
 				throw new AutomationException(ExitCode.Error_Arguments, "Wrong WinSDK toolchain selected on \'Platforms/HoloLens/Toolchain\' page. Please check.");
 			}
 
-			// VS 2017 puts MSBuild stuff (where PDBCopy lives) under the Visual Studio Installation directory
-			DirectoryReference VSInstallDir;
+			// VS puts MSBuild stuff (where PDBCopy lives) under the Visual Studio Installation directory
 			DirectoryReference MSBuildInstallDir = new DirectoryReference(Path.Combine(WindowsExports.GetMSBuildToolPath(), "..", "..", ".."));
 
 			DirectoryReference SDKFolder;
@@ -535,11 +536,16 @@ namespace HoloLens.Automation
 			MakeCertPath = HoloLensExports.GetWindowsSdkToolPath("makecert.exe");
 			Pvk2PfxPath = HoloLensExports.GetWindowsSdkToolPath("pvk2pfx.exe");
 
+			IEnumerable<DirectoryReference> VSInstallDirs;
 			if (PDBCopyPath == null || !FileReference.Exists(PDBCopyPath))
 			{
-				if (WindowsExports.TryGetVSInstallDir(WindowsCompiler.VisualStudio2017, out VSInstallDir))
+				if (null != (VSInstallDirs = WindowsExports.TryGetVSInstallDirs(WindowsCompiler.VisualStudio2019)))
 				{
-					PDBCopyPath = FileReference.Combine(VSInstallDir, "MSBuild", "Microsoft", "VisualStudio", "v15.0", "AppxPackage", "PDBCopy.exe");
+					PDBCopyPath = FileReference.Combine(VSInstallDirs.First(), "MSBuild", "Microsoft", "VisualStudio", "v16.0", "AppxPackage", "PDBCopy.exe");
+				}
+				else if (null != (VSInstallDirs = WindowsExports.TryGetVSInstallDirs(WindowsCompiler.VisualStudio2022)))
+				{
+					PDBCopyPath = FileReference.Combine(VSInstallDirs.First(), "MSBuild", "Microsoft", "VisualStudio", "v17.0", "AppxPackage", "PDBCopy.exe");
 				}
 			}
 
@@ -589,7 +595,7 @@ namespace HoloLens.Automation
 				{
 					string ArchString = Target.Receipt.Architecture;
 					SC.StageBuildProductsFromReceipt(Target.Receipt, Target.RequireFilesExist, Params.bTreatNonShippingBinariesAsDebugFiles);
-					DeployExports.AddWinMDReferencesFromReceipt(Target.Receipt, Params.RawProjectPath.Directory, SC.LocalRoot.FullName);
+					DeployExports.AddWinMDReferencesFromReceipt(Target.Receipt, Params.RawProjectPath.Directory, SC.LocalRoot.FullName, Windows10SDKVersion);
 
 					// Stage HoloLens-specific assets (tile, splash, etc.)
 					DirectoryReference assetsPath = new DirectoryReference(Path.Combine(ProjectBinariesFolder.FullName, ArchString, "Resources"));
@@ -620,7 +626,8 @@ namespace HoloLens.Automation
 
 		public override string GetCookPlatform(bool bDedicatedServer, bool bIsClientOnly)
 		{
-			return PlatformType.ToString();
+		    string Return = PlatformType.ToString();
+            return bIsClientOnly ? Return + "Client" : Return;
 		}
 
 		static void FillMapfile(DirectoryReference DirectoryName, string SearchPath, string Mask, StringBuilder AppXRecipeBuiltFiles)
@@ -699,6 +706,16 @@ namespace HoloLens.Automation
 			}
 		}
 
+		private List<string> GetContainerFileExtensions()
+		{
+			return new List<string> { "*.pak", "*.ucas", "*.utoc" };
+		}
+
+		private bool IsUsingContainers(ProjectParams Params)
+		{
+			return (Params.UsePak(this) || (Params.IoStore && !Params.SkipIoStore));
+		}
+
 		private void PackagePakFiles(ProjectParams Params, DeploymentContext SC, string OutputNameBase)
 		{
 			string IntermediateDirectory = Path.Combine(SC.ProjectRoot.FullName, "Intermediate", "Deploy", "neutral");
@@ -716,9 +733,12 @@ namespace HoloLens.Automation
 
 			string OutputAppX = Path.Combine(SC.StageDirectory.FullName, OutputName + Extension);
 
-			if(Params.UsePak(this))
+			if(IsUsingContainers(Params))
 			{
-				FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, "*.pak", AppXRecipeBuiltFiles);
+				foreach (string ContainerExtension in GetContainerFileExtensions())
+				{
+					FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, ContainerExtension, AppXRecipeBuiltFiles);
+				}
 			}
 			else
 			{
@@ -765,9 +785,12 @@ namespace HoloLens.Automation
 
 					string OutputAppX = Path.Combine(SC.StageDirectory.FullName, Product.Path.GetFileNameWithoutExtension() + Extension);
 
-					if (Params.UsePak(this))
+					if(IsUsingContainers(Params))
 					{
-						FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, "*.pak", AppXRecipeBuiltFiles);
+						foreach (string ContainerExtension in GetContainerFileExtensions())
+						{
+							FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, ContainerExtension, AppXRecipeBuiltFiles);
+						}
 					}
 					else
 					{
@@ -831,9 +854,12 @@ namespace HoloLens.Automation
 
 				string OutputAppX = Path.Combine(SC.StageDirectory.FullName, OutputName + Extension);
 
-				if (Params.UsePak(this) && !Params.Run)
+				if (IsUsingContainers(Params) && !Params.Run)
 				{
-					FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, "*.pak", Dict);
+					foreach (string ContainerExtension in GetContainerFileExtensions())
+					{
+						FillMapfile(SC.StageDirectory, SC.StageDirectory.FullName, ContainerExtension, Dict);
+					}
 				}
 				else
 				{
@@ -973,7 +999,7 @@ namespace HoloLens.Automation
 			TargetRules Rules = Params.ProjectTargets.Find(x => x.Rules.Type == TargetType.Game)?.Rules;
 
 			bool UseDebugCrt = false;
-			WindowsCompiler compiler = WindowsCompiler.VisualStudio2017;
+			WindowsCompiler compiler = WindowsCompiler.VisualStudio2019;
 
 			//TODO: Why is this null?
 			if (Rules != null)
@@ -1071,8 +1097,8 @@ namespace HoloLens.Automation
 
 					if (updateCommandLine)
 					{
-						// Update the ue4commandline.txt
-						FileReference IntermediateCmdLineFile = FileReference.Combine(SC.StageDirectory, "UE4CommandLine.txt");
+						// Update the uecommandline.txt
+						FileReference IntermediateCmdLineFile = FileReference.Combine(SC.StageDirectory, "UECommandLine.txt");
 						Log.TraceInformation("Writing cmd line to: " + IntermediateCmdLineFile.FullName);
 						Project.WriteStageCommandline(IntermediateCmdLineFile, Params, SC);
 					}
@@ -1270,7 +1296,7 @@ namespace HoloLens.Automation
 		private void DeployToLocalDevice(ProjectParams Params, DeploymentContext SC)
 		{
 #if !__MonoCS__
-            if (Utils.IsRunningOnMono)
+            if (!RuntimePlatform.IsWindows)
             {
                 return;
             }
@@ -1366,11 +1392,7 @@ namespace HoloLens.Automation
 
 			string osArchBlock = osBlocks[2].ToLower();
 
-			if (osArchBlock.StartsWith("x86"))
-			{
-				return WindowsArchitecture.x86;
-			}
-			else if (osArchBlock.StartsWith("amd64"))
+			if (osArchBlock.StartsWith("amd64"))
 			{
 				return WindowsArchitecture.x64;
 			}
@@ -1391,7 +1413,7 @@ namespace HoloLens.Automation
 		private void DeployToRemoteDevice(string DeviceAddress, ProjectParams Params, DeploymentContext SC)
 		{
 #if !__MonoCS__
-			if (Utils.IsRunningOnMono)
+			if (!RuntimePlatform.IsWindows)
             {
                 return;
             }
@@ -1480,7 +1502,7 @@ namespace HoloLens.Automation
 
 		private IProcessResult RunUsingLauncherTool(string DeviceAddress, ERunOptions ClientRunFlags, string ClientApp, string ClientCmdLine, ProjectParams Params)
 		{
-            if (Utils.IsRunningOnMono)
+            if (!RuntimePlatform.IsWindows)
             {
                 return null;
             }
@@ -1572,7 +1594,7 @@ namespace HoloLens.Automation
 		private IProcessResult RunUsingDevicePortal(string DeviceAddress, ERunOptions ClientRunFlags, string ClientApp, string ClientCmdLine, ProjectParams Params)
 		{
 #if !__MonoCS__
-            if (Utils.IsRunningOnMono)
+            if (!RuntimePlatform.IsWindows)
             {
                 return null;
             }
@@ -1677,7 +1699,7 @@ namespace HoloLens.Automation
 		private bool ShouldAcceptCertificate(System.Security.Cryptography.X509Certificates.X509Certificate2 Certificate, bool Unattended)
 		{
 #if !__MonoCS__
-            if (Utils.IsRunningOnMono)
+            if (!RuntimePlatform.IsWindows)
             {
                 return false;
             }
@@ -1742,9 +1764,8 @@ namespace HoloLens.Automation
             switch (Compiler)
 			{
 				case WindowsCompiler.VisualStudio2019:
-				case WindowsCompiler.VisualStudio2017:
+				case WindowsCompiler.VisualStudio2022:
 				//Compiler version is still 14 for 2017
-				case WindowsCompiler.VisualStudio2015_DEPRECATED:
 				case WindowsCompiler.Default:
 					VCVersionFragment = "14";
 					break;

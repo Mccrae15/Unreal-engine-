@@ -20,7 +20,7 @@
 			"Name": "GameplayInsights",
 			"Type": "EditorAndProgram",
 			"LoadingPhase": "Default",
-			"WhitelistPrograms": [
+			"ProgramAllowList": [
 				"UnrealInsights"
 			]
 		},
@@ -28,6 +28,17 @@
 			"Name": "GameplayInsightsEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "RewindDebugger",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "RewindDebuggerVLog",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
+
 	]
 }

@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 using System.Reflection;
 using ImageMagick;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -29,52 +29,13 @@ namespace Gauntlet
 
 		static string InnerTempDir;
 		static string InnerLogDir;
-		static string InnerUE4RootDir;
+		static string InnerUnrealRootDir;
 		static object InnerLockObject = new object();
 		static List<Action> InnerAbortHandlers;
 		static List<Action> InnerPostAbortHandlers = new List<Action>();
 		public static bool CancelSignalled { get; private set; }
 
-		/// <summary>
-		/// Get the worker id of this Gauntlet instance
-		/// returns -1 if instance is not a member of a worker group
-		/// </summary>
-		public static int WorkerID
-		{
-			get
-			{
-				int Default = -1;
-				return Params.ParseValue("workerid", Default);
-			}
 
-		}
-
-		/// <summary>
-		/// Get the worker pool id of the host worker, pools are assigned to teams such as QA, Automation, etc
-		/// returns -1 if instance is not running on a worker pool
-		/// </summary>
-		public static int WorkerPoolID
-		{
-			get
-			{
-				int Default = -1;
-				return Params.ParseValue("workerpoolid", Default);
-			}
-
-		}
-
-
-		/// <summary>
-		/// Returns true if Gauntlet instance is a member of a worker group
-		/// </summary>
-		public static bool IsWorker
-		{
-			get
-			{
-				return WorkerID != -1;
-			}
-		}
-		
 		/// <summary>
 		/// Returns the device pool id 
 		/// </summary>
@@ -84,7 +45,8 @@ namespace Gauntlet
 			{
 				return Params.ParseValue("devicepool", "");
 			}
-		}		
+		}
+
 
 		public static string TempDir
 		{
@@ -120,16 +82,16 @@ namespace Gauntlet
 			}
 		}
 
-		public static string UE4RootDir
+		public static string UnrealRootDir
 		{
 			get
 			{
-				if (String.IsNullOrEmpty(InnerUE4RootDir))
+				if (String.IsNullOrEmpty(InnerUnrealRootDir))
 				{
-					InnerUE4RootDir = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().GetOriginalLocation()), "..", "..", ".."));
+					InnerUnrealRootDir = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().GetOriginalLocation()), "..", "..", "..", ".."));
 				}
 
-				return InnerUE4RootDir;
+				return InnerUnrealRootDir;
 			}
 
 		}
@@ -140,8 +102,9 @@ namespace Gauntlet
 		/// </summary>
 		public static string LongPathPrefix
 		{
-			get { return Path.DirectorySeparatorChar == '\\' ? @"\\?\" : ""; }
+			get { return Path.DirectorySeparatorChar == '\\'? @"\\?\" : ""; }
 		}
+
 
 		/// <summary>
 		/// Acquired and released during the main Tick of the Gauntlet systems. Use this before touchung anything global scope from a 
@@ -192,7 +155,10 @@ namespace Gauntlet
 		/// </summary>
 		public static List<Action> PostAbortHandlers { get { return InnerPostAbortHandlers; } }
 
-
+		/// <summary>
+		/// Used by network functions that need to deal with multiple adapters
+		/// </summary>
+		public static string PreferredNetworkDomain {  get { return "epicgames.net";  } }
 	}
 
 	/// <summary>
@@ -228,7 +194,7 @@ namespace Gauntlet
 			}
 		}
 
-		static StreamWriter LogFile = null;
+		static TextWriter LogFile = null;
 
 		static List<Action<string>> Callbacks;
 
@@ -271,7 +237,7 @@ namespace Gauntlet
 
 				try
 				{
-					LogFile = new StreamWriter(Outpath);
+					LogFile = TextWriter.Synchronized(new StreamWriter(Outpath));
 				}
 				catch (UnauthorizedAccessException Ex)
 				{
@@ -381,15 +347,22 @@ namespace Gauntlet
 			// TODO - Remove all Gauntlet logging and switch to UBT log?
 			CommandUtils.LogInformation(Message);
 
-			if (LogFile != null)
+			try
 			{
-				LogFile.WriteLine(Message);
-			}
+				if (LogFile != null)
+				{
+					LogFile.WriteLine(Message);
+				}
 
-			if (Callbacks != null)
-			{
-				Callbacks.ForEach(A => A(Message));
+				if (Callbacks != null)
+				{
+					Callbacks.ForEach(A => A(Message));
+				}
 			}
+			catch (Exception Ex)
+			{
+				CommandUtils.LogWarning("Exception logging '{0}'. {1}", Message, Ex.ToString());
+			}			
 		}	
 
 		static public void Verbose(string Format, params object[] Args)
@@ -546,7 +519,7 @@ namespace Gauntlet
 				// find all types from loaded assemblies that implement testnode
 					List < Type> CandidateTypes = new List<Type>();
 
-				foreach (var Assembly in AppDomain.CurrentDomain.GetAssemblies())
+				foreach (Assembly Assembly in ScriptManager.AllScriptAssemblies) 
 				{
 					foreach (var Type in Assembly.GetTypes())
 					{
@@ -753,10 +726,19 @@ namespace Gauntlet
 		public static class InterfaceHelpers
 		{
 
-			public static IEnumerable<InterfaceType> FindImplementations<InterfaceType>()
+			public static IEnumerable<InterfaceType> FindImplementations<InterfaceType>(bool bIncludeCompiledScripts = false)
 				where InterfaceType : class
 			{
-				var AllTypes = Assembly.GetExecutingAssembly().GetTypes().Where(T => typeof(InterfaceType).IsAssignableFrom(T));
+				HashSet<Type> AllTypes = new HashSet<Type>(Assembly.GetExecutingAssembly().GetTypes().Where(T => typeof(InterfaceType).IsAssignableFrom(T)));
+
+				if (bIncludeCompiledScripts)
+				{
+					foreach (Assembly Assembly in ScriptManager.AllScriptAssemblies)
+					{
+						List<Type> AssemblyTypes = Assembly.GetTypes().Where(T => typeof(InterfaceType).IsAssignableFrom(T)).ToList();
+						AllTypes.UnionWith(AssemblyTypes);
+					}
+				}
 
 				List<InterfaceType> ConstructedTypes = new List<InterfaceType>();
 
@@ -771,8 +753,25 @@ namespace Gauntlet
 						ConstructedTypes.Add(NewInstance);
 					}
 				}
-				
+
 				return ConstructedTypes;
+			}
+			/// <summary>
+			/// Check if the method signature is overridden.
+			/// </summary>
+			/// <param name="ClassType"></param>
+			/// <param name="MethodName"></param>
+			/// <param name="Signature"></param>
+			/// <returns></returns>
+			public static bool HasOverriddenMethod(Type ClassType, string MethodName, Type[] Signature)
+			{
+				MethodInfo Method = ClassType.GetMethod(MethodName, Signature);
+				if (Method == null)
+				{
+					throw new Exception(string.Format("Unknown method {0} from {1} with signature {2}.", MethodName, ClassType.Name, Signature.ToString()));
+				}
+				bool IsOverridden = Method.GetBaseDefinition().DeclaringType != Method.DeclaringType;
+				return Method.GetBaseDefinition().DeclaringType != Method.DeclaringType;
 			}
 
 		}
@@ -1120,7 +1119,7 @@ namespace Gauntlet
 								Log.Verbose("Copying to {0}", DestInfo.FullName);
 							}
 
-							SrcInfo.CopyTo(DestInfo.FullName, true);
+							DestInfo = SrcInfo.CopyTo(DestInfo.FullName, true);
 
 							// Clear attributes and set last write time
 							DestInfo.Attributes = FileAttributes.Normal;
@@ -1160,9 +1159,9 @@ namespace Gauntlet
 									Copied = true;
 
 									// Filter out some known unneeded files which can cause this warning, and log the message instead
-									string[] Blacklist = new string[]{ "UE4CC-XboxOne", "PersistentDownloadDir" };
+									string[] Denylist = new string[]{ "UECC-", "PersistentDownloadDir" };
 									string Message = string.Format("Long path file copy failed with {0}.  Please verify that this file is not required.", ex.Message);
-									if ( Blacklist.FirstOrDefault(B => { return SrcInfo.FullName.IndexOf(B, StringComparison.OrdinalIgnoreCase) >= 0; }) == null)
+									if (Denylist.FirstOrDefault(B => { return SrcInfo.FullName.IndexOf(B, StringComparison.OrdinalIgnoreCase) >= 0; }) == null)
 									{
 										Log.Warning(Message); 
 									}
@@ -1245,6 +1244,12 @@ namespace Gauntlet
 				}
 				
 				string RootPath = Path.GetPathRoot(InPath); // get drive's letter
+
+				if (string.IsNullOrEmpty(RootPath))
+				{
+					return false;
+				}
+
 				DriveInfo driveInfo = new System.IO.DriveInfo(RootPath); // get info about the drive
 				return driveInfo.DriveType == DriveType.Network; // return true if a network drive
 			}
@@ -1544,6 +1549,99 @@ namespace Gauntlet
 			Files = Files.Where(F => Pattern.IsMatch(F));
 
 			return Files.ToArray();
+		}
+
+		/// <summary>
+		/// Returns true if any part of the specified path contains 'Component'. E.g. c:\Temp\Foo\Bar would return true for 'Foo'
+		/// </summary>
+		/// <param name="InPath">Path to search</param>
+		/// <param name="InComponent">Component to look for</param>
+		/// <param name="InPartialMatch">Whether a partial match is ok. E.g 'Fo' instead of 'Foo'</param>
+		/// <returns></returns>
+		public static bool PathContainsComponent(string InPath, string InComponent, bool InPartialMatch=false)
+		{
+			// normalize and split the path
+			var Components = new DirectoryInfo(InPath).FullName.Split(Path.DirectorySeparatorChar);
+
+			return InPartialMatch
+				? Components.Any(S => S.Contains(InComponent, StringComparison.OrdinalIgnoreCase))
+				: Components.Any(S => S.Equals(InComponent, StringComparison.OrdinalIgnoreCase));
+		}
+
+		/// <summary>
+		/// Returns subdirectories that match the specified regular expression, searching up to the specified maximum depth
+		/// </summary>
+		/// <param name="BaseDir">Directory to start searching in</param>
+		/// <param name="RegexPattern">Regular expression to match on</param>
+		/// <param name="RecursionDepth">Depth to search (-1 = unlimited)</param>
+		/// <returns></returns>
+		public static IEnumerable<DirectoryInfo> FindMatchingDirectories(string BaseDir, string RegexPattern, int RecursionDepth=0)
+		{
+			List<DirectoryInfo> Found = new List<DirectoryInfo>();
+
+			List<DirectoryInfo> Candidates = new List<DirectoryInfo>(new DirectoryInfo(BaseDir).GetDirectories());
+
+			Regex Pattern = new Regex(RegexPattern, RegexOptions.IgnoreCase);
+
+			int CurrentDepth = 0;
+
+			do
+			{
+				IEnumerable<DirectoryInfo> MatchingDirs = Candidates.Where(D => Pattern.IsMatch(D.Name));
+
+				Found.AddRange(MatchingDirs);
+
+				// recurse
+				Candidates = Candidates.SelectMany(D => D.GetDirectories()).ToList();
+
+			} while (Candidates.Any() && (CurrentDepth++ < RecursionDepth || RecursionDepth == -1)); ;
+
+			return Found;
+		}
+
+		/// <summary>
+		/// Returns files that match the specified regular expression in the provided folder, searching up to a maximum depth
+		/// </summary>
+		/// <param name="BaseDir">Directory to start searching in</param>
+		/// <param name="RegexPattern">Regular expression to match on</param>
+		/// <param name="RecursionDepth">Depth to search (-1 = unlimited)</param>
+		/// <returns></returns>
+		public static IEnumerable<FileInfo> FindMatchingFiles(string BaseDir, string RegexPattern, int RecursionDepth = 0)
+		{
+			List<FileInfo> Found = new List<FileInfo>();
+
+			IEnumerable<DirectoryInfo> CandidateDirs = new DirectoryInfo[] { new DirectoryInfo(BaseDir) };
+
+			Regex Pattern = new Regex(RegexPattern, RegexOptions.IgnoreCase);
+
+			int CurrentDepth = 0;
+
+			do
+			{
+				// check for matching files in this set of directories
+				IEnumerable<FileInfo> MatchingFiles = CandidateDirs.SelectMany(D => D.GetFiles()).Where(F => Pattern.IsMatch(F.Name));
+
+				Found.AddRange(MatchingFiles);
+
+				// recurse into this set of directories
+				CandidateDirs = CandidateDirs.SelectMany(D => D.GetDirectories()).ToList();
+
+			} while (CandidateDirs.Any() && (CurrentDepth++ < RecursionDepth || RecursionDepth == -1)); ;
+
+			return Found;
+		}
+	}
+
+	public static class FileUtils
+	{
+		/// <summary>
+		/// Sanitize filename
+		/// </summary>
+		/// <param name="Name"></param>
+		/// <returns></returns>
+		static public string SanitizeFilename(string Name)
+		{
+			return Regex.Replace(Name, @"[^a-z0-9_\-.]+", "_", RegexOptions.IgnoreCase);
 		}
 	}
 

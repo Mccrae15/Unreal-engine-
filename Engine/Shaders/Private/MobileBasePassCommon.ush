@@ -1,13 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	MobileBasePassCommon.usf: Base pass definitions used by both vertex and pixel shader
+	MobileBasePassCommon.ush: Base pass definitions used by both vertex and pixel shader
 =============================================================================*/
 
 #define FogStruct MobileBasePass.Fog
 #define PlanarReflectionStruct MobileBasePass.PlanarReflection
-
-#define USE_PS_CLIP_PLANE PROJECT_ALLOW_GLOBAL_CLIP_PLANE
 
 #undef NEEDS_LIGHTMAP_COORDINATE
 
@@ -18,7 +16,9 @@
 	#define PROJECT_MOBILE_DISABLE_VERTEX_FOG 0
 #endif
 
-#define USE_VERTEX_FOG					(!PROJECT_MOBILE_DISABLE_VERTEX_FOG) && MATERIAL_ENABLE_TRANSLUCENCY_FOGGING
+// Use vertex fogging for translucency and opaque if project does not use per-pixel fog
+// And always use vertex fogging on sky for perf
+#define USE_VERTEX_FOG	(!PROJECT_MOBILE_DISABLE_VERTEX_FOG || MATERIAL_IS_SKY || (MATERIAL_ENABLE_TRANSLUCENCY_FOGGING && (MATERIALBLENDING_ANY_TRANSLUCENT || MATERIAL_SHADINGMODEL_SINGLELAYERWATER)))
 
 #define PACK_INTERPOLANTS (USE_VERTEX_FOG && NUM_VF_PACKED_INTERPOLANTS > 0 && (ES3_1_PROFILE))
 #define LANDSCAPE_BUG_WORKAROUND (IOS && IS_MOBILE_BASEPASS_VERTEX_SHADER && PACK_INTERPOLANTS)
@@ -42,8 +42,8 @@ struct FSharedMobileBasePassInterpolants
 	float3 PixelPositionExcludingWPO	: TEXCOORD9;
 #endif
 
-#if USE_PS_CLIP_PLANE
-	float OutClipDistance : OUTCLIPDIST;
+#if USE_GLOBAL_CLIP_PLANE
+	float OutClipDistance : SV_ClipDistance;
 #endif
 
 #if MOBILE_MULTI_VIEW

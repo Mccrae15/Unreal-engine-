@@ -28,7 +28,7 @@ struct FCurveDesc
 #if WITH_EDITORONLY_DATA
 bool UAnimCurveCompressionCodec_CompressedRichCurve::Compress(const FCompressibleAnimData& AnimSeq, FAnimCurveCompressionResult& OutResult)
 {
-	int32 NumCurves = AnimSeq.RawCurveData.FloatCurves.Num();
+	int32 NumCurves = AnimSeq.RawFloatCurves.Num();
 
 	TArray<FCurveDesc> Curves;
 	Curves.Reserve(NumCurves);
@@ -37,14 +37,14 @@ bool UAnimCurveCompressionCodec_CompressedRichCurve::Compress(const FCompressibl
 	int32 KeyDataOffset = 0;
 	KeyDataOffset += sizeof(FCurveDesc) * NumCurves;
 
-	const FAnimKeyHelper Helper(AnimSeq.SequenceLength, AnimSeq.NumFrames);
+	const FAnimKeyHelper Helper(AnimSeq.SequenceLength, AnimSeq.NumberOfKeys);
 	const float SampleRate = UseAnimSequenceSampleRate ? Helper.KeysPerSecond() : ErrorSampleRate;
 
 	TArray<uint8> KeyData;
 
 	for (int32 CurveIndex = 0; CurveIndex < NumCurves; ++CurveIndex)
 	{
-		const FFloatCurve& Curve = AnimSeq.RawCurveData.FloatCurves[CurveIndex];
+		const FFloatCurve& Curve = AnimSeq.RawFloatCurves[CurveIndex];
 
 		FRichCurve RawCurve = Curve.FloatCurve;	// Copy
 		RawCurve.RemoveRedundantKeys(MaxCurveError);

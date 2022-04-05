@@ -40,6 +40,8 @@ public class SampleToolsEditorMode : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"EditorFramework",
+				"EditorStyle",
 				"UnrealEd",
                 "ContentBrowser",
                 "LevelEditor",

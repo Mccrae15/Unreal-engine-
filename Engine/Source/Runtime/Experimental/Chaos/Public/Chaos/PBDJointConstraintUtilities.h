@@ -5,6 +5,7 @@
 
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/PBDJointConstraintTypes.h"
+#include "Chaos/Collision/CollisionApplyType.h"
 
 
 namespace Chaos
@@ -145,6 +146,18 @@ namespace Chaos
 			const FReal MinRatio);
 
 		static CHAOS_API void ConditionInverseMassAndInertia(
+			const FReal& InInvMParent,
+			const FReal& InInvMChild,
+			const FVec3& InInvIParent,
+			const FVec3& InInvIChild,
+			const FReal MinParentMassRatio,
+			const FReal MaxInertiaRatio,
+			FReal& OutInvMParent,
+			FReal& OutInvMChild,
+			FVec3& OutInvIParent,
+			FVec3& OutInvIChild);
+
+		static CHAOS_API void ConditionInverseMassAndInertia(
 			FReal& InOutInvMParent,
 			FReal& InOutInvMChild,
 			FVec3& InOutInvIParent,
@@ -251,6 +264,10 @@ namespace Chaos
 			const FPBDJointSettings& JointSettings);
 
 		static bool GetDriveAccelerationMode(
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings);
+
+		static FReal GetShockPropagationInvMassScale(
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings);
 

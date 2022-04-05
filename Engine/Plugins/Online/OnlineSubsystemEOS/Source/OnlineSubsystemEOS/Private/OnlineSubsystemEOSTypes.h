@@ -8,22 +8,11 @@
 #include "Interfaces/OnlineFriendsInterface.h"
 #include "Interfaces/OnlinePresenceInterface.h"
 #include "Interfaces/OnlineUserInterface.h"
+#include "EOSSharedTypes.h"
 #include "EOSShared.h"
 #include "IPAddress.h"
 
 #include "OnlineSubsystemEOSPackage.h"
-
-#if WITH_EOS_SDK
-	#if defined(EOS_PLATFORM_BASE_FILE_NAME)
-	#include EOS_PLATFORM_BASE_FILE_NAME
-	#endif
-
-	#include "eos_common.h"
-#endif
-
-// Expect URLs to look like "EOS:PUID:SocketName:Channel"
-#define EOS_CONNECTION_URL_PREFIX TEXT("EOS")
-#define EOS_URL_SEPARATOR TEXT(":")
 
 #define EOS_OSS_STRING_BUFFER_LENGTH 256 + 1 // 256 plus null terminator
 
@@ -35,8 +24,8 @@ class FOnlineSubsystemEOS;
 #define ID_HALF_BYTE_SIZE 16
 #define EOS_ID_BYTE_SIZE (ID_HALF_BYTE_SIZE * 2)
 
-typedef TSharedPtr<const class FUniqueNetIdEOS, UNIQUENETID_ESPMODE> FUniqueNetIdEOSPtr;
-typedef TSharedRef<const class FUniqueNetIdEOS, UNIQUENETID_ESPMODE> FUniqueNetIdEOSRef;
+typedef TSharedPtr<const class FUniqueNetIdEOS> FUniqueNetIdEOSPtr;
+typedef TSharedRef<const class FUniqueNetIdEOS> FUniqueNetIdEOSRef;
 
 /**
  * Unique net id wrapper for a EOS account ids. The underlying string is a combination
@@ -49,11 +38,8 @@ public:
 	template<typename... TArgs>
 	static FUniqueNetIdEOSRef Create(TArgs&&... Args)
 	{
-		return MakeShared<FUniqueNetIdEOS, UNIQUENETID_ESPMODE>(Forward<TArgs>(Args)...);
+		return MakeShareable(new FUniqueNetIdEOS(Forward<TArgs>(Args)...));
 	}
-
-	/** Allow MakeShared to see private constructors */
-	friend class SharedPointerInternals::TIntrusiveReferenceController<FUniqueNetIdEOS>;
 
 	static const FUniqueNetIdEOS& Cast(const FUniqueNetId& NetId)
 	{
@@ -142,13 +128,17 @@ PACKAGE_SCOPE:
 	uint8 RawBytes[EOS_ID_BYTE_SIZE] = { 0 };
 private:
 	FUniqueNetIdEOS()
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FUniqueNetIdString(EMPTY_EASID EOS_ID_SEPARATOR EMPTY_PUID)
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		Type = FName("EOS");
 	}
 	
 	explicit FUniqueNetIdEOS(uint8* Bytes, int32 Size)
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FUniqueNetIdString()
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		check(Size == EOS_ID_BYTE_SIZE);
 		EpicAccountIdStr = BytesToHex(Bytes, ID_HALF_BYTE_SIZE);
@@ -158,20 +148,26 @@ private:
 	}
 
 	explicit FUniqueNetIdEOS(const FString& InUniqueNetId)
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FUniqueNetIdString(InUniqueNetId, FName("EOS"))
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		ParseAccountIds();
 	}
 
 	explicit FUniqueNetIdEOS(FString&& InUniqueNetId)
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FUniqueNetIdString(MoveTemp(InUniqueNetId))
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		ParseAccountIds();
 		Type = FName("EOS");
 	}
 
 	explicit FUniqueNetIdEOS(const FUniqueNetId& Src)
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FUniqueNetIdString(Src)
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		ParseAccountIds();
 		Type = FName("EOS");
@@ -441,17 +437,6 @@ static inline FString MakeNetIdStringFromIds(EOS_EpicAccountId AccountId, EOS_Pr
 	return NetId;
 }
 
-/** Used to store a pointer to the EOS callback object without knowing type */
-class FCallbackBase
-{
-	static bool bShouldCancelAllCallbacks;
-
-public:
-	virtual ~FCallbackBase() {}
-	static bool ShouldCancelAllCallbacks() { return FCallbackBase::bShouldCancelAllCallbacks; }
-	static void CancelAllCallbacks() { FCallbackBase::bShouldCancelAllCallbacks = true; }
-};
-
 /** Class to handle all callbacks generically using a lambda to process callback results */
 template<typename CallbackFuncType, typename CallbackType>
 class TEOSCallback :
@@ -497,6 +482,27 @@ private:
 		delete CallbackThis;
 	}
 };
+
+namespace OSSInternalCallback
+{
+	/** Create a callback for a non-SDK function that is tied to the lifetime of an arbitrary shared pointer. */
+	template <typename DelegateType, typename OwnerType, typename... CallbackArgs>
+	UE_NODISCARD DelegateType Create(const TSharedPtr<OwnerType, ESPMode::ThreadSafe>& InOwner,
+		const TFunction<void(CallbackArgs...)>& InUserCallback)
+	{
+		const DelegateType& CheckOwnerThenExecute = DelegateType::CreateLambda(
+			[WeakOwner = TWeakPtr<OwnerType, ESPMode::ThreadSafe>(InOwner), InUserCallback](CallbackArgs... Payload) {
+				check(IsInGameThread());
+				TSharedPtr<OwnerType, ESPMode::ThreadSafe> Owner = WeakOwner.Pin();
+				if (Owner.IsValid())
+				{
+					InUserCallback(Payload...);
+				}
+		});
+
+		return CheckOwnerThenExecute;
+	}
+}
 
 /**
  * Class to handle nested callbacks (callbacks that are tied to an external callback's lifetime,
@@ -669,41 +675,6 @@ private:
 
 		check(CallbackThis->CallbackLambda);
 		CallbackThis->Nested2CallbackLambda(Data);
-	}
-};
-
-/** Class to handle all callbacks generically using a lambda to process callback results */
-template<typename CallbackFuncType, typename CallbackType>
-class TEOSGlobalCallback :
-	public FCallbackBase
-{
-public:
-	TFunction<void(const CallbackType*)> CallbackLambda;
-
-	TEOSGlobalCallback() = default;
-	virtual ~TEOSGlobalCallback() = default;
-
-
-	CallbackFuncType GetCallbackPtr()
-	{
-		return &CallbackImpl;
-	}
-
-private:
-	static void EOS_CALL CallbackImpl(const CallbackType* Data)
-	{
-		check(IsInGameThread());
-
-		TEOSGlobalCallback* CallbackThis = (TEOSGlobalCallback*)Data->ClientData;
-		check(CallbackThis);
-
-		if (FCallbackBase::ShouldCancelAllCallbacks())
-		{
-			return;
-		}
-
-		check(CallbackThis->CallbackLambda);
-		CallbackThis->CallbackLambda(Data);
 	}
 };
 

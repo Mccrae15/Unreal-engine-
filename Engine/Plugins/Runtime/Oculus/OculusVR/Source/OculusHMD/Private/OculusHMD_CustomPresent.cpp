@@ -32,6 +32,7 @@ FCustomPresent::FCustomPresent(class FOculusHMD* InOculusHMD, ovrpRenderAPIType 
 	, RenderAPI(InRenderAPI)
 	, DefaultPixelFormat(InDefaultPixelFormat)
 	, bSupportsSRGB(bInSupportsSRGB)
+    , bSupportsSubsampled(false)
 	, bIsStandaloneStereoDevice(false)
 {
 	CheckInGameThread();
@@ -317,7 +318,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 
 	FRHITexture2D* DstTexture2D = DstTexture->GetTexture2D();
 	FRHITextureCube* DstTextureCube = DstTexture->GetTextureCube();
-	FRHITexture2D* SrcTexture2D = SrcTexture->GetTexture2D();
+	FRHITexture2D* SrcTexture2D = SrcTexture->GetTexture2DArray() ? SrcTexture->GetTexture2DArray() : SrcTexture->GetTexture2D();
 	FRHITextureCube* SrcTextureCube = SrcTexture->GetTextureCube();
 
 	FIntPoint DstSize;
@@ -406,7 +407,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 
 	if (DstTexture2D)
 	{
-		sRGBSource &= ( ( SrcTexture->GetFlags() & TexCreate_SRGB ) != 0);
+		sRGBSource &= EnumHasAnyFlags(SrcTexture->GetFlags(), TexCreate_SRGB);
 
 		// Need to copy over mip maps on Android since they are not generated like they are on PC
 #if PLATFORM_ANDROID
@@ -439,14 +440,14 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 				{
 					TShaderMapRef<FScreenPSMipLevel> PixelShader(ShaderMap);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
 				}
 				else
 				{
 					TShaderMapRef<FScreenPSsRGBSourceMipLevel> PixelShader(ShaderMap);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
 				}
 
@@ -500,7 +501,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 
 				TShaderMapRef<FOculusCubemapPS> PixelShader(ShaderMap);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 				FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
 				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, FaceIndex);
 

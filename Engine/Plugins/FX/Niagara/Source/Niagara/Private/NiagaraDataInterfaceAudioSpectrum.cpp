@@ -53,7 +53,7 @@ float FNiagaraDataInterfaceProxySpectrum::GetSpectrumValue(float InNormalizedPos
 		return 0.f;
 	}
 
-	const Audio::AlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[InChannelIndex];
+	const Audio::FAlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[InChannelIndex];
 	const int32 MaxIndex = Buffer.Num() - 1;
 
 	if (MaxIndex < 0)
@@ -172,14 +172,14 @@ void FNiagaraDataInterfaceProxySpectrum::PostDataToGPU()
 
 			if (NumSamplesInBuffer > 0)
 			{
-				GPUBuffer.Initialize(sizeof(float), NumSamplesInBuffer, EPixelFormat::PF_R32_FLOAT, BUF_Static);
+				GPUBuffer.Initialize(TEXT("FNiagaraDataInterfaceProxySpectrum_GPUBuffer"), sizeof(float), NumSamplesInBuffer, EPixelFormat::PF_R32_FLOAT, BUF_Static);
 			}
 		}
 
 		// Copy to GPU data
 		if (GPUBuffer.NumBytes > 0)
 		{
-			float *BufferData = static_cast<float*>(RHILockVertexBuffer(GPUBuffer.Buffer, 0, NumBytesInBuffer, EResourceLockMode::RLM_WriteOnly));
+			float *BufferData = static_cast<float*>(RHILockBuffer(GPUBuffer.Buffer, 0, NumBytesInBuffer, EResourceLockMode::RLM_WriteOnly));
 
 			FScopeLock ScopeLock(&BufferLock);
 
@@ -190,7 +190,7 @@ void FNiagaraDataInterfaceProxySpectrum::PostDataToGPU()
 				FPlatformMemory::Memcpy(&BufferData[Pos], ChannelSpectrumBuffers[ChannelIndex].GetData(), NumBytesInChannelBuffer);
 			}
 
-			RHIUnlockVertexBuffer(GPUBuffer.Buffer);
+			RHIUnlockBuffer(GPUBuffer.Buffer);
 		}
 	});
 }
@@ -214,7 +214,7 @@ void FNiagaraDataInterfaceProxySpectrum::UpdateSpectrum()
 	{
 		for (int32 ChannelIndex = 0; ChannelIndex < ChannelSpectrumBuffers.Num(); ChannelIndex++)
 		{
-			Audio::AlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
+			Audio::FAlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
 			if (Buffer.Num() > 0)
 			{
 				FMemory::Memset(Buffer.GetData(), 0, sizeof(float) * Buffer.Num());
@@ -248,7 +248,7 @@ void FNiagaraDataInterfaceProxySpectrum::UpdateSpectrum()
 	FSlidingWindow SlidingWindow(*SlidingBuffer, PopBuffer, InterleavedBuffer);
 
 	int32 NumWindows = 0;
-	for (Audio::AlignedFloatBuffer& InterleavedWindow : SlidingWindow)
+	for (Audio::FAlignedFloatBuffer& InterleavedWindow : SlidingWindow)
 	{
 		if (0 == NumWindows)
 		{
@@ -295,7 +295,7 @@ void FNiagaraDataInterfaceProxySpectrum::UpdateSpectrum()
 		// Apply scaling for each channel.
 		for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
 		{
-			Audio::AlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
+			Audio::FAlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
 
 			Audio::ArrayMultiplyByConstantInPlace(Buffer, LinearScale);
 
@@ -340,7 +340,7 @@ void FNiagaraDataInterfaceProxySpectrum::ResizeSpectrumBuffer(int32 InNumChannel
 
 	for (int32 ChannelIndex = 0; ChannelIndex < InNumChannels; ChannelIndex++)
 	{
-		Audio::AlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
+		Audio::FAlignedFloatBuffer& Buffer = ChannelSpectrumBuffers[ChannelIndex];
 		Buffer.Reset();
 		if (InNumBands > 0)
 		{
@@ -564,7 +564,7 @@ UNiagaraDataInterfaceAudioSpectrum::UNiagaraDataInterfaceAudioSpectrum(FObjectIn
 }
 
 
-void UNiagaraDataInterfaceAudioSpectrum::GetSpectrumValue(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioSpectrum::GetSpectrumValue(FVectorVMExternalFunctionContext& Context)
 {
 	GetProxyAs<FNiagaraDataInterfaceProxySpectrum>()->UpdateSpectrum();
 
@@ -572,7 +572,7 @@ void UNiagaraDataInterfaceAudioSpectrum::GetSpectrumValue(FVectorVMContext& Cont
 	VectorVM::FExternalFuncInputHandler<int32> InChannel(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		float Position = InNormalizedPos.Get();
 		int32 Channel = InChannel.Get();
@@ -584,11 +584,11 @@ void UNiagaraDataInterfaceAudioSpectrum::GetSpectrumValue(FVectorVMContext& Cont
 	}
 }
 
-void UNiagaraDataInterfaceAudioSpectrum::GetNumChannels(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioSpectrum::GetNumChannels(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FExternalFuncRegisterHandler<int32> OutChannel(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		*OutChannel.GetDestAndAdvance() = GetProxyAs<FNiagaraDataInterfaceProxySpectrum>()->GetNumChannels();
 	}
@@ -748,7 +748,7 @@ bool UNiagaraDataInterfaceAudioSpectrum::Equals(const UNiagaraDataInterface* Oth
 
 struct FNiagaraDataInterfaceParametersCS_AudioSpectrum : public FNiagaraDataInterfaceParametersCS
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioSpectrum, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioSpectrum, NonVirtual);
 
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
@@ -777,6 +777,8 @@ struct FNiagaraDataInterfaceParametersCS_AudioSpectrum : public FNiagaraDataInte
 	LAYOUT_FIELD(FShaderParameter, Resolution);
 	LAYOUT_FIELD(FShaderResourceParameter,SpectrumBuffer);
 };
+
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioSpectrum);
 
 IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceAudioSpectrum, FNiagaraDataInterfaceParametersCS_AudioSpectrum);
 

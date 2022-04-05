@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
+
+#include "Hash/Blake3.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealType.h"
@@ -121,6 +123,7 @@ void FBoolProperty::LinkInternal(FArchive& Ar)
 		PropertyFlags &= ~(CPF_IsPlainOldData | CPF_ZeroConstructor);
 		PropertyFlags |= CPF_NoDestructor;
 	}
+	PropertyFlags |= CPF_HasGetValueTypeHash;
 }
 void FBoolProperty::Serialize( FArchive& Ar )
 {
@@ -138,10 +141,7 @@ void FBoolProperty::Serialize( FArchive& Ar )
 	if( Ar.IsLoading())
 	{
 		Ar << NativeBool;
-		//if (!IsPendingKill())
-		{
-			SetBoolSize( BoolSize, !!NativeBool );
-		}
+		SetBoolSize( BoolSize, !!NativeBool );
 	}
 	else
 	{
@@ -291,6 +291,17 @@ EConvertFromTypeResult FBoolProperty::ConvertFromType(const FPropertyTag& Tag, F
 	return EConvertFromTypeResult::Converted;
 }
 
+#if WITH_EDITORONLY_DATA
+void FBoolProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	Super::AppendSchemaHash(Builder, bSkipEditorOnly);
+	Builder.Update(&ByteOffset, sizeof(ByteOffset));
+	Builder.Update(&ByteMask, sizeof(ByteMask));
+	Builder.Update(&FieldMask, sizeof(FieldMask));
+}
+#endif
+
+
 void FBoolProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	check(FieldSize != 0);
@@ -388,7 +399,8 @@ void FBoolProperty::InitializeValueInternal( void* Data ) const
 
 uint32 FBoolProperty::GetValueTypeHashInternal(const void* Src) const
 {
-	return GetTypeHash(*(const bool*)Src);
+	uint8* SrcByteValue = (uint8*)Src + ByteOffset;
+	return GetTypeHash(*SrcByteValue & FieldMask);
 }
 
 #include "UObject/DefineUPropertyMacros.h"

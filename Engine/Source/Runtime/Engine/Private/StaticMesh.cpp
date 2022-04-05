@@ -8,11 +8,10 @@
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/PackageSegment.h"
 #include "Misc/ScopedSlowTask.h"
-#include "UObject/FrameworkObjectVersion.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
-#include "UObject/UObjectAnnotation.h"
 #include "RenderingThread.h"
 #include "VertexFactory.h"
 #include "LocalVertexFactory.h"
@@ -22,8 +21,13 @@
 #include "Engine/CollisionProfile.h"
 #include "Serialization/MemoryReader.h"
 #include "UObject/EditorObjectVersion.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "UObject/FrameworkObjectVersion.h"
 #include "UObject/Package.h"
+#include "UObject/PackageResourceManager.h"
+#include "UObject/RenderingObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/UObjectAnnotation.h"
 #include "EngineUtils.h"
 #include "Engine/AssetUserData.h"
 #include "StaticMeshResources.h"
@@ -31,9 +35,12 @@
 #include "StaticMeshAttributes.h"
 #include "StaticMeshDescription.h"
 #include "StaticMeshOperations.h"
+#include "Rendering/NaniteResources.h"
+#include "Rendering/NaniteCoarseMeshStreamingManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "SpeedTreeWind.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
@@ -41,7 +48,9 @@
 #include "EngineGlobals.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "DynamicMeshBuilder.h"
+#include "Math/UnrealMathUtility.h"
 #include "Model.h"
+#include "Async/Async.h"
 #include "SplineMeshSceneProxy.h"
 #include "Templates/UniquePtr.h"
 
@@ -50,6 +59,7 @@
 #include "RawMesh.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "MeshBuilder.h"
+#include "NaniteBuilder.h"
 #include "MeshUtilities.h"
 #include "MeshUtilitiesCommon.h"
 #include "DerivedDataCacheInterface.h"
@@ -58,9 +68,16 @@
 #include "IMeshBuilderModule.h"
 #include "IMeshReductionManagerModule.h"
 #include "IMeshReductionInterfaces.h"
-#include "TessellationRendering.h"
 #include "Misc/MessageDialog.h"
+#include "StaticMeshCompiler.h"
+#include "AssetCompilingManager.h"
+#include "ObjectCacheContext.h"
 
+#include "DerivedDataCache.h"
+#include "DerivedDataRequestOwner.h"
+#include "DerivedDataCacheRecord.h"
+#include "DerivedDataValue.h"
+#include "Compression/OodleDataCompression.h"
 #endif // #if WITH_EDITOR
 
 #include "Engine/StaticMeshSocket.h"
@@ -85,8 +102,6 @@ DECLARE_MEMORY_STAT( TEXT( "StaticMesh Total Memory" ), STAT_StaticMeshTotalMemo
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh Vertex Memory" ), STAT_StaticMeshVertexMemory, STATGROUP_MemoryStaticMesh );
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh VxColor Resource Mem" ), STAT_ResourceVertexColorMemory, STATGROUP_MemoryStaticMesh );
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh Index Memory" ), STAT_StaticMeshIndexMemory, STATGROUP_MemoryStaticMesh );
-DECLARE_MEMORY_STAT( TEXT( "StaticMesh Distance Field Memory" ), STAT_StaticMeshDistanceFieldMemory, STATGROUP_MemoryStaticMesh );
-DECLARE_MEMORY_STAT( TEXT( "StaticMesh Occluder Memory" ), STAT_StaticMeshOccluderMemory, STATGROUP_MemoryStaticMesh );
 
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh Total Memory" ), STAT_StaticMeshTotalMemory, STATGROUP_Memory );
 
@@ -117,12 +132,6 @@ static TAutoConsoleVariable<int32> CVarStaticMeshKeepMobileMinLODSettingOnDeskto
 	0,
 	TEXT("If non-zero, mobile setting for MinLOD will be stored in the cooked data for desktop platforms"));
 
-int32 GForceStripMeshAdjacencyDataDuringCooking = 0;
-static FAutoConsoleVariableRef CVarForceStripMeshAdjacencyDataDuringCooking(
-	TEXT("r.ForceStripAdjacencyDataDuringCooking"),
-	GForceStripMeshAdjacencyDataDuringCooking,
-	TEXT("If set, adjacency data will be stripped for all static and skeletal meshes during cooking (acting like the target platform did not support tessellation)."));
-
 static TAutoConsoleVariable<int32> CVarSupportDepthOnlyIndexBuffers(
 	TEXT("r.SupportDepthOnlyIndexBuffers"),
 	1,
@@ -140,6 +149,16 @@ static TAutoConsoleVariable<int32> CVarStripDistanceFieldDataDuringLoad(
 	0,
 	TEXT("If non-zero, data for distance fields will be discarded on load. TODO: change to discard during cook!."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+const TCHAR* GMinLodQualityLevelCVarName = TEXT("r.StaticMesh.MinLodQualityLevel");
+const TCHAR* GMinLodQualityLevelScalabilitySection = TEXT("ViewDistanceQuality");
+int32 GMinLodQualityLevel = -1;
+static FAutoConsoleVariableRef CVarMinLodQualityLevel(
+	GMinLodQualityLevelCVarName,
+	GMinLodQualityLevel,
+	TEXT("The quality level for the Min stripping LOD. \n"),
+	FConsoleVariableDelegate::CreateStatic(&UStaticMesh::OnLodStrippingQualityLevelChanged),
+	ECVF_Scalability);
 
 #if ENABLE_COOK_STATS
 namespace StaticMeshCookStats
@@ -170,6 +189,28 @@ static void FillMaterialName(const TArray<FStaticMaterial>& StaticMaterials, TMa
 }
 #endif
 
+/*-----------------------------------------------------------------------------
+	FStaticMeshAsyncBuildWorker
+-----------------------------------------------------------------------------*/
+
+#if WITH_EDITOR
+
+void FStaticMeshAsyncBuildWorker::DoWork()
+{
+	FStaticMeshAsyncBuildScope AsyncBuildScope(StaticMesh);
+
+	if (PostLoadContext.IsValid())
+	{
+		StaticMesh->ExecutePostLoadInternal(*PostLoadContext);
+	}
+
+	if (BuildContext.IsValid())
+	{
+		BuildContext->bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(true, nullptr);
+	}
+}
+
+#endif // #if WITH_EDITOR
 
 /*-----------------------------------------------------------------------------
 	FStaticMeshSectionAreaWeightedTriangleSamplerBuffer
@@ -189,9 +230,6 @@ void FStaticMeshSectionAreaWeightedTriangleSamplerBuffer::InitRHI()
 
 	if (Samplers && Samplers->Num() > 0)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-
 		// Count triangle count for all sections and required memory
 		const uint32 AllSectionCount = Samplers->Num();
 		uint32 TriangleCount = 0;
@@ -201,10 +239,11 @@ void FStaticMeshSectionAreaWeightedTriangleSamplerBuffer::InitRHI()
 		}
 		uint32 SizeByte = TriangleCount * sizeof(SectionTriangleInfo);
 
-		BufferSectionTriangleRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
+		FRHIResourceCreateInfo CreateInfo(TEXT("StaticMeshSectionAreaWeightedTriangleSamplerBuffer"));
+		BufferSectionTriangleRHI = RHICreateBuffer(SizeByte, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
 
 		// Now compute the alias look up table for unifor; distribution for all section and all triangles
-		SectionTriangleInfo* SectionTriangleInfoBuffer = (SectionTriangleInfo*)BufferData;
+		SectionTriangleInfo* SectionTriangleInfoBuffer = (SectionTriangleInfo*)RHILockBuffer(BufferSectionTriangleRHI, 0, SizeByte, RLM_WriteOnly);
 		for (uint32 i = 0; i < AllSectionCount; ++i)
 		{
 			FStaticMeshSectionAreaWeightedTriangleSampler& sampler = (*Samplers)[i];
@@ -219,7 +258,7 @@ void FStaticMeshSectionAreaWeightedTriangleSamplerBuffer::InitRHI()
 				SectionTriangleInfoBuffer++;
 			}
 		}
-		RHIUnlockVertexBuffer(BufferSectionTriangleRHI);
+		RHIUnlockBuffer(BufferSectionTriangleRHI);
 
 		BufferSectionTriangleSRV = RHICreateShaderResourceView(BufferSectionTriangleRHI, sizeof(SectionTriangleInfo), PF_R32G32B32A32_UINT);
 	}
@@ -274,9 +313,34 @@ int32 FStaticMeshLODResources::GetPlatformMinLODIdx(const ITargetPlatform* Targe
 {
 #if WITH_EDITOR
 	check(TargetPlatform && StaticMesh);
-	return StaticMesh->GetMinLOD().GetValueForPlatformIdentifiers(
-		TargetPlatform->GetPlatformInfo().PlatformGroupName,
-		TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+	if (StaticMesh->IsMinLodQualityLevelEnable())
+	{
+		// get all supported quality level from scalability + engine ini files
+		FSupportedQualityLevelArray SupportedQualityLevels = StaticMesh->GetQualityLevelMinLOD().GetSupportedQualityLevels(*TargetPlatform->GetPlatformInfo().IniPlatformName.ToString());
+		
+		// loop through all the supported quality level to find the min lod index
+		int32 MinLodIdx = MAX_int32;
+		for (int32& QL : SupportedQualityLevels)
+		{
+			// check if have data for the supported quality level
+			if (StaticMesh->GetQualityLevelMinLOD().IsQualityLevelValid(QL))
+			{
+				MinLodIdx = FMath::Min(StaticMesh->GetQualityLevelMinLOD().GetValueForQualityLevel(QL), MinLodIdx);
+			}
+		}
+
+		if (MinLodIdx == MAX_int32)
+		{
+			MinLodIdx = StaticMesh->GetQualityLevelMinLOD().Default;
+		}
+
+		return MinLodIdx;
+	}
+	else
+	{
+		return StaticMesh->GetMinLOD().GetValueForPlatform(*TargetPlatform->IniPlatformName());
+	}
+	
 #else
 	return 0;
 #endif
@@ -286,13 +350,10 @@ uint8 FStaticMeshLODResources::GenerateClassStripFlags(FArchive& Ar, UStaticMesh
 {
 #if WITH_EDITOR
 	// Defined class flags for possible stripping
-	const uint8 AdjacencyDataStripFlag = CDSF_AdjacencyData;
 	const uint8 MinLodDataStripFlag = CDSF_MinLodData;
 	const uint8 ReversedIndexBufferStripFlag = CDSF_ReversedIndexBuffer;
 	const uint8 RayTracingResourcesFlag = CDSF_RayTracingResources;
 
-	const bool bWantToStripTessellation = Ar.IsCooking()
-		&& ((GForceStripMeshAdjacencyDataDuringCooking != 0) || !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::Tessellation));
 	const bool bWantToStripLOD = Ar.IsCooking()
 		&& (CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0)
 		&& OwnerStaticMesh
@@ -301,7 +362,6 @@ uint8 FStaticMeshLODResources::GenerateClassStripFlags(FArchive& Ar, UStaticMesh
 	const bool bWantToStripRayTracingResources = Ar.IsCooking() && (!Ar.CookingTarget()->UsesRayTracing() || !bSupportRayTracing);
 
 	return
-		(bWantToStripTessellation ? AdjacencyDataStripFlag : 0) |
 		(bWantToStripLOD ? MinLodDataStripFlag : 0) |
 		(bWantToStripRayTracingResources ? RayTracingResourcesFlag : 0);
 #else
@@ -324,12 +384,7 @@ bool FStaticMeshLODResources::IsLODCookedOut(const ITargetPlatform* TargetPlatfo
 	}
 	check(TargetPlatform);
 
-	static auto* VarMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MeshStreaming"));
-	const bool bMeshStreamingEnabled = !VarMeshStreaming || VarMeshStreaming->GetInt() != 0;
-
-	// If LOD streaming is supported, LODs below MinLOD are stored to optional paks and thus never cooked out
-	const FStaticMeshLODGroup& LODGroupSettings = TargetPlatform->GetStaticMeshLODSettings().GetLODGroup(StaticMesh->LODGroup);
-	return !bMeshStreamingEnabled || !TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MeshLODStreaming) || StaticMesh->NeverStream || !LODGroupSettings.IsLODStreamingSupported();
+	return !StaticMesh->GetEnableLODStreaming(TargetPlatform);
 #else
 	return false;
 #endif
@@ -345,11 +400,7 @@ bool FStaticMeshLODResources::IsLODInlined(const ITargetPlatform* TargetPlatform
 	}
 	check(TargetPlatform);
 
-	static auto* VarMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MeshStreaming"));
-	const bool bMeshStreamingEnabled = !VarMeshStreaming || VarMeshStreaming->GetInt() != 0;
-
-	const FStaticMeshLODGroup& LODGroupSettings = TargetPlatform->GetStaticMeshLODSettings().GetLODGroup(StaticMesh->LODGroup);
-	if (!bMeshStreamingEnabled || !TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MeshLODStreaming) || StaticMesh->NeverStream || !LODGroupSettings.IsLODStreamingSupported())
+	if (!StaticMesh->GetEnableLODStreaming(TargetPlatform))
 	{
 		return true;
 	}
@@ -360,19 +411,19 @@ bool FStaticMeshLODResources::IsLODInlined(const ITargetPlatform* TargetPlatform
 	}
 
 	int32 MaxNumStreamedLODs = 0;
-	const int32 NumStreamedLODsOverride = StaticMesh->NumStreamedLODs.GetValueForPlatformIdentifiers(
-		TargetPlatform->GetPlatformInfo().PlatformGroupName,
-		TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+	const int32 NumStreamedLODsOverride = StaticMesh->NumStreamedLODs.GetValueForPlatform(*TargetPlatform->IniPlatformName());
 	if (NumStreamedLODsOverride >= 0)
 	{
 		MaxNumStreamedLODs = NumStreamedLODsOverride;
 	}
 	else
 	{
+		const FStaticMeshLODGroup& LODGroupSettings = TargetPlatform->GetStaticMeshLODSettings().GetLODGroup(StaticMesh->LODGroup);
 		MaxNumStreamedLODs = LODGroupSettings.GetDefaultMaxNumStreamedLODs();
 	}
 	
-	const int32 NumLODs = StaticMesh->GetNumLODs();
+	FStaticMeshRenderData& PlatformRenderData = UStaticMesh::GetPlatformStaticMeshRenderData(StaticMesh, TargetPlatform);
+	const int32 NumLODs = PlatformRenderData.LODResources.Num();
 	const int32 NumStreamedLODs = FMath::Min(MaxNumStreamedLODs, NumLODs - 1);
 	const int32 InlinedLODStartIdx = NumStreamedLODs;
 	return LODIdx >= InlinedLODStartIdx;
@@ -430,6 +481,8 @@ uint32 FStaticMeshLODResources::FStaticMeshBuffersSize::CalcBuffersSize() const
 
 void FStaticMeshLODResources::SerializeBuffers(FArchive& Ar, UStaticMesh* OwnerStaticMesh, uint8 InStripFlags, FStaticMeshBuffersSize& OutBuffersSize)
 {
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+
 	bool bEnableDepthOnlyIndexBuffer = (CVarSupportDepthOnlyIndexBuffers.GetValueOnAnyThread() == 1);
 	bool bEnableReversedIndexBuffer = (CVarSupportReversedIndexBuffers.GetValueOnAnyThread() == 1);
 
@@ -452,7 +505,6 @@ void FStaticMeshLODResources::SerializeBuffers(FArchive& Ar, UStaticMesh* OwnerS
 
 	bHasRayTracingGeometry = false;
 	bHasWireframeIndices = false;
-	bHasAdjacencyInfo = false;
 	bHasDepthOnlyIndices = false;
 	bHasReversedIndices = false;
 	bHasReversedDepthOnlyIndices = false;
@@ -471,13 +523,12 @@ void FStaticMeshLODResources::SerializeBuffers(FArchive& Ar, UStaticMesh* OwnerS
 	AccumIndexBufferSize(IndexBuffer, OutBuffersSize.SerializedBuffersSize);
 
 	const bool bSerializeReversedIndexBuffer = !StripFlags.IsClassDataStripped(CDSF_ReversedIndexBuffer);
-	const bool bSerializeAdjacencyDataIndexBuffer = !StripFlags.IsClassDataStripped(CDSF_AdjacencyData);
 	const bool bSerializeWireframeIndexBuffer = !StripFlags.IsEditorDataStripped();
 	const bool bSerializeRayTracingGeometry = !StripFlags.IsClassDataStripped(CDSF_RayTracingResources);
 
 	FAdditionalStaticMeshIndexBuffers DummyBuffers;
 	FAdditionalStaticMeshIndexBuffers* SerializedAdditionalIndexBuffers = &DummyBuffers;
-	if ((bEnableDepthOnlyIndexBuffer || bEnableReversedIndexBuffer) && (bSerializeReversedIndexBuffer || bSerializeAdjacencyDataIndexBuffer || bSerializeWireframeIndexBuffer || bEnableDepthOnlyIndexBuffer))
+	if ((bEnableDepthOnlyIndexBuffer || bEnableReversedIndexBuffer) && (bSerializeReversedIndexBuffer || bSerializeWireframeIndexBuffer || bEnableDepthOnlyIndexBuffer))
 	{
 		if (AdditionalIndexBuffers == nullptr)
 		{
@@ -523,11 +574,10 @@ void FStaticMeshLODResources::SerializeBuffers(FArchive& Ar, UStaticMesh* OwnerS
 		bHasWireframeIndices = AdditionalIndexBuffers && SerializedAdditionalIndexBuffers->WireframeIndexBuffer.GetNumIndices() != 0;
 	}
 
-	if (bSerializeAdjacencyDataIndexBuffer)
+	if (Ar.IsLoading() && Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::RemovingTessellation && !StripFlags.IsClassDataStripped(CDSF_AdjacencyData_DEPRECATED))
 	{
-		SerializedAdditionalIndexBuffers->AdjacencyIndexBuffer.Serialize(Ar, bNeedsCPUAccess);
-		AccumIndexBufferSize(SerializedAdditionalIndexBuffers->AdjacencyIndexBuffer, OutBuffersSize.SerializedBuffersSize);
-		bHasAdjacencyInfo = AdditionalIndexBuffers && SerializedAdditionalIndexBuffers->AdjacencyIndexBuffer.GetNumIndices() != 0;
+		FRawStaticIndexBuffer AdjacencyIndexBuffer;
+		AdjacencyIndexBuffer.Serialize(Ar, bNeedsCPUAccess);
 	}
 
 	if (bSerializeRayTracingGeometry)
@@ -554,6 +604,8 @@ void FStaticMeshLODResources::SerializeBuffers(FArchive& Ar, UStaticMesh* OwnerS
 
 void FStaticMeshLODResources::SerializeAvailabilityInfo(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	bool bHasAdjacencyInfo = false;
 	const bool bEnableDepthOnlyIndexBuffer = !!CVarSupportDepthOnlyIndexBuffers.GetValueOnAnyThread();
 	const bool bEnableReversedIndexBuffer = !!CVarSupportReversedIndexBuffers.GetValueOnAnyThread();
 
@@ -562,8 +614,7 @@ void FStaticMeshLODResources::SerializeAvailabilityInfo(FArchive& Ar)
 #if WITH_EDITOR
 	if (Ar.IsSaving())
 	{
-		Packed = bHasAdjacencyInfo
-			| (bHasDepthOnlyIndices << 1u)
+		Packed = (bHasDepthOnlyIndices << 1u)
 			| (bHasReversedIndices << 2u)
 			| (bHasReversedDepthOnlyIndices << 3u)
 			| (bHasColorVertexData << 4u)
@@ -592,7 +643,7 @@ void FStaticMeshLODResources::SerializeAvailabilityInfo(FArchive& Ar)
 
 	FAdditionalStaticMeshIndexBuffers DummyBuffers;
 	FAdditionalStaticMeshIndexBuffers* SerializedAdditionalIndexBuffers = &DummyBuffers;
-	if ((bEnableDepthOnlyIndexBuffer || bEnableReversedIndexBuffer) && (bHasReversedIndices || bHasAdjacencyInfo || bHasWireframeIndices || bHasDepthOnlyIndices))
+	if ((bEnableDepthOnlyIndexBuffer || bEnableReversedIndexBuffer) && (bHasReversedIndices || bHasWireframeIndices || bHasDepthOnlyIndices))
 	{
 		if (AdditionalIndexBuffers == nullptr)
 		{
@@ -623,10 +674,10 @@ void FStaticMeshLODResources::SerializeAvailabilityInfo(FArchive& Ar)
 	{
 		SerializedAdditionalIndexBuffers->WireframeIndexBuffer.Discard();
 	}
-	SerializedAdditionalIndexBuffers->AdjacencyIndexBuffer.SerializeMetaData(Ar);
-	if (!bHasAdjacencyInfo)
+	if (Ar.IsLoading() && Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::RemovingTessellation)
 	{
-		SerializedAdditionalIndexBuffers->AdjacencyIndexBuffer.Discard();
+		FRawStaticIndexBuffer AdjacencyIndexBuffer;
+		AdjacencyIndexBuffer.SerializeMetaData(Ar);
 	}
 	// No metadata to serialize for ray tracing geometry
 	if (!bHasRayTracingGeometry)
@@ -638,7 +689,6 @@ void FStaticMeshLODResources::SerializeAvailabilityInfo(FArchive& Ar)
 void FStaticMeshLODResources::ClearAvailabilityInfo()
 {
 	DepthOnlyNumTriangles = 0;
-	bHasAdjacencyInfo = false;
 	bHasDepthOnlyIndices = false;
 	bHasReversedIndices = false;
 	bHasReversedDepthOnlyIndices = false;
@@ -742,16 +792,8 @@ void FStaticMeshLODResources::Serialize(FArchive& Ar, UObject* Owner, int32 Inde
 			else
 #endif
 			{
-#if USE_BULKDATA_STREAMING_TOKEN
-				FByteBulkData TmpBulkData;
-				TmpBulkData.Serialize(Ar, Owner, Index, false);
-				bIsOptionalLOD = TmpBulkData.IsOptional();
-
-				StreamingBulkData = TmpBulkData.CreateStreamingToken();			
-#else
 				StreamingBulkData.Serialize(Ar, Owner, Index, false);
 				bIsOptionalLOD = StreamingBulkData.IsOptional();
-#endif
 
 #if WITH_EDITORONLY_DATA
 				BulkDataSize = (uint32)StreamingBulkData.GetBulkDataSize();
@@ -762,7 +804,7 @@ void FStaticMeshLODResources::Serialize(FArchive& Ar, UObject* Owner, int32 Inde
 					TmpBuff.Empty(BulkDataSize);
 					TmpBuff.AddUninitialized(BulkDataSize);
 					void* Dest = TmpBuff.GetData();
-					TmpBulkData.GetCopy(&Dest);
+					StreamingBulkData.GetCopy(&Dest);
 				}
 #endif
 			}
@@ -792,24 +834,36 @@ void FStaticMeshLODResources::Serialize(FArchive& Ar, UObject* Owner, int32 Inde
 
 void FStaticMeshLODResources::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) const
 {
-	const int32 VBSize = VertexBuffers.StaticMeshVertexBuffer.GetResourceSize() +
-		VertexBuffers.PositionVertexBuffer.GetStride() * VertexBuffers.PositionVertexBuffer.GetNumVertices() +
-		VertexBuffers.ColorVertexBuffer.GetStride() * VertexBuffers.ColorVertexBuffer.GetNumVertices();
+	CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("TexcoordBuffer and TangentBuffer"), VertexBuffers.StaticMeshVertexBuffer.GetResourceSize());
+	CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("PositionVertexBuffer"), VertexBuffers.PositionVertexBuffer.GetNumVertices());
+	CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("ColorVertexBuffer"), VertexBuffers.ColorVertexBuffer.GetStride() * VertexBuffers.ColorVertexBuffer.GetNumVertices());
 
-	int32 NumIndicies = IndexBuffer.GetNumIndices();
+	const int32 IndexStride = (IndexBuffer.Is32Bit() ? 4 : 2);
+	CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("IndexBuffer"), IndexBuffer.GetNumIndices() * IndexStride);
 
 	if (AdditionalIndexBuffers)
 	{
-		NumIndicies += AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.GetNumIndices();
-		NumIndicies += AdditionalIndexBuffers->ReversedIndexBuffer.GetNumIndices();
-		NumIndicies += AdditionalIndexBuffers->WireframeIndexBuffer.GetNumIndices();
-		NumIndicies += (RHISupportsTessellation(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]) ? AdditionalIndexBuffers->AdjacencyIndexBuffer.GetNumIndices() : 0);
+		CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("ReversedDepthOnlyIndexBuffer"), AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.GetNumIndices() * IndexStride);
+		CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("ReversedIndexBuffer"), AdditionalIndexBuffers->ReversedIndexBuffer.GetNumIndices() * IndexStride);
+		CumulativeResourceSize.AddUnknownMemoryBytes(TEXT("WireframeIndexBuffer"), AdditionalIndexBuffers->WireframeIndexBuffer.GetNumIndices() * IndexStride);
 	}
 
-	int32 IBSize = NumIndicies * (IndexBuffer.Is32Bit() ? 4 : 2);
-
-	CumulativeResourceSize.AddUnknownMemoryBytes(VBSize + IBSize);
 	CumulativeResourceSize.AddUnknownMemoryBytes(Sections.GetAllocatedSize());
+}
+
+SIZE_T FStaticMeshLODResources::GetCPUAccessMemoryOverhead() const
+{
+	int32 NumIndices = IndexBuffer.GetAllowCPUAccess() ? IndexBuffer.GetNumIndices() : 0;
+	if (AdditionalIndexBuffers)
+	{
+		NumIndices += AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.GetAllowCPUAccess() ? AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.GetNumIndices() : 0;
+		NumIndices += AdditionalIndexBuffers->ReversedIndexBuffer.GetAllowCPUAccess() ? AdditionalIndexBuffers->ReversedIndexBuffer.GetNumIndices() : 0;
+		NumIndices += AdditionalIndexBuffers->WireframeIndexBuffer.GetAllowCPUAccess() ? AdditionalIndexBuffers->WireframeIndexBuffer.GetNumIndices() : 0;
+	}
+	return NumIndices * (IndexBuffer.Is32Bit() ? 4 : 2) +
+		(VertexBuffers.StaticMeshVertexBuffer.GetAllowCPUAccess() ? VertexBuffers.StaticMeshVertexBuffer.GetResourceSize() : 0) +
+		(VertexBuffers.PositionVertexBuffer.GetAllowCPUAccess() ? VertexBuffers.PositionVertexBuffer.GetStride() * VertexBuffers.PositionVertexBuffer.GetNumVertices() : 0) +
+		(VertexBuffers.ColorVertexBuffer.GetAllowCPUAccess() ? VertexBuffers.ColorVertexBuffer.GetStride() * VertexBuffers.ColorVertexBuffer.GetNumVertices() : 0);
 }
 
 int32 FStaticMeshLODResources::GetNumTriangles() const
@@ -846,19 +900,29 @@ void FStaticMeshVertexFactories::InitVertexFactory(
 	{
 		FLocalVertexFactory* VertexFactory;
 		const FStaticMeshLODResources* LODResources;
-		bool bOverrideColorVertexBuffer;
+	#if WITH_EDITORONLY_DATA
+		const UStaticMesh* StaticMesh;
+	#endif
 		uint32 LightMapCoordinateIndex;
 		uint32 LODIndex;
+		uint8 bOverrideColorVertexBuffer : 1;
+	#if WITH_EDITORONLY_DATA
+		uint8 bIsCoarseProxy : 1;
+	#endif
 	} Params;
 
 	uint32 LightMapCoordinateIndex = (uint32)InParentMesh->GetLightMapCoordinateIndex();
 	LightMapCoordinateIndex = LightMapCoordinateIndex < LodResources.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() ? LightMapCoordinateIndex : LodResources.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() - 1;
 
-	Params.VertexFactory = &InOutVertexFactory;
-	Params.LODResources = &LodResources;
-	Params.bOverrideColorVertexBuffer = bInOverrideColorVertexBuffer;
-	Params.LightMapCoordinateIndex = LightMapCoordinateIndex;
-	Params.LODIndex = LODIndex;
+	Params.VertexFactory				= &InOutVertexFactory;
+	Params.LODResources					= &LodResources;
+	Params.bOverrideColorVertexBuffer	= bInOverrideColorVertexBuffer;
+	Params.LightMapCoordinateIndex		= LightMapCoordinateIndex;
+	Params.LODIndex						= LODIndex;
+#if WITH_EDITORONLY_DATA
+	Params.StaticMesh					= InParentMesh;
+	Params.bIsCoarseProxy				= InParentMesh->NaniteSettings.bEnabled && InParentMesh->NaniteSettings.FallbackPercentTriangles < 1.0f;
+#endif
 
 	// Initialize the static mesh's vertex factory.
 	ENQUEUE_RENDER_COMMAND(InitStaticMeshVertexFactory)(
@@ -883,7 +947,11 @@ void FStaticMeshVertexFactories::InitVertexFactory(
 				Params.LODResources->VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(Params.VertexFactory, Data);
 			}
 
-			Data.LODLightmapDataIndex = Params.LODIndex;
+			Data.LODLightmapDataIndex	= Params.LODIndex;
+		#if WITH_EDITORONLY_DATA
+			Data.bIsCoarseProxy			= Params.bIsCoarseProxy;
+			Data.StaticMesh				= Params.StaticMesh;
+		#endif
 			Params.VertexFactory->SetData(Data);
 			Params.VertexFactory->InitResource();
 		});
@@ -948,9 +1016,9 @@ float FStaticMeshSectionAreaWeightedTriangleSampler::GetWeights(TArray<float>& O
 	OutWeights.Empty(Indicies.Num() / 3);
 	for (int32 i = First; i < Last; i+=3)
 	{
-		FVector V0 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i]);
-		FVector V1 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i + 1]);
-		FVector V2 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i + 2]);
+		FVector3f V0 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i]);
+		FVector3f V1 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i + 1]);
+		FVector3f V2 = Owner->VertexBuffers.PositionVertexBuffer.VertexPosition(Indicies[i + 2]);
 
 		float Area = ((V1 - V0) ^ (V2 - V0)).Size() * 0.5f;
 		OutWeights.Add(Area);
@@ -1027,10 +1095,10 @@ void FStaticMeshVertexBuffers::InitModelBuffers(TArray<FModelVertex>& Vertices)
 		PositionVertexBuffer.Init(1);
 		StaticMeshVertexBuffer.Init(1, 2);
 
-		PositionVertexBuffer.VertexPosition(0) = FVector(0, 0, 0);
-		StaticMeshVertexBuffer.SetVertexTangents(0, FVector(1, 0, 0), FVector(0, 1, 0), FVector(0, 0, 1));
-		StaticMeshVertexBuffer.SetVertexUV(0, 0, FVector2D(0, 0));
-		StaticMeshVertexBuffer.SetVertexUV(0, 1, FVector2D(0, 0));
+		PositionVertexBuffer.VertexPosition(0) = FVector3f(0, 0, 0);
+		StaticMeshVertexBuffer.SetVertexTangents(0, FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
+		StaticMeshVertexBuffer.SetVertexUV(0, 0, FVector2f(0, 0));
+		StaticMeshVertexBuffer.SetVertexUV(0, 1, FVector2f(0, 0));
 	}
 }
 
@@ -1101,7 +1169,7 @@ void FStaticMeshVertexBuffers::InitFromDynamicVertex(FLocalVertexFactory* Vertex
 			const FDynamicMeshVertex& Vertex = Vertices[i];
 
 			PositionVertexBuffer.VertexPosition(i) = Vertex.Position;
-			StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector());
+			StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector3f(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector3f());
 			for (uint32 j = 0; j < NumTexCoords; j++)
 			{
 				StaticMeshVertexBuffer.SetVertexUV(i, j, Vertex.TextureCoordinate[j]);
@@ -1115,9 +1183,9 @@ void FStaticMeshVertexBuffers::InitFromDynamicVertex(FLocalVertexFactory* Vertex
 		StaticMeshVertexBuffer.Init(1, 1);
 		ColorVertexBuffer.Init(1);
 
-		PositionVertexBuffer.VertexPosition(0) = FVector(0, 0, 0);
-		StaticMeshVertexBuffer.SetVertexTangents(0, FVector(1, 0, 0), FVector(0, 1, 0), FVector(0, 0, 1));
-		StaticMeshVertexBuffer.SetVertexUV(0, 0, FVector2D(0, 0));
+		PositionVertexBuffer.VertexPosition(0) = FVector3f(0, 0, 0);
+		StaticMeshVertexBuffer.SetVertexTangents(0, FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
+		StaticMeshVertexBuffer.SetVertexUV(0, 0, FVector2f(0, 0));
 		ColorVertexBuffer.VertexColor(0) = FColor(1,1,1,1);
 		NumTexCoords = 1;
 		LightMapIndex = 0;
@@ -1144,8 +1212,8 @@ void FStaticMeshVertexBuffers::InitFromDynamicVertex(FLocalVertexFactory* Vertex
 };
 
 FStaticMeshLODResources::FStaticMeshLODResources(bool bAddRef)
-	: MaxDeviation(0.0f)
-	, bHasAdjacencyInfo(false)
+	: CardRepresentationData(nullptr)
+	, MaxDeviation(0.0f)
 	, bHasDepthOnlyIndices(false)
 	, bHasReversedIndices(false)
 	, bHasReversedDepthOnlyIndices(false)
@@ -1170,6 +1238,7 @@ FStaticMeshLODResources::~FStaticMeshLODResources()
 {
 	check(GetRefCount() == 0);
 	delete DistanceFieldData;
+	delete CardRepresentationData;
 	delete AdditionalIndexBuffers;
 }
 
@@ -1187,7 +1256,6 @@ void FStaticMeshLODResources::UpdateIndexMemoryStats()
 			StaticMeshIndexMemory += AdditionalIndexBuffers->WireframeIndexBuffer.GetAllocatedSize();
 			StaticMeshIndexMemory += AdditionalIndexBuffers->ReversedIndexBuffer.GetAllocatedSize();
 			StaticMeshIndexMemory += AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.GetAllocatedSize();
-			StaticMeshIndexMemory += AdditionalIndexBuffers->AdjacencyIndexBuffer.GetAllocatedSize();
 		}
 
 		INC_DWORD_STAT_BY(STAT_StaticMeshIndexMemory, StaticMeshIndexMemory);
@@ -1252,11 +1320,6 @@ void FStaticMeshLODResources::InitResources(UStaticMesh* Parent)
 		BeginInitResource(&AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer);
 	}
 
-	if (bHasAdjacencyInfo && RHISupportsTessellation(GMaxRHIShaderPlatform))
-	{
-		BeginInitResource(&AdditionalIndexBuffers->AdjacencyIndexBuffer);
-	}
-
 	if (Parent->bSupportGpuUniformlyDistributedSampling && Parent->bSupportUniformlyDistributedSampling && Parent->bAllowCPUAccess)
 	{
 		AreaWeightedSectionSamplersBuffer.Init(&AreaWeightedSectionSamplers);
@@ -1270,41 +1333,12 @@ void FStaticMeshLODResources::InitResources(UStaticMesh* Parent)
 			[this, DebugName = Parent->GetFName()](FRHICommandListImmediate& RHICmdList)
 			{
 				FRayTracingGeometryInitializer Initializer;
-				Initializer.DebugName = DebugName;
-				Initializer.IndexBuffer = IndexBuffer.IndexBufferRHI;
-				Initializer.TotalPrimitiveCount = 0; // This is calculated below based on static mesh section data
-				Initializer.GeometryType = RTGT_Triangles;
-				Initializer.bFastBuild = false;
-				
-				TArray<FRayTracingGeometrySegment> GeometrySections;
-				GeometrySections.Reserve(Sections.Num());
-				for (const FStaticMeshSection& Section : Sections)
-				{
-					FRayTracingGeometrySegment Segment;
-					Segment.VertexBuffer = VertexBuffers.PositionVertexBuffer.VertexBufferRHI;
-					Segment.VertexBufferElementType = VET_Float3;
-					Segment.VertexBufferStride = VertexBuffers.PositionVertexBuffer.GetStride();
-					Segment.VertexBufferOffset = 0;
-					Segment.FirstPrimitive = Section.FirstIndex / 3;
-					Segment.NumPrimitives = Section.NumTriangles;
-					Segment.bEnabled = Section.bVisibleInRayTracing;
-					Segment.bForceOpaque = Section.bForceOpaque;
-					GeometrySections.Add(Segment);
-					Initializer.TotalPrimitiveCount += Section.NumTriangles;
-				}
-				Initializer.Segments = GeometrySections;
-
+				SetupRayTracingGeometryInitializer(Initializer, DebugName);
 				RayTracingGeometry.SetInitializer(Initializer);
 			}
 		);
 	}
 #endif // RHI_RAYTRACING
-
-	if (DistanceFieldData)
-	{
-		DistanceFieldData->VolumeTexture.Initialize(Parent);
-		INC_DWORD_STAT_BY( STAT_StaticMeshDistanceFieldMemory, DistanceFieldData->GetResourceSizeBytes() );
-	}
 
 #if STATS
 	ENQUEUE_RENDER_COMMAND(UpdateMemoryStats)(
@@ -1314,6 +1348,36 @@ void FStaticMeshLODResources::InitResources(UStaticMesh* Parent)
 	});
 #endif
 }
+
+#if RHI_RAYTRACING
+void FStaticMeshLODResources::SetupRayTracingGeometryInitializer(FRayTracingGeometryInitializer& Initializer, const FName& DebugName)
+{
+	Initializer.DebugName = DebugName;
+	Initializer.IndexBuffer = IndexBuffer.IndexBufferRHI;
+	Initializer.TotalPrimitiveCount = 0; // This is calculated below based on static mesh section data
+	Initializer.GeometryType = RTGT_Triangles;
+	Initializer.bFastBuild = false;
+
+	TArray<FRayTracingGeometrySegment> GeometrySections;
+	GeometrySections.Reserve(Sections.Num());
+	for (const FStaticMeshSection& Section : Sections)
+	{
+		FRayTracingGeometrySegment Segment;
+		Segment.VertexBuffer = VertexBuffers.PositionVertexBuffer.VertexBufferRHI;
+		Segment.VertexBufferElementType = VET_Float3;
+		Segment.VertexBufferStride = VertexBuffers.PositionVertexBuffer.GetStride();
+		Segment.VertexBufferOffset = 0;
+		Segment.MaxVertices = VertexBuffers.PositionVertexBuffer.GetNumVertices();
+		Segment.FirstPrimitive = Section.FirstIndex / 3;
+		Segment.NumPrimitives = Section.NumTriangles;
+		Segment.bEnabled = Section.bVisibleInRayTracing;
+		Segment.bForceOpaque = Section.bForceOpaque;
+		GeometrySections.Add(Segment);
+		Initializer.TotalPrimitiveCount += Section.NumTriangles;
+	}
+	Initializer.Segments = GeometrySections;
+}
+#endif // RHI_RAYTRACING
 
 void FStaticMeshLODResources::ReleaseResources()
 {
@@ -1334,32 +1398,17 @@ void FStaticMeshLODResources::ReleaseResources()
 
 	if (AdditionalIndexBuffers)
 	{
-		// AdjacencyIndexBuffer may not be initialized at this time, but it is safe to release it anyway.
+		// These may not be initialized at this time, but it is safe to release it anyway.
 		// The bInitialized flag will be safely checked in the render thread.
 		// This avoids a race condition regarding releasing this resource.
-		BeginReleaseResource(&AdditionalIndexBuffers->AdjacencyIndexBuffer);
 		BeginReleaseResource(&AdditionalIndexBuffers->ReversedIndexBuffer);
 		BeginReleaseResource(&AdditionalIndexBuffers->WireframeIndexBuffer);
 		BeginReleaseResource(&AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer);
 	}
-#if RHI_RAYTRACING
-	// BeginReleaseResource(&RayTracingGeometry);
-	// Workaround for UE-106993:
-	// Destroy ray tracing geometry on the render thread, as it may hold references to render resources.
-	// These references should be cleared in FRayTracingGeometry::ReleaseResource(), however FRayTracingGeometry does
-	// not implement this method and it can't be added due to 4.26 hotfix rules.
-	ENQUEUE_RENDER_COMMAND(ReleaseRayTracingGeometry)([Ptr = &RayTracingGeometry](FRHICommandListImmediate&)
-	{
-		Ptr->ReleaseResource();
-		*Ptr = FRayTracingGeometry(); // Explicitly reset all contents, including any resource references.
-	});
-#endif // RHI_RAYTRACING
 
-	if (DistanceFieldData)
-	{
-		DEC_DWORD_STAT_BY( STAT_StaticMeshDistanceFieldMemory, DistanceFieldData->GetResourceSizeBytes() );
-		DistanceFieldData->VolumeTexture.Release();
-	}
+#if RHI_RAYTRACING
+	BeginReleaseResource(&RayTracingGeometry);
+#endif // RHI_RAYTRACING
 }
 
 void FStaticMeshLODResources::IncrementMemoryStats()
@@ -1387,8 +1436,11 @@ void FStaticMeshLODResources::DiscardCPUData()
 		AdditionalIndexBuffers->ReversedIndexBuffer.Discard();
 		AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.Discard();
 		AdditionalIndexBuffers->WireframeIndexBuffer.Discard();
-		AdditionalIndexBuffers->AdjacencyIndexBuffer.Discard();
 	}
+	
+#if RHI_RAYTRACING
+	RayTracingGeometry.RawData.Discard();
+#endif
 }
 
 /*------------------------------------------------------------------------------
@@ -1469,6 +1521,51 @@ int32 FStaticMeshRenderData::GetNumNonOptionalLODs() const
 	}
 }
 
+void FStaticMeshRenderData::SerializeInlineDataRepresentations(FArchive& Ar, UStaticMesh* Owner)
+{
+	// Defined class flags for possible stripping
+	const uint8 CardRepresentationDataStripFlag = 2;
+
+	// Actual flags used during serialization
+	uint8 ClassDataStripFlags = 0;
+
+#if WITH_EDITOR
+	const bool bWantToStripCardRepresentationData = Ar.IsCooking() && (!Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DeferredRendering) || !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::LumenGI));
+	ClassDataStripFlags |= (bWantToStripCardRepresentationData ? CardRepresentationDataStripFlag : 0);
+#endif
+
+	FStripDataFlags StripFlags(Ar, ClassDataStripFlags);
+	if (!StripFlags.IsDataStrippedForServer() && !StripFlags.IsClassDataStripped(CardRepresentationDataStripFlag))
+	{
+		if (Ar.IsSaving())
+		{
+			// Need to block on GDistanceFieldAsyncQueue as it can generate GCardRepresentationAsyncQueue tasks
+			GDistanceFieldAsyncQueue->BlockUntilBuildComplete(Owner, false);
+			GCardRepresentationAsyncQueue->BlockUntilBuildComplete(Owner, false);
+		}
+
+		for (int32 ResourceIndex = 0; ResourceIndex < LODResources.Num(); ResourceIndex++)
+		{
+			FStaticMeshLODResources& LOD = LODResources[ResourceIndex];
+				
+			bool bValid = (LOD.CardRepresentationData != nullptr);
+
+			Ar << bValid;
+
+			if (bValid)
+			{
+				if (LOD.CardRepresentationData == nullptr)
+				{
+					check(Ar.IsLoading());
+					LOD.CardRepresentationData = new FCardRepresentationData();
+				}
+
+				Ar << *(LOD.CardRepresentationData);
+			}
+		}
+	}
+}
+
 void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCooked)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshRenderData::Serialize);
@@ -1487,6 +1584,8 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 	if (!bCooked)
 	{
 		Ar << MaterialIndexToImportIndex;
+		Ar << EstimatedNaniteTotalCompressedSize;
+		Ar << EstimatedNaniteStreamingCompressedSize;
 	}
 
 #endif // #if WITH_EDITORONLY_DATA
@@ -1503,7 +1602,7 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 				&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
 				&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
 			{
-				MinMobileLODIdx = Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Mobile")) - Owner->GetMinLOD().GetValueForPlatformIdentifiers(TEXT("Desktop"));
+				MinMobileLODIdx = Owner->GetMinLOD().GetValueForPlatform(TEXT("Mobile")) - FStaticMeshLODResources::GetPlatformMinLODIdx(Ar.CookingTarget(), Owner);
 				MinMobileLODIdx = FMath::Clamp(MinMobileLODIdx, 0, 255); // Will be cast to uint8 when applying LOD bias. Also, make sure it's not < 0,
 																		 // which can happen if the desktop min LOD is higher than the mobile setting
 			}
@@ -1535,7 +1634,17 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 	}
 #endif
 	Ar << NumInlinedLODs;
-	CurrentFirstLODIdx = LODResources.Num() - NumInlinedLODs;
+
+#if WITH_EDITOR
+	if (bCooked && Ar.IsLoading())
+	{
+		CurrentFirstLODIdx = 0;
+	}
+	else
+#endif
+	{
+		CurrentFirstLODIdx = LODResources.Num() - NumInlinedLODs;
+	}
 
 	if (Ar.IsLoading())
 	{
@@ -1546,9 +1655,13 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 		}
 	}
 
+	NaniteResources.Serialize( Ar, Owner, bCooked );
+
 	// Inline the distance field derived data for cooked builds
 	if (bCooked)
 	{
+		SerializeInlineDataRepresentations(Ar, Owner);
+
 		// Defined class flags for possible stripping
 		const uint8 DistanceFieldDataStripFlag = 1;
 
@@ -1556,7 +1669,8 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 		uint8 ClassDataStripFlags = 0;
 
 #if WITH_EDITOR
-		const bool bWantToStripDistanceFieldData = Ar.IsCooking() && !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DistanceFieldAO);
+		const bool bWantToStripDistanceFieldData = Ar.IsCooking() 
+			&& (!Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::DistanceFieldAO) || !Ar.CookingTarget()->UsesDistanceFields());
 
 		ClassDataStripFlags |= (bWantToStripDistanceFieldData ? DistanceFieldDataStripFlag : 0);
 #endif
@@ -1588,16 +1702,12 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 
 						if (Divider > 1)
 						{
-							FDistanceFieldVolumeData DownSampledDFVolumeData = *LOD.DistanceFieldData;
-							IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>(TEXT("MeshUtilities"));
-
-							MeshUtilities.DownSampleDistanceFieldVolumeData(DownSampledDFVolumeData, Divider);
-
-							Ar << DownSampledDFVolumeData;
+							//@todo - strip mips
+							LOD.DistanceFieldData->Serialize(Ar, Owner);
 						}
 						else
 						{
-							Ar << *(LOD.DistanceFieldData);
+							LOD.DistanceFieldData->Serialize(Ar, Owner);
 						}
 					}
 					else
@@ -1606,9 +1716,10 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 						if (LOD.DistanceFieldData == nullptr)
 						{
 							LOD.DistanceFieldData = new FDistanceFieldVolumeData();
+							LOD.DistanceFieldData->AssetName = Owner->GetFName();
 						}
 
-						Ar << *(LOD.DistanceFieldData);
+						LOD.DistanceFieldData->Serialize(Ar, Owner);
 					}
 				}
 			}
@@ -1668,12 +1779,6 @@ void FStaticMeshRenderData::InitResources(ERHIFeatureLevel::Type InFeatureLevel,
 			LODResources[LODIndex].InitResources(Owner);
 			LODVertexFactories[LODIndex].InitResources(LODResources[LODIndex], LODIndex, Owner);
 		}
-		else if (!LODIndex && LODResources[LODIndex].DistanceFieldData)
-		{
-			FDistanceFieldVolumeData* DistanceFieldData = LODResources[LODIndex].DistanceFieldData;
-			DistanceFieldData->VolumeTexture.Initialize(Owner);
-			INC_DWORD_STAT_BY(STAT_StaticMeshDistanceFieldMemory, DistanceFieldData->GetResourceSizeBytes());
-		}
 	}
 
 #if RHI_RAYTRACING
@@ -1682,11 +1787,16 @@ void FStaticMeshRenderData::InitResources(ERHIFeatureLevel::Type InFeatureLevel,
 		ENQUEUE_RENDER_COMMAND(InitRayTracingGeometryForInlinedLODs)(
 			[this](FRHICommandListImmediate&)
 			{
-				for (int32 LODIndex = CurrentFirstLODIdx; LODIndex < LODResources.Num(); ++LODIndex)
+				for (int32 LODIndex = 0; LODIndex < LODResources.Num(); ++LODIndex)
 				{
 					// Skip LODs that have their render data stripped
 					if (LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
 					{
+						if (LODIndex < CurrentFirstLODIdx)
+						{
+							LODResources[LODIndex].RayTracingGeometry.Initializer.Type = ERayTracingGeometryInitializerType::StreamingDestination;
+						}
+
 						LODResources[LODIndex].RayTracingGeometry.InitResource();
 					}
 				}
@@ -1694,6 +1804,8 @@ void FStaticMeshRenderData::InitResources(ERHIFeatureLevel::Type InFeatureLevel,
 		);
 	}
 #endif
+
+	NaniteResources.InitResources(Owner);
 
 	ENQUEUE_RENDER_COMMAND(CmdSetStaticMeshReadyForStreaming)(
 		[this, Owner](FRHICommandListImmediate&)
@@ -1714,13 +1826,9 @@ void FStaticMeshRenderData::ReleaseResources()
 			LODResources[LODIndex].ReleaseResources();
 			LODVertexFactories[LODIndex].ReleaseResources();
 		}
-		else if (!LODIndex && LODResources[LODIndex].DistanceFieldData)
-		{
-			FDistanceFieldVolumeData* DistanceFieldData = LODResources[LODIndex].DistanceFieldData;
-			DEC_DWORD_STAT_BY(STAT_StaticMeshDistanceFieldMemory, DistanceFieldData->GetResourceSizeBytes());
-			DistanceFieldData->VolumeTexture.Release();
-		}
 	}
+
+	NaniteResources.ReleaseResources();
 }
 
 void FStaticMeshRenderData::AllocateLODResources(int32 NumLODs)
@@ -1768,80 +1876,16 @@ int32 FStaticMeshRenderData::GetFirstValidLODIdx(int32 MinIdx) const
 	return LODIndex;
 }
 
-FStaticMeshOccluderData::FStaticMeshOccluderData()
-{
-	VerticesSP = MakeShared<FOccluderVertexArray, ESPMode::ThreadSafe>();
-	IndicesSP = MakeShared<FOccluderIndexArray, ESPMode::ThreadSafe>();
-}
 
-SIZE_T FStaticMeshOccluderData::GetResourceSizeBytes() const
+void UStaticMesh::RequestUpdateCachedRenderState() const
 {
-	return VerticesSP->GetAllocatedSize() + IndicesSP->GetAllocatedSize();
-}
-
-TUniquePtr<FStaticMeshOccluderData> FStaticMeshOccluderData::Build(UStaticMesh* Owner)
-{
-	TUniquePtr<FStaticMeshOccluderData> Result;
-#if WITH_EDITOR		
-	if (Owner->LODForOccluderMesh >= 0)
+	Nanite::FCoarseMeshStreamingManager* CoarseMeshSM = IStreamingManager::Get().GetNaniteCoarseMeshStreamingManager();
+	if (HasValidNaniteData() && CoarseMeshSM)
 	{
-		// TODO: Custom geometry for occluder mesh?
-		int32 LODIndex = FMath::Min(Owner->LODForOccluderMesh, Owner->GetRenderData()->LODResources.Num()-1);
-		const FStaticMeshLODResources& LODModel = Owner->GetRenderData()->LODResources[LODIndex];
-			
-		const FRawStaticIndexBuffer& IndexBuffer = LODModel.DepthOnlyIndexBuffer.GetNumIndices() > 0 ? LODModel.DepthOnlyIndexBuffer : LODModel.IndexBuffer;
-		int32 NumVtx = LODModel.VertexBuffers.PositionVertexBuffer.GetNumVertices();
-		int32 NumIndices = IndexBuffer.GetNumIndices();
-		
-		if (NumVtx > 0 && NumIndices > 0 && !IndexBuffer.Is32Bit())
-		{
-			Result = MakeUnique<FStaticMeshOccluderData>();
-		
-			Result->VerticesSP->SetNumUninitialized(NumVtx);
-			Result->IndicesSP->SetNumUninitialized(NumIndices);
-
-			const FVector* V0 = &LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(0);
-			const uint16* Indices = IndexBuffer.AccessStream16();
-
-			FMemory::Memcpy(Result->VerticesSP->GetData(), V0, NumVtx*sizeof(FVector));
-			FMemory::Memcpy(Result->IndicesSP->GetData(), Indices, NumIndices*sizeof(uint16));
-		}
+		CoarseMeshSM->RequestUpdateCachedRenderState(this);
 	}
-#endif // WITH_EDITOR
-	return Result;
-}
 
-void FStaticMeshOccluderData::SerializeCooked(FArchive& Ar, UStaticMesh* Owner)
-{
-#if WITH_EDITOR	
-	if (Ar.IsSaving())
-	{
-		bool bHasOccluderData = false;
-		if (Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::SoftwareOcclusion) && Owner->GetOccluderData())
-		{
-			bHasOccluderData = true;
-		}
-		
-		Ar << bHasOccluderData;
-		
-		if (bHasOccluderData)
-		{
-			Owner->GetOccluderData()->VerticesSP->BulkSerialize(Ar);
-			Owner->GetOccluderData()->IndicesSP->BulkSerialize(Ar);
-		}
-	}
-	else
-#endif // WITH_EDITOR
-	{
-		bool bHasOccluderData;
-		Ar << bHasOccluderData;
-		if (bHasOccluderData)
-		{
-			Owner->SetOccluderData(MakeUnique<FStaticMeshOccluderData>());
-			Owner->GetOccluderData()->VerticesSP->BulkSerialize(Ar);
-			Owner->GetOccluderData()->IndicesSP->BulkSerialize(Ar);
-		}
-	}
+	// TODO: Need to mark all DynamicRayTracingGeometries used in FStaticMeshSceneProxy referencing this StaticMesh as either invalid or request a recreation (UE-139474)
 }
 
 
@@ -1900,7 +1944,7 @@ void FStaticMeshRenderData::ResolveSectionInfo(UStaticMesh* Owner)
 		{
 			if (LODIndex == 0)
 			{
-				ScreenSize[LODIndex].Default = 1.0f;
+				ScreenSize[LODIndex].Default = 2.0f;
 			}
 			else if(LOD.MaxDeviation <= 0.0f)
 			{
@@ -1966,17 +2010,29 @@ void FStaticMeshRenderData::SyncUVChannelData(const TArray<FStaticMaterial>& Obj
 		UpdateData->Add(StaticMaterial.UVChannelData);
 	}
 
-	ENQUEUE_RENDER_COMMAND(SyncUVChannelData)([this, UpdateData = MoveTemp(UpdateData)](FRHICommandListImmediate& RHICmdList)
+	// SyncUVChannelData can be called from any thread during async mesh compilation. 
+	// There is currently multiple race conditions in ENQUEUE_RENDER_COMMAND making it unsafe to be called from
+	// any other thread than rendering or game because of the render thread suspension mecanism.
+	// We sidestep the issue here by avoiding a call to ENQUEUE_RENDER_COMMAND if the resource has not been initialized and is still unknown
+	// to the render thread.
+	if (bIsInitialized)
+	{
+		ENQUEUE_RENDER_COMMAND(SyncUVChannelData)([this, UpdateData = MoveTemp(UpdateData)](FRHICommandListImmediate& RHICmdList)
+		{
+			FMemory::Memswap(&UVChannelDataPerMaterial, UpdateData.Get(), sizeof(UVChannelDataPerMaterial));
+		});
+	}
+	else
 	{
 		FMemory::Memswap(&UVChannelDataPerMaterial, UpdateData.Get(), sizeof(UVChannelDataPerMaterial));
-	});
+	}
 }
 
 /*------------------------------------------------------------------------------
 	FStaticMeshLODSettings
 ------------------------------------------------------------------------------*/
 
-void FStaticMeshLODSettings::Initialize(const FConfigFile& IniFile)
+void FStaticMeshLODSettings::Initialize(const ITargetPlatform* TargetPlatform)
 {
 	check(!Groups.Num());
 	// Ensure there is a default LOD group.
@@ -1984,7 +2040,7 @@ void FStaticMeshLODSettings::Initialize(const FConfigFile& IniFile)
 
 	// Read individual entries from a config file.
 	const TCHAR* IniSection = TEXT("StaticMeshLODSettings");
-	const FConfigSection* Section = IniFile.Find(IniSection);
+	const FConfigSection* Section = TargetPlatform->GetConfigSystem()->GetSectionPrivate(IniSection, false, false, GEngineIni);
 	if (Section)
 	{
 		for (TMultiMap<FName,FConfigValue>::TConstIterator It(*Section); It; ++It)
@@ -2232,6 +2288,36 @@ FMeshReductionSettings UStaticMesh::GetReductionSettings(int32 LODIndex) const
 	return SMLODGroup.GetSettings(SrcModel.ReductionSettings, LODIndex);
 }
 
+bool UStaticMesh::GetEnableLODStreaming(const ITargetPlatform* TargetPlatform) const
+{
+	if (NeverStream)
+	{
+		return false;
+	}
+
+	static auto* VarMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MeshStreaming"));
+	const bool bMeshStreamingDisabled = VarMeshStreaming && VarMeshStreaming->GetInt() == 0;
+
+	static auto* VarNaniteCoarseMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.CoarseMeshStreaming"));
+	const bool bNaniteCoareMeshStreamingDisabled = VarNaniteCoarseMeshStreaming && VarNaniteCoarseMeshStreaming->GetInt() == 0;
+
+	if (bMeshStreamingDisabled && bNaniteCoareMeshStreamingDisabled)
+	{
+		return false;
+
+	}
+
+	check(TargetPlatform);
+	// Check whether the target platforms supports LOD streaming. 
+	// Even if it does, disable streaming if it has editor only data since most tools don't support mesh streaming.
+	if (!TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MeshLODStreaming) || TargetPlatform->HasEditorOnlyData())
+	{
+		return false;
+	}
+
+	const FStaticMeshLODGroup& LODGroupSettings = TargetPlatform->GetStaticMeshLODSettings().GetLODGroup(LODGroup);
+	return LODGroupSettings.IsLODStreamingSupported();
+}
 
 void UStaticMesh::PostDuplicate(bool bDuplicateForPIE)
 {
@@ -2241,6 +2327,18 @@ void UStaticMesh::PostDuplicate(bool bDuplicateForPIE)
 	{
 		SetLightingGuid();
 	}
+}
+
+static void SerializeNaniteSettingsForDDC(FArchive& Ar, FMeshNaniteSettings& NaniteSettings)
+{
+	// Note: this serializer is only used to build the mesh DDC key, no versioning is required
+	FArchive_Serialize_BitfieldBool(Ar, NaniteSettings.bEnabled);
+	Ar << NaniteSettings.PositionPrecision;
+	Ar << NaniteSettings.TargetMinimumResidencyInKB;
+	Ar << NaniteSettings.KeepPercentTriangles;
+	Ar << NaniteSettings.TrimRelativeError;
+	Ar << NaniteSettings.FallbackPercentTriangles;
+	Ar << NaniteSettings.FallbackRelativeError;
 }
 
 static void SerializeReductionSettingsForDDC(FArchive& Ar, FMeshReductionSettings& ReductionSettings)
@@ -2268,17 +2366,17 @@ static void SerializeBuildSettingsForDDC(FArchive& Ar, FMeshBuildSettings& Build
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseMikkTSpace);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bComputeWeightedNormals);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bRemoveDegenerates);
-	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bBuildAdjacencyBuffer);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bBuildReversedIndexBuffer);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseHighPrecisionTangentBasis);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseFullPrecisionUVs);
+	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bUseBackwardsCompatibleF16TruncUVs);
 	FArchive_Serialize_BitfieldBool(Ar, BuildSettings.bGenerateLightmapUVs);
 
 	Ar << BuildSettings.MinLightmapResolution;
 	Ar << BuildSettings.SrcLightmapIndex;
 	Ar << BuildSettings.DstLightmapIndex;
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_BUILD_SCALE_VECTOR)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_BUILD_SCALE_VECTOR)
 	{
 		float BuildScale(1.0f);
 		Ar << BuildScale;
@@ -2294,24 +2392,26 @@ static void SerializeBuildSettingsForDDC(FArchive& Ar, FMeshBuildSettings& Build
 
 	FString ReplacementMeshName = BuildSettings.DistanceFieldReplacementMesh->GetPathName();
 	Ar << ReplacementMeshName;
+	Ar << BuildSettings.MaxLumenMeshCards;
 }
 
 // If static mesh derived data needs to be rebuilt (new format, serialization
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define STATICMESH_DERIVEDDATA_VER TEXT("9CE2B6FB46754B699726C4AA1515F12E")
+#define STATICMESH_DERIVEDDATA_VER TEXT("A8F10585DE67499EA913B652DC4A955E")
 
-static const FString& GetStaticMeshDerivedDataVersion()
+const FString& GetStaticMeshDerivedDataVersion()
 {
 	static FString CachedVersionString;
 	if (CachedVersionString.IsEmpty())
 	{
 		// Static mesh versioning is controlled by the version reported by the mesh utilities module.
 		IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>(TEXT("MeshUtilities"));
-		CachedVersionString = FString::Printf(TEXT("%s_%s"),
+		CachedVersionString = FString::Printf(TEXT("%s_%s_%s"),
 			STATICMESH_DERIVEDDATA_VER,
-			*MeshUtilities.GetVersionString()
+			*MeshUtilities.GetVersionString(),
+			*Nanite::IBuilderModule::Get().GetVersionString()
 			);
 	}
 	return CachedVersionString;
@@ -2323,7 +2423,7 @@ public:
 	explicit FStaticMeshStatusMessageContext(const FText& InMessage)
 		: FScopedSlowTask(0, InMessage)
 	{
-		UE_LOG(LogStaticMesh,Log,TEXT("%s"),*InMessage.ToString());
+		UE_LOG(LogStaticMesh,Display,TEXT("%s"),*InMessage.ToString());
 		MakeDialog();
 	}
 };
@@ -2369,24 +2469,32 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 	}
 #endif
 
+	{
+		TempBytes.Reset();
+		FMemoryWriter Ar(TempBytes, /*bIsPersistent=*/ true);
+		SerializeNaniteSettingsForDDC(Ar, Mesh->NaniteSettings);
+
+		const uint8* SettingsAsBytes = TempBytes.GetData();
+		KeySuffix.Reserve(KeySuffix.Len() + TempBytes.Num() + 1);
+		for (int32 ByteIndex = 0; ByteIndex < TempBytes.Num(); ++ByteIndex)
+		{
+			ByteToHex(SettingsAsBytes[ByteIndex], KeySuffix);
+		}
+	}
+
 	int32 NumLODs = Mesh->GetNumSourceModels();
 	for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
 	{
 		FStaticMeshSourceModel& SrcModel = Mesh->GetSourceModel(LODIndex);
 		
-		if (SrcModel.MeshDescriptionBulkData.IsValid())
+		check(SrcModel.RawMeshBulkData->IsEmpty());
+		if (!SrcModel.GetMeshDescriptionBulkData()->IsEmpty())
 		{
-			KeySuffix += "MD";
-			KeySuffix += SrcModel.MeshDescriptionBulkData->GetIdString();
-		}
-		else if (!SrcModel.RawMeshBulkData->IsEmpty())
-		{
-			// Legacy path for old assets
-			KeySuffix += SrcModel.RawMeshBulkData->GetIdString();
+			KeySuffix += SrcModel.GetMeshDescriptionBulkData()->GetIdString();
 		}
 		else
 		{
-			// If neither mesh description nor raw mesh bulk data are valid, this is a generated LOD
+			// If mesh description bulk data is empty, this is a generated LOD
 			KeySuffix += "_";
 		}
 
@@ -2403,7 +2511,6 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 		FMeshReductionSettings FinalReductionSettings = LODGroup.GetSettings(SrcModel.ReductionSettings, LODIndex);
 		SerializeReductionSettingsForDDC(Ar, FinalReductionSettings);
 
-
 		// Now convert the raw bytes to a string.
 		const uint8* SettingsAsBytes = TempBytes.GetData();
 		KeySuffix.Reserve(KeySuffix.Len() + TempBytes.Num() + 1);
@@ -2413,15 +2520,23 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 		}
 	}
 
+	// Add hi-res mesh description into DDC key
+	if (!Mesh->GetHiResSourceModel().GetMeshDescriptionBulkData()->IsEmpty())
+	{
+		KeySuffix += Mesh->GetHiResSourceModel().GetMeshDescriptionBulkData()->GetIdString();
+	}
+	else
+	{
+		KeySuffix += "_";
+	}
+
 	// Mesh LOD streaming settings that need to trigger recache when changed
-	const bool bAllowLODStreaming = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MeshLODStreaming) && LODGroup.IsLODStreamingSupported();
+	const bool bAllowLODStreaming = Mesh->GetEnableLODStreaming(TargetPlatform);
 	KeySuffix += bAllowLODStreaming ? TEXT("LS1") : TEXT("LS0");
 	KeySuffix += TEXT("MNS");
 	if (bAllowLODStreaming)
 	{
-		int32 MaxNumStreamedLODs = Mesh->NumStreamedLODs.GetValueForPlatformIdentifiers(
-			TargetPlatform->GetPlatformInfo().PlatformGroupName,
-			TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+		int32 MaxNumStreamedLODs = Mesh->NumStreamedLODs.GetValueForPlatform(*TargetPlatform->IniPlatformName());
 		if (MaxNumStreamedLODs < 0)
 		{
 			MaxNumStreamedLODs = LODGroup.GetDefaultMaxNumStreamedLODs();
@@ -2437,7 +2552,24 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 		KeySuffix += TEXT("zzzzzzzz");
 	}
 
+	// Nanite Coarse mesh streaming change require regenerating the coarse mesh LODs during caching
+	static auto* VarNaniteCoarseMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.CoarseMeshStreaming"));
+	const bool bNaniteCoareMeshStreamingEnabled = !VarNaniteCoarseMeshStreaming || VarNaniteCoarseMeshStreaming->GetInt() != 0;
+	if (bNaniteCoareMeshStreamingEnabled)
+	{
+		KeySuffix += TEXT("_NCMS");
+	}
+
 	KeySuffix.AppendChar(Mesh->bSupportUniformlyDistributedSampling ? TEXT('1') : TEXT('0'));
+
+	if (TargetPlatform->SupportsFeature(ETargetPlatformFeatures::HardwareLZDecompression))
+	{
+		KeySuffix += TEXT("_HWLZ");
+	}
+	else
+	{
+		KeySuffix += TEXT("_SWLZ");
+	}
 
 	// Value of this CVar affects index buffer <-> painted vertex color correspondence (see UE-51421).
 	static const TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.TriangleOrderOptimization"));
@@ -2468,13 +2600,25 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 		}
 	}
 
-	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix);
+	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix, false);
 
 	if (TargetPlatform->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
 		&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
 		&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
 	{
 		KeySuffix += TEXT("_MinMLOD");
+	}
+
+	// Append the section material slot mappings for LOD0, if there are two or more (and thus are permutable), as they are baked into the Nanite build.
+	const FMeshSectionInfoMap& SectionInfoMap = Mesh->GetSectionInfoMap();
+	int32 NumLOD0Sections = SectionInfoMap.GetSectionNumber(0);
+	if (NumLOD0Sections >= 2)
+	{
+		KeySuffix += TEXT("_");
+		for (int32 SectionIndex = 0; SectionIndex < NumLOD0Sections; SectionIndex++)
+		{
+			KeySuffix += LexToString(SectionInfoMap.Get(0, SectionIndex).MaterialIndex);
+		}
 	}
 
 	return KeySuffix;
@@ -2532,9 +2676,9 @@ void FStaticMeshRenderData::ComputeUVDensities()
 					for (int32 UVIndex = 0; UVIndex < NumTexCoords; ++UVIndex)
 					{
 						const float UVAera = FUVDensityAccumulator::GetUVChannelAera(
-												LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index0, UVIndex), 
-												LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index1, UVIndex), 
-												LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index2, UVIndex));
+												FVector2D(LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index0, UVIndex)), 
+												FVector2D(LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index1, UVIndex)), 
+												FVector2D(LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Index2, UVIndex)));
 
 						UVDensityAccs[UVIndex].PushTriangle(Aera, UVAera);
 					}
@@ -2584,6 +2728,7 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshRenderData::Cache);
+		LLM_SCOPE_BYNAME(TEXT("AssetCompilation/StaticMesh"));
 
 		COOK_STAT(auto Timer = StaticMeshCookStats::UsageStats.TimeSyncWork());
 		double T0 = FPlatformTime::Seconds();
@@ -2592,12 +2737,58 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 		const FString KeySuffix = BuildStaticMeshDerivedDataKeySuffix(TargetPlatform, Owner, LODGroup);
 		DerivedDataKey = BuildStaticMeshDerivedDataKey(KeySuffix);
 
-		TArray<uint8> DerivedData;
-		if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, Owner->GetPathName()))
+		using namespace UE::DerivedData;
+
+		static const FValueId MeshDataId = FValueId::FromName("MeshData");
+		static const FValueId NaniteStreamingDataId = FValueId::FromName("NaniteStreamingData");
+		static const double DDCSizeToEstimateFactor = 0.9;	// Hack: DDC uses fast compression. Compressed data is typically at least 10% smaller in shipped build, so use that as our estimate.
+
+		FCacheKey CacheKey;
+		CacheKey.Bucket = FCacheBucket(TEXT("StaticMesh"));
+		CacheKey.Hash = FIoHash::HashBuffer(MakeMemoryView(FTCHARToUTF8(DerivedDataKey)));
+
+		uint64 EstimatedMeshDataCompressedSize = 0;
+		FSharedBuffer MeshDataBuffer;
+		FIoHash NaniteStreamingDataHash;
 		{
-			COOK_STAT(Timer.AddHit(DerivedData.Num()));
-			FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
+			FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::Default | ECachePolicy::KeepAlive);
+			PolicyBuilder.AddValuePolicy(NaniteStreamingDataId, ECachePolicy::Default | ECachePolicy::SkipData);
+			
+			FCacheGetRequest Request;
+			Request.Name = Owner->GetPathName();
+			Request.Key = CacheKey;
+			Request.Policy = PolicyBuilder.Build();
+
+			FRequestOwner RequestOwner(EPriority::Blocking);
+			GetCache().Get(MakeArrayView(&Request, 1), RequestOwner,
+				[&MeshDataBuffer, &EstimatedMeshDataCompressedSize, &NaniteStreamingDataHash](FCacheGetResponse&& Response)
+				{
+					const FCompressedBuffer& CompressedBuffer = Response.Record.GetValue(MeshDataId).GetData();
+					MeshDataBuffer = CompressedBuffer.Decompress();
+					EstimatedMeshDataCompressedSize = uint64(CompressedBuffer.GetCompressedSize() * DDCSizeToEstimateFactor);
+
+					NaniteStreamingDataHash = Response.Record.GetValue(NaniteStreamingDataId).GetRawHash();
+				});
+			RequestOwner.Wait();
+		}
+
+		if (!MeshDataBuffer.IsNull())
+		{
+			COOK_STAT(Timer.AddHit(MeshDataBuffer.GetSize()));
+
+			FMemoryReaderView Ar(MakeArrayView((const uint8*)MeshDataBuffer.GetData(), MeshDataBuffer.GetSize()), /*bIsPersistent=*/ true);
 			Serialize(Ar, Owner, /*bCooked=*/ false);
+
+			// Reconstruct EstimatedCompressedSize
+			// It is not serialized as it is not known before the serialized data has been compressed and we don't want to compress twice.
+			EstimatedCompressedSize = EstimatedMeshDataCompressedSize + EstimatedNaniteStreamingCompressedSize;
+
+			check(NaniteResources.StreamablePages.GetBulkDataSize() == 0);
+			if (NaniteResources.ResourceFlags & NANITE_RESOURCE_FLAG_STREAMING_DATA_IN_DDC)
+			{
+				NaniteResources.DDCKeyHash = CacheKey.Hash;
+				NaniteResources.DDCRawHash = NaniteStreamingDataHash;
+			}
 
 			for (int32 LODIdx = 0; LODIdx < LODResources.Num(); ++LODIdx)
 			{
@@ -2631,18 +2822,64 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 
 			checkf(Owner->IsMeshDescriptionValid(0), TEXT("Bad MeshDescription on %s"), *GetPathNameSafe(Owner));
 
-			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
-			if (!MeshBuilderModule.BuildMesh(*this, Owner, LODGroup))
+			if (Owner->bDoFastBuild)
 			{
-				UE_LOG(LogStaticMesh, Error, TEXT("Failed to build static mesh. See previous line(s) for details."));
-				return;
+				// If the mesh is built via the FastBuild path, just build it each time here instead of using the DDC as a cache.
+				const int32 NumSourceModels = Owner->GetNumSourceModels();
+				AllocateLODResources(NumSourceModels);
+				for (int32 LodIndex = 0; LodIndex < NumSourceModels; LodIndex++)
+				{
+					Owner->BuildFromMeshDescription(*Owner->GetMeshDescription(LodIndex), LODResources[LodIndex]);
+				}
 			}
+			else
+			{
+				IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
 
-			ComputeUVDensities();
-			if(Owner->bSupportUniformlyDistributedSampling)
-			{
-				BuildAreaWeighedSamplingData();
+				// Only build the LODs if coarse mesh streaming is enabled
+				static auto* VarNaniteCoarseMeshStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.CoarseMeshStreaming"));
+				const bool bNaniteCoareMeshStreamingEnabled = !VarNaniteCoarseMeshStreaming || VarNaniteCoarseMeshStreaming->GetInt() != 0;
+
+				const bool bGenerateStreamingLODs = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MeshLODStreaming) && bNaniteCoareMeshStreamingEnabled && LODGroup.IsLODStreamingSupported();
+				if (!MeshBuilderModule.BuildMesh(*this, Owner, LODGroup, bGenerateStreamingLODs))
+				{
+					UE_LOG(LogStaticMesh, Error, TEXT("Failed to build static mesh. See previous line(s) for details."));
+					return;
+				}
+
+				ComputeUVDensities();
+				if(Owner->bSupportUniformlyDistributedSampling)
+				{
+					BuildAreaWeighedSamplingData();
+				}
 			}
+			
+			int64 TotalPushedBytes = 0;
+			FCacheRecordBuilder RecordBuilder(CacheKey);
+			if (NaniteResources.PageStreamingStates.Num() > 0)
+			{
+				if (NaniteResources.HasStreamingData())
+				{
+					// Compress streaming data and add it to record builder
+					FByteBulkData& BulkData = NaniteResources.StreamablePages;
+					TotalPushedBytes += BulkData.GetBulkDataSize();
+
+					FValue Value = FValue::Compress(FSharedBuffer::MakeView(BulkData.LockReadOnly(), BulkData.GetBulkDataSize()));
+					RecordBuilder.AddValue(NaniteStreamingDataId, Value);
+					EstimatedNaniteStreamingCompressedSize = uint64(Value.GetData().GetCompressedSize() * DDCSizeToEstimateFactor);
+					BulkData.Unlock();
+					NaniteResources.ResourceFlags |= NANITE_RESOURCE_FLAG_STREAMING_DATA_IN_DDC;
+					NaniteResources.DDCKeyHash = CacheKey.Hash;
+					NaniteResources.DDCRawHash = Value.GetRawHash();
+				}
+				
+				// Compress non-streaming data for size estimation
+				FLargeMemoryWriter Ar(0, /*bIsPersistent=*/ true);
+				NaniteResources.Serialize(Ar, Owner, /*bCooked=*/ false);
+				FCompressedBuffer CompressedBuffer = FCompressedBuffer::Compress(FSharedBuffer::MakeView(Ar.GetData(), Ar.TotalSize()));
+				EstimatedNaniteTotalCompressedSize = EstimatedNaniteStreamingCompressedSize + uint64(CompressedBuffer.GetCompressedSize() * DDCSizeToEstimateFactor);
+			}
+			
 			bLODsShareStaticLighting = Owner->CanLODsShareStaticLighting();
 			FLargeMemoryWriter Ar(0, /*bIsPersistent=*/ true);
 			Serialize(Ar, Owner, /*bCooked=*/ false);
@@ -2666,17 +2903,44 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 #if WITH_EDITOR
 			//Do not save ddc when we are forcing the regeneration of ddc in automation test
 			//No need to take more space in the ddc.
-			if (GIsAutomationTesting && Owner->BuildCacheAutomationTestGuid.IsValid())
+			if (GIsAutomationTesting && Owner->BuildCacheAutomationTestGuid.IsValid() && !NaniteResources.HasStreamingData())
 			{
 				bSaveDDC = false;
 			}
 #endif
-			int64 DerivedDataNum = Ar.TotalSize();
-			bool bCanStoreInDDC = DerivedDataNum <= TNumericLimits<TArrayView<uint8>::SizeType>::Max();
-			if (bSaveDDC && bCanStoreInDDC)
+			bool bSavedToDDC = false;
+			if (bSaveDDC)
 			{
-				TArrayView<uint8> DataView(Ar.GetData(), DerivedDataNum);
-				GetDerivedDataCacheRef().Put(*DerivedDataKey, DataView, Owner->GetPathName());
+				FValue Value = FValue::Compress(FSharedBuffer::MakeView(Ar.GetData(), Ar.TotalSize()));
+				RecordBuilder.AddValue(MeshDataId, Value);
+				TotalPushedBytes += Ar.TotalSize();
+				EstimatedCompressedSize = uint64(Value.GetData().GetCompressedSize() * DDCSizeToEstimateFactor) + EstimatedNaniteStreamingCompressedSize;
+
+				FRequestOwner RequestOwner(UE::DerivedData::EPriority::Blocking);
+				const FCachePutRequest PutRequest = { FSharedString(Owner->GetPathName()), RecordBuilder.Build(), ECachePolicy::Default | ECachePolicy::KeepAlive };
+				GetCache().Put(MakeArrayView(&PutRequest, 1), RequestOwner,
+					[&bSavedToDDC](FCachePutResponse&& Response)
+					{
+						if (Response.Status == EStatus::Ok)
+						{
+							bSavedToDDC = true;
+						}
+					});
+
+				RequestOwner.Wait();
+
+				if (bSavedToDDC && NaniteResources.HasStreamingData())
+				{
+					// Drop streaming data from memory when it has been successfully committed to DDC
+					NaniteResources.DropBulkData();
+				}
+			}
+
+			if (NaniteResources.HasStreamingData() && !bSavedToDDC)
+			{
+				// Streaming data was not pushed to DDC. Disable DDC streaming flag.
+				check(NaniteResources.StreamablePages.GetBulkDataSize() > 0);
+				NaniteResources.ResourceFlags &= ~NANITE_RESOURCE_FLAG_STREAMING_DATA_IN_DDC;
 			}
 
 			double T1 = FPlatformTime::Seconds();
@@ -2685,24 +2949,30 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 				*Owner->GetPathName()
 				);
 			FPlatformAtomics::InterlockedAdd(&StaticMeshDerivedDataTimings::BuildCycles, T1 - T0);
-			COOK_STAT(Timer.AddMiss(DerivedDataNum));
+			COOK_STAT(Timer.AddMiss(TotalPushedBytes));
 		}
+	}
+
+	// If the engine is exiting and is waiting on us to finish this pending task, exit asap and don't start any other work.
+	if (IsEngineExitRequested())
+	{
+		return;
 	}
 
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
 
 	if (CVar->GetValueOnAnyThread(true) != 0 || Owner->bGenerateMeshDistanceField)
 	{
-		FString DistanceFieldKey = BuildDistanceFieldDerivedDataKey(DerivedDataKey);
 		if (LODResources.IsValidIndex(0))
 		{
 			if (!LODResources[0].DistanceFieldData)
 			{
 				LODResources[0].DistanceFieldData = new FDistanceFieldVolumeData();
+				LODResources[0].DistanceFieldData->AssetName = Owner->GetFName();
 			}
 
 			const FMeshBuildSettings& BuildSettings = Owner->GetSourceModel(0).BuildSettings;
-			UStaticMesh* MeshToGenerateFrom = BuildSettings.DistanceFieldReplacementMesh ? BuildSettings.DistanceFieldReplacementMesh : Owner;
+			UStaticMesh* MeshToGenerateFrom = BuildSettings.DistanceFieldReplacementMesh ? ToRawPtr(BuildSettings.DistanceFieldReplacementMesh) : Owner;
 
 			if (BuildSettings.DistanceFieldReplacementMesh)
 			{
@@ -2710,12 +2980,16 @@ void FStaticMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, UStatic
 				BuildSettings.DistanceFieldReplacementMesh->ConditionalPostLoad();
 			}
 
-			LODResources[0].DistanceFieldData->CacheDerivedData(DistanceFieldKey, Owner, MeshToGenerateFrom, BuildSettings.DistanceFieldResolutionScale, BuildSettings.bGenerateDistanceFieldAsIfTwoSided);
+			LODResources[0].DistanceFieldData->CacheDerivedData(DerivedDataKey, TargetPlatform, Owner, *this, MeshToGenerateFrom, BuildSettings.DistanceFieldResolutionScale, BuildSettings.bGenerateDistanceFieldAsIfTwoSided);
 		}
 		else
 		{
 			UE_LOG(LogStaticMesh, Error, TEXT("Failed to generate distance field data for %s due to missing LODResource for LOD 0."), *Owner->GetPathName());
 		}
+	}
+	else
+	{
+		BeginCacheMeshCardRepresentation(TargetPlatform, Owner, *this, DerivedDataKey, /* OptionalSourceMeshData */ nullptr);
 	}
 }
 #endif // #if WITH_EDITOR
@@ -2770,28 +3044,33 @@ const float UStaticMesh::MinimumAutoLODPixelError = SMALL_NUMBER;
 
 UStaticMesh::UStaticMesh(const FObjectInitializer& ObjectInitializer)
 	: UStreamableRenderAsset(ObjectInitializer)
+#if WITH_EDITOR
+	, LockedProperties((uint32)EStaticMeshAsyncProperties::None)
+#endif
 {
 	ElementToIgnoreForTexFactor = -1;
 	bHasNavigationData=true;
 #if WITH_EDITORONLY_DATA
 	bAutoComputeLODScreenSize=true;
 	ImportVersion = EImportStaticMeshVersion::BeforeImportStaticMeshVersionWasAdded;
-	LODForOccluderMesh = -1;
 	NumStreamedLODs.Default = -1;
+	GetHiResSourceModel().StaticMeshDescriptionBulkData = CreateDefaultSubobject<UStaticMeshDescriptionBulkData>(TEXT("HiResMeshDescription"));
+	GetHiResSourceModel().StaticMeshDescriptionBulkData->SetFlags(RF_Transactional);
 #endif // #if WITH_EDITORONLY_DATA
 	SetLightMapResolution(4);
 	SetMinLOD(0);
 
-	LpvBiasMultiplier = 1.0f;
+	bDoFastBuild = false;
 	bSupportUniformlyDistributedSampling = false;
 
 	bSupportRayTracing = true;
 
-	SetIsBuiltAtRuntime(false);
 	bRenderingResourcesInitialized = false;
 #if WITH_EDITOR
 	BuildCacheAutomationTestGuid.Invalidate();
 #endif
+	SetQualityLevelMinLOD(0);
+	MinQualityLevelLOD.Init(GMinLodQualityLevelCVarName, GMinLodQualityLevelScalabilitySection);
 }
 
 // We don't care if the default implementation of the destructor is cleaning up 
@@ -2801,8 +3080,55 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UStaticMesh::~UStaticMesh() = default;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+#if WITH_EDITOR
+
+thread_local const UStaticMesh* FStaticMeshAsyncBuildScope::StaticMeshBeingAsyncCompiled = nullptr;
+
+void UStaticMesh::WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties AsyncProperties) const
+{
+	// Async static mesh builds are only supported on editor, no-op for other builds
+	if (IsCompiling() && (LockedProperties & (uint32)AsyncProperties) != 0 && FStaticMeshAsyncBuildScope::ShouldWaitOnLockedProperties(this))
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("StaticMeshCompilationStall %s"), ToString(AsyncProperties)));
+		
+		if (IsInGameThread())
+		{
+			UE_LOG(
+				LogStaticMesh,
+				Verbose,
+				TEXT("Accessing property %s of the StaticMesh while it is still being built asynchronously will force it to be compiled before continuing. "
+					 "For better performance, consider making the caller async aware so it can wait until the static mesh is ready to access this property."
+					 "To better understand where those calls are coming from, you can use Editor.AsyncAssetDumpStallStacks on the console." ),
+				ToString(AsyncProperties)
+			);
+
+			FStaticMeshCompilingManager::Get().FinishCompilation({ const_cast<UStaticMesh*>(this) });
+		}
+		else
+		{
+			// Trying to access a property from another thread that cannot force finish the compilation is invalid
+			ensureMsgf(
+				false,
+				TEXT("Accessing property %s of the StaticMesh while it is still being built asynchronously is only supported on the game-thread. "
+					 "To avoid any race-condition, consider finishing the compilation before pushing tasks to other threads or making higher-level game-thread code async aware so it "
+					 "schedules the task only when the static mesh's compilation is finished. If this is a blocker, you can disable async static mesh from the editor experimental settings."),
+				ToString(AsyncProperties)
+			);
+		}
+	}
+}
+
+#endif // WITH_EDITOR
+
+bool UStaticMesh::IsNavigationRelevant() const 
+{
+	return bHasNavigationData;
+}
+
 FStaticMeshRenderData* UStaticMesh::GetRenderData()
 {
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::RenderData);
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return RenderData.Get();
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -2810,6 +3136,8 @@ FStaticMeshRenderData* UStaticMesh::GetRenderData()
 
 const FStaticMeshRenderData* UStaticMesh::GetRenderData() const
 {
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::RenderData);
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return RenderData.Get();
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -2817,29 +3145,10 @@ const FStaticMeshRenderData* UStaticMesh::GetRenderData() const
 
 void UStaticMesh::SetRenderData(TUniquePtr<class FStaticMeshRenderData>&& InRenderData)
 {
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::RenderData);
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	RenderData = MoveTemp(InRenderData);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-FStaticMeshOccluderData* UStaticMesh::GetOccluderData()
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return OccluderData.Get();
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-const FStaticMeshOccluderData* UStaticMesh::GetOccluderData() const
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return OccluderData.Get();
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-void UStaticMesh::SetOccluderData(TUniquePtr<class FStaticMeshOccluderData>&& InOccluderData)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	OccluderData = MoveTemp(InOccluderData);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
@@ -2870,7 +3179,7 @@ void UStaticMesh::InitResources()
 	{
 		{
 			const int32 NumLODs = GetNumLODs();
-			const int32 MinFirstLOD = GetMinLOD().GetValue();
+			const int32 MinFirstLOD = GetMinLODIdx();
 
 			CachedSRRState.NumNonStreamingLODs = GetRenderData()->NumInlinedLODs;
 			CachedSRRState.NumNonOptionalLODs = GetRenderData()->GetNumNonOptionalLODs();
@@ -2895,11 +3204,6 @@ void UStaticMesh::InitResources()
 		CachedSRRState.bHasPendingInitHint = true;
 	}
 
-	if (GetOccluderData())
-	{
-		INC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, GetOccluderData()->GetResourceSizeBytes() );
-	}
-
 #if (WITH_EDITOR && DO_CHECK)
 	if (GetRenderData() && CachedSRRState.bSupportsStreaming && !GetOutermost()->bIsCookedForEditor)
 	{
@@ -2916,11 +3220,12 @@ void UStaticMesh::InitResources()
 	LinkStreaming();
 
 #if	STATS
-	UStaticMesh* This = this;
+	// Compute size on the current thread to avoid the render thread causing a stall on accessing RenderData
+	// before it is released from async duty
+	const uint32 StaticMeshResourceSize = GetResourceSizeBytes(EResourceSizeMode::Exclusive);
 	ENQUEUE_RENDER_COMMAND(UpdateMemoryStats)(
-		[This](FRHICommandList& RHICmdList)
+		[StaticMeshResourceSize](FRHICommandList& RHICmdList)
 		{
-			const uint32 StaticMeshResourceSize = This->GetResourceSizeBytes( EResourceSizeMode::Exclusive );
 			INC_DWORD_STAT_BY( STAT_StaticMeshTotalMemory, StaticMeshResourceSize );
 			INC_DWORD_STAT_BY( STAT_StaticMeshTotalMemory2, StaticMeshResourceSize );
 		} );
@@ -2934,11 +3239,6 @@ void UStaticMesh::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 	if (GetRenderData())
 	{
 		GetRenderData()->GetResourceSizeEx(CumulativeResourceSize);
-	}
-
-	if (GetOccluderData())
-	{
-		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GetOccluderData()->GetResourceSizeBytes());
 	}
 }
 
@@ -2959,6 +3259,11 @@ void FStaticMeshRenderData::GetResourceSizeEx(FResourceSizeEx& CumulativeResourc
 		{
 			LODRenderData.DistanceFieldData->GetResourceSizeEx(CumulativeResourceSize);
 		}
+
+		if (LODRenderData.CardRepresentationData)
+		{
+			LODRenderData.CardRepresentationData->GetResourceSizeEx(CumulativeResourceSize);
+		}
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -2968,6 +3273,23 @@ void FStaticMeshRenderData::GetResourceSizeEx(FResourceSizeEx& CumulativeResourc
 		NextCachedRenderData->GetResourceSizeEx(CumulativeResourceSize);
 	}
 #endif // #if WITH_EDITORONLY_DATA
+
+	NaniteResources.GetResourceSizeEx(CumulativeResourceSize);
+}
+
+SIZE_T FStaticMeshRenderData::GetCPUAccessMemoryOverhead() const
+{
+	SIZE_T Result = 0;
+
+	for (int32 LODIndex = 0; LODIndex < LODResources.Num(); ++LODIndex)
+	{
+		Result += LODResources[LODIndex].GetCPUAccessMemoryOverhead();
+	}
+
+#if WITH_EDITORONLY_DATA
+	Result += NextCachedRenderData ? NextCachedRenderData->GetCPUAccessMemoryOverhead() : 0;
+#endif
+	return Result;
 }
 
 int32 UStaticMesh::GetNumVertices(int32 LODIndex) const
@@ -2975,9 +3297,57 @@ int32 UStaticMesh::GetNumVertices(int32 LODIndex) const
 	int32 NumVertices = 0;
 	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(LODIndex))
 	{
-		NumVertices = GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
+		NumVertices = GetRenderData()->LODResources[LODIndex].GetNumVertices();
 	}
 	return NumVertices;
+}
+
+int32 UStaticMesh::GetNumTriangles(int32 LODIndex) const
+{
+	int32 NumTriangles = 0;
+	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(LODIndex))
+	{
+		NumTriangles = GetRenderData()->LODResources[LODIndex].GetNumTriangles();
+	}
+	return NumTriangles;
+}
+
+int32 UStaticMesh::GetNumTexCoords(int32 LODIndex) const
+{
+	int32 NumTexCoords = 0;
+	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(LODIndex))
+	{
+		NumTexCoords = GetRenderData()->LODResources[LODIndex].GetNumTexCoords();
+	}
+	return NumTexCoords;
+}
+
+int32 UStaticMesh::GetNumNaniteVertices() const
+{
+	int32 NumVertices = 0;
+	if (HasValidNaniteData())
+	{
+		const Nanite::FResources& Resources = GetRenderData()->NaniteResources;
+		if (Resources.RootData.Num() > 0)
+		{
+			NumVertices = Resources.NumInputVertices;
+		}
+	}
+	return NumVertices;
+}
+
+int32 UStaticMesh::GetNumNaniteTriangles() const
+{
+	int32 NumTriangles = 0;
+	if (HasValidNaniteData())
+	{
+		const Nanite::FResources& Resources = GetRenderData()->NaniteResources;
+		if (Resources.RootData.Num() > 0)
+		{
+			NumTriangles = Resources.NumInputTriangles;
+		}
+	}
+	return NumTriangles;
 }
 
 int32 UStaticMesh::GetNumLODs() const
@@ -3000,10 +3370,11 @@ bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) con
 	{
 		if (bCheckLODForVerts)
 		{
-		    if (LODIndex == INDEX_NONE)
-		    {
-			    LODIndex = FMath::Clamp<int32>(GetMinLOD().GetValue(), 0, GetRenderData()->LODResources.Num() - 1);
-		    }
+			if (LODIndex == INDEX_NONE)
+			{
+				LODIndex = FMath::Clamp<int32>(GetMinLODIdx(), 0, GetRenderData()->LODResources.Num() - 1);
+			}
+
 			return (GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0);
 		}
 		else
@@ -3011,6 +3382,16 @@ bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) con
 			return true;
 		}
 	}
+	return false;
+}
+
+bool UStaticMesh::HasValidNaniteData() const
+{
+	if (const FStaticMeshRenderData* SMRenderData = GetRenderData())
+	{
+		return SMRenderData->NaniteResources.PageStreamingStates.Num() > 0;
+	}
+
 	return false;
 }
 
@@ -3116,9 +3497,18 @@ void UStaticMesh::UpdateUVChannelData(bool bRebuildAll)
 		{
 			SetLightmapUVDensity(GetUVDensity(GetRenderData()->LODResources, GetLightMapCoordinateIndex()));
 
+			// This can potentially be run from any thread during async static mesh compilation
 			if (GEngine)
 			{
-				GEngine->TriggerStreamingDataRebuild();
+				if (IsInGameThread())
+				{
+					GEngine->TriggerStreamingDataRebuild();
+				}
+				else
+				{
+					// GEngine could be null by the time the task gets executed on the task graph.
+					Async(EAsyncExecution::TaskGraphMainThread, []() { if (GEngine) { GEngine->TriggerStreamingDataRebuild(); } });
+				}
 			}
 		}
 
@@ -3141,9 +3531,9 @@ static void AccumulateBounds(FBox& Bounds, const FStaticMeshLODResources& LODMod
 		const int32 Index1 = IndexBuffer[SectionInfo.FirstIndex + TriangleIndex * 3 + 1];
 		const int32 Index2 = IndexBuffer[SectionInfo.FirstIndex + TriangleIndex * 3 + 2];
 
-		FVector Pos1 = Transform.TransformPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index1));
-		FVector Pos2 = Transform.TransformPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index2));
-		FVector Pos0 = Transform.TransformPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index0));
+		FVector Pos1 = Transform.TransformPosition(FVector(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index1)));
+		FVector Pos2 = Transform.TransformPosition(FVector(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index2)));
+		FVector Pos0 = Transform.TransformPosition(FVector(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Index0)));
 
 		Bounds += Pos0;
 		Bounds += Pos1;
@@ -3202,15 +3592,10 @@ void UStaticMesh::ReleaseResources()
 	if (GetRenderData())
 	{
 		GetRenderData()->ReleaseResources();
-	}
 
-	if (GetOccluderData())
-	{
-		DEC_DWORD_STAT_BY( STAT_StaticMeshOccluderMemory, GetOccluderData()->GetResourceSizeBytes() );
+		// insert a fence to signal when these commands completed
+		ReleaseResourcesFence.BeginFence();
 	}
-	
-	// insert a fence to signal when these commands completed
-	ReleaseResourcesFence.BeginFence();
 
 	bRenderingResourcesInitialized = false;
 }
@@ -3226,10 +3611,30 @@ void UStaticMesh::PreEditChange(FProperty* PropertyAboutToChange)
 		return;
 	}
 
+	if (IsCompiling())
+	{
+		FStaticMeshCompilingManager::Get().FinishCompilation({ this });
+	}
+
 	Super::PreEditChange(PropertyAboutToChange);
 
 	// Release the static mesh's resources.
 	ReleaseResources();
+
+	// Invalidate the render data for any components using this static mesh. This is essentially the same work done by the
+	// FStaticMeshComponentRecreateRenderStateContext constructor, but we don't want to re-create the render state immediately.
+	TSet<FSceneInterface*> Scenes;
+	FObjectCacheContextScope ObjectCacheScope;
+	for (UStaticMeshComponent* Component : ObjectCacheScope.GetContext().GetStaticMeshComponents(this))
+	{
+		if (Component->IsRenderStateCreated())
+		{
+			Component->DestroyRenderState_Concurrent();
+			Scenes.Add(Component->GetScene());
+		}
+	}
+
+	UpdateAllPrimitiveSceneInfosForScenes(MoveTemp(Scenes));
 
 	// Flush the resource release commands to the rendering thread to ensure that the edit change doesn't occur while a resource is still
 	// allocated, and potentially accessing the UStaticMesh.
@@ -3302,12 +3707,6 @@ void UStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	//Don't use the render data here because the property that just changed might be invalidating the current RenderData.
 	EnforceLightmapRestrictions(/*bUseRenderData=*/false);
 
-	// Following an undo or other operation which can change the SourceModels, ensure the StaticMeshOwner is up to date
-	for (int32 Index = 0; Index < GetNumSourceModels(); ++Index)
-	{
-		GetSourceModel(Index).StaticMeshOwner = this;
-	}
-
 	Build(/*bSilent=*/ true);
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UStaticMesh, bHasNavigationData)
@@ -3346,12 +3745,6 @@ void UStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 
 void UStaticMesh::PostEditUndo()
 {
-	// Following an undo or other operation which can change the SourceModels, ensure the StaticMeshOwner is up to date
-	for (int32 Index = 0; Index < GetNumSourceModels(); ++Index)
-	{
-		GetSourceModel(Index).StaticMeshOwner = this;
-	}
-
 	// The super will cause a Build() via PostEditChangeProperty().
 	Super::PostEditUndo();
 }
@@ -3434,24 +3827,97 @@ void UStaticMesh::BroadcastNavCollisionChange()
 	}
 }
 
+FMeshSectionInfoMap& UStaticMesh::GetSectionInfoMap()
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SectionInfoMap);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SectionInfoMap; 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FMeshSectionInfoMap& UStaticMesh::GetSectionInfoMap() const
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SectionInfoMap);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SectionInfoMap; 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+FMeshSectionInfoMap& UStaticMesh::GetOriginalSectionInfoMap()
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::OriginalSectionInfoMap);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return OriginalSectionInfoMap; 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FMeshSectionInfoMap& UStaticMesh::GetOriginalSectionInfoMap() const
+{ 
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::OriginalSectionInfoMap);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return OriginalSectionInfoMap; 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+int32 UStaticMesh::GetNumSourceModels() const
+{
+	return GetSourceModels().Num();
+}
+
+bool UStaticMesh::IsSourceModelValid(int32 Index) const
+{
+	return GetSourceModels().IsValidIndex(Index);
+}
+
+const TArray<FStaticMeshSourceModel>& UStaticMesh::GetSourceModels() const
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SourceModels;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FStaticMeshSourceModel& UStaticMesh::GetSourceModel(int32 Index) const
+{
+	return GetSourceModels()[Index];
+}
+
+FStaticMeshSourceModel& UStaticMesh::GetSourceModel(int32 Index)
+{ 
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return SourceModels[Index];
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 FStaticMeshSourceModel& UStaticMesh::AddSourceModel()
 {
-	int32 LodModelIndex = GetSourceModels().AddDefaulted();
-	FStaticMeshSourceModel& NewSourceModel = GetSourceModel(LodModelIndex);
-	NewSourceModel.StaticMeshOwner = this;
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	int32 LodModelIndex = SourceModels.AddDefaulted();
+	FStaticMeshSourceModel& NewSourceModel = SourceModels[LodModelIndex];
+	NewSourceModel.CreateSubObjects(this);
 	return NewSourceModel;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UStaticMesh::SetNumSourceModels(const int32 Num)
 {
-	const int32 OldNum = GetNumSourceModels();
-	GetSourceModels().SetNum(Num);
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const int32 OldNum = SourceModels.Num();
 
 	//Shrink the SectionInfoMap if some SourceModel are removed
 	if (OldNum > Num)
 	{
 		for (int32 RemoveLODIndex = Num; RemoveLODIndex < OldNum; ++RemoveLODIndex)
 		{
+			// Remove MeshDescription allocations
+			FStaticMeshSourceModel& ThisSourceModel = SourceModels[RemoveLODIndex];
+			ThisSourceModel.ClearMeshDescription();
+			check(ThisSourceModel.GetMeshDescriptionBulkData());
+			ThisSourceModel.GetMeshDescriptionBulkData()->Empty();
+
 			int32 SectionCount = GetSectionInfoMap().GetSectionNumber(RemoveLODIndex);
 			for (int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
 			{
@@ -3465,16 +3931,18 @@ void UStaticMesh::SetNumSourceModels(const int32 Num)
 		}
 	}
 
+	SourceModels.SetNum(Num);
+
 	for (int32 Index = OldNum; Index < Num; ++Index)
 	{
-		FStaticMeshSourceModel& ThisSourceModel = GetSourceModel(Index);
+		FStaticMeshSourceModel& ThisSourceModel = SourceModels[Index];
 
-		ThisSourceModel.StaticMeshOwner = this;
+		ThisSourceModel.CreateSubObjects(this);
 		int32 PreviousCustomLODIndex = 0;
 		//Find the previous custom LOD
 		for (int32 ReverseIndex = Index - 1; ReverseIndex > 0; ReverseIndex--)
 		{
-			const FStaticMeshSourceModel& StaticMeshModel = GetSourceModel(ReverseIndex);
+			const FStaticMeshSourceModel& StaticMeshModel = SourceModels[ReverseIndex];
 			//If the custom import LOD is reduce and is not using himself as the source, do not consider it
 			if (IsMeshDescriptionValid(ReverseIndex) && !(IsReductionActive(ReverseIndex) && StaticMeshModel.ReductionSettings.BaseLODModel != ReverseIndex))
 			{
@@ -3489,11 +3957,20 @@ void UStaticMesh::SetNumSourceModels(const int32 Num)
 			ThisSourceModel.ReductionSettings.PercentTriangles = FMath::Pow(0.5f, (float)(Index-PreviousCustomLODIndex));
 		}
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UStaticMesh::RemoveSourceModel(const int32 Index)
 {
-	check(IsSourceModelValid(Index));
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	check(SourceModels.IsValidIndex(Index));
+
+	// Remove MeshDescription allocations
+	FStaticMeshSourceModel& ThisSourceModel = SourceModels[Index];
+	ThisSourceModel.ClearMeshDescription();
+	check(ThisSourceModel.GetMeshDescriptionBulkData());
+	ThisSourceModel.GetMeshDescriptionBulkData()->Empty();
 
 	//Remove the SectionInfoMap of the LOD we remove
 	{
@@ -3510,9 +3987,9 @@ void UStaticMesh::RemoveSourceModel(const int32 Index)
 	}
 
 	//Move down all SectionInfoMap for the next LOD
-	if (Index < GetNumSourceModels() - 1)
+	if (Index < SourceModels.Num() - 1)
 	{
-		for (int32 MoveIndex = Index + 1; MoveIndex < GetNumSourceModels(); ++MoveIndex)
+		for (int32 MoveIndex = Index + 1; MoveIndex < SourceModels.Num(); ++MoveIndex)
 		{
 			int32 SectionCount = GetSectionInfoMap().GetSectionNumber(MoveIndex);
 			for (int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
@@ -3532,83 +4009,85 @@ void UStaticMesh::RemoveSourceModel(const int32 Index)
 	}
 
 	//Remove the LOD
-	GetSourceModels().RemoveAt(Index);
+	SourceModels.RemoveAt(Index);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
-bool UStaticMesh::FixLODRequiresAdjacencyInformation(const int32 LODIndex, const bool bPreviewMode, bool bPromptUser, bool* OutUserCancel)
+TArray<FStaticMeshSourceModel>&& UStaticMesh::MoveSourceModels()
 {
-	if (OutUserCancel != nullptr)
-	{
-		*OutUserCancel = false;
-	}
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return MoveTemp(SourceModels);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
-	bool bIsUnattended = FApp::IsUnattended() == true || GIsRunningUnattendedScript || GIsAutomationTesting;
-	//Cannot prompt user in unattended mode
-	if (!IsSourceModelValid(LODIndex) || (bIsUnattended && bPromptUser))
-	{
-		return false;
-	}
-	FStaticMeshSourceModel& SourceModel = GetSourceModel(LODIndex);
-	const FMeshDescription* MeshDescription = GetMeshDescription(LODIndex);
+void UStaticMesh::SetSourceModels(TArray<FStaticMeshSourceModel>&& InSourceModels)
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::SourceModels);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SourceModels = MoveTemp(InSourceModels);
 
-	//In preview mode we simulate a false BuildAdjacencyBuffer
-	if (MeshDescription && (!(SourceModel.BuildSettings.bBuildAdjacencyBuffer) || bPreviewMode))
+	for (FStaticMeshSourceModel& SourceModel : SourceModels)
 	{
-		FStaticMeshConstAttributes StaticMeshAttributes(*MeshDescription);
-
-		TPolygonGroupAttributesConstRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
-		int32 SectionIndex = 0;
-		
-		for (const FPolygonGroupID PolygonGroupID : MeshDescription->PolygonGroups().GetElementIDs())
+		SourceModel.StaticMeshOwner = this;
+		if (SourceModel.StaticMeshDescriptionBulkData)
 		{
-			const FName MaterialImportedName = PolygonGroupImportedMaterialSlotNames[PolygonGroupID];
-			int32 MaterialIndex = 0;
-			for (FStaticMaterial& Material : GetStaticMaterials())
-			{
-				if (Material.ImportedMaterialSlotName != NAME_None && Material.ImportedMaterialSlotName == MaterialImportedName)
-				{
-					FStaticMaterial *RemapMaterial = &Material;
-					FMeshSectionInfo SectionInfo = GetSectionInfoMap().Get(LODIndex, SectionIndex);
-					if (GetStaticMaterials().IsValidIndex(SectionInfo.MaterialIndex))
-					{
-						RemapMaterial = &GetStaticMaterials()[SectionInfo.MaterialIndex];
-					}
-					const bool bRequiresAdjacencyInformation = RequiresAdjacencyInformation(RemapMaterial->MaterialInterface, nullptr, GWorld->FeatureLevel);
-					if (bRequiresAdjacencyInformation)
-					{
-						if (bPromptUser)
-						{
-							FText ConfirmRequiredAdjacencyText = FText::Format(LOCTEXT("ConfirmRequiredAdjacency", "Using a tessellation material required the adjacency buffer to be computed.\nDo you want to set the adjacency options to true?\n\n\tSaticMesh: {0}\n\tLOD Index: {1}\n\tMaterial: {2}"), FText::FromString(GetPathName()), LODIndex, FText::FromString(RemapMaterial->MaterialInterface->GetPathName()));
-							EAppReturnType::Type Result = FMessageDialog::Open((OutUserCancel != nullptr) ? EAppMsgType::YesNoCancel : EAppMsgType::YesNo, ConfirmRequiredAdjacencyText);
-							switch(Result)
-							{
-								//Handle cancel and negative answer
-								case EAppReturnType::Cancel:
-								{
-									check(OutUserCancel != nullptr);
-									*OutUserCancel = true;
-									return false;
-								}
-								case EAppReturnType::No:
-								{
-									return false;
-								}
-							}
-						}
-						if (!bPreviewMode)
-						{
-							UE_LOG(LogStaticMesh, Warning, TEXT("Adjacency information not built for static mesh with a material that requires it. Forcing build setting to use adjacency.\n\tLOD Index: %d\n\tMaterial: %s\n\tStaticMesh: %s"), LODIndex, *RemapMaterial->MaterialInterface->GetPathName(), *GetPathName());
-							SourceModel.BuildSettings.bBuildAdjacencyBuffer = true;
-						}
-						return true;
-					}
-				}
-				MaterialIndex++;
-			}
-			SectionIndex++;
+			SourceModel.StaticMeshDescriptionBulkData->Rename(nullptr, this, REN_DontCreateRedirectors | REN_NonTransactional);
 		}
 	}
-	return false;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+
+const FStaticMeshSourceModel& UStaticMesh::GetHiResSourceModel() const
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::HiResSourceModel);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return HiResSourceModel;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+FStaticMeshSourceModel& UStaticMesh::GetHiResSourceModel()
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::HiResSourceModel);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return HiResSourceModel;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+FStaticMeshSourceModel&& UStaticMesh::MoveHiResSourceModel()
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::HiResSourceModel);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return MoveTemp(HiResSourceModel);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void UStaticMesh::SetHiResSourceModel(FStaticMeshSourceModel&& InSourceModel)
+{
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::HiResSourceModel);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	HiResSourceModel = MoveTemp(InSourceModel);
+	HiResSourceModel.StaticMeshOwner = this;
+	if (HiResSourceModel.StaticMeshDescriptionBulkData)
+	{
+		HiResSourceModel.StaticMeshDescriptionBulkData->Rename(nullptr, this, REN_DontCreateRedirectors | REN_NonTransactional);
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+bool UStaticMesh::TryCancelAsyncTasks()
+{
+	if (AsyncTask)
+	{
+		if (AsyncTask->IsDone() || AsyncTask->Cancel())
+		{
+			AsyncTask.Reset();
+			ReleaseAsyncProperty();
+		}
+	}
+
+	return AsyncTask == nullptr;
 }
 
 #endif // WITH_EDITOR
@@ -3625,6 +4104,27 @@ void UStaticMesh::BeginDestroy()
 
 bool UStaticMesh::IsReadyForFinishDestroy()
 {
+#if WITH_EDITOR
+	// We're being garbage collected and might still have async tasks pending
+	if (!TryCancelAsyncTasks())
+	{
+		return false;
+	}
+
+	if (GetRenderData())
+	{
+		if (GDistanceFieldAsyncQueue)
+		{
+			GDistanceFieldAsyncQueue->CancelBuild(this);
+		}
+
+		if (GCardRepresentationAsyncQueue)
+		{
+			GCardRepresentationAsyncQueue->CancelBuild(this);
+		}
+	}
+#endif
+
 	// Tick base class to make progress on the streaming before calling HasPendingInitOrStreaming().
 	if (!Super::IsReadyForFinishDestroy())
 	{
@@ -3670,6 +4170,22 @@ int32 UStaticMesh::GetNumSectionsWithCollision() const
 
 void UStaticMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 {
+#if WITH_EDITORONLY_DATA
+	OutTags.Add(FAssetRegistryTag("NaniteEnabled", NaniteSettings.bEnabled ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag("NaniteFallbackPercent", FString::Printf(TEXT("%.1f"), NaniteSettings.FallbackPercentTriangles * 100.0f), FAssetRegistryTag::TT_Numerical));
+
+	if (AssetImportData)
+	{
+		OutTags.Add(FAssetRegistryTag(SourceFileTagName(), AssetImportData->GetSourceData().ToJson(), FAssetRegistryTag::TT_Hidden));
+	}
+#endif
+
+	// Avoid accessing properties being compiled, this function will get called again after compilation is finished.
+	if (IsCompiling())
+	{
+		return;
+	}
+
 	int32 NumTriangles = 0;
 	int32 NumVertices = 0;
 	int32 NumUVChannels = 0;
@@ -3712,6 +4228,31 @@ void UStaticMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 		ComplexityString = LexToString((ECollisionTraceFlag)GetBodySetup()->GetCollisionTraceFlag());
 	}
 
+	int32 NumNaniteTriangles = GetNumNaniteTriangles();
+	int32 NumNaniteVertices = GetNumNaniteVertices();
+
+	int32 DistanceFieldSize = 0;
+
+	if (GetRenderData() && GetRenderData()->LODResources.Num() > 0 && GetRenderData()->LODResources[0].DistanceFieldData != nullptr)
+	{
+		const FDistanceFieldVolumeData& VolumeData = *(GetRenderData()->LODResources[0].DistanceFieldData);
+
+		DistanceFieldSize += VolumeData.GetResourceSizeBytes();
+		DistanceFieldSize += VolumeData.StreamableMips.GetBulkDataSize();
+	}
+
+	uint64 EstimatedCompressedSize = 0;
+	uint64 EstimatedNaniteCompressedSize = 0;
+#if WITH_EDITORONLY_DATA
+	if (GetRenderData())
+	{
+		EstimatedCompressedSize = (int32)GetRenderData()->EstimatedCompressedSize;
+		EstimatedNaniteCompressedSize =  (int32)GetRenderData()->EstimatedNaniteTotalCompressedSize;
+	}
+#endif
+
+	OutTags.Add(FAssetRegistryTag("NaniteTriangles", FString::FromInt(NumNaniteTriangles), FAssetRegistryTag::TT_Numerical));
+	OutTags.Add(FAssetRegistryTag("NaniteVertices", FString::FromInt(NumNaniteVertices), FAssetRegistryTag::TT_Numerical));
 	OutTags.Add(FAssetRegistryTag("Triangles", FString::FromInt(NumTriangles), FAssetRegistryTag::TT_Numerical) );
 	OutTags.Add(FAssetRegistryTag("Vertices", FString::FromInt(NumVertices), FAssetRegistryTag::TT_Numerical) );
 	OutTags.Add(FAssetRegistryTag("UVChannels", FString::FromInt(NumUVChannels), FAssetRegistryTag::TT_Numerical) );
@@ -3723,13 +4264,9 @@ void UStaticMesh::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	OutTags.Add(FAssetRegistryTag("SectionsWithCollision", FString::FromInt(NumSectionsWithCollision), FAssetRegistryTag::TT_Numerical));
 	OutTags.Add(FAssetRegistryTag("DefaultCollision", DefaultCollisionName.ToString(), FAssetRegistryTag::TT_Alphabetical));
 	OutTags.Add(FAssetRegistryTag("CollisionComplexity", ComplexityString, FAssetRegistryTag::TT_Alphabetical));
-
-#if WITH_EDITORONLY_DATA
-	if (AssetImportData)
-	{
-		OutTags.Add( FAssetRegistryTag(SourceFileTagName(), AssetImportData->GetSourceData().ToJson(), FAssetRegistryTag::TT_Hidden) );
-	}
-#endif
+	OutTags.Add(FAssetRegistryTag("DistanceFieldSize", FString::FromInt(DistanceFieldSize), FAssetRegistryTag::TT_Numerical, FAssetRegistryTag::TD_Memory));
+	OutTags.Add(FAssetRegistryTag("EstTotalCompressedSize", FString::Printf(TEXT("%llu"), EstimatedCompressedSize), FAssetRegistryTag::TT_Numerical, FAssetRegistryTag::TD_Memory));
+	OutTags.Add(FAssetRegistryTag("EstNaniteCompressedSize", FString::Printf(TEXT("%llu"), EstimatedNaniteCompressedSize), FAssetRegistryTag::TT_Numerical, FAssetRegistryTag::TD_Memory));
 
 	Super::GetAssetRegistryTags(OutTags);
 }
@@ -3752,187 +4289,6 @@ void UStaticMesh::GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMetad
 	FStaticMeshSourceModel
 ------------------------------------------------------------------------------*/
 
-FStaticMeshSourceModel::FStaticMeshSourceModel()
-{
-	LODDistance_DEPRECATED = 0.0f;
-#if WITH_EDITOR
-	RawMeshBulkData = new FRawMeshBulkData();
-	ScreenSize.Default = 0.0f;
-	StaticMeshOwner = nullptr;
-#endif // #if WITH_EDITOR
-	SourceImportFilename = FString();
-#if WITH_EDITORONLY_DATA
-	bImportWithBaseMesh = false;
-#endif
-}
-
-FStaticMeshSourceModel::~FStaticMeshSourceModel()
-{
-#if WITH_EDITOR
-	if (RawMeshBulkData)
-	{
-		delete RawMeshBulkData;
-	}
-#endif // #if WITH_EDITOR
-}
-
-#if WITH_EDITOR
-bool FStaticMeshSourceModel::IsRawMeshEmpty() const
-{
-	// Even if the RawMeshBulkData is empty, it may be because it's a new asset serialized as MeshDescription.
-	// Hence MeshDescriptionBulkData must also be invalid (and, by consequence, also MeshDescription).
-	return RawMeshBulkData->IsEmpty() && !MeshDescriptionBulkData.IsValid() && !MeshDescription.IsValid();
-}
-
-void FStaticMeshSourceModel::LoadRawMesh(FRawMesh& OutRawMesh) const
-{
-	if (RawMeshBulkData->IsEmpty())
-	{
-		// If the RawMesh is empty, consider the possibility that it's a new asset with a valid MeshDescription which needs loading.
-		// We require the FStaticMeshSourceModel to be in the UStaticMesh::SourceModels array, so that we can infer which LOD it
-		// corresponds to. This would normally be unreasonably limiting, but since these methods are deprecated, we'll go with it.
-		check(StaticMeshOwner != nullptr);
-		const int32 LODIndex = this - &StaticMeshOwner->GetSourceModel(0);
-		check(LODIndex < StaticMeshOwner->GetNumSourceModels());
-		if (FMeshDescription* CachedMeshDescription = StaticMeshOwner->GetMeshDescription(LODIndex))
-		{
-			TMap<FName, int32> MaterialMap;
-			check(StaticMeshOwner != nullptr);
-			const UStaticMesh* ConstStaticMeshOwner = StaticMeshOwner;
-			for (int32 MaterialIndex = 0; MaterialIndex < ConstStaticMeshOwner->GetStaticMaterials().Num(); ++MaterialIndex)
-			{
-				MaterialMap.Add(ConstStaticMeshOwner->GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName, MaterialIndex);
-			}
-			FStaticMeshOperations::ConvertToRawMesh(*MeshDescription, OutRawMesh, MaterialMap);
-		}
-	}
-	else
-	{
-		RawMeshBulkData->LoadRawMesh(OutRawMesh);
-	}
-}
-
-void FStaticMeshSourceModel::SaveRawMesh(FRawMesh& InRawMesh, bool /* unused */)
-{
-	if (!InRawMesh.IsValid())
-	{
-		return;
-	}
-
-	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshSourceModel::SaveRawMesh);
-
-	//Save both format
-	RawMeshBulkData->SaveRawMesh(InRawMesh);
-
-	CreateMeshDescription();
-
-	TMap<int32, FName> MaterialMap;
-	check(StaticMeshOwner != nullptr);
-	const UStaticMesh* ConstStaticMeshOwner = StaticMeshOwner;
-	FillMaterialName(ConstStaticMeshOwner->GetStaticMaterials(), MaterialMap);
-	FStaticMeshOperations::ConvertFromRawMesh(InRawMesh, *MeshDescription, MaterialMap);
-	
-	// Package up mesh description into bulk data
-	if (!MeshDescriptionBulkData.IsValid())
-	{
-		MeshDescriptionBulkData = MakeUnique<FMeshDescriptionBulkData>();
-	}
-
-	MeshDescriptionBulkData->SaveMeshDescription(*MeshDescription);
-}
-
-FMeshDescription* FStaticMeshSourceModel::CreateMeshDescription()
-{
-	if (!MeshDescription.IsValid())
-	{
-		// If this is the first time a MeshDescription is being created, create it and register its attributes
-		MeshDescription = MakeUnique<FMeshDescription>();
-	}
-	else
-	{
-		// Otherwise, empty it completely
-		*MeshDescription = FMeshDescription();
-	}
-
-	// Register static mesh attributes on it
-	FStaticMeshAttributes StaticMeshAttributes(*MeshDescription);
-	StaticMeshAttributes.Register();
-
-	return MeshDescription.Get();
-}
-
-void FStaticMeshSourceModel::SerializeBulkData(FArchive& Ar, UObject* Owner)
-{
-	const bool bIsLoadingLegacyArchive = Ar.IsLoading() && Ar.CustomVer(FEditorObjectVersion::GUID) < FEditorObjectVersion::StaticMeshDeprecatedRawMesh;
-
-	// Serialize RawMesh when loading legacy archives
-	if (bIsLoadingLegacyArchive)
-	{
-		check(RawMeshBulkData != NULL);
-		RawMeshBulkData->Serialize(Ar, Owner);
-	}
-
-	// Initialize the StaticMeshOwner
-	if (Ar.IsLoading())
-	{
-		StaticMeshOwner = Cast<UStaticMesh>(Owner);
-	}
-
-	// Always serialize the MeshDescription bulk data when transacting (so undo/redo works correctly).
-	// Now RawMesh is deprecated, always serialize unless we're loading an old archive.
-	if (Ar.IsTransacting() || !bIsLoadingLegacyArchive)
-	{
-		if (Ar.IsSaving() && !MeshDescriptionBulkData.IsValid() && !RawMeshBulkData->IsEmpty())
-		{
-			// If saving a legacy asset which hasn't yet been committed as MeshDescription, perform the conversion now
-			// so it can be loaded successfully as MeshDescription next time.
-			// Note: even if there's a more recent cached MeshDescription, if it hasn't been committed, it will not be saved.
-			FRawMesh RawMesh;
-			LoadRawMesh(RawMesh);
-			SaveRawMesh(RawMesh);
-		}
-
-		bool bIsValid = MeshDescriptionBulkData.IsValid();
-		Ar << bIsValid;
-
-		if (bIsValid)
-		{
-			if (Ar.IsLoading())
-			{
-				MeshDescriptionBulkData = MakeUnique<FMeshDescriptionBulkData>();
-			}
-
-			MeshDescriptionBulkData->Serialize(Ar, Owner);
-
-			// As we are loading a new mesh description bulkdata, if there's a cached existing unpacked MeshDescription,
-			// unpack the new one
-			if (Ar.IsLoading() && MeshDescription.IsValid())
-			{
-				CreateMeshDescription();
-				MeshDescriptionBulkData->LoadMeshDescription(*MeshDescription);
-			}
-		}
-
-		// For transactions only, serialize the unpacked mesh description here too.
-		// This is so we can preserve any transient attributes which have been set on it when undoing.
-		if (Ar.IsTransacting())
-		{
-			bool bIsMeshDescriptionValid = MeshDescription.IsValid();
-			Ar << bIsMeshDescriptionValid;
-
-			if (bIsMeshDescriptionValid)
-			{
-				if (Ar.IsLoading())
-				{
-					CreateMeshDescription();
-				}
-
-				Ar << (*MeshDescription);
-			}
-		}
-	}
-}
-#endif // #if WITH_EDITOR
 
 /*------------------------------------------------------------------------------
 	FMeshSectionInfoMap
@@ -4064,7 +4420,7 @@ void UStaticMesh::RegisterMeshAttributes(FMeshDescription& MeshDescription)
 
 
 #if WITH_EDITOR
-static FStaticMeshRenderData& GetPlatformStaticMeshRenderData(UStaticMesh* Mesh, const ITargetPlatform* Platform)
+FStaticMeshRenderData& UStaticMesh::GetPlatformStaticMeshRenderData(UStaticMesh* Mesh, const ITargetPlatform* Platform)
 {
 	check(Mesh && Mesh->GetRenderData());
 	const FStaticMeshLODSettings& PlatformLODSettings = Platform->GetStaticMeshLODSettings();
@@ -4096,76 +4452,56 @@ static FStaticMeshRenderData& GetPlatformStaticMeshRenderData(UStaticMesh* Mesh,
 	return *PlatformRenderData;
 }
 
+void UStaticMesh::WillNeverCacheCookedPlatformDataAgain()
+{
+}
+
+void UStaticMesh::ClearCachedCookedPlatformData(const ITargetPlatform* TargetPlatform)
+{
+	FStaticMeshRenderData& PlatformRenderData = GetPlatformStaticMeshRenderData(this, TargetPlatform);
+	PlatformRenderData.NaniteResources.DropBulkData();
+}
+
+void UStaticMesh::ClearAllCachedCookedPlatformData()
+{
+	for (ITargetPlatform* TargetPlatform : GetTargetPlatformManagerRef().GetActiveTargetPlatforms())
+	{
+		ClearCachedCookedPlatformData(TargetPlatform);
+	}
+
+	GetRenderData()->NextCachedRenderData.Reset();
+}
+
+void UStaticMesh::BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform)
+{
+	FStaticMeshRenderData& PlatformRenderData = GetPlatformStaticMeshRenderData(this, TargetPlatform);
+	PlatformRenderData.NaniteResources.RebuildBulkDataFromDDC(this);
+}
+
+bool UStaticMesh::IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform)
+{
+	if (IsCompiling())
+	{
+		return false;
+	}
+	
+	GetPlatformStaticMeshRenderData(this, TargetPlatform);
+	return true;
+}
 
 #if WITH_EDITORONLY_DATA
 
 bool UStaticMesh::LoadMeshDescription(int32 LodIndex, FMeshDescription& OutMeshDescription) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::LoadMeshDescription);
-
-	// Ensure MeshDescription is empty, with no attributes registered
-	OutMeshDescription = FMeshDescription();
+	if (!IsSourceModelValid(LodIndex))
+	{
+		return false;
+	}
 
 	const FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-
-	// If we don't have a valid MeshDescription, try and get one...
-	if (SourceModel.MeshDescriptionBulkData.IsValid())
-	{
-		// Unpack MeshDescription from the bulk data which was deserialized
-		SourceModel.MeshDescriptionBulkData->LoadMeshDescription(OutMeshDescription);
-		return true;
-	}
-	
-	// If BulkData isn't valid, this means either:
-	// a) This LOD doesn't have a MeshDescription (because it's been generated), or;
-	// b) This is a legacy asset which still uses RawMesh, in which case we'll look in the DDC for it.
-	FString MeshDataKey;
-	if (GetMeshDataKey(LodIndex, MeshDataKey))
-	{
-		COOK_STAT(auto Timer = StaticMeshCookStats::UsageStats.TimeSyncWork());
-		TArray<uint8> DerivedData;
-		if (GetDerivedDataCacheRef().GetSynchronous(*MeshDataKey, DerivedData, GetPathName()))
-		{
-			COOK_STAT(Timer.AddHit(DerivedData.Num()));
-			// If there was valid DDC data, we assume this is because the asset is an old one with valid RawMeshBulkData
-			check(!SourceModel.RawMeshBulkData->IsEmpty());
-
-			// Load from the DDC
-			const bool bIsPersistent = true;
-			FMemoryReader Ar(DerivedData, bIsPersistent);
-
-			// Create a bulk data object which will be immediately thrown away (as it is not in an archive)
-			FMeshDescriptionBulkData MeshDescriptionBulkData;
-			MeshDescriptionBulkData.Serialize(Ar, const_cast<UStaticMesh*>(this));
-
-			// Unpack MeshDescription from the bulk data
-			MeshDescriptionBulkData.LoadMeshDescription(OutMeshDescription);
-			return true;
-		}
-		else
-		{
-			COOK_STAT(Timer.TrackCyclesOnly());
-		}
-	}
-
-	// If after all this we *still* don't have a valid MeshDescription, but there's a valid RawMesh, convert that to a MeshDescription.
-	if (!SourceModel.RawMeshBulkData->IsEmpty())
-	{
-		FRawMesh LodRawMesh;
-		SourceModel.LoadRawMesh(LodRawMesh);
-		TMap<int32, FName> MaterialMap;
-		FillMaterialName(GetStaticMaterials(), MaterialMap);
-
-		// Register static mesh attributes on the mesh description
-		FStaticMeshAttributes StaticMeshAttributes(OutMeshDescription);
-		StaticMeshAttributes.Register();
-
-		FStaticMeshOperations::ConvertFromRawMesh(LodRawMesh, OutMeshDescription, MaterialMap);
-		return true;
-	}
-
-	return false;
+	return SourceModel.LoadMeshDescription(OutMeshDescription);
 }
+
 
 bool UStaticMesh::CloneMeshDescription(int32 LodIndex, FMeshDescription& OutMeshDescription) const
 {
@@ -4174,18 +4510,10 @@ bool UStaticMesh::CloneMeshDescription(int32 LodIndex, FMeshDescription& OutMesh
 		return false;
 	}
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::CloneMeshDescription);
-	
 	const FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-
-	if (SourceModel.MeshDescription.IsValid())
-	{
-		OutMeshDescription = *SourceModel.MeshDescription.Get();
-		return true;
-	}
-
-	return LoadMeshDescription(LodIndex, OutMeshDescription);
+	return SourceModel.CloneMeshDescription(OutMeshDescription);
 }
+
 
 FMeshDescription* UStaticMesh::GetMeshDescription(int32 LodIndex) const
 {
@@ -4194,24 +4522,12 @@ FMeshDescription* UStaticMesh::GetMeshDescription(int32 LodIndex) const
 		return nullptr;
 	}
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::GetMeshDescription);
-
 	// Require a const_cast here, because GetMeshDescription should ostensibly have const semantics,
 	// but the lazy initialization (from the BulkData or the DDC) is a one-off event which breaks constness.
 	UStaticMesh* MutableThis = const_cast<UStaticMesh*>(this);
-
 	FStaticMeshSourceModel& SourceModel = MutableThis->GetSourceModel(LodIndex);
 
-	if (!SourceModel.MeshDescription.IsValid())
-	{
-		FMeshDescription MeshDescription;
-		if (LoadMeshDescription(LodIndex, MeshDescription))
-		{
-			SourceModel.MeshDescription = MakeUnique<FMeshDescription>(MoveTemp(MeshDescription));
-		}
-	}
-
-	return SourceModel.MeshDescription.Get();
+	return SourceModel.GetOrCacheMeshDescription();
 }
 
 
@@ -4223,13 +4539,7 @@ bool UStaticMesh::IsMeshDescriptionValid(int32 LodIndex) const
 	}
 
 	const FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-
-	// Determine whether a mesh description is valid without requiring it to be loaded first.
-	// If there is a valid MeshDescriptionBulkData, we know this implies a valid mesh description.
-	// If not, then it's a legacy asset which will have a mesh description built from the RawMeshBulkData, if non-empty.
-	return SourceModel.MeshDescription.IsValid() ||
-		   SourceModel.MeshDescriptionBulkData.IsValid() ||
-		   !SourceModel.RawMeshBulkData->IsEmpty();
+	return SourceModel.IsMeshDescriptionValid();
 }
 
 
@@ -4258,37 +4568,17 @@ FMeshDescription* UStaticMesh::CreateMeshDescription(int32 LodIndex, FMeshDescri
 
 void UStaticMesh::CommitMeshDescription(int32 LodIndex, const FCommitMeshDescriptionParams& Params)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::CommitMeshDescription);
-
-	// This part should remain thread-safe so it can be called from any thread
-	// as long as no more than one thread is calling it for the same UStaticMesh.
-
 	// The source model must be created before calling this function
 	check(IsSourceModelValid(LodIndex));
 
 	FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-	if (SourceModel.MeshDescription.IsValid())
-	{
-		// Package up mesh description into bulk data
-		if (!SourceModel.MeshDescriptionBulkData.IsValid())
-		{
-			SourceModel.MeshDescriptionBulkData = MakeUnique<FMeshDescriptionBulkData>();
-		}
+	SourceModel.CommitMeshDescription(Params.bUseHashAsGuid);
 
-		SourceModel.MeshDescriptionBulkData->SaveMeshDescription(*SourceModel.MeshDescription);
-		if (Params.bUseHashAsGuid)
-		{
-			SourceModel.MeshDescriptionBulkData->UseHashAsGuid();
-		}
-	}
-	else
+	// For LOD0, cache the bounds of the mesh description in the static mesh for quick access
+	if (LodIndex == 0 && SourceModel.GetCachedMeshDescription())
 	{
-		SourceModel.MeshDescriptionBulkData.Reset();
+		CachedMeshDescriptionBounds = SourceModel.GetCachedMeshDescription()->GetBounds();
 	}
-
-	// Clear RawMeshBulkData and mark as invalid.
-	// If any legacy tool needs the RawMesh at this point, it will do a conversion from MD at that moment.
-	SourceModel.RawMeshBulkData->Empty();
 
 	// This part is not thread-safe, so we give the caller the option of calling it manually from the mainthread
 	if (Params.bMarkPackageDirty)
@@ -4304,7 +4594,7 @@ void UStaticMesh::ClearMeshDescription(int32 LodIndex)
 		TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::ClearMeshDescription);
 
 		FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-		SourceModel.MeshDescription.Reset();
+		SourceModel.ClearMeshDescription();
 	}
 }
 
@@ -4317,58 +4607,110 @@ void UStaticMesh::ClearMeshDescriptions()
 	}
 }
 
-// If static mesh derived data needs to be rebuilt (new format, serialization
-// differences, etc.) replace the version GUID below with a new one.
-// In case of merge conflicts with DDC versions, you MUST generate a new GUID
-// and set this new GUID as the version.                                       
-#define MESHDATAKEY_STATICMESH_DERIVEDDATA_VER TEXT("940C97E946F545F5834146D0D58828BF")
 
-
-static const FString& GetMeshDataKeyStaticMeshDerivedDataVersion()
+bool UStaticMesh::LoadHiResMeshDescription(FMeshDescription& OutMeshDescription) const
 {
-	static FString CachedVersionString(MESHDATAKEY_STATICMESH_DERIVEDDATA_VER);
-	return CachedVersionString;
-}
-
-bool UStaticMesh::GetMeshDataKey(int32 LodIndex, FString& OutKey) const
-{
-	OutKey.Empty();
-	if (LodIndex >= GetNumSourceModels())
-	{
-		return false;
-	}
-
-	FSHA1 Sha;
-	FString LodIndexString = FString::Printf(TEXT("%d_"), LodIndex);
-	const FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-	if(!SourceModel.RawMeshBulkData->IsEmpty())
-	{
-		LodIndexString += SourceModel.RawMeshBulkData->GetIdString();
-	}
-	else
-	{
-		LodIndexString += TEXT("REDUCELOD");
-	}
-	const TArray<TCHAR>& LodIndexArray = LodIndexString.GetCharArray();
-	Sha.Update((uint8*)LodIndexArray.GetData(), LodIndexArray.Num() * LodIndexArray.GetTypeSize());
-	Sha.Final();
-
-	// Retrieve the hash and use it to construct a pseudo-GUID.
-	uint32 Hash[5];
-	Sha.GetHash((uint8*)Hash);
-	FGuid Guid = FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
-	FString MeshLodData = Guid.ToString(EGuidFormats::Digits);
-
-	OutKey = FDerivedDataCacheInterface::BuildCacheKey(
-		TEXT("MESHDATAKEY_STATICMESH"),
-		*GetMeshDataKeyStaticMeshDerivedDataVersion(),
-		*MeshLodData
-	);
-	return true;
+	const FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	return SourceModel.LoadMeshDescription(OutMeshDescription);
 }
 
 
-void UStaticMesh::CacheMeshData()
+bool UStaticMesh::CloneHiResMeshDescription(FMeshDescription& OutMeshDescription) const
+{
+	const FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	return SourceModel.CloneMeshDescription(OutMeshDescription);
+}
+
+
+FMeshDescription* UStaticMesh::GetHiResMeshDescription() const
+{
+	// Require a const_cast here, because GetMeshDescription should ostensibly have const semantics,
+	// but the lazy initialization (from the BulkData or the DDC) is a one-off event which breaks constness.
+	UStaticMesh* MutableThis = const_cast<UStaticMesh*>(this);
+	FStaticMeshSourceModel& SourceModel = MutableThis->GetHiResSourceModel();
+
+	return SourceModel.GetOrCacheMeshDescription();
+}
+
+
+bool UStaticMesh::IsHiResMeshDescriptionValid() const
+{
+	const FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	return SourceModel.IsMeshDescriptionValid();
+}
+
+
+FMeshDescription* UStaticMesh::CreateHiResMeshDescription()
+{
+	FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	return SourceModel.CreateMeshDescription();
+}
+
+
+FMeshDescription* UStaticMesh::CreateHiResMeshDescription(FMeshDescription InMeshDescription)
+{
+	FMeshDescription* NewMeshDescription = CreateHiResMeshDescription();
+	if (NewMeshDescription != nullptr)
+	{
+		*NewMeshDescription = MoveTemp(InMeshDescription);
+	}
+
+	return NewMeshDescription;
+}
+
+
+void UStaticMesh::CommitHiResMeshDescription(const FCommitMeshDescriptionParams& Params)
+{
+	FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	SourceModel.CommitMeshDescription(Params.bUseHashAsGuid);
+
+	// This part is not thread-safe, so we give the caller the option of calling it manually from the mainthread
+	if (Params.bMarkPackageDirty)
+	{
+		MarkPackageDirty();
+	}
+}
+
+
+void UStaticMesh::ClearHiResMeshDescription()
+{
+	FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	SourceModel.ClearMeshDescription();
+}
+
+
+bool UStaticMesh::ModifyMeshDescription(int32 LodIndex, bool bAlwaysMarkDirty)
+{
+	FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
+	check(SourceModel.StaticMeshDescriptionBulkData != nullptr);
+	return SourceModel.StaticMeshDescriptionBulkData->Modify(bAlwaysMarkDirty);
+}
+
+
+bool UStaticMesh::ModifyAllMeshDescriptions(bool bAlwaysMarkDirty)
+{
+	bool bResult = true;
+	for (int LODIndex = 0; LODIndex < GetNumSourceModels(); LODIndex++)
+	{
+		if (!ModifyMeshDescription(LODIndex))
+		{
+			bResult = false;
+		}
+	}
+
+	return bResult;
+}
+
+
+bool UStaticMesh::ModifyHiResMeshDescription(bool bAlwaysMarkDirty)
+{
+	FStaticMeshSourceModel& SourceModel = GetHiResSourceModel();
+	check(SourceModel.StaticMeshDescriptionBulkData != nullptr);
+	return SourceModel.StaticMeshDescriptionBulkData->Modify(bAlwaysMarkDirty);
+}
+
+
+void UStaticMesh::ConvertLegacySourceData()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::CacheMeshData);
 
@@ -4376,51 +4718,10 @@ void UStaticMesh::CacheMeshData()
 	for (int32 LodIndex = 0; LodIndex < GetNumSourceModels(); ++LodIndex)
 	{
 		FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
-		if (!SourceModel.MeshDescriptionBulkData.IsValid())
-		{
-			// Legacy assets used to store their source data in the RawMeshBulkData
-			// Migrate it to the new description if present
-			if (!SourceModel.RawMeshBulkData->IsEmpty())
-			{
-				FString MeshDataKey;
-				if (GetMeshDataKey(LodIndex, MeshDataKey))
-				{
-					COOK_STAT(auto Timer = StaticMeshCookStats::UsageStats.TimeSyncWork());
-					// If the DDC key doesn't exist, convert the data and save it to DDC
-					if (GetDerivedDataCacheRef().CachedDataProbablyExists(*MeshDataKey))
-					{
-						COOK_STAT(Timer.TrackCyclesOnly());
-					}
-					else
-					{
-						// Get the RawMesh for this LOD
-						FRawMesh TempRawMesh;
-						SourceModel.RawMeshBulkData->LoadRawMesh(TempRawMesh);
 
-						// Create a new MeshDescription
-						FMeshDescription* MeshDescription = SourceModel.CreateMeshDescription();
-
-						// Convert the RawMesh to MeshDescription
-						TMap<int32, FName> MaterialMap;
-						FillMaterialName(GetStaticMaterials(), MaterialMap);
-						FStaticMeshOperations::ConvertFromRawMesh(TempRawMesh, *MeshDescription, MaterialMap);
-
-						// Pack MeshDescription into temporary bulk data, ready to write out to DDC.
-						// This will be reloaded from the DDC when needed if a MeshDescription is requested from the static mesh.
-						FMeshDescriptionBulkData MeshDescriptionBulkData;
-						MeshDescriptionBulkData.SaveMeshDescription(*MeshDescription);
-
-						// Write the DDC cache
-						TArray<uint8> DerivedData;
-						const bool bIsPersistent = true;
-						FMemoryWriter Ar(DerivedData, bIsPersistent);
-						MeshDescriptionBulkData.Serialize(Ar, this);
-						GetDerivedDataCacheRef().Put(*MeshDataKey, DerivedData, GetPathName());
-						COOK_STAT(Timer.AddMiss(DerivedData.Num()));
-					}
-				}
-			}
-		}
+		// Legacy assets used to store their source data in the RawMeshBulkData
+		// Migrate it to the new description if present
+		SourceModel.ConvertRawMesh(LodIndex);
 	}
 }
 
@@ -4545,12 +4846,12 @@ bool UStaticMesh::SetUVChannel(int32 LODIndex, int32 UVChannelIndex, const TMap<
 
 	FStaticMeshAttributes Attributes(*MeshDescription);
 
-	TMeshAttributesRef<FVertexInstanceID, FVector2D> UVs = Attributes.GetVertexInstanceUVs();
+	TMeshAttributesRef<FVertexInstanceID, FVector2f> UVs = Attributes.GetVertexInstanceUVs();
 	for (const FVertexInstanceID VertexInstanceID : MeshDescription->VertexInstances().GetElementIDs())
 	{
 		if (const FVector2D* UVCoord = TexCoords.Find(VertexInstanceID))
 		{
-			UVs.Set(VertexInstanceID, UVChannelIndex, *UVCoord);
+			UVs.Set(VertexInstanceID, UVChannelIndex, (FVector2f)*UVCoord);		// LWC_TODO: Precision loss? TexCoords should probably be passed as FVector2f.
 		}
 		else
 		{
@@ -4574,7 +4875,7 @@ int32 UStaticMesh::GetNumUVChannels(int32 LODIndex)
 	if (MeshDescription)
 	{
 		FStaticMeshConstAttributes Attributes(*MeshDescription);
-		NumUVChannels = Attributes.GetVertexInstanceUVs().GetNumIndices();
+		NumUVChannels = Attributes.GetVertexInstanceUVs().GetNumChannels();
 	}
 #endif
 	return NumUVChannels;
@@ -4583,9 +4884,10 @@ int32 UStaticMesh::GetNumUVChannels(int32 LODIndex)
 void UStaticMesh::CacheDerivedData()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::CacheDerivedData);
+	LLM_SCOPE_BYNAME(TEXT("AssetCompilation/StaticMesh"));
 
 #if WITH_EDITORONLY_DATA
-	CacheMeshData();
+	ConvertLegacySourceData();
 #endif
 	// Cache derived data for the running platform.
 	ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
@@ -4599,33 +4901,28 @@ void UStaticMesh::CacheDerivedData()
 		// on the main thread when calling CacheDerivedData() from another thread.
 		if (IsInGameThread())
 		{
-			// Finish any previous async builds before modifying RenderData
+			// Cancel any previous async builds before modifying RenderData
 			// This can happen during import as the mesh is rebuilt redundantly
 			if (GDistanceFieldAsyncQueue)
 			{
-				GDistanceFieldAsyncQueue->BlockUntilBuildComplete(this, true);
+				GDistanceFieldAsyncQueue->CancelBuild(this);
 			}
-		}
 
-		for (int32 LODIndex = 0; LODIndex < GetRenderData()->LODResources.Num(); ++LODIndex)
-		{
-			FDistanceFieldVolumeData* DistanceFieldData = GetRenderData()->LODResources[LODIndex].DistanceFieldData;
-
-			if (DistanceFieldData)
+			if (GCardRepresentationAsyncQueue)
 			{
-				// Release before destroying RenderData
-				DistanceFieldData->VolumeTexture.Release();
+				GCardRepresentationAsyncQueue->CancelBuild(this);
 			}
 		}
 	}
 
 	SetRenderData(MakeUnique<FStaticMeshRenderData>());
 	GetRenderData()->Cache(RunningPlatform, this, LODSettings);
+}
 
-	// Conditionally create occluder data
-	SetOccluderData(FStaticMeshOccluderData::Build(this));
-
-	// Additionally cache derived data for any other platforms we care about.
+void UStaticMesh::PrepareDerivedDataForActiveTargetPlatforms()
+{
+	ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
+	ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
 	const TArray<ITargetPlatform*>& TargetPlatforms = TargetPlatformManager.GetActiveTargetPlatforms();
 	for (int32 PlatformIndex = 0; PlatformIndex < TargetPlatforms.Num(); ++PlatformIndex)
 	{
@@ -4635,6 +4932,10 @@ void UStaticMesh::CacheDerivedData()
 			GetPlatformStaticMeshRenderData(this, Platform);
 		}
 	}
+
+	// Now that they are in local DDC cache, clear them to save memory
+	// next time they are read it will be fast anyway.
+	ClearAllCachedCookedPlatformData();
 }
 
 #endif // #if WITH_EDITORONLY_DATA
@@ -4642,9 +4943,18 @@ void UStaticMesh::CacheDerivedData()
 void UStaticMesh::CalculateExtendedBounds()
 {
 	FBoxSphereBounds Bounds(ForceInit);
-	if (GetRenderData())
+#if WITH_EDITOR
+	if (CachedMeshDescriptionBounds.IsSet())
 	{
-		Bounds = GetRenderData()->Bounds;
+		Bounds = CachedMeshDescriptionBounds.GetValue();
+	}
+	else
+#endif // #if WITH_EDITOR
+	{
+		if (GetRenderData())
+		{
+			Bounds = GetRenderData()->Bounds;
+		}
 	}
 
 	// Only apply bound extension if necessary, as it will result in a larger bounding sphere radius than retrieved from the render data
@@ -4689,6 +4999,25 @@ void UStaticMesh::Serialize(FArchive& Ar)
 
 	SCOPE_MS_ACCUMULATOR(STAT_StaticMesh_SerializeFull);
 
+	if (IsCompiling())
+	{
+		// Skip serialization during compilation if told to do so.
+		if (Ar.ShouldSkipCompilingAssets())
+		{
+			return;
+		}
+#if WITH_EDITOR
+		// Since UPROPERTY are accessed directly by offset during serialization instead of using accessors, 
+		// the protection put in place to automatically finish compilation if a locked property is accessed will not work. 
+		// We have no choice but to force finish the compilation here to avoid potential race conditions between 
+		// async compilation and the serialization.
+		else
+		{
+			FStaticMeshCompilingManager::Get().FinishCompilation({this});
+		}
+#endif
+	}
+
 	{
 		SCOPE_MS_ACCUMULATOR(STAT_StaticMesh_SerializeParent);
 		Super::Serialize(Ar);
@@ -4698,6 +5027,8 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	FStripDataFlags StripFlags( Ar );
 
@@ -4705,7 +5036,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	Ar << bCooked;
 
 #if WITH_EDITORONLY_DATA
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REMOVE_ZERO_TRIANGLE_SECTIONS)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_REMOVE_ZERO_TRIANGLE_SECTIONS)
 	{
 		GStaticMeshesThatNeedMaterialFixup.Set(this);
 	}
@@ -4715,7 +5046,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	Ar << LocalBodySetup;
 	SetBodySetup(LocalBodySetup);
 
-	if (Ar.UE4Ver() >= VER_UE4_STATIC_MESH_STORE_NAV_COLLISION)
+	if (Ar.UEVer() >= VER_UE4_STATIC_MESH_STORE_NAV_COLLISION)
 	{
 		UNavCollisionBase* LocalNavCollision = GetNavCollision();
 		Ar << LocalNavCollision;
@@ -4750,7 +5081,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 	if( !StripFlags.IsEditorDataStripped() )
 	{
-		if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_DEPRECATED_STATIC_MESH_THUMBNAIL_PROPERTIES_REMOVED )
+		if ( Ar.IsLoading() && Ar.UEVer() < VER_UE4_DEPRECATED_STATIC_MESH_THUMBNAIL_PROPERTIES_REMOVED )
 		{
 			FRotator DummyThumbnailAngle;
 			float DummyThumbnailDistance;
@@ -4799,6 +5130,14 @@ void UStaticMesh::Serialize(FArchive& Ar)
 		{
 			FStaticMeshSourceModel& SrcModel = GetSourceModel(i);
 			SrcModel.SerializeBulkData(Ar, this);
+
+			//@@!!
+			// Automatically detect assets saved before CL 16135278 which changed F16 to RTNE
+			//	set them to bUseBackwardsCompatibleF16TruncUVs	
+			if ( Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::DirLightsAreAtmosphereLightsByDefault)
+			{
+				SrcModel.BuildSettings.bUseBackwardsCompatibleF16TruncUVs = true;
+			}
 		}
 
 		if (Ar.CustomVer(FEditorObjectVersion::GUID) < FEditorObjectVersion::UPropertryForMeshSection)
@@ -4808,7 +5147,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 
 		// Need to set a flag rather than do conversion in place as RenderData is not
 		// created until postload and it is needed for bounding information
-		bRequiresLODDistanceConversion = Ar.UE4Ver() < VER_UE4_STATIC_MESH_SCREEN_SIZE_LODS;
+		bRequiresLODDistanceConversion = Ar.UEVer() < VER_UE4_STATIC_MESH_SCREEN_SIZE_LODS;
 		bRequiresLODScreenSizeConversion = Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::LODsUseResolutionIndependentScreenSize;
 	}
 #endif // #if WITH_EDITOR
@@ -4822,21 +5161,23 @@ void UStaticMesh::Serialize(FArchive& Ar)
 			SCOPE_MS_ACCUMULATOR(STAT_StaticMesh_RenderData);
 			SetRenderData(MakeUnique<FStaticMeshRenderData>());
 			GetRenderData()->Serialize(Ar, this, bCooked);
-
-			FStaticMeshOccluderData::SerializeCooked(Ar, this);
 		}
 #if WITH_EDITOR
 		else if (Ar.IsSaving())
 		{		
+			// Make sure we're not trying to save something still being compiled
+			if (IsCompiling())
+			{
+				FStaticMeshCompilingManager::Get().FinishCompilation({this});
+			}
+
 			FStaticMeshRenderData& PlatformRenderData = GetPlatformStaticMeshRenderData(this, Ar.CookingTarget());
 			PlatformRenderData.Serialize(Ar, this, bCooked);
-
-			FStaticMeshOccluderData::SerializeCooked(Ar, this);
 		}
 #endif
 	}
 
-	if (Ar.UE4Ver() >= VER_UE4_SPEEDTREE_STATICMESH)
+	if (Ar.UEVer() >= VER_UE4_SPEEDTREE_STATICMESH)
 	{
 		bool bHasSpeedTreeWind = SpeedTreeWind.IsValid();
 		Ar << bHasSpeedTreeWind;
@@ -4853,14 +5194,14 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	}
 
 #if WITH_EDITORONLY_DATA
-	if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_ASSET_IMPORT_DATA_AS_JSON && !AssetImportData)
+	if ( Ar.IsLoading() && Ar.UEVer() < VER_UE4_ASSET_IMPORT_DATA_AS_JSON && !AssetImportData)
 	{
 		// AssetImportData should always be valid
 		AssetImportData = NewObject<UAssetImportData>(this, TEXT("AssetImportData"));
 	}
 	
 	// SourceFilePath and SourceFileTimestamp were moved into a subobject
-	if ( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_ADDED_FBX_ASSET_IMPORT_DATA && AssetImportData )
+	if ( Ar.IsLoading() && Ar.UEVer() < VER_UE4_ADDED_FBX_ASSET_IMPORT_DATA && AssetImportData )
 	{
 		// AssetImportData should always have been set up in the constructor where this is relevant
 		FAssetImportInfo Info;
@@ -4924,8 +5265,12 @@ void UStaticMesh::Serialize(FArchive& Ar)
 			const int32 LODIndex = GetNumSourceModels() - 1;
 			FStaticMeshSourceModel& SourceModel = GetSourceModel(LODIndex);
 
+			// If we get here, it is a very old version which still serializes as RawMesh.
+			// Hence we can expect the RawMeshBulkData to be valid.
+			// At this point it will not have been converted to MeshDescription.
+			ensure(!SourceModel.RawMeshBulkData->IsEmpty());
 			FRawMesh RawMesh;
-			SourceModel.LoadRawMesh(RawMesh);
+			SourceModel.RawMeshBulkData->LoadRawMesh(RawMesh);
 
 			// Billboard LOD is made up out of quads so check for this
 			bool bQuadVertices = ((RawMesh.VertexPositions.Num() % 4) == 0);
@@ -4951,6 +5296,54 @@ bool UStaticMesh::IsPostLoadThreadSafe() const
 	return false;
 }
 
+#if WITH_EDITOR
+
+bool UStaticMesh::IsAsyncTaskComplete() const
+{
+	return AsyncTask == nullptr || AsyncTask->IsWorkDone();
+}
+
+void UStaticMesh::AcquireAsyncProperty(EStaticMeshAsyncProperties AsyncProperties)
+{
+	LockedProperties |= (uint32)AsyncProperties;
+}
+
+void UStaticMesh::ReleaseAsyncProperty(EStaticMeshAsyncProperties AsyncProperties)
+{
+	LockedProperties &= ~(uint32)AsyncProperties;
+}
+
+int64 UStaticMesh::GetBuildRequiredMemory() const
+{
+	// We have to base our estimate on something accessible and known before the build, for now use the biggest bulk data size.
+	int64 BiggestBulkDataSize = -1;
+	if (GetHiResSourceModel().GetMeshDescriptionBulkData())
+	{
+		BiggestBulkDataSize = FMath::Max(BiggestBulkDataSize, GetHiResSourceModel().GetMeshDescriptionBulkData()->GetBulkDataSize());
+	}
+
+	for (const FStaticMeshSourceModel& Model : GetSourceModels())
+	{
+		if (Model.GetMeshDescriptionBulkData())
+		{
+			BiggestBulkDataSize = FMath::Max(BiggestBulkDataSize, Model.GetMeshDescriptionBulkData()->GetBulkDataSize());
+		}
+
+		if (Model.RawMeshBulkData)
+		{
+			BiggestBulkDataSize = FMath::Max(BiggestBulkDataSize, Model.RawMeshBulkData->GetBulkData().GetBulkDataSize());
+		}
+	}
+
+	// Rough estimate of the memory that should be required to build that mesh.
+	// Used -ddc=cold on the command line and opened some big meshes from the content browser one by one while
+	// monitoring the editor commit memory spike generated by the compilation.
+	// For smaller assets, -llm with LLM tags have been used and came down to mostly the same ratio.
+	return BiggestBulkDataSize * 7;
+}
+
+#endif // WITH_EDITOR
+
 //
 //	UStaticMesh::PostLoad
 //
@@ -4960,31 +5353,101 @@ void UStaticMesh::PostLoad()
 	Super::PostLoad();
 
 #if WITH_EDITOR
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::PostLoad);
+	FStaticMeshAsyncBuildScope AsyncBuildScope(this);
+#endif
+
+	FStaticMeshPostLoadContext Context;
+	BeginPostLoadInternal(Context);
+
+#if WITH_EDITOR
+	if (FStaticMeshCompilingManager::Get().IsAsyncCompilationAllowed(this))
+	{
+		FModuleManager::Get().LoadModuleChecked<IMeshUtilities>(TEXT("MeshUtilities"));
+ 
+		// Cache derived data for the running platform.
+		ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
+		ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
+		check(RunningPlatform);
+		IMeshBuilderModule::GetForPlatform(RunningPlatform);
+
+		// Additionally cache derived data for any other platforms we care about.
+		const TArray<ITargetPlatform*>& TargetPlatforms = TargetPlatformManager.GetActiveTargetPlatforms();
+		for (ITargetPlatform* Platform : TargetPlatforms)
+		{
+			if (Platform != RunningPlatform)
+			{
+				IMeshBuilderModule::GetForPlatform(Platform);
+			}
+		}
+
+		FQueuedThreadPool* StaticMeshThreadPool = FStaticMeshCompilingManager::Get().GetThreadPool();
+		EQueuedWorkPriority BasePriority = FStaticMeshCompilingManager::Get().GetBasePriority(this);
+
+		// We assume that complex collision mesh are small and fast to compute so stalling
+		// on them should be fast. This is required to avoid stalling on the RenderData of the
+		// ComplexCollisionMesh during the async build of this mesh.
+		if (ComplexCollisionMesh && ComplexCollisionMesh->IsCompiling())
+		{
+			FStaticMeshCompilingManager::Get().FinishCompilation({ ComplexCollisionMesh });
+		}
+
+		AsyncTask = MakeUnique<FStaticMeshAsyncBuildTask>(this, MakeUnique<FStaticMeshPostLoadContext>(MoveTemp(Context)));
+		AsyncTask->StartBackgroundTask(StaticMeshThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait, GetBuildRequiredMemory());
+		FStaticMeshCompilingManager::Get().AddStaticMeshes({this});
+	}
+	else
+#endif
+	{
+		ExecutePostLoadInternal(Context);
+		FinishPostLoadInternal(Context);
+	}
+}
+
+void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
+{
+#if WITH_EDITOR
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::BeginPostLoadInternal);
+
+	// Make sure every static FString's are built and cached on the main thread
+	// before trying to access it from multiple threads
+	GetStaticMeshDerivedDataVersion();
+
+	// Lock all properties that should not be modified/accessed during async post-load
+	AcquireAsyncProperty();
+
+	// This scope allows us to use any locked properties without causing stalls
+	FStaticMeshAsyncBuildScope AsyncBuildScope(this);
 
 	if (GetNumSourceModels() > 0)
 	{
-		UStaticMesh* DistanceFieldReplacementMesh = GetSourceModel(0).BuildSettings.DistanceFieldReplacementMesh;
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
 
-		if (DistanceFieldReplacementMesh)
+		if (CVar->GetValueOnAnyThread(true) != 0 || bGenerateMeshDistanceField)
 		{
-			DistanceFieldReplacementMesh->ConditionalPostLoad();
-		}
+			for (int32 MaterialIndex = 0; MaterialIndex < GetStaticMaterials().Num(); MaterialIndex++)
+			{
+				UMaterialInterface* MaterialInterface = GetStaticMaterials()[MaterialIndex].MaterialInterface;
+				if (MaterialInterface)
+				{
+					// Make sure dependency is postloaded
+					MaterialInterface->ConditionalPostLoad();
+				}
+			}
 
-		//TODO remove this code when FRawMesh will be removed
-		//Fill the static mesh owner
-		int32 NumLODs = GetNumSourceModels();
-		for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
-		{
-			FStaticMeshSourceModel& SrcModel = GetSourceModel(LODIndex);
-			SrcModel.StaticMeshOwner = this;
+			UStaticMesh* DistanceFieldReplacementMesh = GetSourceModel(0).BuildSettings.DistanceFieldReplacementMesh;
+
+			if (DistanceFieldReplacementMesh)
+			{
+				DistanceFieldReplacementMesh->ConditionalPostLoad();
+			}
 		}
 	}
 
-	if (!GetOutermost()->bIsCookedForEditor)
+	Context.bIsCookedForEditor = GetOutermost()->bIsCookedForEditor;
+	if (!Context.bIsCookedForEditor)
 	{
 		// Needs to happen before 'CacheDerivedData'
-		if (GetLinkerUE4Version() < VER_UE4_BUILD_SCALE_VECTOR)
+		if (GetLinkerUEVersion() < VER_UE4_BUILD_SCALE_VECTOR)
 		{
 			int32 NumLODs = GetNumSourceModels();
 			for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
@@ -4994,7 +5457,7 @@ void UStaticMesh::PostLoad()
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_LIGHTMAP_MESH_BUILD_SETTINGS)
+		if (GetLinkerUEVersion() < VER_UE4_LIGHTMAP_MESH_BUILD_SETTINGS)
 		{
 			for (int32 i = 0; i < GetNumSourceModels(); i++)
 			{
@@ -5002,7 +5465,7 @@ void UStaticMesh::PostLoad()
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_MIKKTSPACE_IS_DEFAULT)
+		if (GetLinkerUEVersion() < VER_UE4_MIKKTSPACE_IS_DEFAULT)
 		{
 			for (int32 i = 0; i < GetNumSourceModels(); ++i)
 			{
@@ -5010,14 +5473,15 @@ void UStaticMesh::PostLoad()
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_BUILD_MESH_ADJ_BUFFER_FLAG_EXPOSED)
+		if (GetLinkerUEVersion() < VER_UE4_BUILD_MESH_ADJ_BUFFER_FLAG_EXPOSED)
 		{
 			FRawMesh TempRawMesh;
 			uint32 TotalIndexCount = 0;
 
 			for (int32 i = 0; i < GetNumSourceModels(); ++i)
 			{
-				// Access RawMesh directly instead of through the FStaticMeshSourceModel API,
+				// At this stage in loading, we have not yet converted a legacy asset's RawMesh to MeshDescription,
+				// so access RawMesh directly instead of through the FStaticMeshSourceModel API,
 				// because we don't want to perform an automatic conversion to MeshDescription at this point -
 				// this will be done below in CacheDerivedData().
 				// This is a path for legacy assets.
@@ -5027,11 +5491,6 @@ void UStaticMesh::PostLoad()
 					TotalIndexCount += TempRawMesh.WedgeIndices.Num();
 				}
 			}
-
-			for (int32 i = 0; i < GetNumSourceModels(); ++i)
-			{
-				GetSourceModel(i).BuildSettings.bBuildAdjacencyBuffer = (TotalIndexCount < 50000);
-			}
 		}
 
 		// The LODGroup update on load must happen before CacheDerivedData so we don't have to rebuild it after
@@ -5040,32 +5499,69 @@ void UStaticMesh::PostLoad()
 			SetLODGroup(LODGroup);
 		}
 
+		FModuleManager::Get().LoadModule("NaniteBuilder");
 		IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
 		MeshUtilities.FixupMaterialSlotNames(this);
 
-		if (GetIsBuiltAtRuntime())
+		const int32 CustomVersion = GetLinkerCustomVersion(FReleaseObjectVersion::GUID);
+		if (GetLinkerUEVersion() < VER_UE4_STATIC_MESH_EXTENDED_BOUNDS || CustomVersion < FReleaseObjectVersion::StaticMeshExtendedBoundsFix)
 		{
-#if WITH_EDITOR
-			// If built at runtime, but an editor build, we cache the mesh descriptions so that they can be rebuilt within the editor if necessary.
-			// This is done through the fast build path for consistency
-			TArray<const FMeshDescription*> MeshDescriptions;
-			const int32 NumSourceModels = GetNumSourceModels();
-			MeshDescriptions.Reserve(NumSourceModels);
-			for (int32 SourceModelIndex = 0; SourceModelIndex < NumSourceModels; SourceModelIndex++)
-			{
-				MeshDescriptions.Add(GetMeshDescription(SourceModelIndex));
-			}
-			BuildFromMeshDescriptions(MeshDescriptions);
-#endif
+			// A stall is almost guaranteed during async build because mesh bounds are used extensively from many different places.
+			Context.bShouldComputeExtendedBounds = true;
+			UE_LOG(LogStaticMesh, Log, TEXT("%s should be resaved to improve async compilation performance."), *GetFullName());
 		}
 		else
 		{
-			// This, among many other things, will build a MeshDescription from the legacy RawMesh if one has not already been serialized,
-			// or, failing that, if there is not already one in the DDC. This will remain cached until the end of PostLoad(), upon which it
-			// is then released, and can be reloaded on demand.
-			CacheDerivedData();
+			// Do not stall on this property if it doesn't need to be recomputed after rebuild.
+			ReleaseAsyncProperty(EStaticMeshAsyncProperties::ExtendedBounds);
 		}
+	}
 
+	Context.bIsCookedForEditor = GetOutermost()->bIsCookedForEditor;
+	Context.bNeedsMaterialFixup = GStaticMeshesThatNeedMaterialFixup.Get(this);
+#endif
+	
+#if WITH_EDITORONLY_DATA
+	Context.bNeedsMeshUVDensityFix = GetLinkerCustomVersion(FRenderingObjectVersion::GUID) < FRenderingObjectVersion::FixedMeshUVDensity;
+
+	// If any, make sure the ComplexCollisionMesh is loaded before creating the NavCollision
+	if (ComplexCollisionMesh && ComplexCollisionMesh != this)
+	{
+		ComplexCollisionMesh->ConditionalPostLoad();
+	}
+#endif //WITH_EDITORONLY_DATA
+
+	// We want to always have a BodySetup, its used for per-poly collision as well
+	if (GetBodySetup() == nullptr)
+	{
+		CreateBodySetup();
+	}
+
+	// Make sure the object is created on the game-thread before going async
+	if (bHasNavigationData && GetBodySetup() != nullptr)
+	{
+		if (GetNavCollision() == nullptr)
+		{
+			SetNavCollision(UNavCollisionBase::ConstructNew(*this));
+		}
+	}
+}
+
+void UStaticMesh::ExecutePostLoadInternal(FStaticMeshPostLoadContext& Context)
+{
+#if WITH_EDITOR
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::ExecutePostLoadInternal)
+
+	if (!Context.bIsCookedForEditor)
+	{
+		// Generate and cache render data
+		CacheDerivedData();
+	}
+
+	GetBodySetup()->CreatePhysicsMeshes();
+
+	if (!Context.bIsCookedForEditor)
+	{
 		//Fix up the material to remove redundant material, this is needed since the material refactor where we do not have anymore copy of the materials
 		//in the materials list
 		if (GetRenderData() && bCleanUpRedundantMaterialPostLoad)
@@ -5138,7 +5634,7 @@ void UStaticMesh::PostLoad()
 			bCleanUpRedundantMaterialPostLoad = false;
 		}
 
-		if (GetRenderData() && GStaticMeshesThatNeedMaterialFixup.Get(this))
+		if (GetRenderData() && Context.bNeedsMaterialFixup)
 		{
 			FixupZeroTriangleSections();
 		}
@@ -5146,51 +5642,198 @@ void UStaticMesh::PostLoad()
 
 	if (GetRenderData())
 	{
-		// check the MinLOD values are all within range
-		bool bFixedMinLOD = false;
-		int32 MinAvailableLOD = FMath::Max<int32>(GetRenderData()->LODResources.Num() - 1, 0);
-		FPerPlatformInt LocalMinLOD = GetMinLOD();
-		if (!GetRenderData()->LODResources.IsValidIndex(LocalMinLOD.Default))
-		{
-			FFormatNamedArguments Arguments;
-			Arguments.Add(TEXT("MinLOD"), FText::AsNumber(LocalMinLOD.Default));
-			Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
-			FMessageLog("LoadErrors").Warning()
-				->AddToken(FUObjectToken::Create(this))
-				->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_BadMinLOD", "Min LOD value of {MinLOD} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+#if WITH_EDITORONLY_DATA
+		FPerPlatformInt PerPlatformData = GetMinLOD();
+		FPerQualityLevelInt PerQualityLevelData = GetQualityLevelMinLOD();
 
-			LocalMinLOD.Default = MinAvailableLOD;
-			bFixedMinLOD = true;
-		}
-		
-		for (TMap<FName, int32>::TIterator It(LocalMinLOD.PerPlatform); It; ++It)
+		// Convert PerPlatForm data to PerQuality if perQuality data have not been serialized.
+		// Also test default value, since PerPLatformData can have Default !=0 and no PerPlaform data overrides.
+		bool bConvertMinLODData = (PerQualityLevelData.PerQuality.Num() == 0 && PerPlatformData.PerPlatform.Num() != 0) || (PerPlatformData.PerPlatform.Num() == 0 && PerQualityLevelData.Default != PerPlatformData.Default);
+
+		if (GEngine && GEngine->UseStaticMeshMinLODPerQualityLevels && bConvertMinLODData)
 		{
-			if (!GetRenderData()->LODResources.IsValidIndex(It.Value()))
+			// get the platform groups
+			const TArray<FName>& PlatformGroupNameArray = PlatformInfo::GetAllPlatformGroupNames();
+
+			// Make sure all platforms and groups are known before updating any of them. Missing platforms would not properly be converted to PerQuality if some of them were known and others were not.
+			bool bAllPlatformsKnown = true;
+			for (const TPair<FName, int32>& Pair : PerPlatformData.PerPlatform)
 			{
-				FFormatNamedArguments Arguments;
-				Arguments.Add(TEXT("MinLOD"), FText::AsNumber(It.Value()));
-				Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
-				Arguments.Add(TEXT("Platform"), FText::FromString(It.Key().ToString()));
-				FMessageLog("LoadErrors").Warning()
-					->AddToken(FUObjectToken::Create(this))
-					->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_BadMinLODOverride", "Min LOD override of {MinLOD} for {Platform} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+				const bool bIsPlatformGroup = PlatformGroupNameArray.Contains(Pair.Key);
+				const bool bIsKnownPlatform = (FDataDrivenPlatformInfoRegistry::GetPlatformInfo(Pair.Key).IniPlatformName.IsNone() == false);
+				if (!bIsPlatformGroup && !bIsKnownPlatform)
+				{
+					bAllPlatformsKnown = false;
+					break;
+				}
+			}
 
-				It.Value() = MinAvailableLOD;
-				bFixedMinLOD = true;
+			if (bAllPlatformsKnown)
+			{
+				//assign the default value
+				PerQualityLevelData.Default = PerPlatformData.Default;
+
+				// iterate over all platform and platform group entry: ex: XBOXONE = 2, CONSOLE=1, MOBILE = 3
+				if (PerQualityLevelData.PerQuality.Num() == 0)
+				{
+					TMap<FName, int32> SortedPerPlatforms = PerPlatformData.PerPlatform;
+					SortedPerPlatforms.KeySort([&](const FName& A, const FName& B) { return (PlatformGroupNameArray.Contains(A) > PlatformGroupNameArray.Contains(B)); });
+
+					for (const TPair<FName, int32>& Pair : SortedPerPlatforms)
+					{
+						FSupportedQualityLevelArray QualityLevels;
+						FString PlatformEntry = Pair.Key.ToString();
+
+						QualityLevels = QualityLevelProperty::PerPlatformOverrideMapping(PlatformEntry);
+
+						// we now have a range of quality levels supported on that platform or from that group
+						// note: 
+						// -platform group overrides will be applied first
+						// -platform override sharing the same quality level will take the smallest MinLOD value between them
+						// -ex: if XboxOne and PS4 maps to high and XboxOne MinLOD = 2 and PS4 MINLOD = 1, MINLOD 1 will be selected
+						for (int32& QLKey : QualityLevels)
+						{
+							int32* Value = PerQualityLevelData.PerQuality.Find(QLKey);
+							if (Value != nullptr)
+							{
+								*Value = FMath::Min(Pair.Value, *Value);
+							}
+							else
+							{
+								PerQualityLevelData.PerQuality.Add(QLKey, Pair.Value);
+							}
+						}
+					}
+				}
+				SetQualityLevelMinLOD(PerQualityLevelData);
 			}
 		}
+#endif
 
-		if (bFixedMinLOD)
+		// check the MinLOD values are all within range
+
+		int32 MinAvailableLOD = FMath::Max<int32>(GetRenderData()->LODResources.Num() - 1, 0);
+		
+		if (IsMinLodQualityLevelEnable())
 		{
-			SetMinLOD(MoveTemp(LocalMinLOD));
-			FMessageLog("LoadErrors").Open();
+			bool bFixedQualityMinLOD = false;
+			FPerQualityLevelInt QualityLocalMinLOD = GetQualityLevelMinLOD();
+
+			if (!GetRenderData()->LODResources.IsValidIndex(QualityLocalMinLOD.Default))
+			{
+				FFormatNamedArguments Arguments;
+				Arguments.Add(TEXT("DefaultMinLOD"), FText::AsNumber(QualityLocalMinLOD.Default));
+				Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
+				TSharedRef<FUObjectToken> TokenRef = FUObjectToken::Create(this);
+				Async(
+					EAsyncExecution::TaskGraphMainThread,
+					// No choice to MoveTemp here, the SharedRef is not thread safe so it cannot
+					// be copied to another thread, only moved.
+					[Token = MoveTemp(TokenRef), Arguments]()
+					{
+						FMessageLog("LoadErrors").Warning()
+							->AddToken(Token)
+							->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_DefaultMinLODOutOfRange", "Min LOD value of {DefaultMinLOD} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+					}	
+				);
+				QualityLocalMinLOD.Default = MinAvailableLOD;
+				bFixedQualityMinLOD = true;
+			}
+			for (TMap<int32, int32>::TIterator It(QualityLocalMinLOD.PerQuality); It; ++It)
+			{
+				if (!GetRenderData()->LODResources.IsValidIndex(It.Value()))
+				{
+					FFormatNamedArguments Arguments;
+					Arguments.Add(TEXT("QualityLevel"), FText::FromString(QualityLevelProperty::QualityLevelToFName(It.Key()).ToString()));
+					Arguments.Add(TEXT("QualityLevelMinLOD"), FText::AsNumber(It.Value()));
+					Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
+					TSharedRef<FUObjectToken> TokenRef = FUObjectToken::Create(this);
+					Async(
+						EAsyncExecution::TaskGraphMainThread,
+						// No choice to MoveTemp here, the SharedRef is not thread safe so it cannot
+						// be copied to another thread, only moved.
+						[Token = MoveTemp(TokenRef), Arguments]()
+						{
+							FMessageLog("LoadErrors").Warning()
+								->AddToken(Token)
+								->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_MinLODOverrideForQualityLevel", "Min LOD override of {QualityLevelMinLOD} for {QualityLevel} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+						}
+					);
+					It.Value() = MinAvailableLOD;
+					bFixedQualityMinLOD = true;
+				}
+			}
+
+			if (bFixedQualityMinLOD)
+			{
+				SetQualityLevelMinLOD(MoveTemp(QualityLocalMinLOD));
+				// Make sure Slate gets called from the game thread
+				Async(EAsyncExecution::TaskGraphMainThread, []() { FMessageLog("LoadErrors").Open(); });
+			}
+		}
+		else 
+		{
+			bool bFixedMinLOD = false;
+			FPerPlatformInt LocalMinLOD = GetMinLOD();
+
+			if (!GetRenderData()->LODResources.IsValidIndex(LocalMinLOD.Default))
+			{
+				FFormatNamedArguments Arguments;
+				Arguments.Add(TEXT("MinLOD"), FText::AsNumber(LocalMinLOD.Default));
+				Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
+				TSharedRef<FUObjectToken> TokenRef = FUObjectToken::Create(this);
+				Async(
+					EAsyncExecution::TaskGraphMainThread,
+					// No choice to MoveTemp here, the SharedRef is not thread safe so it cannot
+					// be copied to another thread, only moved.
+					[Token = MoveTemp(TokenRef), Arguments]()
+					{
+						FMessageLog("LoadErrors").Warning()
+							->AddToken(Token)
+							->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_BadMinLOD", "Min LOD value of {MinLOD} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+					}
+				);
+				LocalMinLOD.Default = MinAvailableLOD;
+				bFixedMinLOD = true;
+			}
+			for (TMap<FName, int32>::TIterator It(LocalMinLOD.PerPlatform); It; ++It)
+			{
+				if (!GetRenderData()->LODResources.IsValidIndex(It.Value()))
+				{
+					FFormatNamedArguments Arguments;
+					Arguments.Add(TEXT("MinLOD"), FText::AsNumber(It.Value()));
+					Arguments.Add(TEXT("MinAvailLOD"), FText::AsNumber(MinAvailableLOD));
+					Arguments.Add(TEXT("Platform"), FText::FromString(It.Key().ToString()));
+					TSharedRef<FUObjectToken> TokenRef = FUObjectToken::Create(this);
+					Async(
+						EAsyncExecution::TaskGraphMainThread,
+						// No choice to MoveTemp here, the SharedRef is not thread safe so it cannot
+						// be copied to another thread, only moved.
+						[Token = MoveTemp(TokenRef), Arguments]()
+						{
+							FMessageLog("LoadErrors").Warning()
+								->AddToken(Token)
+								->AddToken(FTextToken::Create(FText::Format(LOCTEXT("LoadError_BadMinLODOverride", "Min LOD override of {MinLOD} for {Platform} is out of range 0..{MinAvailLOD} and has been adjusted to {MinAvailLOD}. Please verify and resave the asset."), Arguments)));
+						}
+					);
+					It.Value() = MinAvailableLOD;
+					bFixedMinLOD = true;
+				}
+			}
+
+			if (bFixedMinLOD)
+			{
+				SetMinLOD(MoveTemp(LocalMinLOD));
+				// Make sure Slate gets called from the game thread
+				Async(EAsyncExecution::TaskGraphMainThread, []() { FMessageLog("LoadErrors").Open(); });
+			}
 		}
 	}
 
 #endif // #if WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
-	if (GetLinkerCustomVersion(FRenderingObjectVersion::GUID) < FRenderingObjectVersion::FixedMeshUVDensity)
+	if (Context.bNeedsMeshUVDensityFix)
 	{
 		UpdateUVChannelData(true);
 	}
@@ -5198,29 +5841,16 @@ void UStaticMesh::PostLoad()
 
 	EnforceLightmapRestrictions();
 
-	if( FApp::CanEverRender() && !HasAnyFlags(RF_ClassDefaultObject) )
-	{
-		InitResources();
-	}
-	else
-	{
-		// Update any missing data when cooking.
-		UpdateUVChannelData(false);
 #if WITH_EDITOR
-		if (GetRenderData())
-		{
-			GetRenderData()->ResolveSectionInfo(this);
-		}
-#endif
-	}
-
-#if WITH_EDITOR
-	// Fix extended bounds if needed
-	const int32 CustomVersion = GetLinkerCustomVersion(FReleaseObjectVersion::GUID);
-	if (GetLinkerUE4Version() < VER_UE4_STATIC_MESH_EXTENDED_BOUNDS || CustomVersion < FReleaseObjectVersion::StaticMeshExtendedBoundsFix)
+	if (Context.bShouldComputeExtendedBounds)
 	{
 		CalculateExtendedBounds();
+		ReleaseAsyncProperty(EStaticMeshAsyncProperties::ExtendedBounds);
 	}
+
+	// Those are going to apply modifications to RenderData and should execute before we release
+	// the lock and send the InitResources.
+
 	// Conversion of LOD distance need valid bounds it must be call after the extended Bounds fixup
 	// Only required in an editor build as other builds process this in a different place
 	if (bRequiresLODDistanceConversion)
@@ -5279,28 +5909,59 @@ void UStaticMesh::PostLoad()
 			}
 		}
 	}
-#endif // #if WITH_EDITOR
 
-	// We want to always have a BodySetup, its used for per-poly collision as well
-	if (GetBodySetup() == nullptr)
+	// Additionally cache derived data for any other platforms we care about.
+	// This must be done after the sectioninfomap fixups to make sure the DDC key matches
+	// the one the cooker will generate during save.
+	if (!Context.bIsCookedForEditor)
 	{
-		CreateBodySetup();
+		PrepareDerivedDataForActiveTargetPlatforms();
 	}
 
-#if WITH_EDITOR
+	ReleaseAsyncProperty(EStaticMeshAsyncProperties::SectionInfoMap);
+	ReleaseAsyncProperty(EStaticMeshAsyncProperties::OriginalSectionInfoMap);
+
 	// Release cached mesh descriptions until they are loaded on demand
 	ClearMeshDescriptions();
-#endif
 
-#if WITH_EDITORONLY_DATA
-	// If any, make sure the ComplexCollisionMesh is loaded before creating the NavCollision
-	if (ComplexCollisionMesh && ComplexCollisionMesh != this)
+	if (GetNavCollision())
 	{
-		ComplexCollisionMesh->ConditionalPostLoad();
+		// Physics meshes need to be ready to gather the collision in Setup().
+		GetBodySetup()->CreatePhysicsMeshes();
+		GetNavCollision()->Setup(GetBodySetup());
 	}
-#endif //WITH_EDITORONLY_DATA
 
-	CreateNavCollision();
+	ReleaseAsyncProperty(EStaticMeshAsyncProperties::SourceModels);
+	ReleaseAsyncProperty(EStaticMeshAsyncProperties::HiResSourceModel);
+#endif // #if WITH_EDITOR
+}
+
+void UStaticMesh::FinishPostLoadInternal(FStaticMeshPostLoadContext& Context)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::FinishPostLoad);
+
+	if( FApp::CanEverRender() && !HasAnyFlags(RF_ClassDefaultObject) )
+	{
+		// InitResources will send commands to other threads that will
+		// use our RenderData, we must mark it as ready to be used since
+		// we're not going to modify it anymore
+		ReleaseAsyncProperty(EStaticMeshAsyncProperties::RenderData);
+		InitResources();
+	}
+	else
+	{
+		// Update any missing data when cooking.
+		UpdateUVChannelData(false);
+#if WITH_EDITOR
+		if (GetRenderData())
+		{
+			GetRenderData()->ResolveSectionInfo(this);
+		}
+#endif
+		ReleaseAsyncProperty(EStaticMeshAsyncProperties::RenderData);
+	}
+
+	ReleaseAsyncProperty();
 }
 
 void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescription, FStaticMeshLODResources& LODResources)
@@ -5320,12 +5981,12 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 	TArray<FStaticMeshBuildVertex> StaticMeshBuildVertices;
 	StaticMeshBuildVertices.SetNum(NumVertexInstances);
 
-	TVertexAttributesConstRef<FVector> VertexPositions = MeshDescriptionAttributes.GetVertexPositions();
-	TVertexInstanceAttributesConstRef<FVector> VertexInstanceNormals = MeshDescriptionAttributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesConstRef<FVector> VertexInstanceTangents = MeshDescriptionAttributes.GetVertexInstanceTangents();
+	TVertexAttributesConstRef<FVector3f> VertexPositions = MeshDescriptionAttributes.GetVertexPositions();
+	TVertexInstanceAttributesConstRef<FVector3f> VertexInstanceNormals = MeshDescriptionAttributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesConstRef<FVector3f> VertexInstanceTangents = MeshDescriptionAttributes.GetVertexInstanceTangents();
 	TVertexInstanceAttributesConstRef<float> VertexInstanceBinormalSigns = MeshDescriptionAttributes.GetVertexInstanceBinormalSigns();
-	TVertexInstanceAttributesConstRef<FVector4> VertexInstanceColors = MeshDescriptionAttributes.GetVertexInstanceColors();
-	TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs = MeshDescriptionAttributes.GetVertexInstanceUVs();
+	TVertexInstanceAttributesConstRef<FVector4f> VertexInstanceColors = MeshDescriptionAttributes.GetVertexInstanceColors();
+	TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs = MeshDescriptionAttributes.GetVertexInstanceUVs();
 
 	for (FVertexInstanceID VertexInstanceID : MeshDescription.VertexInstances().GetElementIDs())
 	{
@@ -5333,10 +5994,10 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 
 		StaticMeshVertex.Position = VertexPositions[MeshDescription.GetVertexInstanceVertex(VertexInstanceID)];
 		StaticMeshVertex.TangentX = VertexInstanceTangents[VertexInstanceID];
-		StaticMeshVertex.TangentY = FVector::CrossProduct(VertexInstanceNormals[VertexInstanceID], VertexInstanceTangents[VertexInstanceID]).GetSafeNormal() * VertexInstanceBinormalSigns[VertexInstanceID];
+		StaticMeshVertex.TangentY = FVector3f::CrossProduct(VertexInstanceNormals[VertexInstanceID], VertexInstanceTangents[VertexInstanceID]).GetSafeNormal() * VertexInstanceBinormalSigns[VertexInstanceID];
 		StaticMeshVertex.TangentZ = VertexInstanceNormals[VertexInstanceID];
 
-		for (int32 UVIndex = 0; UVIndex < VertexInstanceUVs.GetNumIndices(); ++UVIndex)
+		for (int32 UVIndex = 0; UVIndex < VertexInstanceUVs.GetNumChannels(); ++UVIndex)
 		{
 			StaticMeshVertex.UVs[UVIndex] = VertexInstanceUVs.Get(VertexInstanceID, UVIndex);
 		}
@@ -5360,8 +6021,13 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 	}
 
 	LODResources.VertexBuffers.PositionVertexBuffer.Init(StaticMeshBuildVertices);
-	LODResources.VertexBuffers.StaticMeshVertexBuffer.Init(StaticMeshBuildVertices, VertexInstanceUVs.GetNumIndices());
 
+	FStaticMeshVertexBufferFlags StaticMeshVertexBufferFlags;
+	StaticMeshVertexBufferFlags.bNeedsCPUAccess = true;
+	StaticMeshVertexBufferFlags.bUseBackwardsCompatibleF16TruncUVs = false;
+	LODResources.VertexBuffers.StaticMeshVertexBuffer.Init(StaticMeshBuildVertices, VertexInstanceUVs.GetNumChannels(), StaticMeshVertexBufferFlags);
+
+	LODResources.bHasColorVertexData = bHasVertexColors;
 	FColorVertexBuffer& ColorVertexBuffer = LODResources.VertexBuffers.ColorVertexBuffer;
 	if (bHasVertexColors)
 	{
@@ -5381,7 +6047,7 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 	TArray<uint32> IndexBuffer;
 	IndexBuffer.SetNumZeroed(NumTriangles * 3);
 
-	FStaticMeshLODResources::FStaticMeshSectionArray& Sections = LODResources.Sections;
+	FStaticMeshSectionArray& Sections = LODResources.Sections;
 
 	int32 SectionIndex = 0;
 	int32 IndexBufferIndex = 0;
@@ -5402,21 +6068,18 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 		uint32 MinVertexIndex = TNumericLimits<uint32>::Max();
 		uint32 MaxVertexIndex = TNumericLimits<uint32>::Min();
 
-		for (FPolygonID PolygonID : MeshDescription.GetPolygonGroupPolygons(PolygonGroupID))
+		for (FTriangleID TriangleID : MeshDescription.GetPolygonGroupTriangles(PolygonGroupID))
 		{
-			for (FTriangleID TriangleID : MeshDescription.GetPolygonTriangleIDs(PolygonID))
+			for (FVertexInstanceID TriangleVertexInstanceIDs : MeshDescription.GetTriangleVertexInstances(TriangleID))
 			{
-				for (FVertexInstanceID TriangleVertexInstanceIDs : MeshDescription.GetTriangleVertexInstances(TriangleID))
-				{
-					uint32 VertexIndex = static_cast<uint32>(TriangleVertexInstanceIDs.GetValue());
-					MinVertexIndex = FMath::Min(MinVertexIndex, VertexIndex);
-					MaxVertexIndex = FMath::Max(MaxVertexIndex, VertexIndex);
-					IndexBuffer[IndexBufferIndex] = VertexIndex;
-					IndexBufferIndex++;
-				}
-
-				TriangleCount++;
+				uint32 VertexIndex = static_cast<uint32>(TriangleVertexInstanceIDs.GetValue());
+				MinVertexIndex = FMath::Min(MinVertexIndex, VertexIndex);
+				MaxVertexIndex = FMath::Max(MaxVertexIndex, VertexIndex);
+				IndexBuffer[IndexBufferIndex] = VertexIndex;
+				IndexBufferIndex++;
 			}
+
+			TriangleCount++;
 		}
 
 		Section.NumTriangles = TriangleCount;
@@ -5448,7 +6111,7 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 	for (uint32& Index : DepthOnlyIndexBuffer)
 	{
 		// Compress all vertex instances into the same instance for each vertex
-		Index = MeshDescription.GetVertexVertexInstances(MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(Index)))[0].GetValue();
+		Index = MeshDescription.GetVertexVertexInstanceIDs(MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(Index)))[0].GetValue();
 	}
 
 	LODResources.bHasDepthOnlyIndices = true;
@@ -5476,8 +6139,6 @@ void UStaticMesh::BuildFromMeshDescription(const FMeshDescription& MeshDescripti
 
 	LODResources.bHasReversedDepthOnlyIndices = true;
 	LODResources.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.SetIndices(ReversedIndexBuffer, IndexBufferStride);
-
-	LODResources.bHasAdjacencyInfo = false;
 }
 
 
@@ -5494,7 +6155,20 @@ UStaticMeshDescription* UStaticMesh::CreateStaticMeshDescription(UObject* Outer)
 }
 
 
-void UStaticMesh::BuildFromStaticMeshDescriptions(const TArray<UStaticMeshDescription*>& StaticMeshDescriptions, bool bBuildSimpleCollision)
+UStaticMeshDescription* UStaticMesh::GetStaticMeshDescription(int32 LODIndex)
+{
+#if WITH_EDITOR
+	if (LODIndex < GetNumSourceModels())
+	{
+		GetSourceModel(LODIndex).GetOrCacheMeshDescription();
+		return GetSourceModel(LODIndex).GetCachedStaticMeshDescription();
+	}
+#endif
+	return nullptr;
+}
+
+
+void UStaticMesh::BuildFromStaticMeshDescriptions(const TArray<UStaticMeshDescription*>& StaticMeshDescriptions, bool bBuildSimpleCollision, bool bFastBuild)
 {
 	TArray<const FMeshDescription*> MeshDescriptions;
 	MeshDescriptions.Reserve(StaticMeshDescriptions.Num());
@@ -5506,16 +6180,30 @@ void UStaticMesh::BuildFromStaticMeshDescriptions(const TArray<UStaticMeshDescri
 
 	FBuildMeshDescriptionsParams Params;
 	Params.bBuildSimpleCollision = bBuildSimpleCollision;
+	Params.bFastBuild = bFastBuild;
 	BuildFromMeshDescriptions(MeshDescriptions, Params);
 }
 
 
 bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*>& MeshDescriptions, const FBuildMeshDescriptionsParams& Params)
 {
-	// Set up
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::BuildFromMeshDescriptions);
 
-	SetIsBuiltAtRuntime(true);
+	const int32 NewNumLODs = MeshDescriptions.Num();
+
+	// Set up
 	NeverStream = true;
+
+#if !WITH_EDITOR
+	// In non-Editor builds, we can only perform fast mesh builds
+	check(Params.bFastBuild);
+#endif
+	if (Params.bFastBuild)
+	{
+		bDoFastBuild = true;
+	}
+
+	check(Params.bCommitMeshDescription || Params.bFastBuild);
 
 	TOptional<FStaticMeshComponentRecreateRenderStateContext> RecreateRenderStateContext;
 	
@@ -5531,40 +6219,113 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 	}
 
 	#if WITH_EDITOR
-		SetNumSourceModels(MeshDescriptions.Num());
+	if (Params.bCommitMeshDescription)
+	{
+		FCommitMeshDescriptionParams CommitParams;
+		CommitParams.bMarkPackageDirty = Params.bMarkPackageDirty;
+		CommitParams.bUseHashAsGuid = Params.bUseHashAsGuid;
+
+		SetNumSourceModels(NewNumLODs);
+		for (int32 LODIndex = 0; LODIndex < NewNumLODs; LODIndex++)
+		{
+			FMeshBuildSettings& LODBuildSettings = GetSourceModel(LODIndex).BuildSettings;
+			if (Params.PerLODOverrides.IsValidIndex(LODIndex))
+			{
+				const FBuildMeshDescriptionsLODParams& LODParams = Params.PerLODOverrides[LODIndex];
+				LODBuildSettings.bUseHighPrecisionTangentBasis = LODParams.bUseHighPrecisionTangentBasis;
+				LODBuildSettings.bUseFullPrecisionUVs = LODParams.bUseFullPrecisionUVs;
+			}
+			CreateMeshDescription(LODIndex, *MeshDescriptions[LODIndex]);
+			CommitMeshDescription(LODIndex, CommitParams);
+		}
+	}
 	#endif
 
 	SetRenderData(MakeUnique<FStaticMeshRenderData>());
-	GetRenderData()->AllocateLODResources(MeshDescriptions.Num());
+	GetRenderData()->AllocateLODResources(NewNumLODs);
 
 	FStaticMeshLODResourcesArray& LODResourcesArray = GetRenderData()->LODResources;
 	for (int32 LODIndex = 0; LODIndex < LODResourcesArray.Num(); ++LODIndex)
 	{
 		LODResourcesArray[LODIndex].IndexBuffer.TrySetAllowCPUAccess(bAllowCPUAccess || Params.bAllowCpuAccess);
+		if (Params.PerLODOverrides.IsValidIndex(LODIndex))
+		{
+			const FBuildMeshDescriptionsLODParams& LODParams = Params.PerLODOverrides[LODIndex];
+			LODResourcesArray[LODIndex].VertexBuffers.StaticMeshVertexBuffer.SetUseHighPrecisionTangentBasis(LODParams.bUseHighPrecisionTangentBasis);
+			LODResourcesArray[LODIndex].VertexBuffers.StaticMeshVertexBuffer.SetUseFullPrecisionUVs(LODParams.bUseFullPrecisionUVs);
+		}
 	}
 
 	// Build render data from each mesh description
 
-	int32 LODIndex = 0;
-	for (const FMeshDescription* MeshDescriptionPtr : MeshDescriptions)
-	{
 #if WITH_EDITOR
-		// Editor builds cache the mesh description so that it can be preserved during map reloads etc
-		if (Params.bCommitMeshDescription)
-		{
-			CreateMeshDescription(LODIndex, *MeshDescriptionPtr);
-			FCommitMeshDescriptionParams CommitParams;
-			CommitParams.bMarkPackageDirty = Params.bMarkPackageDirty;
-			CommitParams.bUseHashAsGuid = Params.bUseHashAsGuid;
-			CommitMeshDescription(LODIndex, CommitParams);
-		}
+	if (Params.bFastBuild)
 #endif
-		check(MeshDescriptionPtr != nullptr);
-		FStaticMeshLODResources& LODResources = GetRenderData()->LODResources[LODIndex];
+	{
+		for (int32 LODIndex = 0; LODIndex < NewNumLODs; LODIndex++)
+		{
+			check(MeshDescriptions[LODIndex] != nullptr);
+			FStaticMeshLODResources& LODResources = GetRenderData()->LODResources[LODIndex];
 
-		BuildFromMeshDescription(*MeshDescriptionPtr, LODResources);
+			BuildFromMeshDescription(*MeshDescriptions[LODIndex], LODResources);
+		}
 
+		InitResources();
+
+		// Set up RenderData bounds and LOD data
+		GetRenderData()->Bounds = MeshDescriptions[0]->GetBounds();
+		CalculateExtendedBounds();
+
+		for (int32 LOD = 0; LOD < NewNumLODs; ++LOD)
+		{
+			// @todo: some way of customizing LOD screen size and/or calculate it based on mesh bounds
+			if (true)
+			{
+				const float LODPowerBase = 0.75f;
+				GetRenderData()->ScreenSize[LOD].Default = FMath::Pow(LODPowerBase, LOD);
+			}
+			else
+			{
+				// Possible model for flexible LODs
+				const float MaxDeviation = 100.0f; // specify
+				const float PixelError = SMALL_NUMBER;
+				const float ViewDistance = (MaxDeviation * 960.0f) / PixelError;
+
+				// Generate a projection matrix.
+				const float HalfFOV = PI * 0.25f;
+				const float ScreenWidth = 1920.0f;
+				const float ScreenHeight = 1080.0f;
+				const FPerspectiveMatrix ProjMatrix(HalfFOV, ScreenWidth, ScreenHeight, 1.0f);
+
+				GetRenderData()->ScreenSize[LOD].Default = ComputeBoundsScreenSize(FVector::ZeroVector, GetRenderData()->Bounds.SphereRadius, FVector(0.0f, 0.0f, ViewDistance + GetRenderData()->Bounds.SphereRadius), ProjMatrix);
+			}
+		}
+
+		// Set up physics-related data
+		CreateBodySetup();
+		check(GetBodySetup());
+		GetBodySetup()->InvalidatePhysicsData();
+
+		if (Params.bBuildSimpleCollision)
+		{
+			FKBoxElem BoxElem;
+			BoxElem.Center = GetRenderData()->Bounds.Origin;
+			BoxElem.X = GetRenderData()->Bounds.BoxExtent.X * 2.0f;
+			BoxElem.Y = GetRenderData()->Bounds.BoxExtent.Y * 2.0f;
+			BoxElem.Z = GetRenderData()->Bounds.BoxExtent.Z * 2.0f;
+			GetBodySetup()->AggGeom.BoxElems.Add(BoxElem);
+			GetBodySetup()->CreatePhysicsMeshes();
+		}
+	}
 #if WITH_EDITOR
+	else
+	{
+		Build(true);
+	}
+
+	for (int32 LODIndex = 0; LODIndex < NewNumLODs; LODIndex++)
+	{
+		FStaticMeshLODResources& LODResources = GetRenderData()->LODResources[LODIndex];
 		for (int32 SectionIndex = 0; SectionIndex < LODResources.Sections.Num(); SectionIndex++)
 		{
 			const FStaticMeshSection& StaticMeshSection = LODResources.Sections[SectionIndex];
@@ -5574,56 +6335,8 @@ bool UStaticMesh::BuildFromMeshDescriptions(const TArray<const FMeshDescription*
 			SectionInfo.bCastShadow = StaticMeshSection.bCastShadow;
 			GetSectionInfoMap().Set(LODIndex, SectionIndex, SectionInfo);
 		}
+	}
 #endif
-		LODIndex++;
-	}
-
-	InitResources();
-
-	// Set up RenderData bounds and LOD data
-	GetRenderData()->Bounds = MeshDescriptions[0]->GetBounds();
-	CalculateExtendedBounds();
-
-	for (int32 LOD = 0; LOD < MeshDescriptions.Num(); ++LOD)
-	{
-		// @todo: some way of customizing LOD screen size and/or calculate it based on mesh bounds
-		if (true)
-		{
-			const float LODPowerBase = 0.75f;
-			GetRenderData()->ScreenSize[LOD].Default = FMath::Pow(LODPowerBase, LOD);
-		}
-		else
-		{
-			// Possible model for flexible LODs
-			const float MaxDeviation = 100.0f; // specify
-			const float PixelError = SMALL_NUMBER;
-			const float ViewDistance = (MaxDeviation * 960.0f) / PixelError;
-
-			// Generate a projection matrix.
-			const float HalfFOV = PI * 0.25f;
-			const float ScreenWidth = 1920.0f;
-			const float ScreenHeight = 1080.0f;
-			const FPerspectiveMatrix ProjMatrix(HalfFOV, ScreenWidth, ScreenHeight, 1.0f);
-
-			GetRenderData()->ScreenSize[LOD].Default = ComputeBoundsScreenSize(FVector::ZeroVector, GetRenderData()->Bounds.SphereRadius, FVector(0.0f, 0.0f, ViewDistance + GetRenderData()->Bounds.SphereRadius), ProjMatrix);
-		}
-	}
-
-	// Set up physics-related data
-	CreateBodySetup();
-	check(GetBodySetup());
-	GetBodySetup()->InvalidatePhysicsData();
-
-	if (Params.bBuildSimpleCollision)
-	{
-		FKBoxElem BoxElem;
-		BoxElem.Center = GetRenderData()->Bounds.Origin;
-		BoxElem.X = GetRenderData()->Bounds.BoxExtent.X * 2.0f;
-		BoxElem.Y = GetRenderData()->Bounds.BoxExtent.Y * 2.0f;
-		BoxElem.Z = GetRenderData()->Bounds.BoxExtent.Z * 2.0f;
-		GetBodySetup()->AggGeom.BoxElems.Add(BoxElem);
-		GetBodySetup()->CreatePhysicsMeshes();
-	}
 
 	if (!bNewMesh)
 	{
@@ -5661,40 +6374,12 @@ int32 UStaticMesh::CalcCumulativeLODSize(int32 NumLODs) const
 	return Accum;
 }
 
-#if USE_BULKDATA_STREAMING_TOKEN
-bool UStaticMesh::GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataFilename) const
-{
-	// TODO: this is slow. Should cache the name once per mesh
-	FString PackageName = GetOutermost()->FileName.ToString();
-	// Handle name redirection and localization
-	const FCoreRedirectObjectName RedirectedName =
-		FCoreRedirects::GetRedirectedName(
-			ECoreRedirectFlags::Type_Package,
-			FCoreRedirectObjectName(NAME_None, NAME_None, *PackageName));
-	FString LocalizedName;
-	LocalizedName = FPackageName::GetDelegateResolvedPackagePath(RedirectedName.PackageName.ToString());
-	LocalizedName = FPackageName::GetLocalizedPackagePath(LocalizedName);
-	bool bSucceed = FPackageName::DoesPackageExist(LocalizedName, nullptr, &OutBulkDataFilename);
-	check(bSucceed);
-	OutBulkDataFilename = FPaths::ChangeExtension(OutBulkDataFilename, MipIndex < GetMinLOD().Default ? TEXT(".uptnl") : TEXT(".ubulk"));
-	return true;
-}
-#endif // USE_BULKDATA_STREAMING_TOKEN
-
 FIoFilenameHash UStaticMesh::GetMipIoFilenameHash(const int32 MipIndex) const
 {
-#if USE_BULKDATA_STREAMING_TOKEN
-	FString MipFilename;
-	if (GetMipDataFilename(MipIndex, MipFilename))
-	{
-		return MakeIoFilenameHash(MipFilename);
-	}
-#else
 	if (GetRenderData() && GetRenderData()->LODResources.IsValidIndex(MipIndex))
 	{
 		return GetRenderData()->LODResources[MipIndex].StreamingBulkData.GetIoFilenameHash();
 	}
-#endif
 	else
 	{
 		return INVALID_IO_FILENAME_HASH;
@@ -5703,20 +6388,19 @@ FIoFilenameHash UStaticMesh::GetMipIoFilenameHash(const int32 MipIndex) const
 
 bool UStaticMesh::DoesMipDataExist(const int32 MipIndex) const
 {
-#if USE_BULKDATA_STREAMING_TOKEN
-	FString MipDataFilename;
-	return GetMipDataFilename(MipIndex, MipDataFilename) && IFileManager::Get().FileExists(*MipDataFilename);
-#else
 	return GetRenderData() && GetRenderData()->LODResources.IsValidIndex(MipIndex) && GetRenderData()->LODResources[MipIndex].StreamingBulkData.DoesExist();
-#endif
 }
 
 bool UStaticMesh::HasPendingRenderResourceInitialization() const
 {
+	// Verify we're not compiling before accessing the renderdata to avoid forcing the compilation
+	// to finish during garbage collection. If we're still compiling, the render data has not
+	// yet been created, hence it is not possible we're actively streaming anything from it...
+
 	// Only check !bReadyForStreaming if the render data is initialized from FStaticMeshRenderData::InitResources(), 
 	// otherwise no render commands are pending and the state will never resolve.
 	// Note that bReadyForStreaming is set on the renderthread.
-	return GetRenderData() && GetRenderData()->IsInitialized() && !GetRenderData()->bReadyForStreaming;
+	return !IsCompiling() && GetRenderData() && GetRenderData()->IsInitialized() && !GetRenderData()->bReadyForStreaming;
 }
 
 bool UStaticMesh::StreamOut(int32 NewMipCount)
@@ -5766,6 +6450,21 @@ bool UStaticMesh::StreamIn(int32 NewMipCount, bool bHighPrio)
 	return false;
 }
 
+EStreamableRenderAssetType UStaticMesh::GetRenderAssetType() const
+{
+	// Don't register for regular streaming when it's Nanite rendered - proxy mesh data is only used for Raytracing and proxy mesh streaming system is used for that
+	Nanite::FCoarseMeshStreamingManager* CoarseMeshStreamingManager = IStreamingManager::Get().GetNaniteCoarseMeshStreamingManager();
+	if (HasValidNaniteData() && CoarseMeshStreamingManager)
+	{
+		return EStreamableRenderAssetType::NaniteCoarseMesh;
+	}
+	else
+	{
+		return EStreamableRenderAssetType::StaticMesh;
+	}
+
+}
+
 void UStaticMesh::CancelAllPendingStreamingActions()
 {
 	FlushRenderingCommands();
@@ -5805,7 +6504,7 @@ FString UStaticMesh::GetDesc()
 }
 
 
-static int32 GetCollisionVertIndexForMeshVertIndex(int32 MeshVertIndex, TMap<int32, int32>& MeshToCollisionVertMap, TArray<FVector>& OutPositions, TArray< TArray<FVector2D> >& OutUVs, FPositionVertexBuffer& InPosVertBuffer, FStaticMeshVertexBuffer& InVertBuffer)
+static int32 GetCollisionVertIndexForMeshVertIndex(int32 MeshVertIndex, TMap<int32, int32>& MeshToCollisionVertMap, TArray<FVector3f>& OutPositions, TArray< TArray<FVector2D> >& OutUVs, FPositionVertexBuffer& InPosVertBuffer, FStaticMeshVertexBuffer& InVertBuffer)
 {
 	int32* CollisionIndexPtr = MeshToCollisionVertMap.Find(MeshVertIndex);
 	if (CollisionIndexPtr != nullptr)
@@ -5818,7 +6517,7 @@ static int32 GetCollisionVertIndexForMeshVertIndex(int32 MeshVertIndex, TMap<int
 		for (int32 ChannelIdx = 0; ChannelIdx < OutUVs.Num(); ChannelIdx++)
 		{
 			check(OutPositions.Num() == OutUVs[ChannelIdx].Num());
-			OutUVs[ChannelIdx].Add(InVertBuffer.GetVertexUV(MeshVertIndex, ChannelIdx));
+			OutUVs[ChannelIdx].Add(FVector2D(InVertBuffer.GetVertexUV(MeshVertIndex, ChannelIdx)));
 		}
 
 		// Copy position
@@ -5957,6 +6656,18 @@ bool UStaticMesh::ContainsPhysicsTriMeshDataCheckComplex(bool bInUseAllTriData, 
 	return false; 
 }
 
+bool UStaticMesh::PollAsyncPhysicsTriMeshData(bool InUseAllTriData) const
+{
+#if WITH_EDITORONLY_DATA
+	bool bInCheckComplexCollisionMesh = true;
+	if (ComplexCollisionMesh && ComplexCollisionMesh != this && bInCheckComplexCollisionMesh)
+	{
+		return true;
+	}
+#endif
+	return !IsCompiling();
+}
+
 void UStaticMesh::GetMeshId(FString& OutMeshId)
 {
 #if WITH_EDITORONLY_DATA
@@ -6013,7 +6724,7 @@ void UStaticMesh::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataCl
 
 const TArray<UAssetUserData*>* UStaticMesh::GetAssetUserDataArray() const 
 {
-	return &AssetUserData;
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }
 
 /**
@@ -6023,7 +6734,11 @@ void UStaticMesh::CreateBodySetup()
 {
 	if (GetBodySetup() == nullptr)
 	{
-		UBodySetup* NewBodySetup = NewObject<UBodySetup>(this);
+		UBodySetup* NewBodySetup = nullptr;
+		{
+			FGCScopeGuard Scope;
+			NewBodySetup = NewObject<UBodySetup>(this);
+		}
 		NewBodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 		NewBodySetup->bSupportUVsAndFaceRemap = bSupportPhysicalMaterialMasks;
 		SetBodySetup(NewBodySetup);
@@ -6036,7 +6751,12 @@ void UStaticMesh::CreateNavCollision(const bool bIsUpdate)
 	{
 		if (GetNavCollision() == nullptr)
 		{
-			SetNavCollision(UNavCollisionBase::ConstructNew(*this));
+			UNavCollisionBase* NewNavCollisionBase = nullptr;
+			{
+				FGCScopeGuard Scope;
+				NewNavCollisionBase = UNavCollisionBase::ConstructNew(*this);
+			}
+			SetNavCollision(NewNavCollisionBase);
 		}
 
 		if (GetNavCollision())
@@ -6061,6 +6781,7 @@ void UStaticMesh::CreateNavCollision(const bool bIsUpdate)
 
 void UStaticMesh::SetNavCollision(UNavCollisionBase* InNavCollision)
 {
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::NavCollision);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	NavCollision = InNavCollision;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -6068,6 +6789,7 @@ void UStaticMesh::SetNavCollision(UNavCollisionBase* InNavCollision)
 
 UNavCollisionBase* UStaticMesh::GetNavCollision() const
 {
+	WaitUntilAsyncPropertyReleased(EStaticMeshAsyncProperties::NavCollision);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return NavCollision; 
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -6105,7 +6827,7 @@ void UStaticMesh::GetVertexColorData(TMap<FVector, FColor>& VertexColorData)
 				// Build a mapping of vertex positions to vertex colors.
 				for (int32 WedgeIndex = 0; WedgeIndex < Mesh.WedgeIndices.Num(); ++WedgeIndex)
 				{
-					FVector Position = Mesh.VertexPositions[Mesh.WedgeIndices[WedgeIndex]];
+					FVector Position(Mesh.VertexPositions[Mesh.WedgeIndices[WedgeIndex]]);
 					FColor Color = Mesh.WedgeColors[WedgeIndex];
 					if (!VertexColorData.Contains(Position))
 					{
@@ -6149,7 +6871,7 @@ void UStaticMesh::SetVertexColorData(const TMap<FVector, FColor>& VertexColorDat
 			// Build a mapping of vertex positions to vertex colors.
 			for (int32 WedgeIndex = 0; WedgeIndex < Mesh.WedgeIndices.Num(); ++WedgeIndex)
 			{
-				FVector Position = Mesh.VertexPositions[Mesh.WedgeIndices[WedgeIndex]];
+				FVector Position(Mesh.VertexPositions[Mesh.WedgeIndices[WedgeIndex]]);
 				const FColor* Color = VertexColorData.Find(Position);
 				if (Color)
 				{
@@ -6174,8 +6896,9 @@ ENGINE_API void UStaticMesh::RemoveVertexColors()
 #if WITH_EDITOR
 	bool bRemovedVertexColors = false;
 
-	for (FStaticMeshSourceModel& SourceModel : GetSourceModels())
+	for (int32 LodIndex = 0; LodIndex < GetNumSourceModels(); LodIndex++)
 	{
+		FStaticMeshSourceModel& SourceModel = GetSourceModel(LodIndex);
 		if (!SourceModel.IsRawMeshEmpty())
 		{
 			FRawMesh RawMesh;
@@ -6249,12 +6972,12 @@ void UStaticMesh::EnforceLightmapRestrictions(bool bUseRenderData)
 			{
 				if (const FMeshDescription* MeshDescription = GetMeshDescription(SourceLOD))
 				{
-					const TVertexInstanceAttributesConstRef<FVector2D> UVChannels = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+					TVertexInstanceAttributesConstRef<FVector2f> UVChannels = FStaticMeshConstAttributes(*MeshDescription).GetVertexInstanceUVs();
 
 					// skip empty/stripped LODs
 					if (UVChannels.GetNumElements() > 0)
 					{
-						int NumChannelsInLOD = UVChannels.GetNumIndices();
+						int NumChannelsInLOD = UVChannels.GetNumChannels();
 						const FStaticMeshSourceModel& SourceModel = GetSourceModel(SourceLOD);
 
 						if (SourceModel.BuildSettings.bGenerateLightmapUVs)
@@ -6402,7 +7125,7 @@ void UStaticMesh::CheckLightMapUVs( UStaticMesh* InStaticMesh, TArray< FString >
 			const uint32 VertexIndices[] = {Indices[StartIndex + 0], Indices[StartIndex + 1], Indices[StartIndex + 2]};
 			for(int i = 0; i<3;i++)
 			{
-				TriangleUVsOUT[i] = MeshLOD.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndices[i], UVChannel);		
+				TriangleUVsOUT[i] = FVector2D(MeshLOD.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndices[i], UVChannel));		
 			}
 		}
 
@@ -6550,7 +7273,7 @@ UMaterialInterface* UStaticMesh::GetMaterial(int32 MaterialIndex) const
 		return GetStaticMaterials()[MaterialIndex].MaterialInterface;
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 
@@ -6594,7 +7317,7 @@ int32 UStaticMesh::GetMaterialIndex(FName MaterialSlotName) const
 			return MaterialIndex;
 		}
 	}
-	return -1;
+	return INDEX_NONE;
 }
 
 #if WITH_EDITOR
@@ -6602,6 +7325,12 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 {
 	if (GetStaticMaterials().IsValidIndex(MaterialIndex))
 	{
+		// Ensure mesh descriptions are loaded before starting the transaction
+		for (int32 LODIndex = 0; LODIndex < GetNumSourceModels(); ++LODIndex)
+		{
+			GetMeshDescription(LODIndex);
+		}
+
 		FScopedTransaction ScopeTransaction(LOCTEXT("StaticMeshMaterialChanged", "StaticMesh: Material changed"));
 
 		// flag the property (Materials) we're modifying so that not all of the object is rebuilt.
@@ -6652,48 +7381,6 @@ void UStaticMesh::SetMaterial(int32 MaterialIndex, UMaterialInterface* NewMateri
 					}
 				}
 				GetStaticMaterials()[MaterialIndex].ImportedMaterialSlotName = FName(*MaterialSlotName);
-			}
-
-			//Make sure adjacency information fit new material change
-			TArray<bool> FixLODAdjacencyOption;
-			FixLODAdjacencyOption.AddZeroed(GetNumLODs());
-			bool bPromptUser = false;
-			for (int32 LODIndex = 0; LODIndex < GetNumLODs(); ++LODIndex)
-			{
-				FixLODAdjacencyOption[LODIndex] = FixLODRequiresAdjacencyInformation(LODIndex);
-				bPromptUser |= FixLODAdjacencyOption[LODIndex];
-			}
-
-			//Prompt the user only once
-			if (bPromptUser)
-			{
-				FText ConfirmRequiredAdjacencyText = FText::Format(LOCTEXT("ConfirmRequiredAdjacencyNoLODIndex", "Using a tessellation material required the adjacency buffer to be computed.\nDo you want to set the adjacency options to true?\n\n\tSaticMesh: {0}\n\tMaterial: {1}"), FText::FromString(GetPathName()), FText::FromString(GetStaticMaterials()[MaterialIndex].MaterialInterface->GetPathName()));
-				EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNoCancel, ConfirmRequiredAdjacencyText);
-				bool bRevertAdjacency = false;
-				switch(Result)
-				{
-					//Handle cancel and negative answer
-					case EAppReturnType::Cancel:
-					{
-						GetStaticMaterials()[MaterialIndex].MaterialInterface = CancelOldMaterial;
-						bRevertAdjacency = true;
-					}
-					case EAppReturnType::No:
-					{
-						bRevertAdjacency = true;
-					}
-				}
-				if (bRevertAdjacency)
-				{
-					//Revert previous change since the material was reverse
-					for (int32 FixLODIndex = 0; FixLODIndex < FixLODAdjacencyOption.Num(); ++FixLODIndex)
-					{
-						if (FixLODAdjacencyOption[FixLODIndex])
-						{
-							GetSourceModel(FixLODIndex).BuildSettings.bBuildAdjacencyBuffer = false;
-						}
-					}
-				}
 			}
 		}
 
@@ -6794,7 +7481,7 @@ void UStaticMesh::ConvertLegacyLODDistance()
 				FVector4 ScreenPosition = ProjMatrix.TransformFVector4(PointToTest);
 				// Convert to a percentage of the screen
 				const float ScreenMultiple = ScreenWidth / 2.0f * ProjMatrix.M[0][0];
-				const float ScreenRadius = ScreenMultiple * GetBounds().SphereRadius / FMath::Max(ScreenPosition.W, 1.0f);
+				const float ScreenRadius = ScreenMultiple * GetBounds().SphereRadius / FMath::Max(float(ScreenPosition.W), 1.0f);
 				const float ScreenArea = ScreenWidth * ScreenHeight;
 				const float BoundsArea = PI * ScreenRadius * ScreenRadius;
 				SrcModel.ScreenSize.Default = FMath::Clamp(BoundsArea / ScreenArea, 0.0f, 1.0f);
@@ -6910,6 +7597,63 @@ void UStaticMesh::RemoveSocket(UStaticMeshSocket* Socket)
 	Sockets.Remove(Socket);
 }
 
+ENGINE_API int32 UStaticMesh::GetDefaultMinLOD() const
+{
+	if (IsMinLodQualityLevelEnable())
+	{
+		return GetQualityLevelMinLOD().GetDefault();
+	}
+	else
+	{
+		return GetMinLOD().GetDefault();
+	}
+}
+
+ENGINE_API int32 UStaticMesh::GetMinLODIdx() const
+{
+	if (IsMinLodQualityLevelEnable())
+	{
+		return GetQualityLevelMinLOD().GetValue(GMinLodQualityLevel);
+	}
+	else
+	{
+		return GetMinLOD().GetValue();
+	}
+}
+
+ENGINE_API void UStaticMesh::SetMinLODIdx(int32 InMinLOD)
+{
+	if (IsMinLodQualityLevelEnable())
+	{
+		SetQualityLevelMinLOD(InMinLOD);
+	}
+	else
+	{
+		SetMinLOD(InMinLOD);
+	}
+}
+
+/** Check the QualitLevel property is enabled for MinLod. */
+bool UStaticMesh::IsMinLodQualityLevelEnable() const
+{
+	return (GEngine && GEngine->UseStaticMeshMinLODPerQualityLevels);
+}
+
+void UStaticMesh::OnLodStrippingQualityLevelChanged(IConsoleVariable* Variable){
+#ifdef WITH_EDITOR
+	if (GEngine && GEngine->UseStaticMeshMinLODPerQualityLevels)
+	{
+		for (TObjectIterator<UStaticMesh> It; It; ++It)
+		{
+			UStaticMesh* StaticMesh = *It;
+			if (StaticMesh && StaticMesh->GetQualityLevelMinLOD().PerQuality.Num() > 0)
+			{
+				FStaticMeshComponentRecreateRenderStateContext Context(StaticMesh, false);
+			}
+		}
+	}
+#endif
+}
 /*-----------------------------------------------------------------------------
 UStaticMeshSocket
 -----------------------------------------------------------------------------*/

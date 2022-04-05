@@ -15,17 +15,18 @@ public class Lobby : ModuleRules
 			);
 
 		PrivateDependencyModuleNames.AddRange(
-			new string[] { 
+			new string[] {
 				"Core",
+				"CoreOnline",
 				"CoreUObject",
+				"NetCore",
 				"Engine",
 				"OnlineSubsystem",
 				"OnlineSubsystemUtils",
 			}
 			);
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 ||
-			Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)

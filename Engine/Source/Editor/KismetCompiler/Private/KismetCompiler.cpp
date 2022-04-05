@@ -23,6 +23,7 @@
 #include "Engine/UserDefinedStruct.h"
 #include "Blueprint/BlueprintExtension.h"
 #include "EdGraphUtilities.h"
+#include "K2Node_AddDelegate.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Composite.h"
 #include "K2Node_CreateDelegate.h"
@@ -39,6 +40,7 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_EditablePinBase.h" // for FUserPinInfo
+#include "KismetCastingUtils.h"
 #include "KismetCompilerBackend.h"
 #include "Kismet2/KismetReinstanceUtilities.h"
 #include "Engine/SCS_Node.h"
@@ -52,7 +54,6 @@
 #include "EdGraph/EdGraphNode_Documentation.h"
 #include "Engine/DynamicBlueprintBinding.h"
 #include "Engine/InheritableComponentHandler.h"
-#include "BlueprintCompilerCppBackendInterface.h"
 #include "Serialization/ArchiveScriptReferenceCollector.h"
 #include "UObject/UnrealTypePrivate.h"
 
@@ -70,6 +71,8 @@ FSimpleMulticastDelegate FKismetCompilerContext::OnPostCompile;
 DECLARE_CYCLE_STAT(TEXT("Create Schema"), EKismetCompilerStats_CreateSchema, STATGROUP_KismetCompiler );
 DECLARE_CYCLE_STAT(TEXT("Create Function List"), EKismetCompilerStats_CreateFunctionList, STATGROUP_KismetCompiler );
 DECLARE_CYCLE_STAT(TEXT("Expansion"), EKismetCompilerStats_Expansion, STATGROUP_KismetCompiler )
+DECLARE_CYCLE_STAT(TEXT("Expand Node"), EKismetCompilerStats_ExpandNode, STATGROUP_KismetCompiler )
+DECLARE_CYCLE_STAT(TEXT("Post Expansion Step"), EKismetCompilerStats_PostExpansionStep, STATGROUP_KismetCompiler )
 DECLARE_CYCLE_STAT(TEXT("Process uber"), EKismetCompilerStats_ProcessUbergraph, STATGROUP_KismetCompiler );
 DECLARE_CYCLE_STAT(TEXT("Process func"), EKismetCompilerStats_ProcessFunctionGraph, STATGROUP_KismetCompiler );
 DECLARE_CYCLE_STAT(TEXT("Generate Function Graph"), EKismetCompilerStats_GenerateFunctionGraphs, STATGROUP_KismetCompiler );
@@ -84,8 +87,10 @@ DECLARE_CYCLE_STAT(TEXT("Bind and Link Class"), EKismetCompilerStats_BindAndLink
 DECLARE_CYCLE_STAT(TEXT("Calculate checksum of CDO"), EKismetCompilerStats_ChecksumCDO, STATGROUP_KismetCompiler );
 DECLARE_CYCLE_STAT(TEXT("Analyze execution path"), EKismetCompilerStats_AnalyzeExecutionPath, STATGROUP_KismetCompiler);
 DECLARE_CYCLE_STAT(TEXT("Calculate checksum of signature"), EKismetCompilerStats_ChecksumSignature, STATGROUP_KismetCompiler);
+DECLARE_CYCLE_STAT(TEXT("Pruning"), EKismetCompilerStats_PruneIsolatedNodes, STATGROUP_KismetCompiler);
+DECLARE_CYCLE_STAT(TEXT("Merge Ubergraph Pages In"), EKismetCompilerStats_MergeUbergraphPagesIn, STATGROUP_KismetCompiler);
 
-namespace
+namespace UE::KismetCompiler::Private
 {
 	// The function collects all nodes, that can represents entry points of the execution. Any node connected to "root" node (by execution link) won't be consider isolated.
 	static void GatherRootSet(const UEdGraph* Graph, TArray<UEdGraphNode*>& RootSet, bool bIncludeNodesThatCouldBeExpandedToRootSet)
@@ -116,6 +121,339 @@ namespace
 			if (bIsRootSet)
 			{
 				RootSet.Add(Node);
+			}
+		}
+	}
+
+	// When we change pins back to real/float types, we also expect that the series of pin types matches that of the UFunction.
+	// If there's ever a discrepancy, then there's not much we can do other than log a warning.
+	// It typically means that the BP is in a bad state, which prevents us from deducing the corresponding pin.
+	static void RestoreFloatPinsToNode(UK2Node_EditablePinBase* Node, const UFunction* FunctionSignature, bool bProcessOutputParamsOnly = false)
+	{
+		check(Node);
+		check(FunctionSignature);
+
+		int UserDefinedPinCursor = 0;
+		int PinCursor = 0;
+
+		if (Node->UserDefinedPins.Num() > 0)
+		{
+			bool bMatchingPinFound = false;
+			
+			check(Node->UserDefinedPins[0]);
+
+			FName UserPinName = Node->UserDefinedPins[0]->PinName;
+
+			for (int i = 0; i < Node->Pins.Num(); ++i)
+			{
+				check(Node->Pins[i]);
+
+				// Subpins aren't a part of the function signature, so we need to skip them.
+				if (Node->Pins[i]->ParentPin)
+				{
+					continue;
+				}
+
+				if (Node->Pins[i]->PinName == UserPinName)
+				{
+					PinCursor = i;
+					bMatchingPinFound = true;
+					break;
+				}
+			}
+
+			if (!bMatchingPinFound)
+			{
+				UE_LOG(LogK2Compiler, Warning, TEXT("User pin '%s' ('%s') was not found in the pins list!"),
+					*UserPinName.ToString(),
+					*Node->GetFullName());
+			}
+		}
+
+		auto IsFloatProperty = [Node](const FProperty* Property)
+		{
+			check(Property);
+
+			if (const FFloatProperty* FloatProperty = CastField<FFloatProperty>(Property))
+			{
+				return true;
+			}
+			else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				check(ArrayProperty->Inner);
+				return ArrayProperty->Inner->IsA<FFloatProperty>();
+			}
+			else if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+			{
+				check(SetProperty->ElementProp);
+				return SetProperty->ElementProp->IsA<FFloatProperty>();
+			}
+			else if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+			{
+				check(MapProperty->KeyProp);
+				check(MapProperty->ValueProp);
+
+				if (MapProperty->KeyProp->IsA<FFloatProperty>() || MapProperty->ValueProp->IsA<FFloatProperty>())
+				{
+					UE_LOG(LogK2Compiler, Warning, TEXT("A map with float entries was found in '%s'. Delegate signature may be inaccurate."),
+						*Node->GetFullName());
+				}
+
+				return false;
+			}
+
+			return false;
+		};
+
+		auto IsValidParameter = [bProcessOutputParamsOnly](FProperty* Property)
+		{
+			check(Property);
+
+			bool bIsOutputParameter =
+				(Property->HasAnyPropertyFlags(CPF_OutParm) && !Property->HasAnyPropertyFlags(CPF_ConstParm));
+
+			if (bProcessOutputParamsOnly)
+			{
+				return bIsOutputParameter;
+			}
+			else
+			{
+				// HACK: We still have to reckon with arrays that are implicitly copy-by-ref.
+				// Ideally, we should be excluding all output params.
+				bool bIsInputParameter =
+					(Property->IsA<FArrayProperty>() && Property->HasAnyPropertyFlags(CPF_Parm)) ||
+					!bIsOutputParameter;
+
+				return bIsInputParameter;
+			}
+		};
+
+		for (TFieldIterator<FProperty> PropIt(FunctionSignature); PropIt; ++PropIt)
+		{
+			FProperty* CurrentProperty = *PropIt;
+			check(CurrentProperty);
+
+			if (IsValidParameter(CurrentProperty))
+			{
+				if (UserDefinedPinCursor < Node->UserDefinedPins.Num())
+				{
+					if (IsFloatProperty(CurrentProperty))
+					{
+						TSharedPtr<FUserPinInfo>& UserPin = Node->UserDefinedPins[UserDefinedPinCursor];
+						check(UserPin);
+
+						if (UserPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+						{
+							UserPin->PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+						}
+						else
+						{
+							UE_LOG(LogK2Compiler, Warning, TEXT("Expected a 'real' type for user pin '%s' ('%s'), but found type '%s' instead!"),
+								*UserPin->PinName.ToString(),
+								*Node->GetFullName(),
+								*UserPin->PinType.PinCategory.ToString());
+						}
+
+						// Subpins aren't a part of the function signature, so we need to skip them.
+						while (PinCursor < Node->Pins.Num())
+						{
+							UEdGraphPin* Pin = Node->Pins[PinCursor];
+							check(Pin);
+							if (Pin->ParentPin == nullptr)
+							{
+								break;
+							}
+
+							++PinCursor;
+						}
+
+						if (PinCursor < Node->Pins.Num())
+						{
+							UEdGraphPin* Pin = Node->Pins[PinCursor];
+							check(Pin);
+
+							if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+							{
+								Pin->PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+							}
+							else
+							{
+								UE_LOG(LogK2Compiler, Warning, TEXT("Expected a 'real' type for pin '%s' ('%s'), but found type '%s' instead!"),
+									*Pin->PinName.ToString(),
+									*Node->GetFullName(),
+									*Pin->PinType.PinCategory.ToString());
+							}
+						}
+						else
+						{
+							UE_LOG(LogK2Compiler, Warning, TEXT("PinCursor ('%s') has an invalid index: %d!"),
+								*Node->GetFullName(),
+								PinCursor);
+						}
+					}
+
+					++UserDefinedPinCursor;
+					++PinCursor;
+				}
+				else
+				{
+					// It's possible that we'll use up pins before reaching the end of the function signature's properties.
+					// This can happen when a function has reference params. The corresponding pins are split between two nodes (ie: entry and result nodes).
+					break;
+				}
+			}
+		}
+	}
+
+	static UFunction* GetLinkedDelegateSignature(UK2Node* NodeWithDelegate)
+	{
+		check(NodeWithDelegate);
+
+		const UEdGraphPin* DelegateOutPin = NodeWithDelegate->FindPin(UK2Node_Event::DelegateOutputName);
+		if (DelegateOutPin && (DelegateOutPin->LinkedTo.Num() > 0))
+		{
+			// Since the BP hasn't been compiled yet, we'll run into knot nodes that need to be skipped.
+			check(DelegateOutPin->LinkedTo[0]);
+			UEdGraphNode* LinkedNode = DelegateOutPin->LinkedTo[0]->GetOwningNode();
+			while (UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(LinkedNode))
+			{
+				check(KnotNode->GetOutputPin());
+				UEdGraphPin* OutputPin = KnotNode->GetOutputPin();
+				check(OutputPin);
+				check(OutputPin->LinkedTo.Num() > 0);
+				
+				LinkedNode = OutputPin->LinkedTo[0]->GetOwningNode();
+			}
+
+			// If the delegate pin has been linked, then we should run into either a
+			// AddDelegate or RemoveDelegate node.
+			// In either case, it should have the signature that we need.
+			UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(LinkedNode);
+			if (DelegateNode)
+			{
+				return DelegateNode->GetDelegateSignature();
+			}
+		}
+
+		return nullptr;
+	}
+
+	// By default, float pins are changed to real/double pins during serialization.
+	// However, Blueprint functions that are bound to native delegates need to use real/float pins if
+	// that's what the underlying delegate signature requires.
+	// Failure to do so will lead to incorrect UFunction signatures in the skeleton class,
+	// which can cause compilation errors.
+	static void MatchNodesToDelegateSignatures(UBlueprint* BP)
+	{
+		check(BP);
+
+		TArray<UK2Node_CreateDelegate*> CreateDelegateNodes;
+		FBlueprintEditorUtils::GetAllNodesOfClass(BP, CreateDelegateNodes);
+
+		TMap<FName, UK2Node_CreateDelegate*> CreateDelegateNodeMap;
+		for (UK2Node_CreateDelegate* CreateDelegateNode : CreateDelegateNodes)
+		{
+			check(CreateDelegateNode);
+			if (CreateDelegateNode->SelectedFunctionName != NAME_None)
+			{
+				CreateDelegateNodeMap.Add(CreateDelegateNode->SelectedFunctionName, CreateDelegateNode);
+			}
+		}
+
+		// Handle function terminator nodes
+
+		TArray<UK2Node_FunctionTerminator*> TerminatorNodes;
+		FBlueprintEditorUtils::GetAllNodesOfClass(BP, TerminatorNodes);
+		for (UK2Node_FunctionTerminator* FunctionTerminatorNode : TerminatorNodes)
+		{
+			check(FunctionTerminatorNode);
+
+			// If the function is an override, then we can't change the signature.
+			UFunction* Function = FunctionTerminatorNode->FunctionReference.ResolveMember<UFunction>(BP->ParentClass);
+			if (!Function)
+			{
+				UK2Node_CreateDelegate** DelegateNodePtr = CreateDelegateNodeMap.Find(FunctionTerminatorNode->FunctionReference.GetMemberName());
+				if (DelegateNodePtr)
+				{
+					UK2Node_CreateDelegate* DelegateNode = *DelegateNodePtr;
+					check(DelegateNode);
+
+					UFunction* DelegateSignature = DelegateNode->GetDelegateSignature();
+
+					if (DelegateSignature == nullptr)
+					{
+						// In some edge cases, the delegate pin for UK2Node_CreateDelegate might be missing PinSubCategoryMemberReference information.
+						// Our fallback case is to find the signature from the linked K2Node_AddDelegate. 
+						DelegateSignature = GetLinkedDelegateSignature(DelegateNode);
+					}
+
+					if (DelegateSignature)
+					{
+						if (DelegateSignature->GetNativeFunc())
+						{
+							bool bUseOutputParams =
+								FunctionTerminatorNode->IsA<UK2Node_FunctionResult>();
+
+							RestoreFloatPinsToNode(FunctionTerminatorNode, DelegateSignature, bUseOutputParams);
+						}
+					}
+					else
+					{
+						UE_LOG(LogK2Compiler, Warning, TEXT("Unable to determine delegate signature for node '%s'!"),
+							*DelegateNode->GetFullName());
+					}
+				}
+			}
+		}
+
+		// Handle custom event nodes
+
+		TArray<UK2Node_CustomEvent*> CustomEventNodes;
+		FBlueprintEditorUtils::GetAllNodesOfClass(BP, CustomEventNodes);
+		for (UK2Node_CustomEvent* CustomEventNode : CustomEventNodes)
+		{
+			check(CustomEventNode);
+
+			// We'll give precedence to the signature of the linked delegate.
+			// Failing that, we'll then see if the custom event was possibly created via a CreateDelegate node.
+			UFunction* DelegateSignature = GetLinkedDelegateSignature(CustomEventNode);
+
+			if (DelegateSignature && DelegateSignature->GetNativeFunc())
+			{
+				RestoreFloatPinsToNode(CustomEventNode, DelegateSignature);
+			}
+			else
+			{
+				FName NodeName = CustomEventNode->CustomFunctionName;
+
+				UK2Node_CreateDelegate** DelegateNodePtr = CreateDelegateNodeMap.Find(NodeName);
+				if (DelegateNodePtr)
+				{
+					UK2Node_CreateDelegate* DelegateNode = *DelegateNodePtr;
+					check(DelegateNode);
+
+					DelegateSignature = DelegateNode->GetDelegateSignature();
+
+					if (DelegateSignature == nullptr)
+					{
+						// In some edge cases, the delegate pin for UK2Node_CreateDelegate might be missing PinSubCategoryMemberReference information.
+						// Our fallback case is to find the signature from the linked K2Node_AddDelegate. 
+						DelegateSignature = GetLinkedDelegateSignature(DelegateNode);
+					}
+
+					if (DelegateSignature)
+					{
+						if (DelegateSignature->GetNativeFunc())
+						{
+							RestoreFloatPinsToNode(CustomEventNode, DelegateSignature);
+						}
+					}
+					else
+					{
+						UE_LOG(LogK2Compiler, Warning, TEXT("Unable to determine delegate signature for node '%s'!"),
+							*DelegateNode->GetFullName());
+					}
+				}
 			}
 		}
 	}
@@ -174,6 +512,7 @@ FKismetCompilerContext::~FKismetCompilerContext()
 
 UEdGraphSchema_K2* FKismetCompilerContext::CreateSchema()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WILD_FKismetCompilerContext::CreateSchema);
 	return NewObject<UEdGraphSchema_K2>();
 }
 
@@ -311,7 +650,7 @@ void FKismetCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedClass* Cla
 	}
 
 	// Purge the class to get it back to a "base" state
-	bool bLayoutChanging = ClassToClean->HasAnyClassFlags(CLASS_LayoutChanging);
+	bool bLayoutChanging = ClassToClean->bLayoutChanging;
 	ClassToClean->PurgeClass(bRecompilingOnLoad);
 
 	// Set properties we need to regenerate the class with
@@ -321,9 +660,9 @@ void FKismetCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedClass* Cla
 	ClassToClean->ClassConfigName = ClassToClean->IsNative() ? FName(ClassToClean->StaticConfigName()) : ParentClass->ClassConfigName;
 	ClassToClean->DebugData = FBlueprintDebugData();
 
-	if(bLayoutChanging)
+	if (bLayoutChanging)
 	{
-		ClassToClean->ClassFlags |= CLASS_LayoutChanging;
+		ClassToClean->bLayoutChanging = true;
 	}
 }
 
@@ -380,6 +719,7 @@ void FKismetCompilerContext::SaveSubObjectsFromCleanAndSanitizeClass(FSubobjectC
 
 void FKismetCompilerContext::PostCreateSchema()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WILD_FKismetCompilerContext::PostCreateSchema);
 	NodeHandlers.Add(UEdGraphNode_Comment::StaticClass(), new FNodeHandlingFunctor(*this));
 
 	TArray<UClass*> ClassesOfUK2Node;
@@ -852,7 +1192,8 @@ void FKismetCompilerContext::CreateClassVariablesFromBlueprint()
 		FEdGraphPinType DirectionPinType(UEdGraphSchema_K2::PC_Byte, NAME_None, FTimeline::GetTimelineDirectionEnum(), EPinContainerType::None, false, FEdGraphTerminalType());
 		CreateVariable(Timeline->GetDirectionPropertyName(), DirectionPinType);
 
-		FEdGraphPinType FloatPinType(UEdGraphSchema_K2::PC_Float, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType());
+		FEdGraphPinType FloatPinType(UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Float, nullptr, EPinContainerType::None, false, FEdGraphTerminalType());
+
 		for (const FTTFloatTrack& FloatTrack : Timeline->FloatTracks)
 		{
 			CreateVariable(FloatTrack.GetPropertyName(), FloatPinType);
@@ -1169,11 +1510,10 @@ void FKismetCompilerContext::CreateLocalVariablesForFunction(FKismetFunctionCont
 
 		// Fix up the return value
 		//@todo:  Is there a better way of doing this without mangling code?
-		const FName RetValName = FName(TEXT("ReturnValue"));
 		for (TFieldIterator<FProperty> It(Context.Function); It && (It->PropertyFlags & CPF_Parm); ++It)
 		{
 			FProperty* Property = *It;
-			if ((Property->GetFName() == RetValName) && Property->HasAnyPropertyFlags(CPF_OutParm))
+			if ((Property->GetFName() == UEdGraphSchema_K2::PN_ReturnValue) && Property->HasAnyPropertyFlags(CPF_OutParm))
 			{
 				Property->SetPropertyFlags(CPF_ReturnParm);
 			}
@@ -1253,17 +1593,19 @@ void FKismetCompilerContext::SetPropertyDefaultValue(const FProperty* PropertyTo
 /** Copies default values cached for the terms in the DefaultPropertyValueMap to the final CDO */
 void FKismetCompilerContext::CopyTermDefaultsToDefaultObject(UObject* DefaultObject)
 {
-	// Assign all default object values from the map to the new CDO
-	for( TMap<FName, FString>::TIterator PropIt(DefaultPropertyValueMap); PropIt; ++PropIt )
+	if (DefaultPropertyValueMap.Num() > 0)
 	{
-		FName TargetPropName = PropIt.Key();
-		FString Value = PropIt.Value();
+		int32 PropertiesAssigned = 0;
 
-		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		// Assign all default object values from the map to the new CDO
+		for (TFieldIterator<FProperty> It(DefaultObject->GetClass(), EFieldIteratorFlags::ExcludeSuper); It && PropertiesAssigned < DefaultPropertyValueMap.Num(); ++It)
 		{
 			FProperty* Property = *It;
-			if (Property->GetFName() == TargetPropName)
+			if (const FString* ValuePtr = DefaultPropertyValueMap.Find(Property->GetFName()))
 			{
+				++PropertiesAssigned;
+
+				const FString& Value = *ValuePtr;
 				if(FObjectProperty* AsObjectProperty = CastField<FObjectProperty>(Property))
 				{
 					// Value is the fully qualified name, so just search for it:
@@ -1301,8 +1643,6 @@ void FKismetCompilerContext::CopyTermDefaultsToDefaultObject(UObject* DefaultObj
 						MessageLog.Warning(*ErrorMessage, InstigatorPin);
 					}
 				}
-
-				break;
 			}
 		}			
 	}
@@ -1494,7 +1834,7 @@ void FKismetCompilerContext::PruneIsolatedNodes(UEdGraph* InGraph, bool bInInclu
 {
 	TArray<UEdGraphNode*> RootSet;
 	// Find any all entry points caused by special nodes
-	GatherRootSet(InGraph, RootSet, bInIncludeNodesThatCouldBeExpandedToRootSet);
+	UE::KismetCompiler::Private::GatherRootSet(InGraph, RootSet, bInIncludeNodesThatCouldBeExpandedToRootSet);
 
 	// Find the connected subgraph starting at the root node and prune out unused nodes
 	PruneIsolatedNodes(RootSet, InGraph->Nodes);
@@ -1503,6 +1843,8 @@ void FKismetCompilerContext::PruneIsolatedNodes(UEdGraph* InGraph, bool bInInclu
 /** Prunes any nodes that weren't visited from the graph, printing out a warning */
 void FKismetCompilerContext::PruneIsolatedNodes(const TArray<UEdGraphNode*>& RootSet, TArray<UEdGraphNode*>& GraphNodes)
 {
+	BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_PruneIsolatedNodes);
+	
 	//@TODO: This function crawls the graph twice (once here and once in Super, could potentially combine them, with a bitflag for flows reached via exec wires)
 
 	// Prune the impure nodes that aren't reachable via any (even impossible, e.g., a branch never taken) execution flow
@@ -1963,11 +2305,10 @@ void FKismetCompilerContext::PrecompileFunction(FKismetFunctionContext& Context,
 		{
 			// Fix up the return value - this used to be done by CreateLocalVariablesForFunction.
 			// This should probably be done in CreateParametersForFunction
-			const FName RetValName = FName(TEXT("ReturnValue"));
 			for (TFieldIterator<FProperty> It(Context.Function); It && (It->PropertyFlags & CPF_Parm); ++It)
 			{
 				FProperty* Property = *It;
-				if ((Property->GetFName() == RetValName) && Property->HasAnyPropertyFlags(CPF_OutParm))
+				if ((Property->GetFName() == UEdGraphSchema_K2::PN_ReturnValue) && Property->HasAnyPropertyFlags(CPF_OutParm))
 				{
 					Property->SetPropertyFlags(CPF_ReturnParm);
 				}
@@ -2052,6 +2393,15 @@ void FKismetCompilerContext::PrecompileFunction(FKismetFunctionContext& Context,
 	}
 }
 
+void FKismetCompilerContext::PreCompileUpdateBlueprintOnLoad(UBlueprint* BP)
+{
+	check(BP);
+	if (BP->GetLinkerCustomVersion(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::BlueprintPinsUseRealNumbers)
+	{
+		UE::KismetCompiler::Private::MatchNodesToDelegateSignatures(BP);
+	}
+}
+
 /** Inserts a new item into an array in a sorted position; using an externally stored sort index map */
 template<typename DataType, typename SortKeyType>
 void OrderedInsertIntoArray(TArray<DataType>& Array, const TMap<DataType, SortKeyType>& SortKeyMap, const DataType& NewItem)
@@ -2094,7 +2444,7 @@ void FKismetCompilerContext::CompileFunction(FKismetFunctionContext& Context)
 		const FString NodeComment = Node->NodeComment.IsEmpty() ? Node->GetName() : Node->NodeComment;
 		const bool bPureNode = IsNodePure(Node);
 		// Debug comments
-		if (KismetCompilerDebugOptions::EmitNodeComments && !Context.bGeneratingCpp)
+		if (KismetCompilerDebugOptions::EmitNodeComments)
 		{
 			FBlueprintCompiledStatement& Statement = Context.AppendStatementForNode(Node);
 			Statement.Type = KCST_Comment;
@@ -2144,6 +2494,42 @@ void FKismetCompilerContext::CompileFunction(FKismetFunctionContext& Context)
 		}
 	}
 	
+	if (Context.ImplicitCastMap.Num() > 0)
+	{
+		// Only issue a warning for pins that belong to nodes in the execution path.
+		// We only compile those particular nodes, which is where implicit cast fixup occurs.
+
+		TArray<UEdGraphPin*> UnhandledPins;
+		for (const auto& It : Context.ImplicitCastMap)
+		{
+			UEdGraphNode* OwningNode = It.Key->GetOwningNode();
+			if (SortKeyMap.Find(OwningNode))
+			{
+				UnhandledPins.Add(It.Key);
+			}
+			else
+			{
+				UE_LOG(LogK2Compiler, Verbose, TEXT("Skipping implicit cast check for pin '%s' in function '%s'. Owning node '%s' is not in the execution list."),
+					*It.Key->PinName.ToString(),
+					*Context.Function->GetName(),
+					*It.Key->GetOwningNode()->GetName());
+			}
+		}
+
+		if (UnhandledPins.Num() > 0)
+		{
+			UE_LOG(LogK2Compiler, Warning, TEXT("Unhandled implicit casts found during compilation of function '%s'!"),
+				*Context.Function->GetFullName());
+
+			for (UEdGraphPin* Pin : UnhandledPins)
+			{
+				UE_LOG(LogK2Compiler, Warning, TEXT("\tPin '%s' was not handled by node '%s'!"),
+					*Pin->PinName.ToString(),
+					*Pin->GetOwningNode()->GetName());
+			}
+		}
+	}
+
 	// The LinearExecutionList should be immutable at this point
 	check(Context.LinearExecutionList.Num() == NumNodesAtStart);
 
@@ -2238,11 +2624,12 @@ void FKismetCompilerContext::CompileFunction(FKismetFunctionContext& Context)
 		}
 	}
 
-	if (Context.bIsUbergraph && CompileOptions.DoesRequireCppCodeGeneration())
+	// Propagate thread-safe flags in this first pass. Also gets called from SetCalculatedMetaDataAndFlags in the second
+	// pass to catch skeleton class generation
+	if (Context.EntryPoint->MetaData.bThreadSafe)
 	{
-		Context.UnsortedSeparateExecutionGroups = FKismetCompilerUtilities::FindUnsortedSeparateExecutionGroups(Context.LinearExecutionList);
+		Context.Function->SetMetaData(FBlueprintMetadata::MD_ThreadSafe, TEXT("true"));
 	}
-
 }
 
 /**
@@ -2290,6 +2677,12 @@ void FKismetCompilerContext::FinishCompilingFunction(FKismetFunctionContext& Con
 		}
 	}
 #endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
+
+	// Check thread safety
+	if (FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(Context.Function))
+	{
+		FKismetCompilerUtilities::CheckFunctionThreadSafety(Context, MessageLog);
+	}
 }
 
 void FKismetCompilerContext::SetCalculatedMetaDataAndFlags(UFunction* Function, UK2Node_FunctionEntry* EntryNode, const UEdGraphSchema_K2* K2Schema)
@@ -2374,6 +2767,12 @@ void FKismetCompilerContext::SetCalculatedMetaDataAndFlags(UFunction* Function, 
 			Function->SetMetaData(FBlueprintMetadata::MD_DeprecationMessage, *(EntryNode->MetaData.DeprecationMessage));
 		}
 	}
+
+	// Just copy the thread-safe flag with no checking, we verify thread safety elsewhere
+	if (EntryNode->MetaData.bThreadSafe)
+	{
+		Function->SetMetaData(FBlueprintMetadata::MD_ThreadSafe, TEXT("true"));
+	}
 	
 	if (UEdGraphPin* WorldContextPin = EntryNode->GetAutoWorldContextPin())
 	{
@@ -2386,6 +2785,12 @@ void FKismetCompilerContext::SetCalculatedMetaDataAndFlags(UFunction* Function, 
 	{
 		// Copy metadata from parent function as well
 		UMetaData::CopyMetadata(OverriddenFunction, Function);
+
+		// Native thread safety metadata works on the class level as well as functions, so we need to check that too.
+		if(FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(OverriddenFunction))
+		{
+			Function->SetMetaData(FBlueprintMetadata::MD_ThreadSafe, TEXT("true"));
+		}
 	}
 }
 
@@ -2489,6 +2894,16 @@ void FKismetCompilerContext::FinishCompilingClass(UClass* Class)
 			Class->RemoveMetaData(NAME_DisplayName);
 		}
 
+		// Add the namespace (if set) to class metadata
+		if (!Blueprint->BlueprintNamespace.IsEmpty())
+		{
+			Class->SetMetaData(FBlueprintMetadata::MD_Namespace, *Blueprint->BlueprintNamespace);
+		}
+		else
+		{
+			Class->RemoveMetaData(FBlueprintMetadata::MD_Namespace);
+		}
+
 		// Copy the category info from the parent class
 #if WITH_EDITORONLY_DATA
 		
@@ -2514,7 +2929,7 @@ void FKismetCompilerContext::FinishCompilingClass(UClass* Class)
 	}
 
 	// Add in any other needed flags
-	Class->ClassFlags |= (CLASS_Parsed | CLASS_CompiledFromBlueprint);
+	Class->ClassFlags |= (CLASS_CompiledFromBlueprint);
 	Class->ClassFlags &= ~CLASS_ReplicationDataIsSetUp;
 
 	// This function mostly mirrors PostParsingClassSetup, opportunity to refactor:
@@ -2890,13 +3305,6 @@ FPinConnectionResponse FKismetCompilerContext::CopyPinLinksToIntermediate(UEdGra
 	return ConnectionResult;
 }
 
-UK2Node_TemporaryVariable* FKismetCompilerContext::SpawnInternalVariable(UEdGraphNode* SourceNode, const FString& Category, const FString& SubCategory, UObject* SubcategoryObject, bool bIsArray, bool bIsSet, bool bIsMap, const FEdGraphTerminalType& ValueTerminalType)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return SpawnInternalVariable(SourceNode, Category, SubCategory, SubcategoryObject, FEdGraphPinType::ToPinContainerType(bIsArray, bIsSet, bIsMap), ValueTerminalType);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
 UK2Node_TemporaryVariable* FKismetCompilerContext::SpawnInternalVariable(UEdGraphNode* SourceNode, const FName Category, const FName SubCategory, UObject* SubcategoryObject, EPinContainerType PinContainerType, const FEdGraphTerminalType& ValueTerminalType)
 {
 	UK2Node_TemporaryVariable* Result = SpawnIntermediateNode<UK2Node_TemporaryVariable>(SourceNode);
@@ -2958,7 +3366,7 @@ void FKismetCompilerContext::CreateFunctionStubForEvent(UK2Node_Event* SrcEventN
 	ChildStubGraph->SetFlags(RF_Transient);
 	MessageLog.NotifyIntermediateObjectCreation(ChildStubGraph, SrcEventNode);
 
-	FKismetFunctionContext& StubContext = *new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FKismetFunctionContext& StubContext = *new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint);
 	FunctionList.Add(&StubContext);
 	StubContext.SourceGraph = ChildStubGraph;
 
@@ -3111,6 +3519,8 @@ void FKismetCompilerContext::CreateFunctionStubForEvent(UK2Node_Event* SrcEventN
 
 void FKismetCompilerContext::MergeUbergraphPagesIn(UEdGraph* Ubergraph)
 {
+	BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_MergeUbergraphPagesIn);
+	
 	for (TArray<UEdGraph*>::TIterator It(Blueprint->UbergraphPages); It; ++It)
 	{
 		UEdGraph* SourceGraph = *It;
@@ -3170,6 +3580,7 @@ void FKismetCompilerContext::ExpansionStep(UEdGraph* Graph, bool bAllowUbergraph
 			UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(Graph->Nodes[NodeIndex]);
 			if (KnotNode)
 			{
+				BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_ExpandNode);
 				KnotNode->ExpandNode(*this, Graph);
 			}
 		}
@@ -3179,6 +3590,7 @@ void FKismetCompilerContext::ExpansionStep(UEdGraph* Graph, bool bAllowUbergraph
 			UK2Node* Node = Cast<UK2Node>(Graph->Nodes[NodeIndex]);
 			if (Node)
 			{
+				BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_ExpandNode);
 				Node->ExpandNode(*this, Graph);
 			}
 		}
@@ -3194,7 +3606,10 @@ void FKismetCompilerContext::ExpansionStep(UEdGraph* Graph, bool bAllowUbergraph
 		ExpandTimelineNodes(Graph);
 	}
 
-	PostExpansionStep(Graph);
+	{
+		BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_PostExpansionStep);
+		PostExpansionStep(Graph);
+	}
 }
 
 void FKismetCompilerContext::DetermineNodeExecLinks(UEdGraphNode* SourceNode, TMap<UEdGraphPin*, UEdGraphPin*>& SourceNodeLinks) const
@@ -3247,6 +3662,10 @@ void FKismetCompilerContext::CreateLocalsAndRegisterNets(FKismetFunctionContext&
 			}
 		}
 	}
+
+	using namespace UE::KismetCompiler;
+
+	CastingUtils::RegisterImplicitCasts(Context);
 
 	// Create net variable declarations
 	CreateLocalVariablesForFunction(Context, FunctionPropertyStorageLocation);
@@ -3429,7 +3848,7 @@ void FKismetCompilerContext::CreateAndProcessUbergraph()
 
 		// Do some cursory validation (pin types match, inputs to outputs, pins never point to their parent node, etc...)
 		{
-			UbergraphContext = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+			UbergraphContext = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint);
 			FunctionList.Add(UbergraphContext);
 			UbergraphContext->SourceGraph = ConsolidatedEventGraph;
 			UbergraphContext->MarkAsEventGraph();
@@ -3792,7 +4211,7 @@ void FKismetCompilerContext::ProcessOneFunctionGraph(UEdGraph* SourceGraph, bool
 	}
 
 	// Clone the source graph so we can modify it as needed; merging in the child graphs
-	UEdGraph* FunctionGraph = FEdGraphUtilities::CloneGraph(SourceGraph, Blueprint, &MessageLog, true); 
+	UEdGraph* FunctionGraph = FEdGraphUtilities::CloneGraph(SourceGraph, Blueprint, &MessageLog, true);
 	FEdGraphUtilities::MergeChildrenGraphsIn(FunctionGraph, FunctionGraph, /*bRequireSchemaMatch=*/ true);
 
 	ExpansionStep(FunctionGraph, false);
@@ -3842,11 +4261,11 @@ void FKismetCompilerContext::ProcessOneFunctionGraph(UEdGraph* SourceGraph, bool
 	}
 
 	const UEdGraphSchema_K2* FunctionGraphSchema = CastChecked<const UEdGraphSchema_K2>(FunctionGraph->GetSchema());
-	FKismetFunctionContext& Context = *new FKismetFunctionContext(MessageLog, FunctionGraphSchema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FKismetFunctionContext& Context = *new FKismetFunctionContext(MessageLog, FunctionGraphSchema, NewClass, Blueprint);
 	FunctionList.Add(&Context);
 	Context.SourceGraph = FunctionGraph;
 
-	if (FBlueprintEditorUtils::IsDelegateSignatureGraph(SourceGraph))
+	if (FBlueprintEditorUtils::IsDelegateSignatureGraph(SourceGraph)) //-V1051
 	{
 		Context.SetDelegateSignatureName(SourceGraph->GetFName());
 	}
@@ -3912,6 +4331,7 @@ void FKismetCompilerContext::ValidateFunctionGraphNames()
 // Creates a copy of the graph to allow further transformations to occur
 void FKismetCompilerContext::CreateFunctionList()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WILD_FKismetCompilerContext::CreateFunctionList);
 	{
 		BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_GenerateFunctionGraphs);
 
@@ -3967,7 +4387,7 @@ void FKismetCompilerContext::CreateFunctionList()
 
 FKismetFunctionContext* FKismetCompilerContext::CreateFunctionContext()
 {
-	FKismetFunctionContext* Result = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FKismetFunctionContext* Result = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint);
 	FunctionList.Add(Result);
 	return Result;
 }
@@ -4055,7 +4475,10 @@ void FKismetCompilerContext::CompileClassLayout(EInternalCompilerFlags InternalF
 	// This validation requires CDO object.
 	ValidateVariableNames();
 
-	ValidateComponentClassOverrides();
+	if (GetAllowNativeComponentClassOverrides())
+	{
+		ValidateComponentClassOverrides();
+	}
 
 	OldCDO = NULL;
 	OldGenLinkerIdx = INDEX_NONE;
@@ -4184,21 +4607,8 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 	const bool bSkipRefreshExternalBlueprintDependencyNodes = !!(InternalFlags & EInternalCompilerFlags::SkipRefreshExternalBlueprintDependencyNodes);
 	FKismetCompilerVMBackend Backend_VM(Blueprint, Schema, *this);
 
-	// Determine whether or not to skip generated class validation.
-	bool bSkipGeneratedClassValidation;
-	if (CompileOptions.DoesRequireCppCodeGeneration())
-	{
-		// CPP codegen requires default value assignment to occur as part of the compilation phase, so we override it here.
-		bPropagateValuesToCDO = true;
-
-		// Also skip generated class validation since it may result in errors and we don't really need to keep the generated class.
-		bSkipGeneratedClassValidation = true;
-	}
-	else
-	{
-		// In all other cases, validation requires CDO value propagation to occur first.
-		bSkipGeneratedClassValidation = !bPropagateValuesToCDO;
-	}
+	// Validation requires CDO value propagation to occur first.
+	bool bSkipGeneratedClassValidation = !bPropagateValuesToCDO;
 
 	if( bGenerateLocals )
 	{
@@ -4367,12 +4777,10 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 	// Fill out the function bodies, either with function bodies, or simple stubs if this is skeleton generation
 	{
 		// Should we display debug information about the backend outputs?
-		bool bDisplayCpp = false;
 		bool bDisplayBytecode = false;
 
 		if (!Blueprint->bIsRegeneratingOnLoad)
 		{
-			GConfig->GetBool(TEXT("Kismet"), TEXT("CompileDisplaysTextBackend"), /*out*/ bDisplayCpp, GEngineIni);
 			GConfig->GetBool(TEXT("Kismet"), TEXT("CompileDisplaysBinaryBackend"), /*out*/ bDisplayBytecode, GEngineIni);
 		}
 
@@ -4396,7 +4804,6 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 				{
 					UFunction* Function = FunctionContext.Function; 
 					FArchiveScriptReferenceCollector ObjRefCollector(Function->ScriptAndPropertyObjectReferences);
-
 					for (int32 iCode = 0; iCode < Function->Script.Num();)
 					{
 						Function->SerializeExpr(iCode, ObjRefCollector);
@@ -4420,34 +4827,6 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 					UE_LOG(LogK2Compiler, Log, TEXT("\n\n[function %s]:\n"), *(Function.Function->GetName()));
 					Disasm.DisassembleStructure(Function.Function);
 				}
-			}
-		}
-
-		// Generate code thru the backend(s)
-		if ((bDisplayCpp && bIsFullCompile && !IsRunningCommandlet()) || CompileOptions.DoesRequireCppCodeGeneration())
-		{
-			FString CppSourceCode;
-			FString HeaderSourceCode;
-
-			{
-				TUniquePtr<IBlueprintCompilerCppBackend> Backend_CPP(IBlueprintCompilerCppBackendModuleInterface::Get().Create());
-				HeaderSourceCode = Backend_CPP->GenerateCodeFromClass(NewClass, FunctionList, !bIsFullCompile, CompileOptions.NativizationOptions, CppSourceCode);
-			}
-
-			if (CompileOptions.OutHeaderSourceCode.IsValid())
-			{
-				*CompileOptions.OutHeaderSourceCode = HeaderSourceCode;
-			}
-
-			if (CompileOptions.OutCppSourceCode.IsValid())
-			{
-				*CompileOptions.OutCppSourceCode = CppSourceCode;
-			}
-
-			if (bDisplayCpp && !IsRunningCommandlet())
-			{
-				UE_LOG(LogK2Compiler, Log, TEXT("[header]\n\n\n%s"), *HeaderSourceCode);
-				UE_LOG(LogK2Compiler, Log, TEXT("[body]\n\n\n%s"), *CppSourceCode);
 			}
 		}
 
@@ -4682,8 +5061,14 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 
 void FKismetCompilerContext::PostCDOCompiled()
 {
-	// Vanilla blueprints don't store off any CDO information at this time,
-	// but if need arises heres our entry point.
+	// Exit now if we did not create a new class.
+	if (!NewClass)
+	{
+		return;
+	}
+
+	// Notify the CDO that it has finished compiling
+	NewClass->ClassDefaultObject->PostCDOCompiled();
 
 	// Allow children to customize PostCDOCompile:
 	OnPostCDOCompiled();
@@ -4841,7 +5226,7 @@ void FKismetCompilerContext::SetCanEverTick() const
 
 bool FKismetCompilerContext::UsePersistentUberGraphFrame() const
 {
-	return UBlueprintGeneratedClass::UsePersistentUberGraphFrame() && !CompileOptions.DoesRequireCppCodeGeneration();
+	return UBlueprintGeneratedClass::UsePersistentUberGraphFrame();
 }
 
 FString FKismetCompilerContext::GetGuid(const UEdGraphNode* Node) const

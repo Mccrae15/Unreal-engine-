@@ -7,6 +7,7 @@
 #include "EditorViewportCommands.h"
 #include "EditorViewportTabContent.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "AssetEditorViewportLayout.h"
 
 #define LOCTEXT_NAMESPACE "SAssetEditorViewport"
 
@@ -16,8 +17,6 @@ void SAssetEditorViewport::BindCommands()
 	FUICommandList& CommandListRef = *CommandList;
 
 	const FEditorViewportCommands& Commands = FEditorViewportCommands::Get();
-
-	TSharedRef<FEditorViewportClient> ClientRef = Client.ToSharedRef();
 
 	CommandListRef.MapAction(
 		Commands.ViewportConfig_OnePane,
@@ -95,36 +94,42 @@ void SAssetEditorViewport::BindCommands()
 }
 
 
-void SAssetEditorViewport::Construct(const FArguments& InArgs)
+void SAssetEditorViewport::Construct(const FArguments& InArgs, const FAssetEditorViewportConstructionArgs& InViewportConstructionArgs)
 {
-	EditorViewportClient = InArgs._EditorViewportClient;
-	SEditorViewport::Construct(SEditorViewport::FArguments());
+	ConfigKey = InViewportConstructionArgs.ConfigKey;
+	Client = InArgs._EditorViewportClient;
+	ParentTabContent = InViewportConstructionArgs.ParentLayout->GetParentTabContent();
+
+	SEditorViewport::FArguments ViewportArgs;
+	if (InArgs._ViewportSize.IsSet())
+	{
+		ViewportArgs._ViewportSize = InArgs._ViewportSize;
+	}
+	SEditorViewport::Construct(ViewportArgs);
+
+	if (InViewportConstructionArgs.IsEnabled.IsSet())
+	{
+		SetEnabled(InViewportConstructionArgs.IsEnabled);
+	}
+
+	GetViewportClient()->SetViewportType(InViewportConstructionArgs.ViewportType);
+	GetViewportClient()->SetRealtime(InViewportConstructionArgs.bRealtime);
 }
 
 void SAssetEditorViewport::OnSetViewportConfiguration(FName ConfigurationName)
 {
-	TSharedPtr<FAssetEditorViewportLayout> LayoutPinned = ParentLayout.Pin();
-	if (LayoutPinned.IsValid())
+	if (TSharedPtr<FViewportTabContent> ViewportTabPinned = ParentTabContent.Pin())
 	{
-		TSharedPtr<FViewportTabContent> ViewportTabPinned = LayoutPinned->GetParentTabContent().Pin();
-		if (ViewportTabPinned.IsValid())
-		{
-			ViewportTabPinned->SetViewportConfiguration(ConfigurationName);
- 			FSlateApplication::Get().DismissAllMenus();
-		}
+		ViewportTabPinned->SetViewportConfiguration(ConfigurationName);
+		FSlateApplication::Get().DismissAllMenus();
 	}
 }
 
 bool SAssetEditorViewport::IsViewportConfigurationSet(FName ConfigurationName) const
 {
-	TSharedPtr<FAssetEditorViewportLayout> LayoutPinned = ParentLayout.Pin();
-	if (LayoutPinned.IsValid())
+	if (TSharedPtr<FViewportTabContent> ViewportTabPinned = ParentTabContent.Pin())
 	{
-		TSharedPtr<FViewportTabContent> ViewportTabPinned = LayoutPinned->GetParentTabContent().Pin();
-		if (ViewportTabPinned.IsValid())
-		{
-			return ViewportTabPinned->IsViewportConfigurationSet(ConfigurationName);
-		}
+		return ViewportTabPinned->IsViewportConfigurationSet(ConfigurationName);
 	}
 	return false;
 }
@@ -134,7 +139,7 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 {
 	MenuBuilder.BeginSection("EditorViewportOnePaneConfigs", LOCTEXT("OnePaneConfigHeader", "One Pane"));
 	{
-		FToolBarBuilder OnePaneButton(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder OnePaneButton(CommandList, FMultiBoxCustomization::None);
 		OnePaneButton.SetLabelVisibility(EVisibility::Collapsed);
 		OnePaneButton.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -159,7 +164,7 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 
 	MenuBuilder.BeginSection("EditorViewportTwoPaneConfigs", LOCTEXT("TwoPaneConfigHeader", "Two Panes"));
 	{
-		FToolBarBuilder TwoPaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder TwoPaneButtons(CommandList, FMultiBoxCustomization::None);
 		TwoPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		TwoPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -173,7 +178,7 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 			[
 				TwoPaneButtons.MakeWidget()
 			]
-		+ SHorizontalBox::Slot()
+			+ SHorizontalBox::Slot()
 			.FillWidth(1)
 			[
 				SNullWidget::NullWidget
@@ -185,7 +190,7 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 
 	MenuBuilder.BeginSection("EditorViewportThreePaneConfigs", LOCTEXT("ThreePaneConfigHeader", "Three Panes"));
 	{
-		FToolBarBuilder ThreePaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder ThreePaneButtons(CommandList, FMultiBoxCustomization::None);
 		ThreePaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		ThreePaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -213,7 +218,7 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 
 	MenuBuilder.BeginSection("EditorViewportFourPaneConfigs", LOCTEXT("FourPaneConfigHeader", "Four Panes"));
 	{
-		FToolBarBuilder FourPaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder FourPaneButtons(CommandList, FMultiBoxCustomization::None);
 		FourPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		FourPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -240,6 +245,16 @@ void SAssetEditorViewport::GenerateLayoutMenu(FMenuBuilder& MenuBuilder) const
 	}
 	MenuBuilder.EndSection();
 
+}
+
+TSharedRef<FEditorViewportClient> SAssetEditorViewport::MakeEditorViewportClient()
+{
+	if (!Client.IsValid())
+	{
+		Client = MakeShareable(new FEditorViewportClient(nullptr));
+	}
+
+	return Client.ToSharedRef();
 }
 
 #undef LOCTEXT_NAMESPACE

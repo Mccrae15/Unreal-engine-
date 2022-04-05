@@ -3,27 +3,31 @@
 #include "MeshMaterialShader.h"
 #include "ScenePrivate.h"
 #include "RayTracingDynamicGeometryCollection.h"
+#include "RayTracingInstance.h"
 
 #if RHI_RAYTRACING
+
+static int32 GRTDynGeomSharedVertexBufferSizeInMB = 4;
+static FAutoConsoleVariableRef CVarRTDynGeomSharedVertexBufferSizeInMB(
+	TEXT("r.RayTracing.DynamicGeometry.SharedVertexBufferSizeInMB"),
+	GRTDynGeomSharedVertexBufferSizeInMB,
+	TEXT("Size of the a single shared vertex buffer used during the BLAS update of dynamic geometries (default 4MB)"),
+	ECVF_RenderThreadSafe
+);
+
+static int32 GRTDynGeomSharedVertexBufferGarbageCollectLatency = 30;
+static FAutoConsoleVariableRef CVarRTDynGeomSharedVertexBufferGarbageCollectLatency(
+	TEXT("r.RayTracing.DynamicGeometry.SharedVertexBufferGarbageCollectLatency"),
+	GRTDynGeomSharedVertexBufferGarbageCollectLatency,
+	TEXT("Amount of update cycles before a heap is deleted when not used (default 30)."),
+	ECVF_RenderThreadSafe
+);
 
 DECLARE_CYCLE_STAT(TEXT("RTDynGeomDispatch"), STAT_CLM_RTDynGeomDispatch, STATGROUP_ParallelCommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("RTDynGeomBuild"), STAT_CLM_RTDynGeomBuild, STATGROUP_ParallelCommandListMarkers);
 
 // Workaround for outstanding memory corruption on some platforms when parallel command list translation is used.
 #define USE_RAY_TRACING_DYNAMIC_GEOMETRY_PARALLEL_COMMAND_LISTS 0
-
-static bool IsSupportedDynamicVertexFactoryType(const FVertexFactoryType* VertexFactoryType)
-{
-	return VertexFactoryType == FindVertexFactoryType(FName(TEXT("FNiagaraSpriteVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FNiagaraSpriteVertexFactoryEx"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FNiagaraRibbonVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FLocalVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FLandscapeVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FLandscapeFixedGridVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FLandscapeXYOffsetVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FGPUSkinPassthroughVertexFactory"), FNAME_Find))
-		|| VertexFactoryType == FindVertexFactoryType(FName(TEXT("FInstancedStaticMeshVertexFactory"), FNAME_Find));
-}
 
 class FRayTracingDynamicGeometryConverterCS : public FMeshMaterialShader
 {
@@ -41,15 +45,20 @@ public:
 		PrimitiveId.Bind(Initializer.ParameterMap, TEXT("PrimitiveId"));
 		OutputVertexBaseIndex.Bind(Initializer.ParameterMap, TEXT("OutputVertexBaseIndex"));
 		bApplyWorldPositionOffset.Bind(Initializer.ParameterMap, TEXT("bApplyWorldPositionOffset"));
-		InstanceTransform.Bind(Initializer.ParameterMap, TEXT("InstanceTransform"));
-		InverseTransform.Bind(Initializer.ParameterMap, TEXT("InverseTransform"));
+		InstanceId.Bind(Initializer.ParameterMap, TEXT("InstanceId"));
+		WorldToInstance.Bind(Initializer.ParameterMap, TEXT("WorldToInstance"));
 	}
 
 	FRayTracingDynamicGeometryConverterCS() = default;
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsSupportedDynamicVertexFactoryType(Parameters.VertexFactoryType) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return Parameters.VertexFactoryType->SupportsRayTracingDynamicGeometry() && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
 	}
 
 	void GetShaderBindings(
@@ -89,8 +98,8 @@ public:
 	LAYOUT_FIELD(FShaderParameter, PrimitiveId);
 	LAYOUT_FIELD(FShaderParameter, bApplyWorldPositionOffset);
 	LAYOUT_FIELD(FShaderParameter, OutputVertexBaseIndex);
-	LAYOUT_FIELD(FShaderParameter, InstanceTransform);
-	LAYOUT_FIELD(FShaderParameter, InverseTransform);
+	LAYOUT_FIELD(FShaderParameter, InstanceId);
+	LAYOUT_FIELD(FShaderParameter, WorldToInstance);
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FRayTracingDynamicGeometryConverterCS, TEXT("/Engine/Private/RayTracing/RayTracingDynamicMesh.usf"), TEXT("RayTracingDynamicGeometryConverterCS"), SF_Compute);
@@ -108,7 +117,7 @@ FRayTracingDynamicGeometryCollection::~FRayTracingDynamicGeometryCollection()
 	VertexPositionBuffers.Empty();
 }
 
-void FRayTracingDynamicGeometryCollection::BeginUpdate()
+int64 FRayTracingDynamicGeometryCollection::BeginUpdate()
 {
 	// Clear working arrays - keep max size allocated
 	DispatchCommands.Empty(DispatchCommands.Max());
@@ -116,13 +125,24 @@ void FRayTracingDynamicGeometryCollection::BeginUpdate()
 	Segments.Empty(Segments.Max());
 
 	// Vertex buffer data can be immediatly reused the next frame, because it's already 'consumed' for building the AccelerationStructure data
-	for (FVertexPositionBuffer* Buffer : VertexPositionBuffers)
+	// Garbage collect unused buffers for n generations
+	for (int32 BufferIndex = 0; BufferIndex < VertexPositionBuffers.Num(); ++BufferIndex)
 	{
+		FVertexPositionBuffer* Buffer = VertexPositionBuffers[BufferIndex];
 		Buffer->UsedSize = 0;
+
+		if (Buffer->LastUsedGenerationID + GRTDynGeomSharedVertexBufferGarbageCollectLatency <= SharedBufferGenerationID)
+		{
+			VertexPositionBuffers.RemoveAtSwap(BufferIndex);
+			delete Buffer;
+			BufferIndex--;
+		}
 	}
 
 	// Increment generation ID used for validation
 	SharedBufferGenerationID++;
+
+	return SharedBufferGenerationID;
 }
 
 void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
@@ -140,6 +160,12 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	FRWBuffer* RWBuffer = UpdateParams.Buffer;
 	uint32 VertexBufferOffset = 0;
 	bool bUseSharedVertexBuffer = false;
+
+	if (ReferencedUniformBuffers.Num() == 0 || ReferencedUniformBuffers.Last() != View->ViewUniformBuffer)
+	{
+		// Keep ViewUniformBuffer alive until EndUpdate()
+		ReferencedUniformBuffers.Add(View->ViewUniformBuffer);
+	}
 
 	// If update params didn't provide a buffer then use a shared vertex position buffer
 	if (RWBuffer == nullptr)
@@ -160,12 +186,15 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 			VertexPositionBuffer = new FVertexPositionBuffer;
 			VertexPositionBuffers.Add(VertexPositionBuffer);
 
-			static const uint32 VertexBufferCacheSize = 16 * 1024 * 1024;
+			static const uint32 VertexBufferCacheSize = GRTDynGeomSharedVertexBufferSizeInMB * 1024 * 1024;
 			uint32 AllocationSize = FMath::Max(VertexBufferCacheSize, UpdateParams.VertexBufferSize);
 
-			VertexPositionBuffer->RWBuffer.Initialize(sizeof(float), AllocationSize / sizeof(float), PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource, TEXT("FRayTracingDynamicGeometryCollection::RayTracingDynamicVertexBuffer"));
+			VertexPositionBuffer->RWBuffer.Initialize(TEXT("FRayTracingDynamicGeometryCollection::RayTracingDynamicVertexBuffer"), sizeof(float), AllocationSize / sizeof(float), PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource);
 			VertexPositionBuffer->UsedSize = 0;
 		}
+
+		// Update the last used generation ID
+		VertexPositionBuffer->LastUsedGenerationID = SharedBufferGenerationID;
 
 		// Get the offset and update used size
 		VertexBufferOffset = VertexPositionBuffer->UsedSize;
@@ -175,13 +204,15 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 		RWBuffer = &VertexPositionBuffer->RWBuffer;
 	}
 
-	FMatrix InstanceTransform = UpdateParams.InstanceTransform;
-	FMatrix InverseTransform = InstanceTransform;
-	InverseTransform.M[3][3] = 1.0f;
-	InverseTransform = InverseTransform.InverseFast();
-
 	for (const FMeshBatch& MeshBatch : UpdateParams.MeshBatches)
 	{
+		if (!ensureMsgf(MeshBatch.VertexFactory->GetType()->SupportsRayTracingDynamicGeometry(),
+			TEXT("FRayTracingDynamicGeometryConverterCS doesn't support %s. Skipping rendering of %s.  This can happen when the skinning cache runs out of space and falls back to GPUSkinVertexFactory."),
+			MeshBatch.VertexFactory->GetType()->GetName(), *PrimitiveSceneProxy->GetOwnerName().ToString()))
+		{
+			continue;
+		}
+
 		const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
 		const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(Scene->GetFeatureLevel(), FallbackMaterialRenderProxyPtr);
 		auto* MaterialInterface = Material.GetMaterialInterface();
@@ -192,13 +223,23 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 			FMeshMaterialShader,
 			FMeshMaterialShader,
 			FMeshMaterialShader,
-			FMeshMaterialShader,
-			FMeshMaterialShader,
 			FRayTracingDynamicGeometryConverterCS> Shaders;
 
 		FMeshComputeDispatchCommand DispatchCmd;
 
-		TShaderRef<FRayTracingDynamicGeometryConverterCS> Shader = Material.GetShader<FRayTracingDynamicGeometryConverterCS>(MeshBatch.VertexFactory->GetType());
+		
+		FMaterialShaderTypes ShaderTypes;
+		ShaderTypes.AddShaderType<FRayTracingDynamicGeometryConverterCS>();
+
+		FMaterialShaders MaterialShaders;
+		if (!Material.TryGetShaders(ShaderTypes, MeshBatch.VertexFactory->GetType(), MaterialShaders))
+		{
+			continue;
+		}
+
+		TShaderRef<FRayTracingDynamicGeometryConverterCS> Shader;
+		MaterialShaders.TryGetShader(SF_Compute, Shader);
+
 		DispatchCmd.MaterialShader = Shader;
 		FMeshDrawShaderBindings& ShaderBindings = DispatchCmd.ShaderBindings;
 
@@ -210,7 +251,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 
 		int32 DataOffset = 0;
 		FMeshDrawSingleShaderBindings SingleShaderBindings = ShaderBindings.GetSingleShaderBindings(SF_Compute, DataOffset);
-		FMeshPassProcessorRenderState DrawRenderState(Scene->UniformBuffers.ViewUniformBuffer);
+		FMeshPassProcessorRenderState DrawRenderState(View->ViewUniformBuffer);
 		Shader->GetShaderBindings(Scene, Scene->GetFeatureLevel(), PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, SingleShaderBindings);
 
 		FVertexInputStreamArray DummyArray;
@@ -228,7 +269,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 			NumCPUVertices = 1 + MeshBatch.Elements[0].MaxVertexIndex - MeshBatch.Elements[0].MinVertexIndex;
 		}
 
-		const uint32 VertexBufferNumElements = UpdateParams.VertexBufferSize / sizeof(FVector) - MinVertexIndex;
+		const uint32 VertexBufferNumElements = UpdateParams.VertexBufferSize / sizeof(FVector3f) - MinVertexIndex;
 		if (!ensureMsgf(NumCPUVertices <= VertexBufferNumElements, 
 			TEXT("Vertex buffer contains %d vertices, but RayTracingDynamicGeometryConverterCS dispatch command expects at least %d."),
 			VertexBufferNumElements, NumCPUVertices))
@@ -242,8 +283,8 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 		SingleShaderBindings.Add(Shader->PrimitiveId, PrimitiveId);
 		SingleShaderBindings.Add(Shader->OutputVertexBaseIndex, OutputVertexBaseIndex);
 		SingleShaderBindings.Add(Shader->bApplyWorldPositionOffset, UpdateParams.bApplyWorldPositionOffset ? 1 : 0);
-		SingleShaderBindings.Add(Shader->InstanceTransform, InstanceTransform);
-		SingleShaderBindings.Add(Shader->InverseTransform, InverseTransform);
+		SingleShaderBindings.Add(Shader->InstanceId, UpdateParams.InstanceId);
+		SingleShaderBindings.Add(Shader->WorldToInstance, UpdateParams.WorldToInstance);
 
 #if MESH_DRAW_COMMAND_DEBUG_DATA
 		FMeshProcessorShaders ShadersForDebug = Shaders.GetUntypedShaders();
@@ -258,7 +299,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	// Optionally resize the buffer when not shared (could also be lazy allocated and still empty)
 	if (!bUseSharedVertexBuffer && RWBuffer->NumBytes != UpdateParams.VertexBufferSize)
 	{
-		RWBuffer->Initialize(sizeof(float), UpdateParams.VertexBufferSize / sizeof(float), PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource, TEXT("FRayTracingDynamicGeometryCollection::RayTracingDynamicVertexBuffer"));
+		RWBuffer->Initialize(TEXT("FRayTracingDynamicGeometryCollection::RayTracingDynamicVertexBuffer"), sizeof(float), UpdateParams.VertexBufferSize / sizeof(float), PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource);
 		bRefit = false;
 	}
 
@@ -281,6 +322,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 		Geometry.Initializer.Segments.Empty();
 		FRayTracingGeometrySegment Segment;
 		Segment.NumPrimitives = UpdateParams.NumTriangles;
+		Segment.MaxVertices = UpdateParams.NumVertices;
 		Geometry.Initializer.Segments.Add(Segment);
 		bRefit = false;
 	}
@@ -295,13 +337,16 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	{
 		checkf(Geometry.Initializer.OfflineData == nullptr, TEXT("Dynamic geometry is not expected to have offline acceleration structure data"));
 		Geometry.RayTracingGeometryRHI = RHICreateRayTracingGeometry(Geometry.Initializer);
+		Geometry.bRequiresBuild = true;
 	}
 
-	FAccelerationStructureBuildParams Params;
+	FRayTracingGeometryBuildParams Params;
 	Params.Geometry = Geometry.RayTracingGeometryRHI;
-	Params.BuildMode = bRefit
-		? EAccelerationStructureBuildMode::Update
-		: EAccelerationStructureBuildMode::Build;
+	Params.BuildMode = Geometry.bRequiresBuild
+		? EAccelerationStructureBuildMode::Build
+		: EAccelerationStructureBuildMode::Update;
+
+	Geometry.bRequiresBuild = false;
 
 	if (bUseSharedVertexBuffer)
 	{
@@ -323,10 +368,10 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	}
 }
 
-void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandList& ParentCmdList)
+void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandList& ParentCmdList, FRHIBuffer* ScratchBuffer)
 {
 #if WANTS_DRAW_MESH_EVENTS
-#define SCOPED_DRAW_OR_COMPUTE_EVENT(ParentCmdList, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(ParentCmdList, FColor(0), TEXT(#Name));
+#define SCOPED_DRAW_OR_COMPUTE_EVENT(ParentCmdList, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&ParentCmdList, FColor(0), TEXT(#Name));
 #else
 #define SCOPED_DRAW_OR_COMPUTE_EVENT(...)
 #endif
@@ -356,7 +401,7 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 
 				// Setup the array views on final allocated segments array
 				FRayTracingGeometrySegment* SegmentData = Segments.GetData();
-				for (FAccelerationStructureBuildParams& Param : BuildParams)
+				for (FRayTracingGeometryBuildParams& Param : BuildParams)
 				{
 					uint32 SegmentCount = Param.Segments.Num();
 					if (SegmentCount > 0)
@@ -440,10 +485,6 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 				// Cache the bound uniform buffers because a lot are the same between dispatches
 				FShaderBindingState ShaderBindingState;
 
-				FUniformBufferRHIRef PassUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(RHICmdList, ERHIFeatureLevel::SM5, ESceneTextureSetupMode::None);
-				FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-				RHICmdList.SetGlobalUniformBuffers(GlobalUniformBuffers);
-
 				for (FMeshComputeDispatchCommand& Cmd : DispatchCommands)
 				{
 					const TShaderRef<FRayTracingDynamicGeometryConverterCS>& Shader = Cmd.MaterialShader;
@@ -474,13 +515,6 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 				RHICmdList.Transition(TransitionsAfter);
 			}
 
-			{
-				FRHIComputeCommandList& RHICmdList = AllocateCommandList(1, GET_STATID(STAT_CLM_RTDynGeomBuild));
-
-				SCOPED_DRAW_OR_COMPUTE_EVENT(RHICmdList, Build);
-				RHICmdList.BuildAccelerationStructures(BuildParams);
-			}
-
 			// Need to kick parallel translate command lists?
 			if (CommandLists.Num() > 0)
 			{
@@ -494,6 +528,21 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 					false // bSpewMerge
 				);
 			}
+
+			if (BuildParams.Num() > 0)
+			{
+				// Can't use parallel command list because we have to make sure we are not building BVH data
+				// on the same RTGeometry on multiple threads at the same time. Ideally move the build
+				// requests over to the RaytracingGeometry manager so they can be correctly scheduled
+				// with other build requests in the engine (see UE-106982)
+				SCOPED_DRAW_OR_COMPUTE_EVENT(ParentCmdList, Build);
+
+				FRHIBufferRange ScratchBufferRange;
+				ScratchBufferRange.Buffer = ScratchBuffer;
+				ScratchBufferRange.Offset = 0;
+				ParentCmdList.BuildAccelerationStructures(BuildParams, ScratchBufferRange);
+			}
+
 		}
 	}
 		
@@ -502,8 +551,28 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 
 void FRayTracingDynamicGeometryCollection::EndUpdate(FRHICommandListImmediate& RHICmdList)
 {
+	ReferencedUniformBuffers.Empty(ReferencedUniformBuffers.Max());
+
 	// Move ownership to RHI thread for another frame
 	RHICmdList.EnqueueLambda([ArrayOwnedByRHIThread = MoveTemp(Segments)](FRHICommandListImmediate&){});
+}
+
+uint32 FRayTracingDynamicGeometryCollection::ComputeScratchBufferSize()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRayTracingDynamicGeometryCollection::ComputeScratchBufferSize);
+
+	const uint64 ScratchAlignment = GRHIRayTracingAccelerationStructureAlignment;
+
+	uint32 BLASScratchSize = 0;
+
+	for (FRayTracingGeometryBuildParams& Params : BuildParams)
+	{
+		const FRayTracingAccelerationStructureSize BLASSizeInfo = Params.Geometry->GetSizeInfo();
+		const uint64 ScratchSize = Params.BuildMode == EAccelerationStructureBuildMode::Build ? BLASSizeInfo.BuildScratchSize : BLASSizeInfo.UpdateScratchSize;
+		BLASScratchSize = Align(BLASScratchSize + ScratchSize, ScratchAlignment);
+	}
+
+	return BLASScratchSize;
 }
 
 #undef USE_RAY_TRACING_DYNAMIC_GEOMETRY_PARALLEL_COMMAND_LISTS

@@ -42,13 +42,22 @@ struct SpirvCodeGenOptions {
   bool debugInfoLine;
   bool debugInfoSource;
   bool debugInfoTool;
+  bool debugInfoRich;
+  /// Use NonSemantic.Vulkan.DebugInfo.100 debug info instead of
+  /// OpenCL.DebugInfo.100
+  bool debugInfoVulkan;
   bool defaultRowMajor;
   bool disableValidation;
   bool enable16BitTypes;
   bool enableReflect;
-  /* UE Change Begin: Implement a fused-multiply-add pass to reduce the possibility of reassociation. */
+  // UE Change Begin: Add 'fused-multiply-add' pass to emulate invariant
+  // qualifier for older versions of Metal.
   bool enableFMAPass;
-  /* UE Change End: Implement a fused-multiply-add pass to reduce the possibility of reassociation. */
+  // UE Change End: Add 'fused-multiply-add' pass to emulate invariant
+  // UE Change Begin: Allow to disable scalar block layout
+  bool disableScalarBlockLayout;
+  // UE Change End: Allow to disable scalar block layout
+  // qualifier for older versions of Metal.
   bool invertY; // Additive inverse
   bool invertW; // Multiplicative inverse
   bool noWarnEmulatedFeatures;
@@ -56,9 +65,28 @@ struct SpirvCodeGenOptions {
   bool useDxLayout;
   bool useGlLayout;
   bool useScalarLayout;
+  // UE Change Begin: Use custom layout rules for UE5.
+  bool ue5Layout;
+  // UE Change End: Use custom layout rules for UE5.
+  // UE Change Begin: Force subpass OpTypeImage depth flag to be set to 0
+  bool forceSubpassImageDepthFalse;
+  // UE Change End: Force subpass OpTypeImage depth flag to be set to 0
+  // UE Change Begin: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
+  bool preserveStorageInput;
+  // UE Change End: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
   bool flattenResourceArrays;
-  bool ue4Layout;
-  bool globalsAsPushConstants;
+  bool reduceLoadSize;
+  bool autoShiftBindings;
+  bool supportNonzeroBaseInstance;
+  /// Maximum length in words for the OpString literal containing the shader
+  /// source for DebugSource and DebugSourceContinued. If the source code length
+  /// is larger than this number, we will use DebugSourceContinued instructions
+  /// for follow-up source code after the first DebugSource instruction. Note
+  /// that this number must be less than or equal to 0xFFFDu because of the
+  /// limitation of a single SPIR-V instruction size (0xFFFF) - 2 operand words
+  /// for OpString. Currently a smaller value is only used to test
+  /// DebugSourceContinued generation.
+  uint32_t debugSourceLen;
   SpirvLayoutRule cBufferLayoutRule;
   SpirvLayoutRule sBufferLayoutRule;
   SpirvLayoutRule tBufferLayoutRule;

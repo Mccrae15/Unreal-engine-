@@ -6,12 +6,14 @@ ConsoleManager.cpp: console command handling
 
 #include "HAL/ConsoleManager.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/ScopeRWLock.h"
 #include "Misc/Paths.h"
 #include "Stats/Stats.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/RemoteConfigIni.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 DEFINE_LOG_CATEGORY(LogConsoleResponse);
 DEFINE_LOG_CATEGORY_STATIC(LogConsoleManager, Log, All);
@@ -79,6 +81,16 @@ public:
 		:Flags(InFlags), bWarnedAboutThreadSafety(false)
 	{
 		SetHelp(InHelp);
+
+		ApplyPreviewIfScalability();
+	}
+
+	void ApplyPreviewIfScalability()
+	{
+		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0)
+		{
+			Flags = (EConsoleVariableFlags)((uint32)Flags | (uint32)ECVF_Preview);
+		}
 	}
 
 	// interface IConsoleVariable -----------------------------------
@@ -87,7 +99,7 @@ public:
 	{
 		return *Help;
 	}
-	virtual void SetHelp(const TCHAR* Value)
+	virtual void SetHelp(const TCHAR* Value) override final
 	{
 		check(Value);
 
@@ -103,6 +115,7 @@ public:
 	virtual void SetFlags(const EConsoleVariableFlags Value)
 	{
 		Flags = Value;
+		ApplyPreviewIfScalability();
 	}
 
 	virtual class IConsoleVariable* AsVariable()
@@ -114,7 +127,7 @@ public:
 	virtual void SetOnChangedCallback(const FConsoleVariableDelegate& Callback) 
 	{
 		OnChangedCallback.Remove(LegacyDelegateHandle);
-		OnChangedCallback.Add(Callback); 
+		LegacyDelegateHandle = OnChangedCallback.Add(Callback); 
 	}
 
 	/** Returns a multicast delegate with which to register. Called when this CVar changes. */
@@ -239,6 +252,16 @@ public:
 	{
 		check(InHelp);
 		//check(*Help != 0); for now disabled as there callstack when we crash early during engine init
+
+		ApplyPreviewIfScalability();
+	}
+
+	void ApplyPreviewIfScalability()
+	{
+		if (((uint32)Flags & (uint32)ECVF_Scalability) != 0)
+		{
+			Flags = (EConsoleVariableFlags)((uint32)Flags | (uint32)ECVF_Preview);
+		}
 	}
 
 	// interface IConsoleVariable -----------------------------------
@@ -261,6 +284,7 @@ public:
 	virtual void SetFlags(const EConsoleVariableFlags Value)
 	{
 		Flags = Value;
+		ApplyPreviewIfScalability();
 	}
 
 	virtual struct IConsoleCommand* AsCommand()
@@ -306,13 +330,229 @@ void OnCVarChange(T& Dst, const T& Src, EConsoleVariableFlags Flags, EConsoleVar
 	}
 }
 
-// T: bool, int32, float, FString
+#if ALLOW_OTHER_PLATFORM_CONFIG
+
+static void ExpandScalabilityCVar(FConfigCacheIni* ConfigSystem, const FString& CVarKey, const FString& CVarValue, TMap<FString, FString>& ExpandedCVars, bool bOverwriteExistingValue)
+{
+	// load scalability settings directly from ini instead of using scalability system, so as not to inadvertantly mess anything up
+	// if the DP had sg.ResolutionQuality=3, we would read [ResolutionQuality@3]
+	FString SectionName = FString::Printf(TEXT("%s@%s"), *CVarKey.Mid(3), *CVarValue);
+	// walk over the scalability section and add them in, unless already done
+	FConfigSection* ScalabilitySection = ConfigSystem->GetSectionPrivate(*SectionName, false, true, GScalabilityIni);
+	if (ScalabilitySection != nullptr)
+	{
+		for (const auto& Pair : *ScalabilitySection)
+		{
+			FString ScalabilityKey = Pair.Key.ToString();
+			if (bOverwriteExistingValue || !ExpandedCVars.Contains(ScalabilityKey))
+			{
+				ExpandedCVars.Add(ScalabilityKey, Pair.Value.GetValue());
+			}
+		}
+	}
+}
+
+bool IConsoleManager::VisitPlatformCVarsForEmulation(FName PlatformName, bool bVisitPlatformDeviceProfile, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit)
+{
+	// get the config system for the platform the DP uses
+	FConfigCacheIni* ConfigSystem = FConfigCacheIni::ForPlatform(*PlatformName.ToString());
+	if (ConfigSystem == nullptr)
+	{
+		return false;
+	}
+
+	// ECVF_SetByConstructor:
+	//   doesn't come from ini
+
+	// ECVF_SetByScalability:
+	//	 skipped, i believe this is not really loaded as a normal layer per-se, it's up to the other sections to set with this one
+
+	// ECVF_SetByGameSetting:
+	//   skipped, since we don't have a user
+
+
+	// ECVF_SetByProjectSetting:
+	// ECVF_SetBySystemSettingsIni:
+	// ECVF_SetByDeviceProfile: 
+	//   ONLY using the base DP named for the platform, as the DPManager needs to be used for proper DeviceProfiles
+
+	const TCHAR* DeviceProfileTag = TEXT("_NamedDeviceProfile");
+	struct FSectionPair
+	{
+		const TCHAR* Name; EConsoleVariableFlags SetBy;
+	} Sections[] =
+	{
+		{ TEXT("/Script/Engine.RendererSettings"), ECVF_SetByProjectSetting },
+		{ TEXT("/Script/Engine.RendererOverrideSettings"), ECVF_SetByProjectSetting },
+		{ TEXT("/Script/Engine.StreamingSettings"), ECVF_SetByProjectSetting },
+		{ TEXT("/Script/Engine.GarbageCollectionSettings"), ECVF_SetByProjectSetting },
+		{ TEXT("/Script/Engine.NetworkSettings"), ECVF_SetByProjectSetting },
+
+		{ TEXT("SystemSettings"), ECVF_SetBySystemSettingsIni },
+		{ TEXT("ConsoleVariables"), ECVF_SetBySystemSettingsIni },
+
+		{ DeviceProfileTag, ECVF_SetByDeviceProfile },
+	};
+
+	// now walk up the stack getting current values
+	for (const FSectionPair& SectionPair : Sections)
+	{
+		FConfigSection* Section;
+		if (FCString::Strcmp(SectionPair.Name, DeviceProfileTag) == 0)
+		{
+			// skip this if we don't want it
+			if (bVisitPlatformDeviceProfile == false)
+			{
+				continue;
+			}
+			FString DPSectionName = PlatformName.ToString() + TEXT(" DeviceProfile");
+			Section = ConfigSystem->GetSectionPrivate(*DPSectionName, false, true, GDeviceProfilesIni);
+		}
+		else
+		{
+			Section = ConfigSystem->GetSectionPrivate(SectionPair.Name, false, true, GEngineIni);
+		}
+
+		if (Section != nullptr)
+		{
+			// add the cvars from the section
+			for (const auto& Pair : *Section)
+			{
+				FString Key = Pair.Key.ToString();
+				FString Value = Pair.Value.GetValue();
+
+				// DPs have +CVars= prefix for the key, and the real cvar KVP is in the Value
+				if (Key.StartsWith(TEXT("CVars")))
+				{
+					FString ValueCopy = Value;
+					// expect a second = in the value, skip any that don't
+					if (!ValueCopy.Split(TEXT("="), &Key, &Value))
+					{
+						continue;
+					}
+				}
+
+				IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*Key);
+				EConsoleVariableFlags PreviewFlag = (CVar != nullptr) ? (EConsoleVariableFlags)(CVar->GetFlags() & ECVF_Preview) : ECVF_Default;
+
+				if (Key.StartsWith(TEXT("sg.")))
+				{
+					// @todo ini: If anything in here was already set, overwrite it or skip it?
+					// the priorities may cause runtime to fail to set a cvar that this will set blindly, since we are ignoring
+					// priority by doing them "in order". Scalablity is one of the lowest priorities, so should almost never be allowed?
+
+					TMap<FString, FString> ScalabilityCVars;
+					ExpandScalabilityCVar(ConfigSystem, Key, Value, ScalabilityCVars, true);
+
+					for (const auto& ScalabilityPair : ScalabilityCVars)
+					{
+						Visit(ScalabilityPair.Key, ScalabilityPair.Value, (EConsoleVariableFlags)(ECVF_SetByScalability | PreviewFlag));
+					}
+				}
+				else
+				{
+					Visit(Key, Value, (EConsoleVariableFlags)(SectionPair.SetBy | PreviewFlag));
+				}
+			}
+		}
+	}
+
+	// ECVF_SetByConsoleVariablesIni:
+	//   maybe skip this? it's a weird one, but maybe?
+
+	// ECVF_SetByCommandline:
+	//   skip as this would not be expected to apply to emulation
+
+	// ECVF_SetByCode:
+	//   skip because it cannot be set by code
+
+	// ECVF_SetByConsole
+	//   we could have this if we made a per-platform CVar, not just the shared default value
+
+
+	return true;
+}
+
+
+static bool GetConfigValueFromRuntimeSources(FName PlatformName, IConsoleVariable* CVar, FString& OutValue, EConsoleVariableFlags& LastSetBy)
+{
+
+	FString VariableName = IConsoleManager::Get().FindConsoleObjectName(CVar);
+	if (VariableName.Len() == 0)
+	{
+		return false;
+	}
+
+	OutValue = CVar->GetDefaultValueVariable()->GetString();
+	LastSetBy = ECVF_SetByConstructor;
+
+	IConsoleManager::VisitPlatformCVarsForEmulation(PlatformName, true, 
+		[&VariableName, &OutValue, &LastSetBy](const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetByAndPreview)
+		{
+			// if this key is the variable, set it at the current SetBy level
+			if (CVarName == VariableName)
+			{
+				OutValue = CVarValue;
+				LastSetBy = (EConsoleVariableFlags)(SetByAndPreview & ECVF_SetByMask);
+			}
+		});
+
+	// by this point, the value will be set, with the DefaultValue if nothing else from the visit function
+	return true;
+}
+
+#endif
+
+
+// an intermediate class between specific typed CVars and FConsoleVariableBase to handle looking up other platform's cvars and caching them
+// if ALLOW_OTHER_PLATFORM_CONFIG is 0, then this is a pass-through class that does nothing
 template <class T>
-class FConsoleVariable : public FConsoleVariableBase
+class FOtherPlatformValueHelper : public FConsoleVariableBase
 {
 public:
-	FConsoleVariable(T DefaultValue, const TCHAR* Help, EConsoleVariableFlags Flags) 
-		: FConsoleVariableBase(Help, Flags), Data(DefaultValue)
+
+	FOtherPlatformValueHelper(const T& DefaultValue, const TCHAR* Help, EConsoleVariableFlags Flags, bool bSaveDefault);
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	// remember the default value of this cvar, before anything else can assign to it - this way we can know in the editor what the value
+	// would be for a cvar on another platform, if no .ini file on that platform sets it
+	virtual IConsoleVariable* GetDefaultValueVariable()
+	{
+		return PlatformIndependentDefault.Get();
+	}
+
+	virtual TSharedPtr<IConsoleVariable> GetPlatformValueVariable(FName PlatformName) override;
+	virtual void ClearPlatformVariables(FName PlatformName) override;
+
+protected:
+	// cache of the default value - we need to remember this when calculating the value on another platform if that platform doesn't override it in any ini file
+	// even if this platform does (in which case the default is lost)
+	TSharedPtr<IConsoleVariable> PlatformIndependentDefault;
+
+	// cache of the values of this cvar on other platforms
+	TMap<FName, TSharedPtr<IConsoleVariable> > PlatformValues;
+	FRWLock PlatformValuesLock;
+
+#endif
+};
+
+
+
+
+
+// T: bool, int32, float, FString
+template <class T>
+class FConsoleVariable : public FOtherPlatformValueHelper<T>
+{
+// help find functions without needing this-> prefixes
+	using FConsoleVariableBase::GetShadowIndex;
+	using FConsoleVariableBase::CanChange;
+	using FConsoleVariableBase::Flags;
+
+public:
+	FConsoleVariable(T DefaultValue, const TCHAR* Help, EConsoleVariableFlags Flags, bool bSaveDefault=true) 
+		: FOtherPlatformValueHelper<T>(DefaultValue, Help, Flags, bSaveDefault)
+		, Data(DefaultValue)
 	{
 	}
 
@@ -337,7 +577,7 @@ public:
 	virtual float GetFloat() const override;
 	virtual FString GetString() const override;
 
-virtual bool IsVariableBool() const override { return false; }
+	virtual bool IsVariableBool() const override { return false; }
 	virtual bool IsVariableInt() const override { return false; }
 	virtual bool IsVariableFloat() const override { return false; }
 	virtual bool IsVariableString() const override { return false; }
@@ -493,15 +733,87 @@ template<> TConsoleVariableData<FString>* FConsoleVariable<FString>::AsVariableS
 	return &Data;
 }
 
+
+
+template<class T>
+FOtherPlatformValueHelper<T>::FOtherPlatformValueHelper(const T& DefaultValue, const TCHAR* Help, EConsoleVariableFlags Flags, bool bSaveDefault)
+	: FConsoleVariableBase(Help, Flags)
+{
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	if (bSaveDefault)
+	{
+		PlatformIndependentDefault = TSharedPtr<IConsoleVariable>(new FConsoleVariable<T>(DefaultValue, TEXT(""), (EConsoleVariableFlags)(Flags | ECVF_ReadOnly), false));
+	}
+#endif
+}
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+template<class T>
+TSharedPtr<IConsoleVariable> FOtherPlatformValueHelper<T>::GetPlatformValueVariable(FName PlatformName)
+{
+	// cheap lock here, contention is very rare
+	FRWScopeLock Lock(PlatformValuesLock, SLT_Write);
+	if (!PlatformValues.Contains(PlatformName))
+	{
+		FString ConfigValue;
+		EConsoleVariableFlags LastSetBy;
+		if (!GetConfigValueFromRuntimeSources(PlatformName, this, ConfigValue, LastSetBy))
+		{
+			return nullptr;
+		}
+
+		T TypedValue;
+		TTypeFromString<T>::FromString(TypedValue, ConvertValueFromHumanFriendlyValue(*ConfigValue));
+
+		// clear the existing setby mask
+		int NewFlags = GetFlags() & ~ECVF_SetFlagMask;
+		// add in new LastSetBy and make it readonly
+		NewFlags |= LastSetBy | ECVF_ReadOnly;
+
+		// make a new cvar to hold the value from the other platform
+		TSharedPtr<IConsoleVariable> PlatformCVar = TSharedPtr<IConsoleVariable>(new FConsoleVariable<T>(TypedValue, TEXT(""), (EConsoleVariableFlags)NewFlags, false));
+
+		PlatformValues.Add(PlatformName, PlatformCVar);
+	}
+
+	return PlatformValues.FindRef(PlatformName);
+}
+
+template<class T>
+void FOtherPlatformValueHelper<T>::ClearPlatformVariables(FName PlatformName)
+{
+	FRWScopeLock Lock(PlatformValuesLock, SLT_Write);
+
+	if (PlatformName == NAME_None)
+	{
+		PlatformValues.Empty();
+	}
+	else
+	{
+		PlatformValues.Remove(PlatformName);
+	}
+}
+
+#endif
+
+
+
 // ----
 
 // T: int32, float, bool
 template <class T>
-class FConsoleVariableRef : public FConsoleVariableBase
+class FConsoleVariableRef : public FOtherPlatformValueHelper<T>
 {
+	// help find functions without needing this-> prefixes
+	using FConsoleVariableBase::GetShadowIndex;
+	using FConsoleVariableBase::CanChange;
+	using FConsoleVariableBase::Flags;
+
 public:
 	FConsoleVariableRef(T& InRefValue, const TCHAR* Help, EConsoleVariableFlags Flags) 
-		: FConsoleVariableBase(Help, Flags), RefValue(InRefValue), MainValue(InRefValue)
+		: FOtherPlatformValueHelper<T>(InRefValue, Help, Flags, true)
+		, RefValue(InRefValue)
+		, MainValue(InRefValue)
 	{
 	}
 
@@ -1335,6 +1647,7 @@ void FConsoleManager::ForEachConsoleObjectThatContains(const FConsoleObjectVisit
 bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevice& Ar, UWorld* InWorld)
 {
 	check(InInput);
+	CSV_EVENT_GLOBAL(TEXT("Cmd: %s"), InInput);
 
 	const TCHAR* It = InInput;
 
@@ -1349,6 +1662,20 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 	if (bCommandEndedInQuestion)
 	{
 		Param1.MidInline(0, Param1.Len() - 1, false);
+	}
+
+	// look for the <cvar>@<platform> syntax
+	FName PlatformName;
+	if (Param1.Contains(TEXT("@")))
+	{
+		FString Left, Right;
+		Param1.Split(TEXT("@"), &Left, &Right);
+
+		if (Left.Len() && Right.Len())
+		{
+			Param1 = Left;
+			PlatformName = *Right;
+		}
 	}
 
 	IConsoleObject* CObj = FindConsoleObject(*Param1);
@@ -1374,6 +1701,30 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 
 	IConsoleCommand* CCmd = CObj->AsCommand();
 	IConsoleVariable* CVar = CObj->AsVariable();
+	TSharedPtr<IConsoleVariable> PlatformCVar;
+
+	if (PlatformName != NAME_None)
+	{
+		if (CVar == nullptr)
+		{
+			Ar.Logf(TEXT("Ignoring platform portion (@%s), which is only valid for looking up CVars"), *PlatformName.ToString());
+		}
+		else
+		{
+#if ALLOW_OTHER_PLATFORM_CONFIG
+			PlatformCVar = CVar->GetPlatformValueVariable(PlatformName);
+			CVar = PlatformCVar.Get();
+			if (!CVar)
+			{
+				Ar.Logf(TEXT("Unable find CVar %s for platform %s (possibly invalid platform name?)"), *Param1, *PlatformName.ToString());
+				return false;
+			}
+#else
+			Ar.Logf(TEXT("Unable to lookup a CVar value on another platform in this build"));
+			return false;
+#endif
+		}
+	}
 
 	if( CCmd )
 	{
@@ -1431,9 +1782,13 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 			}
 			else
 			{
-				if(bReadOnly)
+				if (PlatformName != NAME_None)
 				{
-					Ar.Logf(TEXT("Error: %s is read only!"), *Param1, *CVar->GetString());
+					Ar.Logf(TEXT("Error: Unable to set a value for %s another platform!"), *Param1);
+				}
+				else if(bReadOnly)
+				{
+					Ar.Logf(TEXT("Error: %s is read only!"), *Param1);
 				}
 				else
 				{
@@ -1441,8 +1796,6 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 					CVar->Set(*Param2, ECVF_SetByConsole);
 
 					Ar.Logf(TEXT("%s = \"%s\""), *Param1, *CVar->GetString());
-
-					CallAllConsoleVariableSinks();
 				}
 			}
 		}
@@ -1495,8 +1848,8 @@ IConsoleObject* FConsoleManager::AddConsoleObject(const TCHAR* Name, IConsoleObj
 		// An existing console object was found that has the same name as the object being registered.
 		// In most cases this is not allowed, but if there is a variable with the same name and is
 		// in an 'unregistered' state or we're hot reloading dlls, we may be able to replace or update that variable.
-#if WITH_HOT_RELOAD
-		const bool bCanUpdateOrReplaceObj = (ExistingObj->AsVariable()||ExistingObj->AsCommand()) && (GIsHotReload || ExistingObj->TestFlags(ECVF_Unregistered));
+#if WITH_RELOAD
+		const bool bCanUpdateOrReplaceObj = (ExistingObj->AsVariable()||ExistingObj->AsCommand()) && (IsReloadActive() || ExistingObj->TestFlags(ECVF_Unregistered));
 #else
 		const bool bCanUpdateOrReplaceObj = ExistingObj->AsVariable() && ExistingObj->TestFlags(ECVF_Unregistered);
 #endif
@@ -1504,7 +1857,7 @@ IConsoleObject* FConsoleManager::AddConsoleObject(const TCHAR* Name, IConsoleObj
 		{
 			// NOTE: The reason we don't assert here is because when using HotReload, locally-initialized static console variables will be
 			//       re-registered, and it's desirable for the new variables to clobber the old ones.  Because this happen outside of the
-			//       hot reload stack frame (GIsHotReload=true), we can't detect and handle only those cases, so we opt to warn instead.
+			//       reload stack frame (IsActiveReload()=true), we can't detect and handle only those cases, so we opt to warn instead.
 			UE_LOG(LogConsoleManager, Warning, TEXT( "Console object named '%s' already exists but is being registered again, but we weren't expected it to be! (FConsoleManager::AddConsoleObject)"), Name );
 		}
 
@@ -1527,9 +1880,12 @@ IConsoleObject* FConsoleManager::AddConsoleObject(const TCHAR* Name, IConsoleObj
 		{
 			if(ExistingVar->TestFlags(ECVF_CreatedFromIni))
 			{
+				// Allow the scalability system to update its own values during initialization.
+				bool bScalabilityUpdate = (Var->GetFlags() & ECVF_SetByScalability) && (ExistingVar->GetFlags() & ECVF_SetByScalability);
+
 				// This is to prevent cheaters to set a value from an ini of a cvar that is created later
 				// TODO: This is not ideal as it also prevents consolevariables.ini to set the value where we allow that. We could fix that.
-				if(!Var->TestFlags(ECVF_Cheat))
+				if(!Var->TestFlags(ECVF_Cheat) && !bScalabilityUpdate)
 				{
 					// The existing one came from the ini, get the value
 					Var->Set(*ExistingVar->GetString(), (EConsoleVariableFlags)((uint32)ExistingVar->GetFlags() & ECVF_SetByMask));
@@ -1541,8 +1897,8 @@ IConsoleObject* FConsoleManager::AddConsoleObject(const TCHAR* Name, IConsoleObj
 				ConsoleObjects.Add(Name, Var);
 				return Var;
 			}
-#if WITH_HOT_RELOAD
-			else if (GIsHotReload)
+#if WITH_RELOAD
+			else if (IsReloadActive())
 			{
 				// Variable is being replaced due to a hot reload - copy state across to new variable, but only if the type hasn't changed
 				{
@@ -1987,8 +2343,12 @@ void CreateConsoleVariables()
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("Stat MapBuildData"),	TEXT(""), ECVF_Cheat);
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("r.ResetViewState"), TEXT("Reset some state (e.g. TemporalAA index) to make rendering more deterministic (for automated screenshot verification)"), ECVF_Cheat);
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("r.RHI.Name"),		TEXT("Show current RHI's name"), ECVF_Cheat);
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("r.ResetRenderTargetsExtent"), TEXT("To reset internal render target extents"), ECVF_Cheat);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
+#if WITH_PROFILEGPU
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("DumpGPU"), TEXT("Dump one frame of rendering intermediary resources to disk."), ECVF_Cheat);
+#endif
 
 #if	!UE_BUILD_SHIPPING
 	IConsoleManager::Get().RegisterConsoleCommand( TEXT( "DumpConsoleCommands" ), TEXT( "Dumps all console vaiables and commands and all exec that can be discovered to the log/console" ), ECVF_Default );
@@ -2024,15 +2384,6 @@ void CreateConsoleVariables()
 // sg.     scalability group (used by scalability system, ini load/save or using SCALABILITY console command)
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-static TAutoConsoleVariable<int32> CVarPreViewTranslation(
-	TEXT("r.PreViewTranslation"),
-	1,
-	TEXT("To limit issues with float world space positions we offset the world by the\n")
-	TEXT("PreViewTranslation vector. This command allows to disable updating this vector.\n")
-	TEXT(" 0: disable update\n")
-	TEXT(" 1: update the offset is each frame (default)"),
-	ECVF_Cheat);
-
 static TAutoConsoleVariable<FString> CVarFreezeAtPosition(
 	TEXT("FreezeAtPosition"),
 	TEXT(""),	// default value is empty
@@ -2093,13 +2444,6 @@ static TAutoConsoleVariable<int32> CVarMobileNumDynamicPointLights(
 	TEXT("The number of dynamic point lights to support on mobile devices. Setting this to 0 for games which do not require dynamic point lights will reduce the number of shaders generated."), 
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarMobileDynamicPointLightsUseStaticBranch(
-	TEXT("r.MobileDynamicPointLightsUseStaticBranch"),
-	1,
-	TEXT("0: Generate unique forward rendering base pass shaders for 0, 1, ... N mobile dynamic point lights. (faster but generates many more shaders)\n")
-	TEXT("1: Use a shared shader with static branching for rendering 1 or more dynamic point lights (slightly slower but reduces shaders generated, recommended for most games)."),
-	ECVF_RenderThreadSafe | ECVF_ReadOnly);
-
 static TAutoConsoleVariable<int32> CVarMobileEnableStaticAndCSMShadowReceivers(
 	TEXT("r.Mobile.EnableStaticAndCSMShadowReceivers"),
 	1,
@@ -2112,6 +2456,13 @@ static TAutoConsoleVariable<int32> CVarMobileEnableMovableLightCSMShaderCulling(
 	1,
 	TEXT("0: All primitives lit by movable directional light render with CSM.\n")
 	TEXT("1: Primitives lit by movable directional light render with the CSM shader when determined to be within CSM range. (default)"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarMobileEnableNoPrecomputedLightingCSMShader(
+	TEXT("r.Mobile.EnableNoPrecomputedLightingCSMShader"),
+	0,
+	TEXT("0: CSM shaders for scenes without any precomputed lighting are not generated unless r.AllowStaticLighting is 0. (default)\n")
+	TEXT("1: CSM shaders for scenes without any precomputed lighting are always generated."),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 static TAutoConsoleVariable<int32> CVarMobileUseCSMShaderBranch(
@@ -2149,11 +2500,12 @@ static TAutoConsoleVariable<int32> CVarMobileSkyLightPermutation(
 	TEXT("2: Generate only skylight permutations"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarMobileForceFullPrecisionInPS(
-	TEXT("r.Mobile.ForceFullPrecisionInPS"),
+static TAutoConsoleVariable<int32> CVarMobileFloatPrecisionMode(
+	TEXT("r.Mobile.FloatPrecisionMode"),
 	0,
-	TEXT("0: Use precision specified in shader code (default)\n")
-	TEXT("1: Force use of high precision in pixel shaders.\n"),
+	TEXT("0: Use Half-precision (default)\n")
+	TEXT("1: Half precision, except Full precision for material expressions\n")
+	TEXT("2: Force use of high precision in pixel shaders.\n"),
 	ECVF_ReadOnly);
 
 static TAutoConsoleVariable<int32> CVarMobileAllowDitheredLODTransition(
@@ -2170,18 +2522,19 @@ static TAutoConsoleVariable<int32> CVarMobileAllowPixelDepthOffset(
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarMobileAllowPerPixelShadingModels(
+	TEXT("r.Mobile.AllowPerPixelShadingModels"),
+	1,
+	TEXT("Whether to allow 'Per-Pixel Shader Models (From Material Expression)' in materials for ES3.1 feature level."),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+
 static TAutoConsoleVariable<int32> CVarMobileSupportGPUScene(
 	TEXT("r.Mobile.SupportGPUScene"),
 	0,
 	TEXT("Whether to support GPU scene, required for auto-instancing (only ES3.1 feature level)"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
-);
-
-static TAutoConsoleVariable<int32> CVarMobileGPUSceneUseTexture2D(
-	TEXT("r.Mobile.UseGPUSceneTexture"),
-	0,
-	TEXT("Use a Texture2D instead of TextureBuffer for GPUScene.\n"),
-	ECVF_RenderThreadSafe
 );
 
 static TAutoConsoleVariable<int32> CVarSetClearSceneMethod(
@@ -2192,6 +2545,12 @@ static TAutoConsoleVariable<int32> CVarSetClearSceneMethod(
 	TEXT(" 1: RHIClear (default)\n")
 	TEXT(" 2: Quad at max z"),
 	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarLocalExposure(
+	TEXT("r.LocalExposure"),
+	1,
+	TEXT("Whether to support local exposure"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarBloomQuality(
 	TEXT("r.BloomQuality"),
@@ -2209,7 +2568,7 @@ static TAutoConsoleVariable<int32> CVarSceneColorFringeQuality(
 	TEXT("r.SceneColorFringeQuality"),
 	1,
 	TEXT(" 0: off but best for performance\n")
-	TEXT(" 1: 3 texture samples (default)n"),
+	TEXT(" 1: 3 texture samples (default)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 
@@ -2242,13 +2601,6 @@ static TAutoConsoleVariable<int32> CVarMotionBlurQuality(
 	4,
 	TEXT("Defines the motion blur method which allows to adjust for quality or performance.\n")
 	TEXT(" 0:off, 1:low, 2:medium, 3:high (default), 4: very high"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarPostProcessAAQuality(
-	TEXT("r.PostProcessAAQuality"),
-	4,
-	TEXT("Defines the postprocess anti aliasing method which allows to adjust for quality or performance.\n")
-	TEXT(" 0:off, 1:very low (faster FXAA), 2:low (FXAA), 3:medium (faster TemporalAA), 4:high (default TemporalAA), 5:very high, 6:max"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarFullscreenMode(
@@ -2301,15 +2653,6 @@ static TAutoConsoleVariable<int32> CVarDepthOfFieldQuality(
 	TEXT(" 3: very high quality, intended for non realtime cutscenes, CircleDOF only (slow)\n")
 	TEXT(" 4: extremely high quality, intended for non realtime cutscenes, CircleDOF only (very slow)"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<float> CVarScreenPercentage(
-	TEXT("r.ScreenPercentage"),
-	100.0f,
-	TEXT("To render in lower resolution and upscale for better performance (combined up with the blenable post process setting).\n")
-	TEXT("70 is a good value for low aliasing and performance, can be verified with 'show TestImage'\n")
-	TEXT("in percent, >0 and <=100, larger numbers are possible (supersampling) but the downsampling quality is improvable.")
-	TEXT("<0 is treated like 100."),
-	ECVF_Scalability | ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarHighResScreenshotDelay(
 	TEXT("r.HighResScreenshotDelay"),
@@ -2518,14 +2861,6 @@ static TAutoConsoleVariable<int32> CVarCompileShadersForDevelopment(
 	TEXT(" 1: on (Default)"),
 	ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarPS4MixeedModeShaderDebugInfo(
-	TEXT("r.PS4MixedModeShaderDebugInfo"),
-	0,
-	TEXT("Whether to compile shaders to allow mixed mode shader debugging. This will currently generate slower code.\n")
-	TEXT(" 0: Normal mode\n")
-	TEXT(" 1: Mixed mode)"),
-	ECVF_ReadOnly);
-
 static TAutoConsoleVariable<int32> CVarDontLimitOnBattery(
 	TEXT("r.DontLimitOnBattery"),
 	0,
@@ -2553,7 +2888,7 @@ static TAutoConsoleVariable<float> CVarViewDistanceScaleSecondaryScale(
 	1.0f,
 	TEXT("Controls the secondary view distance scale, Default = 1.0.\n")
 	TEXT("This is an optional scale intended to allow some features or gamemodes to opt-in.\n"),
-	ECVF_RenderThreadSafe);
+	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<float> CVarViewDistanceScale_FieldOfViewMinAngle(
 	TEXT("r.ViewDistanceScale.FieldOfViewMinAngle"),
@@ -2686,6 +3021,12 @@ static TAutoConsoleVariable<int32> CVarPrecomputedVisibilityWarning(
 	TEXT("If set to 1, a warning will be displayed when rendering a scene from a view point without precomputed visibility."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarDemotedLocalMemoryWarning(
+	TEXT("r.DemotedLocalMemoryWarning"),
+	1,
+	TEXT("If set to 1, a warning will be displayed when local memory has been demoted to system memory."),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<int32> CVarFeatureLevelPreview(
 	TEXT("r.FeatureLevelPreview"),
 	0,
@@ -2788,17 +3129,6 @@ static TAutoConsoleVariable<int32> CVarAndroidOverrideExternalTextureSupport(
 	TEXT("  4 = force ImageExternalESSL300 (version #300 with GL_OES_EGL_image_external_essl3)"),
 	ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarLuminOverrideExternalTextureSupport(
-	TEXT("r.Lumin.OverrideExternalTextureSupport"),
-	0,
-	TEXT("Override external texture support for OpenGLES API. (Lumin Only)\n")
-	TEXT("  0 = normal detection used [default]\n")
-	TEXT("  1 = disable external texture support\n")
-	TEXT("  2 = force ImageExternal100 (version #100 with GL_OES_EGL_image_external)\n")
-	TEXT("  3 = force ImageExternal300 (version #300 with GL_OES_EGL_image_external)\n")
-	TEXT("  4 = force ImageExternalESSL300 (version #300 with GL_OES_EGL_image_external_essl3)"),
-	ECVF_ReadOnly);
-
 static TAutoConsoleVariable<FString> CVarCustomUnsafeZones(
 	TEXT("r.CustomUnsafeZones"),
 	TEXT(""),
@@ -2816,10 +3146,20 @@ static TAutoConsoleVariable<int32> CVarSkyLightingQuality(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarMobileDefaultAntiAliasing(
+	TEXT("r.Mobile.AntiAliasing"),
+	1,
+	TEXT("Mobile default AntiAliasingMethod\n")
+	TEXT(" 0: off (no anti-aliasing)\n")
+	TEXT(" 1: FXAA (default, faster than TemporalAA but much more shimmering for non static cases)\n")
+	TEXT(" 2: TemporalAA(it will fallback to FXAA if SupportsGen4TAA is disabled) \n")
+	TEXT(" 3: MSAA"),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<int32> CVarMobileSupportsGen4TAA(
 	TEXT("r.Mobile.SupportsGen4TAA"),
-	0,
+	1,
 	TEXT("Support desktop Gen4 TAA with mobile rendering\n")
-	TEXT("0: Fallback to Mobile TAA (default)")
-	TEXT("1: Support Desktop Gen4 TAA"),
+	TEXT("0: Fallback to FXAA")
+	TEXT("1: Support Desktop Gen4 TAA (default)"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);

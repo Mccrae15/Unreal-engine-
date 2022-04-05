@@ -6,9 +6,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using AutomationTool;
-using UnrealBuildTool;
 using Ionic.Zip;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 [Help("ZipUtils is used to zip/unzip (i.e:RunUAT.bat ZipUtils -archive=D:/Content.zip -add=D:/UE/Pojects/SampleGame/Content/) or (i.e:RunUAT.bat ZipUtils -archive=D:/Content.zip -extract=D:/UE/Pojects/SampleGame/Content/)")]
 [Help("archive=<PathToArchive>", "Path to folder that should be add to the archive.")]
@@ -158,7 +158,7 @@ public class ZipUtils : BuildCommand
 					}
 				}
 
-				if (UnrealBuildTool.Utils.IsRunningOnMono && CommandUtils.IsProbablyAMacOrIOSExe(OutputFileName))
+				if (!RuntimePlatform.IsWindows && CommandUtils.IsProbablyAMacOrIOSExe(OutputFileName))
 				{
 					FixUnixFilePermissions(OutputFileName);
 				}

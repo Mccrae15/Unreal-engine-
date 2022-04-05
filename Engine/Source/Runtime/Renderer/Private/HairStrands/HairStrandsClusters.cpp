@@ -9,11 +9,9 @@
 #include "GlobalShader.h"
 #include "ShaderParameters.h"
 #include "ShaderParameterStruct.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
-static int32 GHairStrandsClusterCullingUsesHzb = 1;
-static FAutoConsoleVariableRef CVarHairCullingUseHzb(TEXT("r.HairStrands.Cluster.CullingUsesHzb"), GHairStrandsClusterCullingUsesHzb, TEXT("Enable/disable the use of HZB to help cull more hair clusters."));
 
 static int32 GHairStrandsClusterForceLOD = -1;
 static FAutoConsoleVariableRef CVarHairClusterCullingLodMode(TEXT("r.HairStrands.Cluster.ForceLOD"), GHairStrandsClusterForceLOD, TEXT("Force a specific hair LOD."));
@@ -26,11 +24,6 @@ bool IsHairStrandsClusterCullingEnable()
 	// At the moment it is not possible to disable cluster culling, as this pass is in charge of LOD selection, 
 	// and preparing the buffer which will be need for the cluster AABB pass (used later on by the voxelization pass)
 	return true;
-}
-
-bool IsHairStrandsClusterCullingUseHzb()
-{
-	return GHairStrandsClusterCullingUsesHzb > 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -67,20 +60,19 @@ class FHairClusterCullingCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FHairClusterCullingCS);
 	SHADER_USE_PARAMETER_STRUCT(FHairClusterCullingCS, FGlobalShader);
 
-	class FHZBCulling : SHADER_PERMUTATION_INT("PERMUTATION_HZBCULLING", 2);
 	class FDebugAABBBuffer : SHADER_PERMUTATION_INT("PERMUTATION_DEBUGAABBBUFFER", 2);
-	using FPermutationDomain = TShaderPermutationDomain<FHZBCulling, FDebugAABBBuffer>;
+	using FPermutationDomain = TShaderPermutationDomain<FDebugAABBBuffer>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(FVector, CameraWorldPos)
-		SHADER_PARAMETER(FMatrix, WorldToClipMatrix)
-		SHADER_PARAMETER(FMatrix, ProjectionMatrix)
+		SHADER_PARAMETER(FVector3f, CameraWorldPos)
+		SHADER_PARAMETER(FMatrix44f, WorldToClipMatrix)
+		SHADER_PARAMETER(FMatrix44f, ProjectionMatrix)
 		SHADER_PARAMETER(uint32, ClusterCount)
 		SHADER_PARAMETER(float, LODForcedIndex)
 		SHADER_PARAMETER(int32, bIsHairGroupVisible)
 		SHADER_PARAMETER(uint32, NumConvexHullPlanes)
 		SHADER_PARAMETER(float, LODBias)
-		SHADER_PARAMETER_ARRAY(FVector4, ViewFrustumConvexHull, [6])
+		SHADER_PARAMETER_ARRAY(FVector4f, ViewFrustumConvexHull, [6])
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, ClusterAABBBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer, ClusterInfoBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer, ClusterLODInfoBuffer)
@@ -91,10 +83,6 @@ class FHairClusterCullingCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer, ClusterDebugInfoBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectParametersClusterCount)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DrawIndirectParameters)
-		SHADER_PARAMETER(FVector, HZBUvFactor)
-		SHADER_PARAMETER(FVector4, HZBSize)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, HZBTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, HZBSampler)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -116,10 +104,12 @@ class FMainClusterCullingPrepareIndirectDrawsCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FMainClusterCullingPrepareIndirectDrawsCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCount)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, DispatchIndirectParametersClusterCount2D)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, DispatchIndirectParametersClusterCountDiv512)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, DispatchIndirectParametersClusterCountDiv512Div512)
+		SHADER_PARAMETER(uint32, GroupSize1D)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer,   DispatchIndirectParametersClusterCount)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectParametersClusterCount1D)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectParametersClusterCount2D)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectParametersClusterCountDiv512)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectParametersClusterCountDiv512Div512)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -140,9 +130,12 @@ class FMainClusterCullingPrepareIndirectDispatchCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FMainClusterCullingPrepareIndirectDispatchCS);
 	SHADER_USE_PARAMETER_STRUCT(FMainClusterCullingPrepareIndirectDispatchCS, FGlobalShader);
 
+	class FGroupSize : SHADER_PERMUTATION_SPARSE_INT("PERMUTATION_GROUP_SIZE", 32, 64);
+	using FPermutationDomain = TShaderPermutationDomain<FGroupSize>;
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, DrawIndirectBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, DispatchIndirectBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DrawIndirectBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, DispatchIndirectBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -164,11 +157,11 @@ class FHairClusterCullingLocalBlockPreFixSumCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FHairClusterCullingLocalBlockPreFixSumCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER(Buffer, DispatchIndirectParametersClusterCountDiv512)
+		RDG_BUFFER_ACCESS(DispatchIndirectParametersClusterCountDiv512, ERHIAccess::IndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCount)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, GlobalIndexCountBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, PerBlocklIndexCountPreFixSumBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, PerBlocklTotalIndexCountBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, PerBlocklIndexCountPreFixSumBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, PerBlocklTotalIndexCountBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -190,7 +183,7 @@ class FHairClusterCullingCompactVertexIdsLocalBlockCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FHairClusterCullingCompactVertexIdsLocalBlockCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER(Buffer, DispatchIndirectParametersBuffer)
+		RDG_BUFFER_ACCESS(DispatchIndirectParametersBuffer, ERHIAccess::IndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCount)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCount2D)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCountDiv512)
@@ -200,8 +193,8 @@ class FHairClusterCullingCompactVertexIdsLocalBlockCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, GlobalIndexCountBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, GlobalRadiusScaleBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, ClusterVertexIdBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, CulledCompactedIndexBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, CulledCompactedRadiusScaleBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, CulledCompactedIndexBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, CulledCompactedRadiusScaleBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -223,10 +216,10 @@ class FHairClusterCullingPreFixSumCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FHairClusterCullingPreFixSumCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER(Buffer, DispatchIndirectParameters)
+		RDG_BUFFER_ACCESS(DispatchIndirectParameters, ERHIAccess::IndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, DispatchIndirectParametersClusterCount)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, GlobalIndexCountBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(Buffer, GlobalIndexCountPreFixSumBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, GlobalIndexCountPreFixSumBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -246,14 +239,6 @@ static FVector CapturedCameraWorldPos;
 static FMatrix CapturedWorldToClipMatrix;
 static FMatrix CapturedProjMatrix;
 
-struct FHairHZBParameters
-{
-	// Set from renderer for view culling
-	FVector HZBUvFactorValue;
-	FVector4 HZBSizeValue;
-	TRefCountPtr<IPooledRenderTarget> HZB;
-};
-
 bool IsHairStrandsClusterDebugEnable();
 bool IsHairStrandsClusterDebugAABBEnable();
 
@@ -262,25 +247,27 @@ static void AddClusterCullingPass(
 	FGlobalShaderMap* ShaderMap,
 	const FViewInfo& View,
 	const FHairCullingParams& CullingParameters,
-	const FHairHZBParameters& HZBParameters,
 	FHairStrandClusterData::FHairGroup& ClusterData)
 {
-	FRDGBufferRef DispatchIndirectParametersClusterCount = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("HairDispatchIndirectParametersClusterCount"));
-	FRDGBufferRef DispatchIndirectParametersClusterCount2D = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("HairDispatchIndirectParametersClusterCount2D"));
-	FRDGBufferRef DispatchIndirectParametersClusterCountDiv512 = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("HairDispatchIndirectParametersClusterCountDiv512"));
-	FRDGBufferRef DispatchIndirectParametersClusterCountDiv512Div512 = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("HairDispatchIndirectParametersClusterCountDiv512Div512"));
+	FRDGBufferRef DispatchIndirectParametersClusterCount = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("Hair.DispatchIndirectParametersClusterCount"));
+	FRDGBufferRef DispatchIndirectParametersClusterCount1D = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("Hair.DispatchIndirectParametersClusterCount1D"));
+	FRDGBufferRef DispatchIndirectParametersClusterCount2D = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("Hair.DispatchIndirectParametersClusterCount2D"));
+	FRDGBufferRef DispatchIndirectParametersClusterCountDiv512 = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("Hair.DispatchIndirectParametersClusterCountDiv512"));
+	FRDGBufferRef DispatchIndirectParametersClusterCountDiv512Div512 = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(), TEXT("Hair.DispatchIndirectParametersClusterCountDiv512Div512"));
 	
-	FRDGBufferRef GlobalClusterIdBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("HairGlobalClusterIdBuffer"));
-	FRDGBufferRef GlobalIndexStartBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("HairGlobalIndexStartBuffer"));
-	FRDGBufferRef GlobalIndexCountBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("HairGlobalIndexCountBuffer"));
-	FRDGBufferRef GlobalRadiusScaleBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(float), ClusterData.ClusterCount), TEXT("HairGlobalRadiusScaleBuffer"));
+	FRDGBufferRef GlobalClusterIdBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("Hair.GlobalClusterIdBuffer"));
+	FRDGBufferRef GlobalIndexStartBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("Hair.GlobalIndexStartBuffer"));
+	FRDGBufferRef GlobalIndexCountBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("Hair.GlobalIndexCountBuffer"));
+	FRDGBufferRef GlobalRadiusScaleBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(float), ClusterData.ClusterCount), TEXT("Hair.GlobalRadiusScaleBuffer"));
 
-	FRDGBufferRef PerBlocklTotalIndexCountBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterData.ClusterCount), TEXT("PerBlocklTotalIndexCountBuffer"));
-	FRDGBufferRef PerBlocklTotalIndexCountPreFixSumBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, ClusterData.ClusterCount), TEXT("PerBlocklTotalIndexCountPreFixSumBuffer"));
-	FRDGBufferRef PerBlocklIndexCountPreFixSumBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, ClusterData.ClusterCount), TEXT("PerBlocklIndexCountPreFixSumBuffer"));
+	const uint32 PrefixGroupSize = 512;
+	const uint32 ClusterCountRoundUpToGroupSize = FMath::DivideAndRoundUp(ClusterData.ClusterCount, PrefixGroupSize) * PrefixGroupSize;
+	FRDGBufferRef PerBlocklTotalIndexCountBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), ClusterCountRoundUpToGroupSize), TEXT("Hair.PerBlocklTotalIndexCountBuffer"));
+	FRDGBufferRef PerBlocklTotalIndexCountPreFixSumBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, ClusterCountRoundUpToGroupSize), TEXT("Hair.PerBlocklTotalIndexCountPreFixSumBuffer"));
+	FRDGBufferRef PerBlocklIndexCountPreFixSumBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32) * 2, ClusterCountRoundUpToGroupSize), TEXT("Hair.PerBlocklIndexCountPreFixSumBuffer"));
 
-	FRDGImportedBuffer DrawIndirectParametersBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectBuffer(), ERDGImportedBufferFlags::CreateUAV);
-	FRDGImportedBuffer DrawIndirectParametersRasterComputeBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectRasterComputeBuffer(), ERDGImportedBufferFlags::CreateUAV);
+	FRDGImportedBuffer DrawIndirectParametersBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectBuffer(), ERDGImportedBufferFlags::CreateViews);
+	FRDGImportedBuffer DrawIndirectParametersRasterComputeBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectRasterComputeBuffer(), ERDGImportedBufferFlags::CreateViews);
 	
 	bool bClusterDebugAABBBuffer = false;
 	bool bClusterDebug = false;
@@ -299,7 +286,7 @@ static void AddClusterCullingPass(
 		static IConsoleVariable* CVarClusterDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HairStrands.Cluster.Debug"));
 		bClusterDebugAABBBuffer = IsHairStrandsClusterDebugAABBEnable();
 		bClusterDebug = IsHairStrandsClusterDebugEnable();
-		ClusterDebugInfoBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FHairClusterDebugInfo), ClusterData.ClusterCount), TEXT("CulledCompactedIndexBuffer"));
+		ClusterDebugInfoBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FHairClusterDebugInfo), ClusterData.ClusterCount), TEXT("Hair.CulledCompactedIndexBuffer"));
 	}
 #endif
 
@@ -343,9 +330,9 @@ static void AddClusterCullingPass(
 		}
 
 		FHairClusterCullingCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairClusterCullingCS::FParameters>();
-		Parameters->ProjectionMatrix = CapturedProjMatrix;
-		Parameters->CameraWorldPos = CapturedCameraWorldPos;
-		Parameters->WorldToClipMatrix = CapturedWorldToClipMatrix;
+		Parameters->ProjectionMatrix = FMatrix44f(CapturedProjMatrix);			// LWC_TODO: Precision loss
+		Parameters->CameraWorldPos = FVector3f(CapturedCameraWorldPos);
+		Parameters->WorldToClipMatrix = FMatrix44f(CapturedWorldToClipMatrix);
 		Parameters->ClusterCount = ClusterData.ClusterCount;
 		Parameters->LODForcedIndex = ForceLOD;
 		Parameters->LODBias = ClusterData.LODBias;
@@ -355,7 +342,8 @@ static void AddClusterCullingPass(
 		check(Parameters->NumConvexHullPlanes <= 6);
 		for (uint32 i = 0; i < Parameters->NumConvexHullPlanes; ++i)
 		{
-			Parameters->ViewFrustumConvexHull[i] = View.ViewFrustum.Planes[i];
+			const FPlane& Plane = View.ViewFrustum.Planes[i];
+			Parameters->ViewFrustumConvexHull[i] = FVector4f(Plane.X, Plane.Y, Plane.Z, Plane.W); // LWC_TODO: precision loss
 		}
 
 		Parameters->ClusterAABBBuffer = RegisterAsSRV(GraphBuilder, *ClusterData.ClusterAABBBuffer);
@@ -374,13 +362,7 @@ static void AddClusterCullingPass(
 		Parameters->ClusterDebugInfoBuffer = GraphBuilder.CreateUAV(ClusterDebugInfoBuffer, PF_R32_SINT);
 #endif
 
-		Parameters->HZBUvFactor = HZBParameters.HZBUvFactorValue;
-		Parameters->HZBSize = HZBParameters.HZBSizeValue;
-		Parameters->HZBTexture = HZBParameters.HZB.IsValid() ? GraphBuilder.RegisterExternalTexture(HZBParameters.HZB, TEXT("HairClusterCullingHZB")) : nullptr;
-		Parameters->HZBSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
 		FHairClusterCullingCS::FPermutationDomain Permutation;
-		Permutation.Set<FHairClusterCullingCS::FHZBCulling>((HZBParameters.HZB.IsValid() && !bClusterCullingFrozenCamera && GHairStrandsClusterCullingUsesHzb) ? 1 : 0);
 		Permutation.Set<FHairClusterCullingCS::FDebugAABBBuffer>(bClusterDebugAABBBuffer ? 1 : 0);
 		TShaderMapRef<FHairClusterCullingCS> ComputeShader(ShaderMap, Permutation);
 		const FIntVector DispatchCount = DispatchCount.DivideAndRoundUp(FIntVector(ClusterData.ClusterCount, 1, 1), FIntVector(64, 1, 1));
@@ -393,9 +375,12 @@ static void AddClusterCullingPass(
 	}
 
 	/// Prepare some indirect draw buffers for specific compute group size
+	const uint32 GroupSize1D = GetVendorOptimalGroupSize1D();
 	{
 		FMainClusterCullingPrepareIndirectDrawsCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMainClusterCullingPrepareIndirectDrawsCS::FParameters>();
+		Parameters->GroupSize1D = GroupSize1D;
 		Parameters->DispatchIndirectParametersClusterCount = GraphBuilder.CreateSRV(DispatchIndirectParametersClusterCount, PF_R32_UINT);
+		Parameters->DispatchIndirectParametersClusterCount1D = GraphBuilder.CreateUAV(DispatchIndirectParametersClusterCount1D, PF_R32_UINT);
 		Parameters->DispatchIndirectParametersClusterCount2D = GraphBuilder.CreateUAV(DispatchIndirectParametersClusterCount2D, PF_R32_UINT);
 		Parameters->DispatchIndirectParametersClusterCountDiv512 = GraphBuilder.CreateUAV(DispatchIndirectParametersClusterCountDiv512, PF_R32_UINT);
 		Parameters->DispatchIndirectParametersClusterCountDiv512Div512 = GraphBuilder.CreateUAV(DispatchIndirectParametersClusterCountDiv512Div512, PF_R32_UINT);
@@ -487,9 +472,13 @@ static void AddClusterCullingPass(
 	}
 
 	{
-		ConvertToExternalBuffer(GraphBuilder, GlobalClusterIdBuffer, ClusterData.ClusterIdBuffer);
-		ConvertToExternalBuffer(GraphBuilder, GlobalIndexStartBuffer, ClusterData.ClusterIndexOffsetBuffer);
-		ConvertToExternalBuffer(GraphBuilder, GlobalIndexCountBuffer, ClusterData.ClusterIndexCountBuffer);
+		ClusterData.ClusterIdBuffer = GraphBuilder.ConvertToExternalBuffer(GlobalClusterIdBuffer);
+		ClusterData.ClusterIndexOffsetBuffer = GraphBuilder.ConvertToExternalBuffer(GlobalIndexStartBuffer);
+		ClusterData.ClusterIndexCountBuffer = GraphBuilder.ConvertToExternalBuffer(GlobalIndexCountBuffer);
+		ClusterData.CulledCluster2DIndirectArgsBuffer = DispatchIndirectParametersClusterCount2D;
+		ClusterData.CulledCluster1DIndirectArgsBuffer = DispatchIndirectParametersClusterCount1D;
+		ClusterData.CulledClusterCountBuffer = DispatchIndirectParametersClusterCount;
+		ClusterData.GroupSize1D = GroupSize1D;
 	}
 
 	/// Prepare some indirect dispatch for compute raster visibility buffers
@@ -498,7 +487,9 @@ static void AddClusterCullingPass(
 		Parameters->DrawIndirectBuffer = DrawIndirectParametersBuffer.UAV;
 		Parameters->DispatchIndirectBuffer = DrawIndirectParametersRasterComputeBuffer.UAV;
 		
-		TShaderMapRef<FMainClusterCullingPrepareIndirectDispatchCS> ComputeShader(ShaderMap);
+		FMainClusterCullingPrepareIndirectDispatchCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<FMainClusterCullingPrepareIndirectDispatchCS::FGroupSize>(GetVendorOptimalGroupSize1D());
+		TShaderMapRef<FMainClusterCullingPrepareIndirectDispatchCS> ComputeShader(ShaderMap, PermutationVector);
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("PrepareIndirectDispatchCS"),
@@ -511,11 +502,7 @@ static void AddClusterCullingPass(
 #if WITH_EDITOR
 	if (bClusterDebugAABBBuffer)
 	{
-		ConvertToExternalBuffer(GraphBuilder, ClusterDebugInfoBuffer, ClusterData.ClusterDebugInfoBuffer);
-	}
-	if (bClusterDebug)
-	{
-		ConvertToExternalBuffer(GraphBuilder, DispatchIndirectParametersClusterCount, ClusterData.CulledDispatchIndirectParametersClusterCount);
+		ClusterData.ClusterDebugInfoBuffer = GraphBuilder.ConvertToExternalBuffer(ClusterDebugInfoBuffer);
 	}
 #endif
 
@@ -535,7 +522,7 @@ static void AddClusterResetLod0(
 	// Set as culling result not available
 	ClusterData.SetCullingResultAvailable(false);
 
-	FRDGImportedBuffer IndirectBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectBuffer(), ERDGImportedBufferFlags::CreateUAV);
+	FRDGImportedBuffer IndirectBuffer = Register(GraphBuilder, ClusterData.HairGroupPublicPtr->GetDrawIndirectBuffer(), ERDGImportedBufferFlags::CreateViews);
 
 	// Initialise indirect buffers to entire lod 0 dispatch
 	FHairIndBufferClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairIndBufferClearCS::FParameters>();
@@ -566,6 +553,7 @@ void ComputeHairStrandsClustersCulling(
 {
 	DECLARE_GPU_STAT(HairStrandsClusterCulling);
 	RDG_EVENT_SCOPE(GraphBuilder, "HairStrandsClusterCulling");
+	TRACE_CPUPROFILER_EVENT_SCOPE(ComputeHairStrandsClustersCulling);
 	RDG_GPU_STAT_SCOPE(GraphBuilder, HairStrandsClusterCulling);
 
 	uint32 ViewCount = Views.Num();
@@ -574,29 +562,6 @@ void ComputeHairStrandsClustersCulling(
 	for (uint32 ViewId = 0; ViewId < ViewCount; ++ViewId)
 	{
 		SceneViews[ViewId] = &Views[ViewId];
-	}
-
-	FHairHZBParameters HZBParameters;
-	if (ViewCount > 0) // only handling one view for now
-	{
-		const FViewInfo& ViewInfo = Views[0];
-		HZBParameters.HZB = ViewInfo.HZB.IsValid() ? ViewInfo.HZB : nullptr;
-
-		const float kHZBTestMaxMipmap = 9.0f;
-		const float HZBMipmapCounts = FMath::Log2(FMath::Max(ViewInfo.HZBMipmap0Size.X, ViewInfo.HZBMipmap0Size.Y));
-		const FVector HZBUvFactorValue(
-			float(ViewInfo.ViewRect.Width()) / float(2 * ViewInfo.HZBMipmap0Size.X),
-			float(ViewInfo.ViewRect.Height()) / float(2 * ViewInfo.HZBMipmap0Size.Y),
-			FMath::Max(HZBMipmapCounts - kHZBTestMaxMipmap, 0.0f)
-		);
-		const FVector4 HZBSizeValue(
-			ViewInfo.HZBMipmap0Size.X,
-			ViewInfo.HZBMipmap0Size.Y,
-			1.0f / float(ViewInfo.HZBMipmap0Size.X),
-			1.0f / float(ViewInfo.HZBMipmap0Size.Y)
-		);
-		HZBParameters.HZBUvFactorValue = HZBUvFactorValue;
-		HZBParameters.HZBSizeValue = HZBSizeValue;
 	}
 
 	const bool bClusterCulling = IsHairStrandsClusterCullingEnable();
@@ -617,7 +582,6 @@ void ComputeHairStrandsClustersCulling(
 					&ShaderMap, 
 					View, 
 					CullingParameters,
-					HZBParameters,
 					ClusterData);
 			}
 		}

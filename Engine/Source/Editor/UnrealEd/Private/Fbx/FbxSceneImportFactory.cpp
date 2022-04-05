@@ -762,7 +762,7 @@ UObject *FFbxAttributeInfo::GetContentObject()
 	ContentObject = FindObjectSafe<UObject>(ANY_PACKAGE, *AssetName);
 	if (ContentObject != nullptr)
 	{
-		if (ContentObject->HasAnyFlags(RF_Transient) || ContentObject->IsPendingKill())
+		if (ContentObject->HasAnyFlags(RF_Transient) || !IsValid(ContentObject))
 		{
 			ContentObject = nullptr;
 		}
@@ -942,7 +942,7 @@ void UFbxSceneImportFactory::ChangeFrontAxis(void* VoidFbxImporter, void* VoidSc
 		UnFbx::FbxNodeInfo &RootNodeInfo = SceneInfo->HierarchyInfo[0];
 		check(RootNodeInfo.UniqueId == RootNode->GetUniqueID());
 		RootNodeInfo.Transform = RootNode->EvaluateGlobalTransform();
-		//Set the UE4 data
+		//Set the UE data
 		TSharedPtr<FFbxNodeInfo> RootNodeInfoPtr = GetNodeInfoPtrById(SceneInfoPtr->HierarchyInfo, RootNodeInfo.UniqueId);
 		if (RootNodeInfoPtr.IsValid())
 		{

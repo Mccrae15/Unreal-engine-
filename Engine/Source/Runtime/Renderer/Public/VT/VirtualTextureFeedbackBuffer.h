@@ -2,10 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "RenderGraphResources.h"
 
-#include "RHI.h"
-#include "RHIResources.h"
+/** Returns the scale used to divide the scene texture resolution to get the virtual texture feedback resolution. */
+extern int32 GetVirtualTextureFeedbackScale();
+
+/** Get size for a virtual texture feedback buffer. This is calculated internally by applying GetVirtualTextureFeedbackScale() to the SceneTextureExtent. */
+extern FIntPoint GetVirtualTextureFeedbackBufferSize(FIntPoint InSceneTextureExtent);
+
+/** Returns a value from the sampling sequence used to traverse each feedback tile. */
+extern uint32 SampleVirtualTextureFeedbackSequence(uint32 InFrameIndex);
 
 /** 
  * Description of how to interpret an RHIBuffer that is being fed to the virtual texture feedback system.
@@ -33,6 +39,32 @@ struct FVirtualTextureFeedbackBufferDesc
 	int32 TotalReadSize = 0;
 };
 
+/** GPU feedback buffer for tracking virtual texture requests from the GPU. */
+class FVirtualTextureFeedbackBuffer : public FRenderResource
+{
+public:
+	// Allocates and prepares the feedback buffer for submission.
+	void Begin(FRDGBuilder& GraphBuilder, const FVirtualTextureFeedbackBufferDesc& Desc);
+
+	// Submits the feedback buffer for readback.
+	void End(FRDGBuilder& GraphBuilder);
+
+	FRHIUnorderedAccessView* GetUAV() const
+	{
+		return UAV ? UAV : GEmptyVertexBufferWithUAV->UnorderedAccessViewRHI.GetReference();
+	}
+
+	//~ Begin FRenderResource Interface
+	virtual void ReleaseRHI() override;
+	//~ End FRenderResource Interface
+
+private:
+	FVirtualTextureFeedbackBufferDesc Desc;
+	TRefCountPtr<FRDGPooledBuffer> PooledBuffer;
+	FRHIUnorderedAccessView* UAV{};
+	bool bCanAccessFeedbackUAV = false;
+};
+
 /** 
  * Submit an RHIBuffer containing virtual texture feedback data to the virtual texture system.
  * The buffer is internally copied to the CPU and parsed to determine which virtual texture pages need to be mapped.
@@ -40,4 +72,5 @@ struct FVirtualTextureFeedbackBufferDesc
  * Multiple buffers can be transferred per frame using this function.
  * The function can be called from the render thread only.
 */
-RENDERER_API void SubmitVirtualTextureFeedbackBuffer(class FRHICommandListImmediate& RHICmdList, FVertexBufferRHIRef const& Buffer, FVirtualTextureFeedbackBufferDesc const& Desc);
+RENDERER_API void SubmitVirtualTextureFeedbackBuffer(class FRHICommandListImmediate& RHICmdList, FBufferRHIRef const& InBuffer, FVirtualTextureFeedbackBufferDesc const& InDesc);
+RENDERER_API void SubmitVirtualTextureFeedbackBuffer(class FRDGBuilder& GraphBuilder, class FRDGBuffer* InBuffer, FVirtualTextureFeedbackBufferDesc const& InDesc);

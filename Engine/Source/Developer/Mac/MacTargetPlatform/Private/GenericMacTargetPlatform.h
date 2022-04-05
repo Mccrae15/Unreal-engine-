@@ -45,9 +45,8 @@ public:
 #endif
 
 		#if WITH_ENGINE
-			FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->IniPlatformName());
 			TextureLODSettings = nullptr;
-			StaticMeshLODSettings.Initialize(EngineSettings);
+			StaticMeshLODSettings.Initialize(this);
 		#endif
 	}
 
@@ -105,17 +104,14 @@ public:
 			return (HAS_EDITOR_DATA || !IS_DEDICATED_SERVER);
 		}
 
-return TSuper::SupportsFeature(Feature);
+		return TSuper::SupportsFeature(Feature);
 	}
 
-#if WITH_ENGINE
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override
 	{
 		// no shaders needed for dedicated server target
 		if (!IS_DEDICATED_SERVER)
 		{
-			static FName NAME_SF_METAL_SM5_NOTESS(TEXT("SF_METAL_SM5_NOTESS"));
-			OutFormats.AddUnique(NAME_SF_METAL_SM5_NOTESS);
 			static FName NAME_SF_METAL_SM5(TEXT("SF_METAL_SM5"));
 			OutFormats.AddUnique(NAME_SF_METAL_SM5);
 			static FName NAME_SF_METAL_MACES3_1(TEXT("SF_METAL_MACES3_1"));
@@ -149,6 +145,8 @@ return TSuper::SupportsFeature(Feature);
 			OutFormats.AddUnique(FName(*ShaderFormat));
 		}
 	}
+
+#if WITH_ENGINE
 	virtual const class FStaticMeshLODSettings& GetStaticMeshLODSettings( ) const override
 	{
 		return StaticMeshLODSettings;
@@ -159,10 +157,9 @@ return TSuper::SupportsFeature(Feature);
 		if (!IS_DEDICATED_SERVER)
 		{
 			// just use the standard texture format name for this texture (with DX11 support)
-			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, Texture, EngineSettings, true);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, Texture, true);
 		}
 	}
-
 
 	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override
 	{
@@ -200,7 +197,7 @@ return TSuper::SupportsFeature(Feature);
 
 		bool bUseDXT5NormalMap = false;
 		FString UseDXT5NormalMapsString;
-		if (EngineSettings.GetString(TEXT("SystemSettings"), TEXT("Compat.UseDXT5NormalMaps"), UseDXT5NormalMapsString))
+		if (this->GetConfigSystem()->GetString(TEXT("SystemSettings"), TEXT("Compat.UseDXT5NormalMaps"), UseDXT5NormalMapsString, GEngineIni))
 		{
 			bUseDXT5NormalMap = FCString::ToBool(*UseDXT5NormalMapsString);
 		}
@@ -303,6 +300,8 @@ return TSuper::SupportsFeature(Feature);
 		return TextureFormatName;
 	}
 
+	virtual bool SupportsLQCompressionTextureFormat() const override { return false; };
+
 	virtual const UTextureLODSettings& GetTextureLODSettings() const override
 	{
 		return *TextureLODSettings;
@@ -313,35 +312,42 @@ return TSuper::SupportsFeature(Feature);
 		TextureLODSettings = InTextureLODSettings;
 	}
 
-
-	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
+	virtual bool CanSupportRemoteShaderCompile() const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
+		return true;
+	}
+	
+	virtual void GetShaderCompilerDependencies(TArray<FString>& OutDependencies) const override
+	{
+		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/ShaderConductor/Mac/libdxcompiler.dylib"));
+		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/ShaderConductor/Mac/libShaderConductor.dylib"));
+	}
 
-		if (Wave->IsSeekableStreaming())
+	virtual FName GetWaveFormat(const class USoundWave* Wave) const override
+	{
+		FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
+		if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			return NAME_ADPCM;
-		}
+			if (Wave->IsStreaming(*this->IniPlatformName()))
+			{
+				return Audio::NAME_OPUS;
+			}
 
-		if (Wave->IsStreaming(*this->IniPlatformName()))
+			return Audio::NAME_OGG;
+		}
+		else
 		{
-			return NAME_OPUS;
+			return FormatName;
 		}
-
-		return NAME_OGG;
 	}
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
-
-		OutFormats.Add(NAME_ADPCM);
-		OutFormats.Add(NAME_OGG);
-		OutFormats.Add(NAME_OPUS);
+		OutFormats.Add(Audio::NAME_ADPCM);
+		OutFormats.Add(Audio::NAME_PCM);
+		OutFormats.Add(Audio::NAME_OGG);
+		OutFormats.Add(Audio::NAME_OPUS);
+		OutFormats.Add(Audio::NAME_BINKA);
 	}
 
 #endif //WITH_ENGINE
@@ -353,49 +359,9 @@ return TSuper::SupportsFeature(Feature);
 	}
 
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		if (IS_DEDICATED_SERVER)
-		{
-			return LOCTEXT("MacServerVariantTitle", "Dedicated Server");
-		}
-
-		if (HAS_EDITOR_DATA)
-		{
-			return LOCTEXT("MacClientEditorDataVariantTitle", "Client with Editor Data");
-		}
-
-		if (IS_CLIENT_ONLY)
-		{
-			return LOCTEXT("MacClientOnlyVariantTitle", "Client only");
-		}
-
-		return LOCTEXT("MacClientVariantTitle", "Client");
-	}
-
-
-	virtual FText GetVariantTitle() const override
-	{
-		return LOCTEXT("MacVariantTitle", "Build Type");
-	}
-
-
 	virtual float GetVariantPriority() const override
 	{
 		return TProperties::GetVariantPriority();
-	}
-
-
-	DECLARE_DERIVED_EVENT(TGenericMacTargetPlatform, ITargetPlatform::FOnTargetDeviceDiscovered, FOnTargetDeviceDiscovered);
-	virtual FOnTargetDeviceDiscovered& OnDeviceDiscovered( ) override
-	{
-		return DeviceDiscoveredEvent;
-	}
-
-	DECLARE_DERIVED_EVENT(TGenericMacTargetPlatform, ITargetPlatform::FOnTargetDeviceLost, FOnTargetDeviceLost);
-	virtual FOnTargetDeviceLost& OnDeviceLost( ) override
-	{
-		return DeviceLostEvent;
 	}
 
 	//~ End ITargetPlatform Interface
@@ -406,9 +372,6 @@ private:
 	ITargetDevicePtr LocalDevice;
 
 #if WITH_ENGINE
-	// Holds the Engine INI settings for quick use.
-	FConfigFile EngineSettings;
-
 	// Holds the texture LOD settings.
 	const UTextureLODSettings* TextureLODSettings;
 
@@ -417,13 +380,6 @@ private:
 
 #endif // WITH_ENGINE
 
-private:
-
-	// Holds an event delegate that is executed when a new target device has been discovered.
-	FOnTargetDeviceDiscovered DeviceDiscoveredEvent;
-
-	// Holds an event delegate that is executed when a target device has been lost, i.e. disconnected or timed out.
-	FOnTargetDeviceLost DeviceLostEvent;
 };
 
 #undef LOCTEXT_NAMESPACE

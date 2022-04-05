@@ -40,6 +40,7 @@ class NIAGARAEDITOR_API UNiagaraStackViewModel : public UObject
 	GENERATED_BODY()
 
 public:
+	DECLARE_DELEGATE_OneParam(FOnChangeSearchTextExternal, FText)
 	DECLARE_MULTICAST_DELEGATE(FOnExpansionChanged);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnStructureChanged, ENiagaraStructureChangedFlags);
 	DECLARE_MULTICAST_DELEGATE(FOnSearchCompleted);
@@ -88,7 +89,10 @@ public:
 
 	TArray<UNiagaraStackEntry*>& GetRootEntryAsArray();
 
+	FOnChangeSearchTextExternal& OnChangeSearchTextExternal();
+
 	FOnExpansionChanged& OnExpansionChanged();
+	FOnExpansionChanged& OnExpansionInOverviewChanged();
 	FOnStructureChanged& OnStructureChanged();
 	FOnSearchCompleted& OnSearchCompleted();
 	FOnDataObjectChanged& OnDataObjectChanged();
@@ -110,8 +114,10 @@ public:
 
 	virtual void Tick();
 	//~ stack search stuff
-	void OnSearchTextChanged(const FText& SearchText);
+	void ResetSearchText();
 	FText GetCurrentSearchText() const { return CurrentSearchText; };
+	void OnSearchTextChanged(const FText& SearchText);
+	void SetSearchTextExternal(const FText& NewSearchText);
 	bool IsSearching();
 	const TArray<FSearchResult>& GetCurrentSearchResults();
 	int GetCurrentFocusedMatchIndex() const { return CurrentFocusedSearchMatchIndex; }
@@ -138,6 +144,7 @@ public:
 
 	bool HasIssues() const;
 
+	void Refresh() { bRefreshPending = true; }
 private:
 	/** Recursively Expands all groups and collapses all items in the stack. */
 	void CollapseToHeadersRecursive(TArray<UNiagaraStackEntry*> Entries);
@@ -154,14 +161,13 @@ private:
 	};
 
 	void EntryExpansionChanged();
+	void EntryExpansionInOverviewChanged();
 	void EntryStructureChanged(ENiagaraStructureChangedFlags Flags);
 	void EntryDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 	void EntryRequestFullRefresh();
 	void EntryRequestFullRefreshDeferred();
 	void RefreshTopLevelViewModels();
 	void RefreshHasIssues();
-	void OnSystemCompiled();
-	void OnEmitterCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 	void EmitterParentRemoved();
 	/** Called by the tick function to perform partial search */
 	void SearchTick();
@@ -179,11 +185,15 @@ private:
 	TArray<UNiagaraStackEntry*> RootEntries;
 
 	UPROPERTY()
-	UNiagaraStackEntry* RootEntry;
+	TObjectPtr<UNiagaraStackEntry> RootEntry;
 
 	bool bExternalRootEntry;
 
+	/** Used to forward a programmatic change in search text to a widget representing the search. The widget is responsible for binding to this delegate. */
+	FOnChangeSearchTextExternal OnChangeSearchTextExternalDelegate;
+	
 	FOnExpansionChanged ExpansionChangedDelegate;
+	FOnExpansionChanged ExpansionInOverviewChangedDelegate;
 	FOnStructureChanged StructureChangedDelegate;
 	FOnDataObjectChanged DataObjectChangedDelegate;
 

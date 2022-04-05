@@ -10,26 +10,23 @@
 // Server create&adopt textures formats for client request
 struct FSharedResourceTexture
 {
-private:
 	struct FSharingData
 	{
 		// GPU-GPU share purpose (DX11,DX12)
 		void* SharedHandle = nullptr;
 
+		// MGPU node index, undefined
+		int MGPUIndex = -1;
+
 		// Unique handle name
 		FGuid SharedHandleGuid;
 
-		// MGPU node index, undefined
-		int32 MGPUIndex = -1;
-
-		bool IsValid() const
+		bool IsValid()
 		{
 			return SharedHandle != nullptr;
 		}
+	};
 
-	} SharingData;
-
-public:
 	bool IsUsed() const
 	{
 		switch (State)
@@ -44,48 +41,9 @@ public:
 	}
 	
 	// remote side copy handle after connected
-	bool IsSharedHandleConnected(const FSharedResourceTexture& RemoteTexture) const
+	inline bool IsSharedHandleConnected(const FSharedResourceTexture& RemoteTexture) const
 	{
 		return SharingData.SharedHandle == RemoteTexture.SharingData.SharedHandle;
-	}
-
-	bool IsValidConnection() const
-	{
-		return SharingData.IsValid();
-	}
-
-	void* GetConnectionSharedHandle() const
-	{
-		return SharingData.SharedHandle;
-	}
-
-	// Unique handle name
-	const FGuid& GetConnectionSharedHandleGuid() const
-	{
-		return SharingData.SharedHandleGuid;
-	}
-
-	void SetConnectionMGPUIndex(const int32 InMGPUIndex)
-	{
-		SharingData.MGPUIndex = InMGPUIndex;
-	}
-
-	int32 GetConnectionMGPUIndex() const
-	{
-		return SharingData.MGPUIndex;
-	}
-
-	bool CreateConnection(void* InSharedHandle, const FGuid& InSharedHandleGuid)
-	{
-		SharingData.SharedHandle = InSharedHandle;
-		SharingData.SharedHandleGuid = InSharedHandleGuid;
-
-		return SharingData.IsValid();
-	}
-
-	void OpenConnection(const FSharedResourceTexture& InRemoteTexture)
-	{
-		SharingData = InRemoteTexture.SharingData;
 	}
 
 	void ReleaseConnection()
@@ -105,8 +63,9 @@ public:
 	}
 
 	FTextureShareSurfaceDesc    TextureDesc;
+	FSharingData                SharingData;
 
-	int32                       Index;
+	int                         Index;
 	TCHAR                       Name[MaxTextureShareItemNameLength] = { 0 }; /** Custom Name of texture resource, used to client-server logic connecting */
 
 	ESharedResourceTextureState  State = ESharedResourceTextureState::Undefined;
@@ -132,16 +91,13 @@ struct FSharedResourceProcessData
 	// Default MGPU node index, Use GPU0
 	uint32 DefaultMGPUIndex = 0;
 
-	FORCEINLINE uint32 GetTextureMGPUIndex(int32 TextureIndex)
+	FORCEINLINE uint32 GetTextureMGPUIndex(int TextureIndex)
 	{
-		int32 TextureMGPUIndex = Textures[TextureIndex].GetConnectionMGPUIndex();
+		int TextureMGPUIndex = Textures[TextureIndex].SharingData.MGPUIndex;
 		return (TextureMGPUIndex < 0) ? DefaultMGPUIndex : (uint32)TextureMGPUIndex;
 	}
 
 	FTextureShareAdditionalData AdditionalData;
-
-	FTextureShareCustomProjectionData CustomProjectionData;
-	bool bIsValidCustomProjectionData = false;
 
 	FORCEINLINE uint64 GetTextureAccessSyncFrame() const
 	{
@@ -161,9 +117,9 @@ struct FSharedResourceProcessData
 	FORCEINLINE void ResetSyncFrame()
 	{
 		SyncFrame = 0;
-		for (int32 TextureIndex = 0; TextureIndex < MaxTextureShareItemTexturesCount; TextureIndex++)
+		for (int i = 0; i < MaxTextureShareItemTexturesCount; i++)
 		{
-			Textures[TextureIndex].AccessSyncFrame = 0;
+			Textures[i].AccessSyncFrame = 0;
 		}
 	}
 
@@ -230,9 +186,9 @@ struct FSharedResourceSessionHeader
 
 	FSharedResourceSessionHeader()
 	{
-		for (uint8 ProcessIdx = 0; ProcessIdx < (uint8)ETextureShareProcess::COUNT; ProcessIdx++)
+		for (int i = 0; i < (uint8)ETextureShareProcess::COUNT; i++)
 		{
-			ProcessState[ProcessIdx] = ESharedResourceProcessState::Undefined;
+			ProcessState[i] = ESharedResourceProcessState::Undefined;
 		}
 	}
 

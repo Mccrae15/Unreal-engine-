@@ -14,8 +14,6 @@ class CORE_API FThreadManager
 {
 	/** Critical section for ThreadList */
 	FCriticalSection ThreadsCritical;
-	/** Set if thread manager is initialized. */
-	static bool bIsInitialized;
 
 	/** List of thread objects to be ticked. */
 	TMap<uint32, class FRunnableThread*, TInlineSetAllocator<256>> Threads;
@@ -46,21 +44,17 @@ public:
 	{
 		static FString GameThreadName(TEXT("GameThread"));
 		static FString RenderThreadName(TEXT("RenderThread"));
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (ThreadId == GGameThreadId)
 		{
 			return GameThreadName;
 		}
-		else if (IsInActualRenderingThread())
+		else if (ThreadId == GRenderThreadId)
 		{
 			return RenderThreadName;
 		}
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return Get().GetThreadNameInternal(ThreadId);
-	}
-
-	/** Checks if thread manager has been initialized. Avoids creating the manager trough lazy initialization */
-	FORCEINLINE static bool IsInitialized() 
-	{
-		return bIsInitialized;
 	}
 
 #if PLATFORM_WINDOWS || PLATFORM_MAC

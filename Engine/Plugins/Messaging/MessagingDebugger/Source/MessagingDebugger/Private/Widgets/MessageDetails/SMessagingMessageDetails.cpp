@@ -233,7 +233,7 @@ FText SMessagingMessageDetails::HandleSenderThreadText() const
 			return LOCTEXT("ActualRenderingThread_Local", "ActualRenderingThread_Local");
 			break;
 
-#if STATS
+#if STATS && !UE_STATS_THREAD_AS_PIPE
 		case ENamedThreads::StatsThread:
 			return LOCTEXT("StatsThread", "StatsThread");
 			break;

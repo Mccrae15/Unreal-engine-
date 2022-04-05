@@ -85,6 +85,7 @@ namespace RemotePayloadSerializer
 		WrappedHttpRequest->RelativePath = Wrapper.URL;
 		WrappedHttpRequest->Verb = ParseHttpVerb(Wrapper.Verb);
 		WrappedHttpRequest->Body = Wrapper.TCHARBody;
+		WrappedHttpRequest->Headers.Add(WebRemoteControlUtils::PassphraseHeader, { Wrapper.Passphrase });
 
 		return WrappedHttpRequest;
 	}
@@ -123,38 +124,6 @@ namespace RemotePayloadSerializer
 		JsonWriter->WriteObjectEnd();
 	}
 
-	bool SerializePartial(TFunctionRef<bool(FRCJsonStructSerializerBackend&)> SerializeFunction, FMemoryWriter& SerializedPayloadWriter)
-	{
-		TArray<uint8> WorkingBuffer;
-		FMemoryWriter TemporaryBufferWriter(WorkingBuffer);
-		FRCJsonStructSerializerBackend TemporaryBackend(TemporaryBufferWriter, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
-
-		int32 ColonPosition = -1;
-		int32 LastBracketPosition = -1;
-
-		bool bSuccess = SerializeFunction(TemporaryBackend);
-
-		FStringView BufferView = FStringView((TCHAR*)WorkingBuffer.GetData(), WorkingBuffer.Num() / sizeof(TCHAR));
-		if (bSuccess)
-		{
-			BufferView.FindChar(TEXT(':'), ColonPosition);
-			BufferView.FindLastChar(TEXT('}'), LastBracketPosition);
-			ColonPosition++;
-		}
-
-		if (LastBracketPosition > ColonPosition)
-		{
-			BufferView.MidInline(ColonPosition, LastBracketPosition - ColonPosition);
-			SerializedPayloadWriter.Serialize((uint8*)BufferView.GetData(), BufferView.Len() * sizeof(TCHAR) / sizeof(uint8));
-		}
-		else
-		{
-			bSuccess = false;
-		}
-
-		return bSuccess;
-	}
-
 	bool DeserializeCall(const FHttpServerRequest& InRequest, FRCCall& OutCall, const FHttpResultCallback& InCompleteCallback)
 	{
 		// Create Json reader to read the payload, the payload will already be validated as being in TCHAR
@@ -180,7 +149,7 @@ namespace RemotePayloadSerializer
 				Reader.Seek(ParametersDelimiters.BlockStart);
 				Reader.SetLimitSize(ParametersDelimiters.BlockEnd);
 
-				FJsonStructDeserializerBackend Backend(Reader);
+				FRCJsonStructDeserializerBackend Backend(Reader);
 				if (!FStructDeserializer::Deserialize((void*)OutCall.ParamStruct.GetStructMemory(), *const_cast<UStruct*>(OutCall.ParamStruct.GetStruct()), Backend, FStructDeserializerPolicies()))
 				{
 					ErrorText = TEXT("Parameters object improperly formatted.");

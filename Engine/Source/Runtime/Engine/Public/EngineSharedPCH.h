@@ -283,6 +283,7 @@
 #include "UObject/UObjectMarks.h"
 #include "UObject/Class.h"
 #include "UObject/GarbageCollection.h"
+#include "UObject/GeneratedCppIncludes.h"
 #include "Serialization/ArchiveUObject.h"
 #include "UObject/CoreNative.h"
 #include "UObject/WeakObjectPtr.h"
@@ -304,7 +305,7 @@
 #include "UObject/GCObject.h"
 #include "Serialization/BulkData.h"
 #include "UObject/Package.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/ObjectResource.h"
 #include "UObject/Linker.h"
@@ -623,5 +624,5 @@
 #include "Sound/SoundConcurrency.h"
 #include "Sound/SoundWave.h"
 #include "Sound/SoundGroups.h"
-#include "TextureLayout3d.h"
-#include "TextureLayout.h"
+
+

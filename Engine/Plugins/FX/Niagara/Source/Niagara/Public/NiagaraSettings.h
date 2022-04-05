@@ -52,6 +52,27 @@ namespace ENDISkelMesh_AdjacencyTriangleIndexFormat
 	};
 }
 
+UENUM()
+enum class ENiagaraDefaultRendererPixelCoverageMode : uint8
+{
+	/** When renderer is set to automatic mode pixel coverage is enabled. */
+	Enabled,
+	/** When renderer is set to automatic mode pixel coverage is disabled. */
+	Disabled,
+};
+
+UENUM()
+namespace ENDICollisionQuery_AsyncGpuTraceProvider
+{
+	enum Type
+	{
+		Default = 0 UMETA(DisplayName = "Project Default"),
+		HWRT = 1 UMETA(DisplayName = "HW Ray Tracing"),
+		GSDF = 2 UMETA(DisplayName = "Global Signed Distance Fields"),
+		None = 3 UMETA(DisplayName = "Disabled"),
+	};
+}
+
 UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"))
 class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 {
@@ -70,11 +91,30 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	/** Sets the default navigation behavior for the system preview viewport. */
 	UPROPERTY(config, EditAnywhere, Category = Viewport)
 	bool bSystemViewportInOrbitMode = true;
+
+	/** If true then the "link input" menu will also show variables of different types, as long as there is a conversion script for them. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	bool bShowConvertibleInputsInStack = false;
 #endif // WITH_EDITORONLY_DATA
+
+	/** If true then active effects rebase the simulation positions to not lose precision. Can be turned off if not needed to skip unnecessary rebasing calculations. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = ( ConfigRestartRequired = true ))
+	bool bSystemsSupportLargeWorldCoordinates = true;
+
+	/**
+	 If set to true, types like positions and vectors cannot be assigned to each other without an explicit conversion step.
+	 If false, type checks are loosened and some types can be implicitly converted into each other.
+	 It is recommended to not disable this when working with large world coordinates. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = ( DisplayName = "Enforce strict type checks in the graph" ))
+	bool bEnforceStrictStackTypes = true;
 
 	/** Default effect type to use for effects that don't define their own. Can be null. */
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "NiagaraEffectType"))
 	FSoftObjectPath DefaultEffectType;
+
+	/** Position pin type color. The other pin colors are defined in the general editor settings. */
+	UPROPERTY(config, EditAnywhere, Category=Niagara)
+	FLinearColor PositionPinTypeColor;
 
 	/** The quality levels Niagara uses. */
 	UPROPERTY(config, EditAnywhere, Category = Scalability)
@@ -96,6 +136,10 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Renderer)
 	ENiagaraDefaultRendererMotionVectorSetting DefaultRendererMotionVectorSetting = ENiagaraDefaultRendererMotionVectorSetting::Precise;
 
+	/** The default setting for pixel coverage mode when automatic is set on the Niagara Renderer. */
+	UPROPERTY(config, EditAnywhere, Category = Renderer)
+	ENiagaraDefaultRendererPixelCoverageMode DefaultPixelCoverageMode = ENiagaraDefaultRendererPixelCoverageMode::Enabled;
+
 	UPROPERTY(config, EditAnywhere, Category=SkeletalMeshDI, meta = ( DisplayName = "Gpu Max Bone Influences", ToolTip = "Controls the maximum number of influences we allow the Skeletal Mesh Data Interface to use on the GPU.  Changing this setting requires restarting the editor.", ConfigRestartRequired = true))
 	TEnumAsByte<ENDISkelMesh_GpuMaxInfluences::Type> NDISkelMesh_GpuMaxInfluences;
 
@@ -104,6 +148,21 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = SkeletalMeshDI, meta = (DisplayName = "Adjacency Triangle Index Format", ToolTip = "Controls the format used for specifying triangle indexes in adjacency buffers.  Changing this setting requires restarting the editor.", ConfigRestartRequired = true))
 	TEnumAsByte<ENDISkelMesh_AdjacencyTriangleIndexFormat::Type> NDISkelMesh_AdjacencyTriangleIndexFormat;
+
+	/**
+	When enabled the static mesh data interface is allowed to sample from the distance field data (if present) on the GPU.
+	Enabling this feature will move all systems that contain static mesh samples into PostRenderOpaque tick group regardless of the features used.
+	Changing this setting requires restarting the editor.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = StaticMeshDI, meta = (DisplayName = "Allow Distance Fields (Experimental)", ConfigRestartRequired = true))
+	bool NDIStaticMesh_AllowDistanceFields = false;
+
+	/** 
+	Defines how traces tagged as 'Project Default' will be interpreted when using the AsyncGpuTrace data interface.
+	The system will go through (starting at element 0) to find the first provider that is available.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = AsyncGpuTraceDI, meta = (DisplayName = "Trace Provider Priorities (Experimental)", ConfigRestartRequired = true))
+	TArray<TEnumAsByte<ENDICollisionQuery_AsyncGpuTraceProvider::Type>> NDICollisionQuery_AsyncGpuTraceProviderOrder;
 
 	// Begin UDeveloperSettings Interface
 	virtual FName GetCategoryName() const override;
@@ -115,7 +174,6 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 
 	UNiagaraEffectType* GetDefaultEffectType()const;
 
-	virtual void PostInitProperties();
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
@@ -128,9 +186,4 @@ public:
 protected:
 	static FOnNiagaraSettingsChanged SettingsChangedDelegate;
 #endif
-
-
-private:
-	UPROPERTY(transient)
-	mutable UNiagaraEffectType* DefaultEffectTypePtr;
 };

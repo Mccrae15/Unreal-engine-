@@ -6,11 +6,6 @@
 
 #pragma once
 
-// Assume D3DX is available
-#ifndef WITH_D3DX_LIBS
-#define WITH_D3DX_LIBS	1
-#endif
-
 // Disable macro redefinition warning for compatibility with Windows SDK 8+
 #pragma warning(push)
 #pragma warning(disable : 4005)	// macro redefinition
@@ -36,6 +31,13 @@
 
 #define D3D12RHI_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER D3D12_RESOURCE_FLAG_NONE
 #define D3D12RHI_HEAP_FLAG_ALLOW_INDIRECT_BUFFERS		D3D12_HEAP_FLAG_NONE
+
+#define D3D12RHI_NEEDS_VENDOR_EXTENSIONS     0
+#define D3D12RHI_NEEDS_SHADER_FEATURE_CHECKS 0
+
+// Heap create not zeroed flag is not available on Hololens so use internal define to disable the feature
+// but make code path shared when it becomes available
+#define FD3D12_HEAP_FLAG_CREATE_NOT_ZEROED D3D12_HEAP_FLAG_NONE
 
 #include "../Public/D3D12Util.h"
 

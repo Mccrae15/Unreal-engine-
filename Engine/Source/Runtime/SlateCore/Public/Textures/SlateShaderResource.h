@@ -113,10 +113,10 @@ class SLATECORE_API FSlateShaderResourceProxy
 public:
 
 	/** The start uv of the texture.  If atlased this is some subUV of the atlas, 0,0 otherwise */
-	FVector2D StartUV;
+	FVector2f StartUV;
 
 	/** The size of the texture in UV space.  If atlas this some sub uv of the atlas.  1,1 otherwise */
-	FVector2D SizeUV;
+	FVector2f SizeUV;
 
 	/** The resource to be used for rendering */
 	FSlateShaderResource* Resource;
@@ -132,7 +132,7 @@ public:
 		: StartUV(0.0f, 0.0f)
 		, SizeUV(1.0f, 1.0f)
 		, Resource(nullptr)
-		, ActualSize(0.0f, 0.0f)
+		, ActualSize(0, 0)
 	{ }
 
 	~FSlateShaderResourceProxy()

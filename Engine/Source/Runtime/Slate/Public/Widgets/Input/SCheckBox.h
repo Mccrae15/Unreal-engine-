@@ -42,7 +42,7 @@ public:
 		, _ClickMethod( EButtonClickMethod::DownAndUp )
 		, _TouchMethod(EButtonTouchMethod::DownAndUp)
 		, _PressMethod(EButtonPressMethod::DownAndUp)
-		, _ForegroundColor()
+		, _ForegroundColor(FSlateColor::UseStyle())
 		, _BorderBackgroundColor ()
 		, _IsFocusable( true )
 		, _UncheckedImage( nullptr )
@@ -54,6 +54,9 @@ public:
 		, _UndeterminedImage( nullptr )
 		, _UndeterminedHoveredImage( nullptr )
 		, _UndeterminedPressedImage( nullptr )
+		, _BackgroundImage( nullptr )
+		, _BackgroundHoveredImage( nullptr )
+		, _BackgroundPressedImage( nullptr )
 	{
 	}
 
@@ -136,6 +139,18 @@ public:
 		/** The undetermined pressed image for the checkbox - overrides the style's */
 		SLATE_ARGUMENT(const FSlateBrush*, UndeterminedPressedImage)
 
+		/** The background image for the checkbox - overrides the style's */
+		SLATE_ARGUMENT(const FSlateBrush*, BackgroundImage)
+
+		/** The background hovered image for the checkbox - overrides the style's */
+		SLATE_ARGUMENT(const FSlateBrush*, BackgroundHoveredImage)
+
+		/** The background pressed image for the checkbox - overrides the style's */
+		SLATE_ARGUMENT(const FSlateBrush*, BackgroundPressedImage)
+
+
+
+
 	SLATE_END_ARGS()
 
 	SCheckBox();
@@ -157,6 +172,7 @@ public:
 	virtual void OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
 	virtual void OnMouseLeave( const FPointerEvent& MouseEvent ) override;
 	virtual bool IsInteractable() const override;
+	virtual FSlateColor GetForegroundColor() const;
 #if WITH_ACCESSIBILITY
 	virtual TSharedRef<FSlateAccessibleWidget> CreateAccessibleWidget() override;
 #endif
@@ -229,8 +245,6 @@ protected:
 	/** Rebuilds the checkbox based on the current ESlateCheckBoxType */
 	void BuildCheckBox(TSharedRef<SWidget> InContent);
 
-	/** Attribute getter for the foreground color */
-	FSlateColor OnGetForegroundColor() const;
 	/** Attribute getter for the padding */
 	FMargin OnGetPadding() const;
 	/** Attribute getter for the border background color */
@@ -255,6 +269,14 @@ protected:
 	const FSlateBrush* GetUndeterminedImage() const;
 	const FSlateBrush* GetUndeterminedHoveredImage() const;
 	const FSlateBrush* GetUndeterminedPressedImage() const;
+
+	/** Attribute getter for the background image */
+	const FSlateBrush* OnGetBackgroundImage() const;
+
+	const FSlateBrush* GetBackgroundImage() const;
+	const FSlateBrush* GetBackgroundHoveredImage() const;
+	const FSlateBrush* GetBackgroundPressedImage() const;
+
 	
 protected:
 	
@@ -287,6 +309,12 @@ protected:
 	const FSlateBrush* UndeterminedHoveredImage;
 	/** Image to use when the checkbox is in an ambiguous state and pressed*/
 	const FSlateBrush* UndeterminedPressedImage;
+	/** Image to use for the checkbox background */
+	const FSlateBrush* BackgroundImage;
+	/** Image to use for the checkbox background when hovered*/
+	const FSlateBrush* BackgroundHoveredImage;
+	/** Image to use for the checkbox background when pressed*/
+	const FSlateBrush* BackgroundPressedImage;
 
 	/** Overrides padding in the widget style, if set */
 	TAttribute<FMargin> PaddingOverride;

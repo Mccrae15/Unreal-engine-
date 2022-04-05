@@ -12,7 +12,7 @@
 #endif
 
 #define AUDIO_SIMD_BYTE_ALIGNMENT (16)
-#define AUDIO_SIMD_FLOAT_ALIGNMENT (4)
+#define AUDIO_NUM_FLOATS_PER_VECTOR_REGISTER (4)
 
 namespace Audio
 {
@@ -123,9 +123,13 @@ namespace Audio
 	SIGNALPROCESSING_API float GetMagnitude(const FAlignedFloatBuffer& Buffer);
 	SIGNALPROCESSING_API float GetMagnitude(const float* RESTRICT Buffer, int32 NumSamples);
 
+	/** Takes an audio buffer and gets the average amplitude across that buffer. */
+	SIGNALPROCESSING_API float BufferGetAverageValue(const FAlignedFloatBuffer& Buffer);
+	SIGNALPROCESSING_API float BufferGetAverageValue(const float* RESTRICT Buffer, int32 NumSamples);
+
 	/** Takes an audio buffer and gets the average absolute amplitude across that buffer. */
-	SIGNALPROCESSING_API float GetAverageAmplitude(const FAlignedFloatBuffer& Buffer);
-	SIGNALPROCESSING_API float GetAverageAmplitude(const float* RESTRICT Buffer, int32 NumSamples);
+	SIGNALPROCESSING_API float BufferGetAverageAbsValue(const FAlignedFloatBuffer& Buffer);
+	SIGNALPROCESSING_API float BufferGetAverageAbsValue(const float* RESTRICT Buffer, int32 NumSamples);
 
 	/** CHANNEL-SPECIFIC OPERATIONS */
 

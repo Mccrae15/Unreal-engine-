@@ -23,7 +23,7 @@ class IPinnedCommandList;
 class FWorkflowAllowedTabSet;
 class IAssetFamily;
 class FWorkflowTabFactory;
-class UBlendSpaceBase;
+class UBlendSpace;
 class IAnimSequenceCurveEditor;
 class IAnimationEditor;
 
@@ -81,11 +81,10 @@ struct FPersonaToolkitArgs
 
 struct FAnimDocumentArgs
 {
-	FAnimDocumentArgs(const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, const TSharedRef<class IPersonaToolkit>& InPersonaToolkit, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FSimpleMulticastDelegate& InOnPostUndo, FSimpleMulticastDelegate& InOnSectionsChanged)
+	FAnimDocumentArgs(const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, const TSharedRef<class IPersonaToolkit>& InPersonaToolkit, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FSimpleMulticastDelegate& InOnSectionsChanged)
 		: PreviewScene(InPreviewScene)
 		, PersonaToolkit(InPersonaToolkit)
 		, EditableSkeleton(InEditableSkeleton)
-		, OnPostUndo(InOnPostUndo)
 		, OnSectionsChanged(InOnSectionsChanged)
 	{}
 
@@ -93,13 +92,68 @@ struct FAnimDocumentArgs
 	TWeakPtr<class IPersonaPreviewScene> PreviewScene;
 	TWeakPtr<class IPersonaToolkit> PersonaToolkit;
 	TWeakPtr<class IEditableSkeleton> EditableSkeleton;
-	FSimpleMulticastDelegate& OnPostUndo;
 	FSimpleMulticastDelegate& OnSectionsChanged;
 
 	/** Optional args */
 	FOnObjectsSelected OnDespatchObjectsSelected;
 	FOnInvokeTab OnDespatchInvokeTab;
 	FSimpleDelegate OnDespatchSectionsChanged;
+};
+
+struct FBlendSpaceEditorArgs
+{
+	// Called when a blendspace sample point is removed
+	FOnBlendSpaceSampleRemoved OnBlendSpaceSampleRemoved;
+
+	// Called when a blendspace sample point is added
+	FOnBlendSpaceSampleAdded OnBlendSpaceSampleAdded;
+	
+	// Called when a blendspace sample point is replaced
+	FOnBlendSpaceSampleReplaced OnBlendSpaceSampleReplaced;
+
+	// Called when the blendspace canvas is double clicked
+	FOnBlendSpaceNavigateUp OnBlendSpaceNavigateUp;
+
+	// Called when the blendspace canvas is double clicked
+	FOnBlendSpaceNavigateDown OnBlendSpaceNavigateDown;
+
+	// Called when the blendspace canvas is double clicked
+	FOnBlendSpaceCanvasDoubleClicked OnBlendSpaceCanvasDoubleClicked;
+
+	// Called when a blendspace sample point is double clicked
+	FOnBlendSpaceSampleDoubleClicked OnBlendSpaceSampleDoubleClicked;
+
+	// Called to get the overridden name of a blend sample
+	FOnGetBlendSpaceSampleName OnGetBlendSpaceSampleName;
+
+	// Allows the target preview position to be programmatically driven
+	TAttribute<FVector> PreviewPosition;
+
+	// Allows the current position to be programmatically driven
+	TAttribute<FVector> PreviewFilteredPosition;
+
+	// Allows an external widget to be inserted into a sample's tooltip
+	FOnExtendBlendSpaceSampleTooltip OnExtendSampleTooltip;
+
+	// Allows preview position to drive external node
+	FOnSetBlendSpacePreviewPosition OnSetPreviewPosition;
+
+	// Status bar to display hint messages in
+	FName StatusBarName = TEXT("AssetEditor.AnimationEditor.MainMenu");
+};
+
+struct FBlendSpacePreviewArgs
+{
+	TAttribute<const UBlendSpace*> PreviewBlendSpace;
+
+	// Allows the target preview position to be programatically driven
+	TAttribute<FVector> PreviewPosition;
+
+	// Allows the current preview position to be programatically driven
+	TAttribute<FVector> PreviewFilteredPosition;
+
+	// Called to get the overridden name of a blend sample
+	FOnGetBlendSpaceSampleName OnGetBlendSpaceSampleName;
 };
 
 /** Places that viewport text can be placed */
@@ -195,7 +249,7 @@ public:
 	virtual void ShutdownModule();
 
 	/** Create a re-usable toolkit that multiple asset editors that are concerned with USkeleton-related data can use */
-	virtual TSharedRef<IPersonaToolkit> CreatePersonaToolkit(UObject* InAsset, const FPersonaToolkitArgs& PersonaToolkitArgs = FPersonaToolkitArgs()) const;
+	virtual TSharedRef<IPersonaToolkit> CreatePersonaToolkit(UObject* InAsset, const FPersonaToolkitArgs& PersonaToolkitArgs = FPersonaToolkitArgs(), USkeleton* InSkeleton = nullptr) const;
 	virtual TSharedRef<IPersonaToolkit> CreatePersonaToolkit(USkeleton* InSkeleton, const FPersonaToolkitArgs& PersonaToolkitArgs = FPersonaToolkitArgs()) const;
 	virtual TSharedRef<IPersonaToolkit> CreatePersonaToolkit(UAnimationAsset* InAnimationAsset, const FPersonaToolkitArgs& PersonaToolkitArgs = FPersonaToolkitArgs()) const;
 	virtual TSharedRef<IPersonaToolkit> CreatePersonaToolkit(USkeletalMesh* InSkeletalMesh, const FPersonaToolkitArgs& PersonaToolkitArgs = FPersonaToolkitArgs()) const;
@@ -220,11 +274,14 @@ public:
 	/** Create an anim notifies tab factory */
 	virtual TSharedRef<FWorkflowTabFactory> CreateAnimNotifiesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FOnObjectsSelected InOnObjectsSelected) const;
 
-	/** Create a skeleton cuve viewer tab factory */
+	UE_DEPRECATED(5.0, "Please use the overload that does not take a post-undo delegate")
 	virtual TSharedRef<FWorkflowTabFactory> CreateCurveViewerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectsSelected InOnObjectsSelected) const;
 
-	/** Create a retarget manager tab factory */
-	virtual TSharedRef<FWorkflowTabFactory> CreateRetargetManagerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo) const;
+	/** Create a skeleton curve viewer tab factory */
+	virtual TSharedRef<FWorkflowTabFactory> CreateCurveViewerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, FOnObjectsSelected InOnObjectsSelected) const;
+
+	/** Create a retarget sources tab factory */
+	virtual TSharedRef<FWorkflowTabFactory> CreateRetargetSourcesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo) const;
 
 	/** Create a tab factory used to configure preview scene settings */
 	virtual TSharedRef<FWorkflowTabFactory> CreateAdvancedPreviewSceneTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<IPersonaPreviewScene>& InPreviewScene) const;
@@ -241,14 +298,27 @@ public:
 	/** Create a tab factory for editing anim blueprint preview & defaults */
 	virtual TSharedRef<FWorkflowTabFactory> CreateAnimBlueprintPreviewTabFactory(const TSharedRef<class FBlueprintEditor>& InBlueprintEditor, const TSharedRef<IPersonaPreviewScene>& InPreviewScene) const;
 
+	/** Create a tab factory for the pose watch manager */
+	virtual TSharedRef<FWorkflowTabFactory> CreatePoseWatchTabFactory(const TSharedRef<class FBlueprintEditor>& InBlueprintEditor) const;
+
 	/** Create a tab factory for editing anim blueprint parent overrides */
 	virtual TSharedRef<FWorkflowTabFactory> CreateAnimBlueprintAssetOverridesTabFactory(const TSharedRef<class FBlueprintEditor>& InBlueprintEditor, UAnimBlueprint* InAnimBlueprint, FSimpleMulticastDelegate& InOnPostUndo) const;
 
-	/** Create a tab factory for editing slot names and groups */
+	UE_DEPRECATED(5.0, "Please use the overload that does not take a post-undo delegate")
 	virtual TSharedRef<FWorkflowTabFactory> CreateSkeletonSlotNamesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectSelected InOnObjectSelected) const;
 
+	/** Create a tab factory for editing slot names and groups */
+	virtual TSharedRef<FWorkflowTabFactory> CreateSkeletonSlotNamesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FOnObjectSelected InOnObjectSelected) const;
+
+	/** Deprecated */
+	UE_DEPRECATED(5.0, "Please use the overload that takes a FBlendSpacePreviewArgs struct")
+	virtual TSharedRef<SWidget> CreateBlendSpacePreviewWidget(TAttribute<const UBlendSpace*> InBlendSpace, TAttribute<FVector> InBlendPosition, TAttribute<FVector> InFilteredBlendPosition) const;
+
 	/** Create a widget to preview a blendspace */
-	virtual TSharedRef<SWidget> CreateBlendSpacePreviewWidget(TAttribute<const UBlendSpaceBase*> InBlendSpace, TAttribute<FVector> InPosition) const;
+	virtual TSharedRef<SWidget> CreateBlendSpacePreviewWidget(const FBlendSpacePreviewArgs& InArgs) const;
+
+	/** Create a widget to edit a blendspace */
+	virtual TSharedRef<SWidget> CreateBlendSpaceEditWidget(UBlendSpace* InBlendSpace, const FBlendSpaceEditorArgs& InArgs) const;
 
 	/** Create a tab factory for editing montage sections */
 	virtual TSharedRef<FWorkflowTabFactory> CreateAnimMontageSectionsTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<IPersonaToolkit>& InPersonaToolkit, FSimpleMulticastDelegate& InOnSectionsChanged) const;

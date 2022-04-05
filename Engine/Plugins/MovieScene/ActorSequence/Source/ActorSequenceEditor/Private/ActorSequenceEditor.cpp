@@ -64,7 +64,6 @@ public:
 
 				return SNew(SDockTab)
 					.Label(&Widget.Get(), &SActorSequenceEditorWidget::GetDisplayLabel)
-					.Icon(FActorSequenceEditorStyle::Get().GetBrush("ClassIcon.ActorSequence"))
 					[
 						Widget
 					];
@@ -205,6 +204,10 @@ public:
 		{
 			Collector.AddReferencedObject(Settings);
 		}
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FActorSequenceEditorModule");
 	}
 
 	FDelegateHandle SequenceEditorHandle;

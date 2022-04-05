@@ -23,7 +23,7 @@ struct FFileChangeData;
 class SNotificationItem;
 
 /**
- * Asset to manage whitelisted OpenColorIO color spaces. This will create required transform objects.
+ * Asset to manage allowed OpenColorIO color spaces. This will create required transform objects.
  */
 UCLASS(BlueprintType)
 class OPENCOLORIO_API UOpenColorIOConfiguration : public UObject
@@ -37,6 +37,7 @@ public:
 public:
 	bool GetShaderAndLUTResources(ERHIFeatureLevel::Type InFeatureLevel, const FString& InSourceColorSpace, const FString& InDestinationColorSpace, FOpenColorIOTransformResource*& OutShaderResource, FTextureResource*& OutLUT3dResource);
 	bool HasTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace);
+	bool HasDesiredColorSpace(const FOpenColorIOColorSpace& ColorSpace) const;
 	bool Validate() const;
 
 	/** This forces to reload colorspaces and corresponding shaders if those are not loaded already. */
@@ -66,7 +67,7 @@ public:
 
 	//~ Begin UObject interface
 	virtual void PostLoad() override;
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform);
+	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 	virtual void BeginDestroy() override;
 
 #if WITH_EDITOR

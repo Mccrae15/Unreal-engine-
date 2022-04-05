@@ -13,6 +13,7 @@
 #include "HAL/LowLevelMemTracker.h"
 
 class UTexture;
+struct FMaterialInstanceCachedData;
 
 /**
  * Cache uniform expressions for the given material instance.
@@ -36,22 +37,24 @@ public:
 #else
 	FMICReentranceGuard(const UMaterialInstance* InMaterial)
 	{
+		bIsInGameThread = IsInGameThread();
 		Material = const_cast<UMaterialInstance*>(InMaterial);
 
-		if (Material->GetReentrantFlag() == true)
+		if (Material->GetReentrantFlag(bIsInGameThread) == true)
 		{
 			UE_LOG(LogMaterial, Warning, TEXT("InMaterial: %s GameThread: %d RenderThread: %d"), *InMaterial->GetFullName(), IsInGameThread(), IsInRenderingThread());
-			check(!Material->GetReentrantFlag());
+			check(!Material->GetReentrantFlag(bIsInGameThread));
 		}
-		Material->SetReentrantFlag(true);
+		Material->SetReentrantFlag(true, bIsInGameThread);
 	}
 
 	~FMICReentranceGuard()
 	{
-		Material->SetReentrantFlag(false);
+		Material->SetReentrantFlag(false, bIsInGameThread);
 	}
 
 private:
+	bool bIsInGameThread;
 	UMaterialInstance* Material;
 #endif // WITH_EDITOR
 };
@@ -96,12 +99,11 @@ public:
 	virtual const FMaterialRenderProxy* GetFallback(ERHIFeatureLevel::Type InFeatureLevel) const override;
 	virtual UMaterialInterface* GetMaterialInterface() const override;
 	
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override;
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override;
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const override;
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override;
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const override;
 
 	void GameThread_SetParent(UMaterialInterface* ParentMaterialInterface);
+
+	void GameThread_UpdateCachedData(const FMaterialInstanceCachedData& CachedData);
 
 	void InitMIParameters(struct FMaterialInstanceParameterSet& ParameterSet);
 
@@ -111,6 +113,7 @@ public:
 	void RenderThread_ClearParameters()
 	{
 		VectorParameterArray.Empty();
+		DoubleVectorParameterArray.Empty();
 		ScalarParameterArray.Empty();
 		TextureParameterArray.Empty();
 		RuntimeVirtualTextureParameterArray.Empty();
@@ -126,48 +129,84 @@ public:
 		LLM_SCOPE(ELLMTag::MaterialInstance);
 
 		InvalidateUniformExpressionCache(false);
+		bool bWasFound;
 		TArray<TNamedParameter<ValueType> >& ValueArray = GetValueArray<ValueType>();
-		const int32 ParameterCount = ValueArray.Num();
-		for (int32 ParameterIndex = 0; ParameterIndex < ParameterCount; ++ParameterIndex)
+		int Index = RenderThread_FindParameterByNameInternal<ValueType>(ParameterInfo, bWasFound);
+
+		if (bWasFound)
 		{
-			TNamedParameter<ValueType>& Parameter = ValueArray[ParameterIndex];
-			if (Parameter.Info == ParameterInfo)
-			{
-				Parameter.Value = Value;
-				return;
-			}
+			ValueArray[Index].Value = Value;
 		}
-		TNamedParameter<ValueType> NewParameter;
-		NewParameter.Info = ParameterInfo;
-		NewParameter.Value = Value;
-		ValueArray.Add(NewParameter);
+		else
+		{
+			TNamedParameter<ValueType> NewParameter;
+			NewParameter.Info = ParameterInfo;
+			NewParameter.Value = Value;
+			ValueArray.Insert(NewParameter, Index);
+		}
 	}
 
 	/**
 	 * Retrieves a parameter by name.
 	 */
 	template <typename ValueType>
-	const ValueType* RenderThread_FindParameterByName(const FHashedMaterialParameterInfo& ParameterInfo) const
+	bool RenderThread_GetParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue) const
 	{
+		bool bWasFound;
 		const TArray<TNamedParameter<ValueType> >& ValueArray = GetValueArray<ValueType>();
-		const int32 ParameterCount = ValueArray.Num();
-		for (int32 ParameterIndex = 0; ParameterIndex < ParameterCount; ++ParameterIndex)
+		int Index = RenderThread_FindParameterByNameInternal<ValueType>(ParameterInfo, bWasFound);
+
+		if (bWasFound && IsValidParameterValue(ValueArray[Index].Value))
 		{
-			const TNamedParameter<ValueType>& Parameter = ValueArray[ParameterIndex];
-			if (Parameter.Info == ParameterInfo)
-			{
-				return &Parameter.Value;
-			}
+			OutValue = ValueArray[Index].Value;
+			return true;
 		}
-		return NULL;
+		return false;
 	}
-	
+
 private:
 	/**
 	 * Retrieves the array of values for a given type.
 	 */
 	template <typename ValueType> TArray<TNamedParameter<ValueType> >& GetValueArray() { return ScalarParameterArray; }
 	template <typename ValueType> const TArray<TNamedParameter<ValueType> >& GetValueArray() const { return ScalarParameterArray; }
+
+	static bool IsValidParameterValue(float) { return true; }
+	static bool IsValidParameterValue(const FLinearColor&) { return true; }
+	static bool IsValidParameterValue(const FVector4d&) { return true; }
+	static bool IsValidParameterValue(const UTexture* Value) { return Value != nullptr; }
+	static bool IsValidParameterValue(const URuntimeVirtualTexture* Value) { return Value != nullptr; }
+
+	template <typename ValueType>
+	int RenderThread_FindParameterByNameInternal(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutWasFound) const
+	{
+		const TArray<TNamedParameter<ValueType> >& ValueArray = GetValueArray<ValueType>();
+
+		TNamedParameter<ValueType> SearchParam;
+		SearchParam.Info = ParameterInfo;
+
+		int Index = Algo::LowerBound(ValueArray, SearchParam,
+			[](const TNamedParameter<ValueType>& Left, const TNamedParameter<ValueType>& Right)
+			{
+				return GetTypeHash(Left.Info) < GetTypeHash(Right.Info);
+			});
+
+		uint32 SearchHash = GetTypeHash(ParameterInfo);
+
+		while (ValueArray.IsValidIndex(Index) && GetTypeHash(ValueArray[Index].Info) == SearchHash)
+		{
+			if (ValueArray[Index].Info == ParameterInfo)
+			{
+				OutWasFound = true;
+				return Index;
+			}
+
+			Index++;
+		}
+
+		OutWasFound = false;
+		return Index;
+	}
 
 	/** The parent of the material instance. */
 	UMaterialInterface* Parent;
@@ -180,20 +219,26 @@ private:
 	
 	/** Vector parameters for this material instance. */
 	TArray<TNamedParameter<FLinearColor> > VectorParameterArray;
+	/** DoubleVector parameters for this material instance. */
+	TArray<TNamedParameter<FVector4d> > DoubleVectorParameterArray;
 	/** Scalar parameters for this material instance. */
 	TArray<TNamedParameter<float> > ScalarParameterArray;
 	/** Texture parameters for this material instance. */
 	TArray<TNamedParameter<const UTexture*> > TextureParameterArray;
 	/** Runtime Virtual Texture parameters for this material instance. */
 	TArray<TNamedParameter<const URuntimeVirtualTexture*> > RuntimeVirtualTextureParameterArray; 
+	/** Remap layer indices for parent */
+	TArray<int32> ParentLayerIndexRemap;
 };
 
 template <> FORCEINLINE TArray<FMaterialInstanceResource::TNamedParameter<float> >& FMaterialInstanceResource::GetValueArray() { return ScalarParameterArray; }
 template <> FORCEINLINE TArray<FMaterialInstanceResource::TNamedParameter<FLinearColor> >& FMaterialInstanceResource::GetValueArray() { return VectorParameterArray; }
+template <> FORCEINLINE TArray<FMaterialInstanceResource::TNamedParameter<FVector4d> >& FMaterialInstanceResource::GetValueArray() { return DoubleVectorParameterArray; }
 template <> FORCEINLINE TArray<FMaterialInstanceResource::TNamedParameter<const UTexture*> >& FMaterialInstanceResource::GetValueArray() { return TextureParameterArray; }
 template <> FORCEINLINE TArray<FMaterialInstanceResource::TNamedParameter<const URuntimeVirtualTexture*> >& FMaterialInstanceResource::GetValueArray() { return RuntimeVirtualTextureParameterArray; }
 template <> FORCEINLINE const TArray<FMaterialInstanceResource::TNamedParameter<float> >& FMaterialInstanceResource::GetValueArray() const { return ScalarParameterArray; }
 template <> FORCEINLINE const TArray<FMaterialInstanceResource::TNamedParameter<FLinearColor> >& FMaterialInstanceResource::GetValueArray() const { return VectorParameterArray; }
+template <> FORCEINLINE const TArray<FMaterialInstanceResource::TNamedParameter<FVector4d> >& FMaterialInstanceResource::GetValueArray() const { return DoubleVectorParameterArray; }
 template <> FORCEINLINE const TArray<FMaterialInstanceResource::TNamedParameter<const UTexture*> >& FMaterialInstanceResource::GetValueArray() const { return TextureParameterArray; }
 template <> FORCEINLINE const TArray<FMaterialInstanceResource::TNamedParameter<const URuntimeVirtualTexture*> >& FMaterialInstanceResource::GetValueArray() const { return RuntimeVirtualTextureParameterArray; }
 
@@ -201,6 +246,7 @@ struct FMaterialInstanceParameterSet
 {
 	TArray<FMaterialInstanceResource::TNamedParameter<float> > ScalarParameters;
 	TArray<FMaterialInstanceResource::TNamedParameter<FLinearColor> > VectorParameters;
+	TArray<FMaterialInstanceResource::TNamedParameter<FVector4d> > DoubleVectorParameters;
 	TArray<FMaterialInstanceResource::TNamedParameter<const UTexture*> > TextureParameters;
 	TArray<FMaterialInstanceResource::TNamedParameter<const URuntimeVirtualTexture*> > RuntimeVirtualTextureParameters;
 };
@@ -219,6 +265,7 @@ ParameterType* GameThread_FindParameterByName(TArray<ParameterType>& Parameters,
 	}
 	return NULL;
 }
+
 template <typename ParameterType>
 const ParameterType* GameThread_FindParameterByName(const TArray<ParameterType>& Parameters, const FHashedMaterialParameterInfo& ParameterInfo)
 {
@@ -269,4 +316,55 @@ const ParameterType* GameThread_FindParameterByIndex(const TArray<ParameterType>
 	}
 
 	return &Parameters[Index];
+}
+
+template <typename ParameterType>
+inline bool GameThread_GetParameterValue(const TArray<ParameterType>& Parameters, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterMetadata& OutResult)
+{
+	for (int32 ParameterIndex = 0; ParameterIndex < Parameters.Num(); ParameterIndex++)
+	{
+		const ParameterType* Parameter = &Parameters[ParameterIndex];
+		if (Parameter->IsOverride() && Parameter->ParameterInfo == ParameterInfo)
+		{
+			Parameter->GetValue(OutResult);
+			return true;
+		}
+	}
+	return false;
+}
+
+template <typename ParameterType, typename OverridenParametersType>
+inline void GameThread_ApplyParameterOverrides(const TArray<ParameterType>& Parameters,
+	TArrayView<const int32> LayerIndexRemap,
+	bool bSetOverride,
+	OverridenParametersType& OverridenParameters, // TSet<FMaterialParameterInfo, ...>
+	TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters)
+{
+	for (int32 ParameterIndex = 0; ParameterIndex < Parameters.Num(); ParameterIndex++)
+	{
+		const ParameterType* Parameter = &Parameters[ParameterIndex];
+		if (Parameter->IsOverride())
+		{
+			FMaterialParameterInfo ParameterInfo;
+			if (Parameter->ParameterInfo.RemapLayerIndex(LayerIndexRemap, ParameterInfo))
+			{
+				bool bPreviouslyOverriden = false;
+				OverridenParameters.Add(ParameterInfo, &bPreviouslyOverriden);
+				if (!bPreviouslyOverriden)
+				{
+					FMaterialParameterMetadata* Result = OutParameters.Find(ParameterInfo);
+					if (Result)
+					{
+						Parameter->GetValue(*Result);
+#if WITH_EDITORONLY_DATA
+						if (bSetOverride)
+						{
+							Result->bOverride = true;
+						}
+#endif // WITH_EDITORONLY_DATA
+					}
+				}
+			}
+		}
+	}
 }

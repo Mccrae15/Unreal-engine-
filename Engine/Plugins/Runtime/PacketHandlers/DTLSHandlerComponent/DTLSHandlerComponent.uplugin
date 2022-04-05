@@ -20,11 +20,10 @@
 			"Name" : "DTLSHandlerComponent",
 			"Type" : "Runtime",
 			"LoadingPhase" : "Default",
-			"WhitelistPlatforms":
+			"PlatformAllowList":
 			[
 				"IOS",
 				"Mac",
-				"Win32",
 				"Win64",
 				"Linux"
 			]

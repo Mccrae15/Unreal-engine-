@@ -13,9 +13,17 @@ namespace ChaosTest {
 
 	void AABBTreeTest();
 
+	void AABBTreeTestDynamic();
+
+	void AABBTreeDirtyGridTest();
+
 	void AABBTreeTimesliceTest();
 
+	void DoForSweepIntersectCellsImpTest();
+
 	void BroadphaseCollectionTest();
+
+	void BoundingVolumeNoBoundsTest();
 
 	void SpatialAccelerationDirtyAndGlobalQueryStrestTest();
 }

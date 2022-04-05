@@ -58,7 +58,7 @@ void FViewportSurfaceReader::Resize(uint32 Width, uint32 Height)
 	ENQUEUE_RENDER_COMMAND(CreateCaptureFrameTexture)(
 		[Width, Height, This](FRHICommandListImmediate& RHICmdList)
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FViewportSurfaceReader_ReadbackTexture"));
 
 			This->ReadbackTexture = RHICreateTexture2D(
 				Width,
@@ -148,7 +148,7 @@ void FViewportSurfaceReader::ResolveRenderTarget(FViewportSurfaceReader* RenderT
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			const bool bIsSourceBackBufferSameAsWindowSize = SourceBackBuffer->GetSizeX() == WindowSize.X && SourceBackBuffer->GetSizeY() == WindowSize.Y;
 			const bool bIsSourceBackBufferSameAsTargetSize = TargetSize.X == SourceBackBuffer->GetSizeX() && TargetSize.Y == SourceBackBuffer->GetSizeY();

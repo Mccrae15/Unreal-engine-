@@ -15,10 +15,11 @@ public class SwitchboardListener : ModuleRules
 				"Networking",
 				"Projects", // for LaunchEngineLoop.cpp dependency
 				"JsonUtilities",
+				"TraceLog",
 			}
 		);
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {

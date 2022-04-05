@@ -16,23 +16,23 @@ static FAutoConsoleVariableRef CVarGlobalViewHeapBlockSize(
 // Define template functions that are only declared in the header.
 #if USE_STATIC_ROOT_SIGNATURE
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Vertex>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetConstantBuffers<SF_Hull>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetConstantBuffers<SF_Domain>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetConstantBuffers<SF_Mesh>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetConstantBuffers<SF_Amplification>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Geometry>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Pixel>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Compute>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask, uint32 Count, uint32& HeapSlot);
 #else
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Vertex>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
-template void FD3D12DescriptorCache::SetConstantBuffers<SF_Hull>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
-template void FD3D12DescriptorCache::SetConstantBuffers<SF_Domain>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
+template void FD3D12DescriptorCache::SetConstantBuffers<SF_Mesh>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
+template void FD3D12DescriptorCache::SetConstantBuffers<SF_Amplification>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Geometry>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Pixel>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
 template void FD3D12DescriptorCache::SetConstantBuffers<SF_Compute>(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask);
 #endif
 
 template void FD3D12DescriptorCache::SetSRVs<SF_Vertex>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetSRVs<SF_Hull>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetSRVs<SF_Domain>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetSRVs<SF_Mesh>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetSRVs<SF_Amplification>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSRVs<SF_Geometry>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSRVs<SF_Pixel>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSRVs<SF_Compute>(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
@@ -41,8 +41,8 @@ template void FD3D12DescriptorCache::SetUAVs<SF_Pixel>(const FD3D12RootSignature
 template void FD3D12DescriptorCache::SetUAVs<SF_Compute>(const FD3D12RootSignature* RootSignature, FD3D12UnorderedAccessViewCache& Cache, const UAVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 
 template void FD3D12DescriptorCache::SetSamplers<SF_Vertex>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetSamplers<SF_Hull>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
-template void FD3D12DescriptorCache::SetSamplers<SF_Domain>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetSamplers<SF_Mesh>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
+template void FD3D12DescriptorCache::SetSamplers<SF_Amplification>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSamplers<SF_Geometry>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSamplers<SF_Pixel>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
 template void FD3D12DescriptorCache::SetSamplers<SF_Compute>(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot);
@@ -295,6 +295,19 @@ void FD3D12DescriptorCache::SetVertexBuffers(FD3D12VertexBufferCache& Cache)
 
 	CmdContext->CommandListHandle.UpdateResidency(Cache.ResidencyHandles, Count);
 	CmdContext->CommandListHandle->IASetVertexBuffers(0, Count, Cache.CurrentVertexBufferViews);
+
+	for (uint32 i = 0; i < Count; ++i)
+	{
+		if (Cache.CurrentVertexBufferResources[i])
+		{
+			FD3D12Resource* Resource = Cache.CurrentVertexBufferResources[i]->GetResource();
+			if (Resource && Resource->RequiresResourceStateTracking())
+			{
+				check(Resource->GetSubresourceCount() == 1);
+				FD3D12DynamicRHI::TransitionResource(CmdContext->CommandListHandle, Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, FD3D12DynamicRHI::ETransitionMode::Validate);
+			}
+		}
+	}
 }
 
 template <EShaderFrequency ShaderStage>
@@ -312,9 +325,9 @@ void FD3D12DescriptorCache::SetUAVs(const FD3D12RootSignature* RootSignature, FD
 	uint32 FirstSlotIndex = HeapSlot;
 	HeapSlot += SlotsNeeded;
 
-	CD3DX12_CPU_DESCRIPTOR_HANDLE DestDescriptor(CurrentViewHeap->GetCPUSlotHandle(FirstSlotIndex));
-	CD3DX12_GPU_DESCRIPTOR_HANDLE BindDescriptor(CurrentViewHeap->GetGPUSlotHandle(FirstSlotIndex));
-	CD3DX12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_UAVS];
+	D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor(CurrentViewHeap->GetCPUSlotHandle(FirstSlotIndex));
+	D3D12_GPU_DESCRIPTOR_HANDLE BindDescriptor(CurrentViewHeap->GetGPUSlotHandle(FirstSlotIndex));
+	D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_UAVS];
 
 	FD3D12CommandListHandle& CommandList = CmdContext->CommandListHandle;
 
@@ -332,7 +345,7 @@ void FD3D12DescriptorCache::SetUAVs(const FD3D12RootSignature* RootSignature, FD
 		{
 			SrcDescriptors[SlotIndex] = UAVs[SlotIndex]->GetView();
 
-			FD3D12DynamicRHI::TransitionResource(CommandList, UAVs[SlotIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			FD3D12DynamicRHI::TransitionResource(CommandList, UAVs[SlotIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS, FD3D12DynamicRHI::ETransitionMode::Validate);
 			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
 		}
 	}
@@ -367,6 +380,20 @@ void FD3D12DescriptorCache::SetUAVs(const FD3D12RootSignature* RootSignature, FD
 #ifdef VERBOSE_DESCRIPTOR_HEAP_DEBUG
 	FMsg::Logf(__FILE__, __LINE__, TEXT("DescriptorCache"), ELogVerbosity::Log, TEXT("SetUnorderedAccessViewTable [STAGE %d] to slots %d - %d"), (int32)ShaderStage, FirstSlotIndex, FirstSlotIndex + SlotsNeeded - 1);
 #endif
+
+	const int8 DiagnosticBufferSlot = RootSignature->GetDiagnosticBufferSlot();
+	D3D12_GPU_VIRTUAL_ADDRESS DiagnosticBufferAddress = CmdContext->GetCommandListManager().GetDiagnosticBufferGPUAddress();
+	if (DiagnosticBufferSlot >= 0 && DiagnosticBufferAddress)
+	{
+		if (ShaderStage == SF_Compute)
+		{
+			CommandList->SetComputeRootUnorderedAccessView(DiagnosticBufferSlot, DiagnosticBufferAddress);
+		}
+		else
+		{
+			CommandList->SetGraphicsRootUnorderedAccessView(DiagnosticBufferSlot, DiagnosticBufferAddress);
+		}
+	}
 }
 
 void FD3D12DescriptorCache::SetRenderTargets(FD3D12RenderTargetView** RenderTargetViewArray, uint32 Count, FD3D12DepthStencilView* DepthStencilTarget)
@@ -378,15 +405,15 @@ void FD3D12DescriptorCache::SetRenderTargets(FD3D12RenderTargetView** RenderTarg
 
 	FD3D12CommandListHandle& CommandList = CmdContext->CommandListHandle;
 
+	// RTV & DS stace should already be in the correct state. It is transitioned in RHISetRenderTargetsAndClear coming from BeginPass because
+	// then we know the correct depth & stencil read & write flags.
+
 	// Fill heap slots
 	for (uint32 i = 0; i < Count; i++)
 	{
 		if (RenderTargetViewArray[i] != NULL)
 		{
-			// RTV should already be in the correct state. It is transitioned in RHISetRenderTargets.
-			FD3D12DynamicRHI::TransitionResource(CommandList, RenderTargetViewArray[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
 			RTVDescriptors[i] = RenderTargetViewArray[i]->GetView();
-
 			CommandList.UpdateResidency(RenderTargetViewArray[i]->GetResource());
 		}
 		else
@@ -397,8 +424,6 @@ void FD3D12DescriptorCache::SetRenderTargets(FD3D12RenderTargetView** RenderTarg
 
 	if (DepthStencilTarget != nullptr)
 	{
-		FD3D12DynamicRHI::TransitionResource(CommandList, DepthStencilTarget);
-
 		const D3D12_CPU_DESCRIPTOR_HANDLE DSVDescriptor = DepthStencilTarget->GetView();
 		CommandList->OMSetRenderTargets(Count, RTVDescriptors, 0, &DSVDescriptor);
 		CommandList.UpdateResidency(DepthStencilTarget->GetResource());
@@ -412,49 +437,7 @@ void FD3D12DescriptorCache::SetRenderTargets(FD3D12RenderTargetView** RenderTarg
 
 void FD3D12DescriptorCache::SetStreamOutTargets(FD3D12Resource** Buffers, uint32 Count, const uint32* Offsets)
 {
-	// Determine how many slots are really needed, since the Count passed in is a pre-defined maximum
-	uint32 SlotsNeeded = 0;
-	for (int32 i = Count - 1; i >= 0; i--)
-	{
-		if (Buffers[i] != NULL)
-		{
-			SlotsNeeded = i + 1;
-			break;
-		}
-	}
-
-	if (0 == SlotsNeeded)
-	{
-		return; // No-op
-	}
-
-	D3D12_STREAM_OUTPUT_BUFFER_VIEW SOViews[D3D12_SO_BUFFER_SLOT_COUNT] = { };
-
-	FD3D12CommandListHandle& CommandList = CmdContext->CommandListHandle;
-
-	// Fill heap slots
-	for (uint32 i = 0; i < SlotsNeeded; i++)
-	{
-		if (Buffers[i])
-		{
-			CommandList.UpdateResidency(Buffers[i]);
-		}
-
-		D3D12_STREAM_OUTPUT_BUFFER_VIEW &currentView = SOViews[i];
-		currentView.BufferLocation = (Buffers[i] != nullptr) ? Buffers[i]->GetGPUVirtualAddress() : 0;
-
-		// MS - The following view members are not correct
-		check(0);
-		currentView.BufferFilledSizeLocation = 0;
-		currentView.SizeInBytes = -1;
-
-		if (Buffers[i] != nullptr)
-		{
-			FD3D12DynamicRHI::TransitionResource(CommandList, Buffers[i], D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		}
-	}
-
-	CommandList->SOSetTargets(0, SlotsNeeded, SOViews);
+	check(Count == 0);
 }
 
 template <EShaderFrequency ShaderStage>
@@ -515,7 +498,7 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 		checkSlow(SlotsNeeded <= MAX_SAMPLERS);
 
 		// Fill heap slots
-		CD3DX12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_SAMPLERS];
+		D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_SAMPLERS];
 		for (uint32 SlotIndex = 0; SlotIndex < SlotsNeeded; SlotIndex++)
 		{
 			if (Samplers[SlotIndex] != nullptr)
@@ -596,19 +579,19 @@ void FD3D12DescriptorCache::SetSRVs(const FD3D12RootSignature* RootSignature, FD
 		{
 			SrcDescriptors[SlotIndex] = SRVs[SlotIndex]->GetView();
 
+			D3D12_RESOURCE_STATES State = (ShaderStage == SF_Compute) ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 			if (SRVs[SlotIndex]->IsDepthStencilResource())
 			{
-				FD3D12DynamicRHI::TransitionResource(CommandList, SRVs[SlotIndex], (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_DEPTH_READ) & ValidResourceStates);
+				if (GUseInternalTransitions)
+				{
+					State |= D3D12_RESOURCE_STATE_DEPTH_READ;
+				}
 			}
 			else if (SRVs[SlotIndex]->GetSkipFastClearFinalize())
 			{
-				D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | CmdContext->SkipFastClearEliminateState;
-				FD3D12DynamicRHI::TransitionResource(CommandList, SRVs[SlotIndex], State & ValidResourceStates);
+				State |= CmdContext->SkipFastClearEliminateState;
 			}
-			else
-			{
-				FD3D12DynamicRHI::TransitionResource(CommandList, SRVs[SlotIndex], (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) & ValidResourceStates);
-			}
+			FD3D12DynamicRHI::TransitionResource(CommandList, SRVs[SlotIndex], State & ValidResourceStates, FD3D12DynamicRHI::ETransitionMode::Validate);
 
 			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
 		}
@@ -1044,6 +1027,7 @@ void FD3D12GlobalHeap::Init(D3D12_DESCRIPTOR_HEAP_TYPE InType, uint32 InTotalSiz
 		INC_DWORD_STAT(STAT_NumSamplerOnlineDescriptorHeaps);
 		INC_MEMORY_STAT_BY(STAT_SamplerOnlineDescriptorHeapMemory, Desc.NumDescriptors * DescriptorSize);
 	}
+	INC_MEMORY_STAT_BY(STAT_D3D12MemoryCurrentTotal, Desc.NumDescriptors * DescriptorSize);
 
 	INC_DWORD_STAT_BY(STAT_GlobalViewHeapFreeDescriptors, TotalSize);
 	
@@ -1265,6 +1249,7 @@ void FD3D12LocalOnlineHeap::Init(uint32 NumDescriptors, D3D12_DESCRIPTOR_HEAP_TY
 		INC_DWORD_STAT(STAT_NumSamplerOnlineDescriptorHeaps);
 		INC_MEMORY_STAT_BY(STAT_SamplerOnlineDescriptorHeapMemory, Desc.NumDescriptors * GetDescriptorSize());
 	}
+	INC_MEMORY_STAT_BY(STAT_D3D12MemoryCurrentTotal, Desc.NumDescriptors * GetDescriptorSize());
 }
 
 
@@ -1303,6 +1288,7 @@ bool FD3D12LocalOnlineHeap::RollOver()
 			INC_DWORD_STAT(STAT_NumSamplerOnlineDescriptorHeaps);
 			INC_MEMORY_STAT_BY(STAT_SamplerOnlineDescriptorHeapMemory, Desc.NumDescriptors * GetDescriptorSize());
 		}
+		INC_MEMORY_STAT_BY(STAT_D3D12MemoryCurrentTotal, Desc.NumDescriptors * GetDescriptorSize());
 
 		Entry.Heap = Heap;
 	}

@@ -32,6 +32,11 @@
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ProfilingDebugging/ScopedTimers.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
+
+#include "Async/Fundamental/Scheduler.h"
+#include "Async/Fundamental/ReserveScheduler.h"
+#include "Tasks/Pipe.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTaskGraph, Log, All);
 
@@ -94,6 +99,14 @@ static FAutoConsoleVariableRef CVarForkedProcessMaxWorkerThreads(
 	TEXT("TaskGraph.ForkedProcessMaxWorkerThreads"),
 	CVar_ForkedProcess_MaxWorkerThreads,
 	TEXT("Configures the number of worker threads a forked process should spawn if it allows multithreading.")
+);
+
+CORE_API int32 GUseNewTaskBackend = 1;
+int32 GNumForegroundWorkers = 2;
+static FAutoConsoleVariableRef CVarNumForegroundWorkers(
+	TEXT("TaskGraph.NumForegroundWorkers"),
+	GNumForegroundWorkers,
+	TEXT("Configures the number of foreground worker threads. Requires the scheduler to be restarted to have an affect")
 );
 
 #if CREATE_HIPRI_TASK_THREADS || CREATE_BACKGROUND_TASK_THREADS
@@ -209,7 +222,25 @@ static FAutoConsoleVariableRef CVarUseHiPriThreads(
 	#define TASKGRAPH_SCOPE_CYCLE_COUNTER(Index, Name)
 #endif
 
+TArray<TaskTrace::FId> GetTraceIds(const FGraphEventArray& Tasks)
+{
+#if UE_TASK_TRACE_ENABLED
+	TArray<TaskTrace::FId> TasksIds;
+	TasksIds.Reserve(Tasks.Num());
 
+	for (const FGraphEventRef& Task : Tasks)
+	{
+		if (Task.IsValid())
+		{
+			TasksIds.Add(Task->GetTraceId());
+		}
+	}
+
+	return TasksIds;
+#else
+	return {};
+#endif
+}
 
 /** 
  *	Pointer to the task graph implementation singleton.
@@ -219,7 +250,7 @@ static FAutoConsoleVariableRef CVarUseHiPriThreads(
 class FTaskGraphImplementation;
 struct FWorkerThread;
 
-static FTaskGraphImplementation* TaskGraphImplementationSingleton = NULL;
+static FTaskGraphInterface* TaskGraphImplementationSingleton = NULL;
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 
@@ -229,52 +260,67 @@ static struct FChaosMode
 	{
 		NumSamples = 45771
 	};
-	FThreadSafeCounter Current;
-	float DelayTimes[NumSamples + 1]; 
-	int32 Enabled;
 
-	FChaosMode()
-		: Enabled(0)
+	struct FState
 	{
-		FRandomStream Stream((int32)FPlatformTime::Cycles());
-		for (int32 Index = 0; Index < NumSamples; Index++)
+		FThreadSafeCounter Current;
+		float DelayTimes[NumSamples + 1]; 
+		int32 Enabled;
+
+		FState()
+			: Enabled(0)
 		{
-			DelayTimes[Index] = Stream.GetFraction();
-		}
-		// ave = .5
-		for (int32 Cube = 0; Cube < 2; Cube++)
-		{
+			FRandomStream Stream((int32)FPlatformTime::Cycles());
 			for (int32 Index = 0; Index < NumSamples; Index++)
 			{
-				DelayTimes[Index] *= Stream.GetFraction();
+				DelayTimes[Index] = Stream.GetFraction();
 			}
+			// ave = .5
+			for (int32 Cube = 0; Cube < 2; Cube++)
+			{
+				for (int32 Index = 0; Index < NumSamples; Index++)
+				{
+					DelayTimes[Index] *= Stream.GetFraction();
+				}
+			}
+			// ave = 1/8
+			for (int32 Index = 0; Index < NumSamples; Index++)
+			{
+				DelayTimes[Index] *= 0.00001f;
+			}
+			// ave = 0.00000125s
+			for (int32 Zeros = 0; Zeros < NumSamples / 20; Zeros++)
+			{
+				int32 Index = Stream.RandHelper(NumSamples);
+				DelayTimes[Index] = 0.0f;
+			}
+			// 95% the samples are now zero
+			for (int32 Zeros = 0; Zeros < NumSamples / 100; Zeros++)
+			{
+				int32 Index = Stream.RandHelper(NumSamples);
+				DelayTimes[Index] = .00005f;
+			}
+			// .001% of the samples are 5ms
 		}
-		// ave = 1/8
-		for (int32 Index = 0; Index < NumSamples; Index++)
+	};
+	std::atomic<FState*> State;
+
+	~FChaosMode()
+	{
+		if (FState* LocalState = State.load(std::memory_order_relaxed))
 		{
-			DelayTimes[Index] *= 0.00001f;
+			delete LocalState;
 		}
-		// ave = 0.00000125s
-		for (int32 Zeros = 0; Zeros < NumSamples / 20; Zeros++)
-		{
-			int32 Index = Stream.RandHelper(NumSamples);
-			DelayTimes[Index] = 0.0f;
-		}
-		// 95% the samples are now zero
-		for (int32 Zeros = 0; Zeros < NumSamples / 100; Zeros++)
-		{
-			int32 Index = Stream.RandHelper(NumSamples);
-			DelayTimes[Index] = .00005f;
-		}
-		// .001% of the samples are 5ms
 	}
+
 	FORCEINLINE void Delay()
 	{
-		if (Enabled)
+		FState* LocalState = State.load(std::memory_order_acquire);
+		if (LocalState && LocalState->Enabled)
 		{
-			uint32 MyIndex = (uint32)Current.Increment();
+			uint32 MyIndex = (uint32)LocalState->Current.Increment();
 			MyIndex %= NumSamples;
-			float DelayS = DelayTimes[MyIndex];
+			float DelayS = LocalState->DelayTimes[MyIndex];
 			if (DelayS > 0.0f)
 			{
 				FPlatformProcess::Sleep(DelayS);
@@ -285,8 +331,14 @@ static struct FChaosMode
 
 static void EnableRandomizedThreads(const TArray<FString>& Args)
 {
-	GChaosMode.Enabled = !GChaosMode.Enabled;
-	if (GChaosMode.Enabled)
+	FChaosMode::FState* LocalState = GChaosMode.State.load(std::memory_order_acquire);
+	if (!LocalState)
+	{
+		LocalState = new FChaosMode::FState();
+		GChaosMode.State.store(LocalState, std::memory_order_release);
+	}
+	LocalState->Enabled = !LocalState->Enabled;
+	if (LocalState->Enabled)
 	{
 		UE_LOG(LogConsoleResponse, Display, TEXT("Random sleeps are enabled."));
 	}
@@ -315,98 +367,86 @@ FORCEINLINE void TestRandomizedThreads()
 
 #endif
 
-static FString ThreadPriorityToName(ENamedThreads::Type Priority)
+static TCHAR CharFromTaskPriority(ENamedThreads::Type InPriority)
 {
-	if (Priority == ENamedThreads::NormalThreadPriority)
+	if (InPriority == ENamedThreads::HighThreadPriority)
 	{
-		return FString(TEXT("Normal"));
+		return TEXT('h');
 	}
-	if (Priority == ENamedThreads::HighThreadPriority)
-	{
-		return FString(TEXT("High"));
-	}
-	if (Priority == ENamedThreads::BackgroundThreadPriority)
-	{
-		return FString(TEXT("Background"));
-	}
-	return FString(TEXT("??Unknown??"));
+	return TEXT('n');
 }
 
-static FString TaskPriorityToName(ENamedThreads::Type Priority)
+static ENamedThreads::Type TaskPriorityFromChar(TCHAR InChar)
 {
-	if (Priority == ENamedThreads::NormalTaskPriority)
+	if (InChar == TEXT('h'))
 	{
-		return FString(TEXT("Normal"));
+		return ENamedThreads::HighTaskPriority;
 	}
-	if (Priority == ENamedThreads::HighTaskPriority)
-	{
-		return FString(TEXT("High"));
-	}
-	return FString(TEXT("??Unknown??"));
+	return ENamedThreads::NormalTaskPriority;
 }
 
-void FAutoConsoleTaskPriority::CommandExecute(const TArray<FString>& Args)
+static TCHAR CharFromThreadPriority(ENamedThreads::Type InPriority)
 {
-	if (Args.Num() > 0)
+	if (InPriority == ENamedThreads::NormalThreadPriority)
 	{
-		if (Args[0].Compare(ThreadPriorityToName(ENamedThreads::NormalThreadPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			ThreadPriority = ENamedThreads::NormalThreadPriority;
-		}
-		else if (Args[0].Compare(ThreadPriorityToName(ENamedThreads::HighThreadPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			ThreadPriority = ENamedThreads::HighThreadPriority;
-		}
-		else if (Args[0].Compare(ThreadPriorityToName(ENamedThreads::BackgroundThreadPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			ThreadPriority = ENamedThreads::BackgroundThreadPriority;
-		}
-		else
-		{
-			UE_LOG(LogConsoleResponse, Display, TEXT("Could not parse thread priority %s"), *Args[0]);
-		}
+		return TEXT('n');
 	}
-	if (Args.Num() > 1)
+	if (InPriority == ENamedThreads::HighThreadPriority)
 	{
-		if (Args[1].Compare(TaskPriorityToName(ENamedThreads::NormalTaskPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			TaskPriority = ENamedThreads::NormalTaskPriority;
-		}
-		else if (Args[1].Compare(TaskPriorityToName(ENamedThreads::HighTaskPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			TaskPriority = ENamedThreads::HighTaskPriority;
-		}
-		else
-		{
-			UE_LOG(LogConsoleResponse, Display, TEXT("Could not parse task priority %s"), *Args[1]);
-		}
+		return TEXT('h');
 	}
-	if (Args.Num() > 2)
-	{
-		if (Args[2].Compare(TaskPriorityToName(ENamedThreads::NormalTaskPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			TaskPriorityIfForcedToNormalThreadPriority = ENamedThreads::NormalTaskPriority;
-		}
-		else if (Args[2].Compare(TaskPriorityToName(ENamedThreads::HighTaskPriority), ESearchCase::IgnoreCase) == 0)
-		{
-			TaskPriorityIfForcedToNormalThreadPriority = ENamedThreads::HighTaskPriority;
-		}
-		else
-		{
-			UE_LOG(LogConsoleResponse, Display, TEXT("Could not parse task priority %s"), *Args[2]);
-		}
-	}
-	if (ThreadPriority == ENamedThreads::NormalThreadPriority)
-	{
-		UE_LOG(LogConsoleResponse, Display, TEXT("%s - thread priority:%s   task priority:%s"), *CommandName, *ThreadPriorityToName(ThreadPriority), *TaskPriorityToName(TaskPriority));
-	}
-	else
-	{
-		UE_LOG(LogConsoleResponse, Display, TEXT("%s - thread priority:%s   task priority:%s  %s (when forced to normal)"), *CommandName, *ThreadPriorityToName(ThreadPriority), *TaskPriorityToName(TaskPriority), *TaskPriorityToName(this->TaskPriorityIfForcedToNormalThreadPriority));
-	}
+	return TEXT('b');
 }
 
+static ENamedThreads::Type ThreadPriorityFromChar(TCHAR InChar)
+{
+	if (InChar == TEXT('n'))
+	{
+		return ENamedThreads::NormalThreadPriority;
+	}
+	if (InChar == TEXT('h'))
+	{
+		return ENamedThreads::HighThreadPriority;
+	}
+	return ENamedThreads::BackgroundThreadPriority;
+}
 
+FString FAutoConsoleTaskPriority::CreateFullHelpText(const TCHAR* Name, const TCHAR* OriginalHelp)
+{
+	return FString::Printf(
+		TEXT("%s\n")
+		TEXT("Arguments are three characters: [ThreadPriority][TaskPriority][TaskPriorityIfForcedToNormalThreadPriority] ")
+		TEXT("where ThreadPriority is 'h' or 'n' or 'b' (high/normal/background) and TaskPriority is 'h' or 'n' (high/normal). ")
+		TEXT("Example: %s bnh")
+		, OriginalHelp, Name);
+}
+
+FString FAutoConsoleTaskPriority::ConfigStringFromPriorities(ENamedThreads::Type InThreadPriority, ENamedThreads::Type InTaskPriority, ENamedThreads::Type InTaskPriorityBackup)
+{
+	const TCHAR OutName[4] = {
+		CharFromThreadPriority(InThreadPriority),
+		CharFromTaskPriority(InTaskPriority),
+		CharFromTaskPriority(InTaskPriorityBackup),
+		TEXT('\0')
+	};
+	return FString(OutName);
+}
+
+void FAutoConsoleTaskPriority::OnSettingChanged(IConsoleVariable* InVariable)
+{
+	if (RawSetting.Len() > 0)
+	{
+		ThreadPriority = ThreadPriorityFromChar(RawSetting[0]);
+	}
+	if (RawSetting.Len() > 1)
+	{
+		TaskPriority = TaskPriorityFromChar(RawSetting[1]);
+	}
+	if (RawSetting.Len() > 2)
+	{
+		TaskPriorityIfForcedToNormalThreadPriority = TaskPriorityFromChar(RawSetting[2]);
+	}
+}
 
 /** 
  *	FTaskThreadBase
@@ -651,7 +691,9 @@ public:
 			}
 			// else StatName = none, we need to let the scope empty so that the render thread submits tasks in a timely manner. 
 		}
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		else if (ThreadId != ENamedThreads::StatsThread)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			StatName = GET_STATID(STAT_TaskGraph_OtherTasks);
 			StallStatId = GET_STATID(STAT_TaskGraph_OtherStalls);
@@ -682,8 +724,9 @@ public:
 #endif
 				if (bAllowStall)
 				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(WaitForTasks);
 					{
-						FScopeCycleCounter Scope(StallStatId);
+						FScopeCycleCounter Scope(StallStatId, EStatFlags::Verbose);
 						Queue(QueueIndex).StallRestartEvent->Wait(bIsRenderThreadAndPolling ? GRenderThreadPollPeriodMs : MAX_uint32, bCountAsStall);
 						if (Queue(QueueIndex).QuitForShutdown)
 						{
@@ -707,7 +750,7 @@ public:
 			}
 			else
 			{
-				Task->Execute(NewTasks, ENamedThreads::Type(ThreadId | (QueueIndex << ENamedThreads::QueueIndexShift)));
+				Task->Execute(NewTasks, ENamedThreads::Type(ThreadId | (QueueIndex << ENamedThreads::QueueIndexShift)), true);
 				ProcessedTasks++;
 				TestRandomizedThreads();
 			}
@@ -801,12 +844,16 @@ private:
 		{
 			return TEXT("RHI Thread");
 		}
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		else if (ThreadId == ENamedThreads::AudioThread)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			return TEXT("Audio Thread");
 		}
 #if STATS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		else if (ThreadId == ENamedThreads::StatsThread)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			return TEXT("Stats Thread");
 		}
@@ -1035,7 +1082,7 @@ private:
 				const bool bIsMultithread = FTaskGraphInterface::IsMultithread();
 				if (bIsMultithread)
 				{
-					FScopeCycleCounter Scope(StallStatId);
+					FScopeCycleCounter Scope(StallStatId, EStatFlags::Verbose);
 					Queue.StallRestartEvent->Wait(MAX_uint32, bCountAsStall);
 					bDidStall = true;
 				}
@@ -1063,7 +1110,7 @@ private:
 			}
 #endif
 			bDidStall = false;
-			Task->Execute(NewTasks, ENamedThreads::Type(ThreadId));
+			Task->Execute(NewTasks, ENamedThreads::Type(ThreadId), true);
 			ProcessedTasks++;
 			TestRandomizedThreads();
 			if (Queue.bStallForTuning)
@@ -1160,7 +1207,7 @@ struct FWorkerThread
 *	These parts of the system have no knowledge of the dependency graph, they exclusively work on tasks.
 **/
 
-class FTaskGraphImplementation : public FTaskGraphInterface
+class FTaskGraphImplementation final : public FTaskGraphInterface
 {
 public:
 
@@ -1171,9 +1218,10 @@ public:
 	 *	Note that unlike most singletons, a manual call to FTaskGraphInterface::Startup is required before the singleton will return a valid reference.
 	**/
 	static FTaskGraphImplementation& Get()
-	{		
+	{
+		checkThreadGraph(!GUseNewTaskBackend);
 		checkThreadGraph(TaskGraphImplementationSingleton);
-		return *TaskGraphImplementationSingleton;
+		return *static_cast<FTaskGraphImplementation*>(TaskGraphImplementationSingleton);
 	}
 
 	/** 
@@ -1182,6 +1230,8 @@ public:
 	**/
 	FTaskGraphImplementation(int32)
 	{
+		TaskTrace::Init();
+
 		bCreatedHiPriorityThreads = !!ENamedThreads::bHasHighPriorityThreads;
 		bCreatedBackgroundPriorityThreads = !!ENamedThreads::bHasBackgroundThreads;
 
@@ -1292,20 +1342,23 @@ public:
 
 			int32 StackSize;
 
-#if WITH_EDITOR
-			StackSize = 1024 * 1024;
-#elif (!UE_BUILD_SHIPPING && !UE_BUILD_TEST)
-			StackSize = 512 * 1024;
-#else
-			StackSize = 384 * 1024;
-#endif
+//#if WITH_EDITOR
+//			StackSize = 1024 * 1024;
+//#elif (!UE_BUILD_SHIPPING && !UE_BUILD_TEST)
+//			StackSize = 512 * 1024;
+//#else
+//			StackSize = 384 * 1024;
+//#endif
 
-			GConfig->GetInt(TEXT("Core.System"), TEXT("TaskThreadStackSize"), StackSize, GEngineIni);
+			StackSize = 1024 * 1024;
+
+			// GConfig is not initialized yet, the only solution for now is to hardcode desired values
+			//GConfig->GetInt(TEXT("Core.System"), TEXT("TaskThreadStackSize"), StackSize, GEngineIni);
 
 			if (GroupName != PrevGroupName)
 			{
-				Trace::ThreadGroupEnd();
-				Trace::ThreadGroupBegin(GroupName);
+				UE::Trace::ThreadGroupEnd();
+				UE::Trace::ThreadGroupBegin(GroupName);
 				PrevGroupName = GroupName;
 			}
 
@@ -1321,7 +1374,7 @@ public:
 			
 			WorkerThreads[ThreadIndex].bAttached = true;
 		}
-		Trace::ThreadGroupEnd();
+		UE::Trace::ThreadGroupEnd();
 	}
 
 	/** 
@@ -1353,6 +1406,54 @@ public:
 		FPlatformTLS::FreeTlsSlot(PerThreadIDTLSSlot);
 	}
 
+	// StatsThread was removed and replaced by a pipe. While all engine code was converted where's a tiny possibilty that 
+	// an external code is using it directly. Redirect all stats tasks to the pipe
+	static void RedirectStatsTasksToPipe(FBaseGraphTask* Task)
+	{
+#if STATS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (ENamedThreads::GetThreadIndex(Task->ThreadToExecuteOn) == ENamedThreads::StatsThread)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		{
+			checkf(ENamedThreads::GetQueueIndex(Task->ThreadToExecuteOn) == ENamedThreads::MainQueue, TEXT("`StatsThread_Local` is not supported and unlikely to be used intentionally. Check that `Task->ThreadToExecuteOn` value is not rubbish: %d"), Task->ThreadToExecuteOn);
+
+			extern CORE_API UE::Tasks::FPipe GStatsPipe;
+			GStatsPipe.Launch(UE_SOURCE_LOCATION,
+				[Task]
+				{
+					TArray<FBaseGraphTask*> Dummy;
+					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
+				}
+			);
+			return;
+		}
+#endif
+	}
+
+#if UE_AUDIO_THREAD_AS_PIPE
+
+	// AudioThread was removed and replaced by a pipe. While all engine code was converted where's a tiny possibilty that 
+	// an external code is using it directly. Redirect all audio tasks to the pipe
+	static void RedirectAudioTasksToPipe(FBaseGraphTask* Task)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (ENamedThreads::GetThreadIndex(Task->ThreadToExecuteOn) == ENamedThreads::AudioThread)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		{
+			extern CORE_API UE::Tasks::FPipe GAudioPipe;
+			GAudioPipe.Launch(UE_SOURCE_LOCATION,
+				[Task]
+				{
+					TArray<FBaseGraphTask*> Dummy;
+					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
+				}
+			);
+			return;
+		}
+	}
+
+#endif
+
 	// API inherited from FTaskGraphInterface
 
 	/** 
@@ -1361,9 +1462,16 @@ public:
 	 *	@param	ThreadToExecuteOn; Either a named thread for a threadlocked task or ENamedThreads::AnyThread for a task that is to run on a worker thread
 	 *	@param	CurrentThreadIfKnown; This should be the current thread if it is known, or otherwise use ENamedThreads::AnyThread and the current thread will be determined.
 	**/
-	virtual void QueueTask(FBaseGraphTask* Task, ENamedThreads::Type ThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown = ENamedThreads::AnyThread) final override
+	virtual void QueueTask(FBaseGraphTask* Task, bool bWakeUpWorker, ENamedThreads::Type ThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown = ENamedThreads::AnyThread) final override
 	{
 		TASKGRAPH_SCOPE_CYCLE_COUNTER(2, STAT_TaskGraph_QueueTask);
+
+#if UE_STATS_THREAD_AS_PIPE
+		RedirectStatsTasksToPipe(Task);
+#endif
+#if UE_AUDIO_THREAD_AS_PIPE
+		RedirectAudioTasksToPipe(Task);
+#endif
 
 		if (ENamedThreads::GetThreadIndex(ThreadToExecuteOn) == ENamedThreads::AnyThread)
 		{
@@ -1432,6 +1540,11 @@ public:
 		return Result;
 	}
 
+	virtual bool IsCurrentThreadKnown() final override
+	{
+		return FPlatformTLS::GetTlsValue(PerThreadIDTLSSlot) != nullptr;
+	}
+
 	virtual ENamedThreads::Type GetCurrentThreadIfKnown(bool bLocalQueue) final override
 	{
 		ENamedThreads::Type Result = GetCurrentThread();
@@ -1490,7 +1603,9 @@ public:
 
 	virtual void WaitUntilTasksComplete(const FGraphEventArray& Tasks, ENamedThreads::Type CurrentThreadIfKnown = ENamedThreads::AnyThread) final override
 	{
+		TaskTrace::FWaitingScope WaitingScope(GetTraceIds(Tasks));
 		TRACE_CPUPROFILER_EVENT_SCOPE(WaitUntilTasksComplete);
+
 		ENamedThreads::Type CurrentThread = CurrentThreadIfKnown;
 		if (ENamedThreads::GetThreadIndex(CurrentThreadIfKnown) == ENamedThreads::AnyThread)
 		{
@@ -1526,6 +1641,7 @@ public:
 					return;
 				}
 			}
+
 			// named thread process tasks while we wait
 			TGraphTask<FReturnGraphTask>::CreateTask(&Tasks, CurrentThread).ConstructAndDispatchWhenReady(CurrentThread);
 			ProcessThreadUntilRequestReturn(CurrentThread);
@@ -1550,6 +1666,7 @@ public:
 				}
 				UE_LOG(LogTaskGraph, Fatal, TEXT("Recursive waits are not allowed in single threaded mode."));
 			}
+		
 			// We will just stall this thread on an event while we wait
 			FScopedEvent Event;
 			TriggerEventWhenTasksComplete(Event.Get(), Tasks, CurrentThreadIfKnown);
@@ -1620,19 +1737,18 @@ public:
 		}
 	}
 
-	FBaseGraphTask* FindWork(ENamedThreads::Type ThreadInNeed)
+	FBaseGraphTask* FindWork(ENamedThreads::Type ThreadInNeed) override
 	{
 		int32 LocalNumWorkingThread = GetNumWorkerThreads() + GNumWorkerThreadsToIgnore;
 		int32 MyIndex = int32((uint32(ThreadInNeed) - NumNamedThreads) % NumTaskThreadsPerSet);
 		int32 Priority = int32((uint32(ThreadInNeed) - NumNamedThreads) / NumTaskThreadsPerSet);
 		check(MyIndex >= 0 && MyIndex < LocalNumWorkingThread &&
-			MyIndex < (PLATFORM_64BITS ? 63 : 32) &&
 			Priority >= 0 && Priority < ENamedThreads::NumThreadPriorities);
 
 		return IncomingAnyThreadTasks[Priority].Pop(MyIndex, true);
 	}
 
-	void StallForTuning(int32 Index, bool Stall)
+	void StallForTuning(int32 Index, bool Stall) override
 	{
 		for (int32 Priority = 0; Priority < ENamedThreads::NumThreadPriorities; Priority++)
 		{
@@ -1640,6 +1756,7 @@ public:
 			((FTaskThreadAnyThread&)Thread(ThreadToWake)).StallForTuning(Stall);
 		}
 	}
+
 	void SetTaskThreadPriorities(EThreadPriority Pri)
 	{
 		check(NumTaskThreadSets == 1); // otherwise tuning this doesn't make a lot of sense
@@ -1707,7 +1824,7 @@ private:
 	enum
 	{
 		/** Compile time maximum number of threads. Didn't really need to be a compile time constant, but task thread are limited by MAX_LOCK_FREE_LINKS_AS_BITS **/
-		MAX_THREADS = 26 * (CREATE_HIPRI_TASK_THREADS + CREATE_BACKGROUND_TASK_THREADS + 1) + ENamedThreads::ActualRenderingThread + 1,
+		MAX_THREADS = 0xFFFF,
 		MAX_THREAD_PRIORITIES = 3
 	};
 
@@ -1739,12 +1856,510 @@ private:
 	FStallingTaskQueue<FBaseGraphTask, PLATFORM_CACHE_LINE_SIZE, 2>	IncomingAnyThreadTasks[MAX_THREAD_PRIORITIES];
 };
 
+/**
+*	FTaskGraphCompatibilityImplementation
+*	Implementation of the centralized part of the task graph system using the ne low level Backend.
+*	These parts of the system have no knowledge of the dependency graph, they exclusively work on tasks.
+**/
+class FTaskGraphCompatibilityImplementation final : public FTaskGraphInterface
+{
+	static thread_local TArray<FBaseGraphTask*> NewTasks;
+
+	/** Array of callbacks to call before shutdown. **/
+	TArray<TFunction<void()> > ShutdownCallbacks;
+
+	/** Index of TLS slot for FWorkerThread* pointer. **/
+	uint32				PerThreadIDTLSSlot;
+
+	/** Number of named threads actually in use. **/
+	int32				NumNamedThreads;
+	int32				NumWorkerThreads;
+
+	TArray<FWorkerThread> NamedThreads;
+
+	FThreadSafeCounter	ReentrancyCheck;
+	FAAArrayQueue<FBaseGraphTask>	QueuedBackgroundTasks;
+
+	std::atomic<bool> bReserveWorkersEnabled{ false };
+
+public:
+	FTaskGraphCompatibilityImplementation(int32 InNumWorkerThreads) 
+		: NumWorkerThreads(FForkProcessHelper::IsForkedMultithreadInstance() ? CVar_ForkedProcess_MaxWorkerThreads : InNumWorkerThreads)
+	{
+		TaskTrace::Init();
+
+		if (FTaskGraphInterface::IsMultithread())
+		{
+			if (NumWorkerThreads <= 3)
+			{
+				GNumForegroundWorkers = 1;
+			}
+
+			int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+			int32 NumForegroundWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+
+			LowLevelTasks::FScheduler::Get().StartWorkers(NumForegroundWorkers, NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskThreadPriority(), FPlatformAffinity::GetTaskBPThreadPriority());
+
+			check(IsInGameThread()); // otherwise we can have a race on starting reserve workers below
+			if (GConfig == nullptr)
+			{
+				// postpone starting reserve workers tillGConfig is initialized, to know if reserve workers are disabled
+				FCoreDelegates::ConfigReadyForUse.AddRaw(this, &FTaskGraphCompatibilityImplementation::StartReserveWorkers);
+			}
+			else
+			{
+				StartReserveWorkers();
+			}
+
+			NumNamedThreads = ENamedThreads::ActualRenderingThread + 1;
+			ENamedThreads::bHasBackgroundThreads = 1;
+			ENamedThreads::bHasHighPriorityThreads = 1;
+		}
+		else
+		{
+			LowLevelTasks::FScheduler::Get().StopWorkers();
+			if (bReserveWorkersEnabled)
+			{
+				LowLevelTasks::FReserveScheduler::Get().StopWorkers();
+			}
+			NumNamedThreads = ENamedThreads::ActualRenderingThread;
+			ENamedThreads::bHasBackgroundThreads = 0;
+			ENamedThreads::bHasHighPriorityThreads = 0;
+		}	
+		NamedThreads.AddDefaulted(NumNamedThreads);
+
+		check(!ReentrancyCheck.GetValue()); // reentrant?
+		ReentrancyCheck.Increment(); // just checking for reentrancy
+		PerThreadIDTLSSlot = FPlatformTLS::AllocTlsSlot();
+
+		for (int32 ThreadIndex = 0; ThreadIndex < NumNamedThreads; ThreadIndex++)
+		{
+			NamedThreads[ThreadIndex].TaskGraphWorker = new FNamedTaskThread;
+			NamedThreads[ThreadIndex].TaskGraphWorker->Setup(ENamedThreads::Type(ThreadIndex), PerThreadIDTLSSlot, &NamedThreads[ThreadIndex]);
+		}
+	}
+
+	~FTaskGraphCompatibilityImplementation() override
+	{
+		FCoreDelegates::ConfigReadyForUse.RemoveAll(this);
+
+		for (auto& Callback : ShutdownCallbacks)
+		{
+			Callback();
+		}
+		ShutdownCallbacks.Empty();
+		for (int32 ThreadIndex = 0; ThreadIndex < NumNamedThreads; ThreadIndex++)
+		{
+			Thread(ThreadIndex).RequestQuit(-1);
+			NamedThreads[ThreadIndex].bAttached = false;
+		}
+		LowLevelTasks::FScheduler::Get().StopWorkers();
+		if (bReserveWorkersEnabled)
+		{
+			LowLevelTasks::FReserveScheduler::Get().StopWorkers();
+		}
+		FPlatformTLS::FreeTlsSlot(PerThreadIDTLSSlot);
+	}
+
+	/** 
+	*	Singleton returning the one and only FTaskGraphImplementation.
+	*	Note that unlike most singletons, a manual call to FTaskGraphInterface::Startup is required before the singleton will return a valid reference.
+	**/
+	static FTaskGraphCompatibilityImplementation& Get()
+	{
+		checkThreadGraph(GUseNewTaskBackend);
+		checkThreadGraph(TaskGraphImplementationSingleton);
+		return *static_cast<FTaskGraphCompatibilityImplementation*>(TaskGraphImplementationSingleton);
+	}
+
+	inline void* operator new(size_t Size)
+	{
+		return FMemory::Malloc(Size, 128u);
+	}
+
+	inline void operator delete(void* Ptr)
+	{
+		FMemory::Free(Ptr);
+	}
+
+	void SetTaskThreadPriorities(EThreadPriority Pri)
+	{
+		if (FTaskGraphInterface::IsMultithread())
+		{
+			int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+			int32 NumWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+
+			LowLevelTasks::FScheduler::Get().StopWorkers();
+			LowLevelTasks::FScheduler::Get().StartWorkers(NumWorkers, NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, Pri, FPlatformAffinity::GetTaskBPThreadPriority());
+
+			if (bReserveWorkersEnabled)
+			{
+				LowLevelTasks::FReserveScheduler::Get().StopWorkers();
+				LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
+			}
+		}
+	}
+
+private:
+	void QueueTask(class FBaseGraphTask* Task, bool bWakeUpWorker, ENamedThreads::Type InThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown) override
+	{
+#if UE_STATS_THREAD_AS_PIPE
+		FTaskGraphImplementation::RedirectStatsTasksToPipe(Task);
+#endif
+#if UE_AUDIO_THREAD_AS_PIPE
+		FTaskGraphImplementation::RedirectAudioTasksToPipe(Task);
+#endif
+
+		if (ENamedThreads::GetThreadIndex(InThreadToExecuteOn) == ENamedThreads::AnyThread)
+		{
+			uint32 ThreadPriority = GetThreadPriorityIndex(InThreadToExecuteOn);
+			check(ThreadPriority < uint32(ENamedThreads::NumThreadPriorities));
+			LowLevelTasks::ETaskPriority Conversion[int(ENamedThreads::NumThreadPriorities)] = { LowLevelTasks::ETaskPriority::Normal, LowLevelTasks::ETaskPriority::High, LowLevelTasks::ETaskPriority::BackgroundNormal };
+			LowLevelTasks::ETaskPriority Priority = Conversion[ThreadPriority];
+
+			if (Priority == LowLevelTasks::ETaskPriority::BackgroundNormal && GetTaskPriority(InThreadToExecuteOn))
+			{
+				Priority = LowLevelTasks::ETaskPriority::BackgroundHigh;
+			}
+
+			Task->TaskHandle.Init(TEXT("TaskGraphTask"), Priority, [Task, InThreadToExecuteOn, Deleter(LowLevelTasks::TDeleter<FBaseGraphTask, &FBaseGraphTask::DeleteTask>(Task))]()
+			{
+				Task->Execute(NewTasks, InThreadToExecuteOn, false);
+			});
+	
+			bWakeUpWorker |= LowLevelTasks::FSchedulerTls::IsBusyWaiting();
+			verifySlow(LowLevelTasks::TryLaunch(Task->TaskHandle, bWakeUpWorker ? LowLevelTasks::EQueuePreference::GlobalQueuePreference : LowLevelTasks::EQueuePreference::LocalQueuePreference, bWakeUpWorker));
+			return;
+		}
+
+		ENamedThreads::Type CurrentThreadIfKnown;
+		if (ENamedThreads::GetThreadIndex(InCurrentThreadIfKnown) == ENamedThreads::AnyThread)
+		{
+			CurrentThreadIfKnown = GetCurrentThread();
+		}
+		else
+		{
+			CurrentThreadIfKnown = ENamedThreads::GetThreadIndex(InCurrentThreadIfKnown);
+			checkThreadGraph(CurrentThreadIfKnown == ENamedThreads::GetThreadIndex(GetCurrentThread()));
+		}
+		{
+			int32 QueueToExecuteOn = ENamedThreads::GetQueueIndex(InThreadToExecuteOn);
+			InThreadToExecuteOn = ENamedThreads::GetThreadIndex(InThreadToExecuteOn);
+			FTaskThreadBase* Target = &Thread(InThreadToExecuteOn);
+			if (InThreadToExecuteOn == ENamedThreads::GetThreadIndex(CurrentThreadIfKnown))
+			{
+				Target->EnqueueFromThisThread(QueueToExecuteOn, Task);
+			}
+			else
+			{
+				Target->EnqueueFromOtherThread(QueueToExecuteOn, Task);
+			}
+		}
+	}
+
+	int32 GetNumWorkerThreads() final override
+	{
+		return LowLevelTasks::FScheduler::Get().GetNumWorkers();
+	}
+
+	bool IsCurrentThreadKnown() final override
+	{
+		return FPlatformTLS::GetTlsValue(PerThreadIDTLSSlot) != nullptr || LowLevelTasks::FTask::GetActiveTask() != nullptr;
+	}
+
+	ENamedThreads::Type GetCurrentThreadIfKnown(bool bLocalQueue) final override
+	{
+		ENamedThreads::Type Result = GetCurrentThread();
+		if (bLocalQueue && ENamedThreads::GetThreadIndex(Result) >= 0 && ENamedThreads::GetThreadIndex(Result) < NumNamedThreads)
+		{
+			Result = ENamedThreads::Type(int32(Result) | int32(ENamedThreads::LocalQueue));
+		}
+		return Result;
+	}
+
+	bool IsThreadProcessingTasks(ENamedThreads::Type ThreadToCheck) final override
+	{
+		int32 QueueIndex = ENamedThreads::GetQueueIndex(ThreadToCheck);
+		ThreadToCheck = ENamedThreads::GetThreadIndex(ThreadToCheck);
+		check(ThreadToCheck >= 0 && ThreadToCheck < NumNamedThreads);
+		return Thread(ThreadToCheck).IsProcessingTasks(QueueIndex);
+	}
+
+	// External Thread API
+
+	void AttachToThread(ENamedThreads::Type CurrentThread) final override
+	{
+		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
+		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
+		check(!NamedThreads[CurrentThread].bAttached);
+		Thread(CurrentThread).InitializeForCurrentThread();
+	}
+
+	uint64 ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread) final override
+	{
+		SCOPED_NAMED_EVENT(ProcessThreadUntilIdle, FColor::Red);
+		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
+		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
+		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
+		check(CurrentThread == GetCurrentThread());
+		return Thread(CurrentThread).ProcessTasksUntilIdle(QueueIndex);
+	}
+
+	void ProcessThreadUntilRequestReturn(ENamedThreads::Type CurrentThread) final override
+	{
+		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
+		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
+		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
+		check(CurrentThread == GetCurrentThread());
+		Thread(CurrentThread).ProcessTasksUntilQuit(QueueIndex);
+	}
+
+	void RequestReturn(ENamedThreads::Type CurrentThread) final override
+	{
+		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
+		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
+		check(CurrentThread != ENamedThreads::AnyThread);
+		Thread(CurrentThread).RequestQuit(QueueIndex);
+	}
+
+	void WaitUntilTasksComplete(const FGraphEventArray& Tasks, ENamedThreads::Type CurrentThreadIfKnown = ENamedThreads::AnyThread) final override
+	{
+		TaskTrace::FWaitingScope WaitingScope(GetTraceIds(Tasks));
+		TRACE_CPUPROFILER_EVENT_SCOPE(WaitUntilTasksComplete);
+	
+		ENamedThreads::Type CurrentThread = CurrentThreadIfKnown;
+		if (ENamedThreads::GetThreadIndex(CurrentThreadIfKnown) == ENamedThreads::AnyThread)
+		{
+			bool bIsHiPri = !!ENamedThreads::GetTaskPriority(CurrentThreadIfKnown);
+			int32 Priority = ENamedThreads::GetThreadPriorityIndex(CurrentThreadIfKnown);
+			check(!ENamedThreads::GetQueueIndex(CurrentThreadIfKnown));
+			CurrentThreadIfKnown = ENamedThreads::GetThreadIndex(GetCurrentThread());
+			CurrentThread = ENamedThreads::SetPriorities(CurrentThreadIfKnown, Priority, bIsHiPri);
+		}
+		else
+		{
+			CurrentThreadIfKnown = ENamedThreads::GetThreadIndex(CurrentThreadIfKnown);
+			check(CurrentThreadIfKnown == ENamedThreads::GetThreadIndex(GetCurrentThread()));
+			// we don't modify CurrentThread here because it might be a local queue
+		}
+
+		if (CurrentThreadIfKnown != ENamedThreads::AnyThread && CurrentThreadIfKnown < NumNamedThreads && !IsThreadProcessingTasks(CurrentThread))
+		{
+			if (Tasks.Num() < 8) // don't bother to check for completion if there are lots of prereqs...too expensive to check
+			{
+				bool bAnyPending = false;
+				for (int32 Index = 0; Index < Tasks.Num(); Index++)
+				{
+					FGraphEvent* Task = Tasks[Index].GetReference();
+					if (Task && !Task->IsComplete())
+					{
+						bAnyPending = true;
+						break;
+					}
+				}
+				if (!bAnyPending)
+				{
+					return;
+				}
+			}
+
+			// named thread process tasks while we wait
+			TGraphTask<FReturnGraphTask>::CreateTask(&Tasks, CurrentThread).ConstructAndDispatchWhenReady(CurrentThread);
+			ProcessThreadUntilRequestReturn(CurrentThread);
+		}
+		else if (LowLevelTasks::FScheduler::Get().IsWorkerThread() || LowLevelTasks::FReserveScheduler::Get().IsWorkerThread())
+		{
+			// a worker thread gets blocked, involve a reserve worker to utilise an idle core
+			bool bSuccess = false; // has a reserve worker helped?
+			if (bReserveWorkersEnabled.load(std::memory_order_relaxed))
+			{
+				if (LowLevelTasks::DoReserveWorkUntil([Index(0), Tasks]() mutable
+				{
+					while (Index < Tasks.Num())
+					{
+						if (!Tasks[Index]->IsComplete())
+						{
+							return false;
+						}
+						Index++;
+					}
+					return true;
+				}))
+				{
+					// a reserve worker was woken up to help with the tasks.
+					// stall this thread on an event while we wait
+					FScopedEvent Event;
+					TriggerEventWhenTasksComplete(Event.Get(), Tasks, CurrentThreadIfKnown);
+					bSuccess = true;
+				}
+			}
+			
+			// for latency reason, worker thread aren't tackling other tasks while waiting if we have reserve workers, 
+			// otherwise worker threads help with task execution while they wait
+			if(!bSuccess)
+			{
+				LowLevelTasks::BusyWaitUntil([Index(0), &Tasks]() mutable
+				{
+					while (Index < Tasks.Num())
+					{
+						if (!Tasks[Index]->IsComplete())
+						{
+							return false;
+						}
+						Index++;
+					}
+					return true;
+				});
+			}
+		}
+		else
+		{
+			if (!FTaskGraphInterface::IsMultithread())
+			{
+				bool bAnyPending = false;
+				for (int32 Index = 0; Index < Tasks.Num(); Index++)
+				{
+					FGraphEvent* Task = Tasks[Index].GetReference();
+					if (Task && !Task->IsComplete())
+					{
+						bAnyPending = true;
+						break;
+					}
+				}
+				if (!bAnyPending)
+				{
+					return;
+				}
+				UE_LOG(LogTaskGraph, Fatal, TEXT("Recursive waits are not allowed in single threaded mode."));
+			}
+			// We will just stall this thread on an event while we wait
+			FScopedEvent Event;
+			TriggerEventWhenTasksComplete(Event.Get(), Tasks, CurrentThreadIfKnown);
+		}
+	}
+
+	void TriggerEventWhenTasksComplete(FEvent* InEvent, const FGraphEventArray& Tasks, ENamedThreads::Type CurrentThreadIfKnown = ENamedThreads::AnyThread, ENamedThreads::Type TriggerThread = ENamedThreads::AnyHiPriThreadHiPriTask) final override
+	{
+		check(InEvent);
+		bool bAnyPending = true;
+		if (Tasks.Num() < 8) // don't bother to check for completion if there are lots of prereqs...too expensive to check
+		{
+			bAnyPending = false;
+			for (int32 Index = 0; Index < Tasks.Num(); Index++)
+			{
+				FGraphEvent* Task = Tasks[Index].GetReference();
+				if (Task && !Task->IsComplete())
+				{
+					bAnyPending = true;
+					break;
+				}
+			}
+		}
+		if (!bAnyPending)
+		{
+			TestRandomizedThreads();
+			InEvent->Trigger();
+			return;
+		}
+		TGraphTask<FTriggerEventGraphTask>::CreateTask(&Tasks, CurrentThreadIfKnown).ConstructAndDispatchWhenReady(InEvent, TriggerThread);
+	}
+
+	void AddShutdownCallback(TFunction<void()>& Callback) override
+	{
+		ShutdownCallbacks.Emplace(Callback);
+	}
+
+	void WakeNamedThread(ENamedThreads::Type ThreadToWake) override
+	{
+		const ENamedThreads::Type ThreadIndex = ENamedThreads::GetThreadIndex(ThreadToWake);
+		if (ThreadIndex < NumNamedThreads)
+		{
+			Thread(ThreadIndex).WakeUp(ENamedThreads::GetQueueIndex(ThreadToWake));
+		}
+	}
+	
+	virtual FBaseGraphTask* FindWork(ENamedThreads::Type ThreadInNeed)
+	{
+		check(false);
+		return nullptr;
+	}
+
+	void StallForTuning(int32 Index, bool Stall) override
+	{
+	}
+
+	/** 
+	*	Examines the TLS to determine the identity of the current thread.
+	*	@return	Id of the thread that is this thread or ENamedThreads::AnyThread if this thread is unknown or is a named thread that has not attached yet.
+	**/
+	ENamedThreads::Type GetCurrentThread()
+	{
+		ENamedThreads::Type CurrentThreadIfKnown = ENamedThreads::AnyThread;
+		FWorkerThread* TLSPointer = (FWorkerThread*)FPlatformTLS::GetTlsValue(PerThreadIDTLSSlot);
+		if (TLSPointer)
+		{
+			checkThreadGraph(TLSPointer - NamedThreads.GetData() >= 0 && TLSPointer - NamedThreads.GetData() < NamedThreads.Num());
+			int32 ThreadIndex = UE_PTRDIFF_TO_INT32(TLSPointer - NamedThreads.GetData());
+			checkThreadGraph(Thread(ThreadIndex).GetThreadId() == ThreadIndex);
+			if (ThreadIndex < NumNamedThreads)
+			{
+				CurrentThreadIfKnown = ENamedThreads::Type(ThreadIndex);
+			}
+		}
+		else 
+		{
+			const LowLevelTasks::FTask* Task = LowLevelTasks::FTask::GetActiveTask();
+			if (Task != nullptr)
+			{
+				ENamedThreads::Type ThreadConversion[int(LowLevelTasks::ETaskPriority::Count)] = { ENamedThreads::HighThreadPriority, ENamedThreads::NormalThreadPriority, ENamedThreads::BackgroundThreadPriority, ENamedThreads::BackgroundThreadPriority, ENamedThreads::BackgroundThreadPriority };
+				ENamedThreads::Type TaskConversion[int(LowLevelTasks::ETaskPriority::Count)] = { ENamedThreads::NormalTaskPriority, ENamedThreads::NormalTaskPriority, ENamedThreads::HighTaskPriority, ENamedThreads::NormalTaskPriority, ENamedThreads::NormalTaskPriority };
+				CurrentThreadIfKnown = (ENamedThreads::Type)(ENamedThreads::AnyThread | ThreadConversion[int(Task->GetPriority())] | TaskConversion[int(Task->GetPriority())]);
+			}
+		}
+		return CurrentThreadIfKnown;
+	}
+
+	/** 
+	*	Internal function to verify an index and return the corresponding FTaskThread
+	*	@param	Index; Id of the thread to retrieve.
+	*	@return	Reference to the corresponding thread.
+	**/
+	inline FTaskThreadBase& Thread(int32 Index)
+	{
+		checkThreadGraph(NamedThreads[Index].TaskGraphWorker->GetThreadId() == Index);
+		return *NamedThreads[Index].TaskGraphWorker;
+	}
+
+	void StartReserveWorkers()
+	{
+		if (bReserveWorkersEnabled)
+		{
+			return; // once enabled, reserve workers can't be disabled
+		}
+
+		int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+		int32 NumForegroundWorkers = FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+
+		check(GConfig);
+		
+		bool bEnableReserveWorkers = true; // by default
+		GConfig->GetBool(TEXT("TaskGraph"), TEXT("EnableReserveWorkers"), bEnableReserveWorkers, GEngineIni);
+
+		if (bEnableReserveWorkers)
+		{
+			bReserveWorkersEnabled = true;
+			LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
+		}
+	}
+};
+
+thread_local TArray<FBaseGraphTask*> FTaskGraphCompatibilityImplementation::NewTasks;
 
 // Implementations of FTaskThread function that require knowledge of FTaskGraphImplementation
 
 FBaseGraphTask* FTaskThreadAnyThread::FindWork()
 {
-	return FTaskGraphImplementation::Get().FindWork(ThreadId);
+	return TaskGraphImplementationSingleton->FindWork(ThreadId);
 }
 
 
@@ -1752,14 +2367,41 @@ FBaseGraphTask* FTaskThreadAnyThread::FindWork()
 
 void FTaskGraphInterface::Startup(int32 NumThreads)
 {
-	// TaskGraphImplementationSingleton is actually set in the constructor because find work will be called before this returns.
-	new FTaskGraphImplementation(NumThreads); 
+	if (FParse::Param(FCommandLine::Get(), TEXT("TaskGraphForceOldBackend")))
+	{
+		GUseNewTaskBackend = 0;
+	}
+	else if (FParse::Param(FCommandLine::Get(), TEXT("TaskGraphForceNewBackend")))
+	{
+		GUseNewTaskBackend = 1;
+	}
+
+	if (GUseNewTaskBackend)
+	{
+		//We want to reduce the number of overall threads that UE uses so that there is are some 
+		//free cores available for other things like the Browser or other Applications. 
+		//Therefore we increase the number of Foreground workers, which are mostly unused. 
+		//But when HighPrio work comes in the Foreground workers will be available and get the job done.
+		bool bIsCookCommandlet = FParse::Param(FCommandLine::Get(), TEXT("cookcommandlet")) || FParse::Param(FCommandLine::Get(), TEXT("run=cook"));
+		if (!bIsCookCommandlet)
+		{
+			GNumForegroundWorkers = FMath::Max(FMath::DivideAndRoundUp(NumThreads, 21), 2);
+		}
+
+		FParse::Value(FCommandLine::Get(), TEXT("-foregroundworkers="), GNumForegroundWorkers);
+		TaskGraphImplementationSingleton = new FTaskGraphCompatibilityImplementation(NumThreads);
+	}
+	else
+	{
+		// TaskGraphImplementationSingleton is actually set in the constructor because find work will be called before this returns.
+		new FTaskGraphImplementation(NumThreads); 
+	}
 }
 
 void FTaskGraphInterface::Shutdown()
 {
 	delete TaskGraphImplementationSingleton;
-	TaskGraphImplementationSingleton = NULL;
+	TaskGraphImplementationSingleton = nullptr;
 }
 
 bool FTaskGraphInterface::IsRunning()
@@ -1778,15 +2420,6 @@ bool FTaskGraphInterface::IsMultithread()
 	return FPlatformProcess::SupportsMultithreading() || (FForkProcessHelper::IsForkedMultithreadInstance() && GAllowTaskGraphForkMultithreading);
 }
 
-
-// Statics and some implementations from FBaseGraphTask and FGraphEvent
-
-static FBaseGraphTask::TSmallTaskAllocator TheSmallTaskAllocator;
-FBaseGraphTask::TSmallTaskAllocator& FBaseGraphTask::GetSmallTaskAllocator()
-{
-	return TheSmallTaskAllocator;
-}
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 void FBaseGraphTask::LogPossiblyInvalidSubsequentsTask(const TCHAR* TaskName)
 {
@@ -1798,7 +2431,8 @@ static TLockFreeClassAllocator_TLSCache<FGraphEvent, PLATFORM_CACHE_LINE_SIZE> T
 
 FGraphEventRef FGraphEvent::CreateGraphEvent()
 {
-	return TheGraphEventAllocator.New();
+	FGraphEvent* Instance = new(TheGraphEventAllocator.Allocate()) FGraphEvent{};
+	return Instance;
 }
 
 void FGraphEvent::Recycle(FGraphEvent* ToRecycle)
@@ -1838,28 +2472,39 @@ void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedT
 		if (bSpawnGatherTask)
 		{
 			// create the Gather...this uses a special version of private CreateTask that "assumes" the subsequent list (which other threads might still be adding too).
-			DECLARE_CYCLE_STAT(TEXT("FNullGraphTask.DontCompleteUntil"),
-			STAT_FNullGraphTask_DontCompleteUntil,
-				STATGROUP_TaskGraphTasks);
+			DECLARE_CYCLE_STAT(TEXT("FNullGraphTask.DontCompleteUntil"), STAT_FNullGraphTask_DontCompleteUntil, STATGROUP_TaskGraphTasks);
 
 			ENamedThreads::Type LocalThreadToDoGatherOn = ENamedThreads::AnyHiPriThreadHiPriTask;
 			if (!GIgnoreThreadToDoGatherOn)
 			{
-				LocalThreadToDoGatherOn = ThreadToDoGatherOn;
+				//LocalThreadToDoGatherOn = ThreadToDoGatherOn;
+				ENamedThreads::Type CurrentThreadIndex = ENamedThreads::GetThreadIndex(CurrentThreadIfKnown);
+				if (CurrentThreadIndex <= ENamedThreads::ActualRenderingThread)
+				{
+					LocalThreadToDoGatherOn = CurrentThreadIndex;
+				}
 			}
+
+#if UE_TASK_TRACE_ENABLED
+			// regenerate TraceId as we're going to use the same event with another task
+			TraceId = TaskTrace::GenerateTaskId();
+#endif
 			TGraphTask<FNullGraphTask>::CreateTask(FGraphEventRef(this), &TempEventsToWaitFor, CurrentThreadIfKnown).ConstructAndDispatchWhenReady(GET_STATID(STAT_FNullGraphTask_DontCompleteUntil), LocalThreadToDoGatherOn);
 			return;
 		}
 	}
 
+	bool bWakeUpWorker = false;
 	SubsequentList.PopAllAndClose(NewTasks);
 	for (int32 Index = NewTasks.Num() - 1; Index >= 0 ; Index--) // reverse the order since PopAll is implicitly backwards
 	{
 		FBaseGraphTask* NewTask = NewTasks[Index];
 		checkThreadGraph(NewTask);
-		NewTask->ConditionalQueueTask(CurrentThreadIfKnown);
+		NewTask->ConditionalQueueTask(CurrentThreadIfKnown, bWakeUpWorker);
 	}
 	NewTasks.Reset();
+
+	TaskTrace::Completed(GetTraceId());
 }
 
 FGraphEvent::~FGraphEvent()
@@ -1974,11 +2619,14 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 	double StartTime = FPlatformTime::Seconds();
 
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FTaskGraphInterface_BroadcastSlow_OnlyUseForSpecialPurposes);
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTaskGraphInterface_BroadcastSlow);
 	check(FPlatformTLS::GetCurrentThreadId() == GGameThreadId);
+
+	Callback(ENamedThreads::GameThread_Local);
+
 	if (!TaskGraphImplementationSingleton)
 	{
 		// we aren't going yet
-		Callback(ENamedThreads::GameThread);
 		return;
 	}
 
@@ -1992,8 +2640,17 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 	{
 		MyEvent = FPlatformProcess::GetSynchEventFromPool(false);
 
-		int32 Workers = FTaskGraphInterface::Get().GetNumWorkerThreads();
-		StallForTaskThread.Add(Workers * (1 + (bDoBackgroundThreads && ENamedThreads::bHasBackgroundThreads) + !!(ENamedThreads::bHasHighPriorityThreads)));
+		int32 Workers = 0;
+		if(GUseNewTaskBackend)
+		{
+			Workers = bDoBackgroundThreads ? TaskGraphImplementationSingleton->GetNumWorkerThreads() : GNumForegroundWorkers;
+			StallForTaskThread.Add(Workers);
+		}
+		else
+		{
+			Workers = FTaskGraphInterface::Get().GetNumWorkerThreads();
+			StallForTaskThread.Add(Workers * (1 + (bDoBackgroundThreads && ENamedThreads::bHasBackgroundThreads) + !!(ENamedThreads::bHasHighPriorityThreads)));
+		}
 
 		TaskEvents.Reserve(StallForTaskThread.GetValue());
 		{
@@ -2002,54 +2659,35 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 			{
 				FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool(false);
 				TaskEvents.Add(TaskEvent);
-				TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("NPTask"), ENamedThreads::AnyNormalThreadHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
+				TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("NPTask"), GUseNewTaskBackend ? ENamedThreads::AnyHiPriThreadHiPriTask : ENamedThreads::AnyNormalThreadHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
 			}
 
 		}
-		if (ENamedThreads::bHasHighPriorityThreads)
+
+		if(!GUseNewTaskBackend)
 		{
-			for (int32 Index = 0; Index < Workers; Index++)
+			if (ENamedThreads::bHasHighPriorityThreads)
 			{
-				FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool(false);
-				TaskEvents.Add(TaskEvent);
-				TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("HPTask"), ENamedThreads::AnyHiPriThreadHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
+				for (int32 Index = 0; Index < Workers; Index++)
+				{
+					FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool(false);
+					TaskEvents.Add(TaskEvent);
+					TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("HPTask"), ENamedThreads::AnyHiPriThreadHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
+				}
 			}
-		}
-		if (bDoBackgroundThreads && ENamedThreads::bHasBackgroundThreads)
-		{
-			for (int32 Index = 0; Index < Workers; Index++)
+			if (bDoBackgroundThreads && ENamedThreads::bHasBackgroundThreads)
 			{
-				FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool(false);
-				TaskEvents.Add(TaskEvent);
-				TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("BPTask"), ENamedThreads::AnyBackgroundHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
+				for (int32 Index = 0; Index < Workers; Index++)
+				{
+					FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool(false);
+					TaskEvents.Add(TaskEvent);
+					TaskThreadTasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("BPTask"), ENamedThreads::AnyBackgroundHiPriTask, &StallForTaskThread, TaskEvent, MyEvent));
+				}
 			}
 		}
 		check(TaskGraphImplementationSingleton);
 	}
 
-
-	FGraphEventArray Tasks;
-#if STATS
-	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::StatsThread))
-	{
-		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
-	}
-#endif
-	if (IsRHIThreadRunning())
-	{
-		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RHIT"), ENamedThreads::SetTaskPriority(ENamedThreads::RHIThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
-	}
-	ENamedThreads::Type RenderThread = ENamedThreads::GetRenderThread();
-	if (RenderThread != ENamedThreads::GameThread)
-	{
-		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RT"), ENamedThreads::SetTaskPriority(RenderThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
-	}
-	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::AudioThread))
-	{
-		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("AudioT"), ENamedThreads::SetTaskPriority(ENamedThreads::AudioThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
-	}
-
-	Callback(ENamedThreads::GameThread_Local);
 
 	if (bDoTaskThreads)
 	{
@@ -2065,6 +2703,7 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 		{
 			const double StartTimeInner = FPlatformTime::Seconds();
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForTaskThreads);
+			TRACE_CPUPROFILER_EVENT_SCOPE(Broadcast_WaitForTaskThreads);
 			FTaskGraphInterface::Get().WaitUntilTasksComplete(TaskThreadTasks, ENamedThreads::GameThread_Local);
 			{
 				const double ThisTime = FPlatformTime::Seconds() - StartTimeInner;
@@ -2075,36 +2714,31 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 			}
 		}
 	}
-	{
-		double StartTimeInner = FPlatformTime::Seconds();
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForNamedThreads);
-		
-		// Wait for all tasks to be complete.  Spin and pump messages to avoid deadlocks when other threads send messages and block until messages are processed
-		while (true)
-		{
-			bool bAnyNotDone = false;
-			for (FGraphEventRef& Item : Tasks)
-			{
-				if (Item.GetReference() && !Item->IsComplete())
-				{
-					bAnyNotDone = true;
-					break;
-				}
-			}
-			if (!bAnyNotDone)
-			{
-				break;
-			}
 
-			FPlatformMisc::PumpMessagesOutsideMainLoop();
-		}
-		
-		const double EndTimeInner = FPlatformTime::Seconds() - StartTimeInner;
-		if (EndTimeInner > 0.02)
-		{
-			UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to wait for named thread broadcast."), EndTimeInner * 1000.0);
-		}
+#if STATS
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::StatsThread))
+	{
+		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
+	if (IsRHIThreadRunning())
+	{
+		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RHIT"), ENamedThreads::SetTaskPriority(ENamedThreads::RHIThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
+	}
+	ENamedThreads::Type RenderThread = ENamedThreads::GetRenderThread();
+	if (RenderThread != ENamedThreads::GameThread)
+	{
+		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RT"), ENamedThreads::SetTaskPriority(RenderThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
+	}
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::AudioThread))
+	{
+		TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("AudioT"), ENamedThreads::SetTaskPriority(ENamedThreads::AudioThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr);
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	for (FEvent* TaskEvent : TaskEvents)
 	{
 		FPlatformProcess::ReturnSynchEventToPool(TaskEvent);
@@ -2134,14 +2768,14 @@ static void HandleNumWorkerThreadsToIgnore(const TArray<FString>& Args)
 			{
 				for (int32 Index = MaxNumPerBank - GNumWorkerThreadsToIgnore - 1; Index >= MaxNumPerBank - Arg; Index--)
 				{
-					FTaskGraphImplementation::Get().StallForTuning(Index, true);
+					TaskGraphImplementationSingleton->StallForTuning(Index, true);
 				}
 			}
 			else
 			{
 				for (int32 Index = MaxNumPerBank - Arg - 1; Index >= MaxNumPerBank - GNumWorkerThreadsToIgnore; Index--)
 				{
-					FTaskGraphImplementation::Get().StallForTuning(Index, false);
+					TaskGraphImplementationSingleton->StallForTuning(Index, false);
 				}
 			}
 			GNumWorkerThreadsToIgnore = Arg;
@@ -2173,7 +2807,15 @@ static void SetTaskThreadPriority(const TArray<FString>& Args)
 	{
 		UE_LOG(LogConsoleResponse, Display, TEXT("Setting task thread priority to normal."));
 	}
-	FTaskGraphImplementation::Get().SetTaskThreadPriorities(Pri);
+
+	if (GUseNewTaskBackend)
+	{
+		FTaskGraphCompatibilityImplementation::Get().SetTaskThreadPriorities(Pri);
+	}
+	else
+	{
+		FTaskGraphImplementation::Get().SetTaskThreadPriorities(Pri);
+	}
 }
 
 static FAutoConsoleCommand TaskThreadPriorityCmd(

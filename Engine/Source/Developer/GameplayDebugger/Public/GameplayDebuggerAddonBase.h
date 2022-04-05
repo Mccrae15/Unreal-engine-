@@ -5,7 +5,9 @@
 #include "CoreMinimal.h"
 #include "GameplayDebuggerTypes.h"
 
+class UWorld;
 class AActor;
+class APlayerController;
 class AGameplayDebuggerCategoryReplicator;
 
 class GAMEPLAYDEBUGGER_API FGameplayDebuggerAddonBase : public TSharedFromThis<FGameplayDebuggerAddonBase>
@@ -17,6 +19,9 @@ public:
 	int32 GetNumInputHandlers() const { return InputHandlers.Num(); }
 	FGameplayDebuggerInputHandler& GetInputHandler(int32 HandlerId) { return InputHandlers[HandlerId]; }
 	FString GetInputHandlerDescription(int32 HandlerId) const;
+	UWorld* GetWorldFromReplicator() const;
+	/** Returns the first non-null world associated with, in order: OwnerPC, DebugActor, AGameplayDebuggerCategoryReplicator owner */
+	UWorld* GetDataWorld(const APlayerController* OwnerPC, const AActor* DebugActor) const;
 
 	/** [ALL] called when gameplay debugger is activated */
 	virtual void OnGameplayDebuggerActivated();
@@ -37,7 +42,7 @@ protected:
 
 	/** creates new key binding handler: single key press */
 	template<class UserClass>
-	bool BindKeyPress(FName KeyName, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TRawMethodDelegate< UserClass >::FMethodPtr KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
+	bool BindKeyPress(FName KeyName, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TMethodPtr< UserClass > KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
 	{
 		FGameplayDebuggerInputHandler NewHandler;
 		NewHandler.KeyName = KeyName;
@@ -55,7 +60,7 @@ protected:
 
 	/** creates new key binding handler: key press with modifiers */
 	template<class UserClass>
-	bool BindKeyPress(FName KeyName, FGameplayDebuggerInputModifier KeyModifer, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TRawMethodDelegate< UserClass >::FMethodPtr KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
+	bool BindKeyPress(FName KeyName, FGameplayDebuggerInputModifier KeyModifer, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TMethodPtr< UserClass > KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
 	{
 		FGameplayDebuggerInputHandler NewHandler;
 		NewHandler.KeyName = KeyName;
@@ -74,7 +79,7 @@ protected:
 
 	/** creates new key binding handler: customizable key press, stored in config files */
 	template<class UserClass>
-	bool BindKeyPress(const FGameplayDebuggerInputHandlerConfig& InputConfig, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TRawMethodDelegate< UserClass >::FMethodPtr KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
+	bool BindKeyPress(const FGameplayDebuggerInputHandlerConfig& InputConfig, UserClass* KeyHandlerObject, typename FGameplayDebuggerInputHandler::FHandler::TMethodPtr< UserClass > KeyHandlerFunc, EGameplayDebuggerInputMode InputMode = EGameplayDebuggerInputMode::Local)
 	{
 		FGameplayDebuggerInputHandler NewHandler;
 		NewHandler.KeyName = InputConfig.KeyName;

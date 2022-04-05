@@ -25,7 +25,7 @@ namespace UnrealBuildTool.Rules
 					"ProceduralMeshComponent",
 				});			
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/Windows");
 			}
@@ -42,6 +42,7 @@ namespace UnrealBuildTool.Rules
 					"Engine",
 					"InputCore",
 					"RHI",
+					"RHICore",
 					"RenderCore",
 					"Renderer",
 					"Slate",
@@ -52,6 +53,7 @@ namespace UnrealBuildTool.Rules
 					"OpenGLDrv",
 					"VulkanRHI",
 					"OVRPlugin",
+					"OculusOpenXRLoader",
 					"ProceduralMeshComponent",
 					"Projects",
 				});
@@ -64,12 +66,13 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.bBuildEditor == true)
 			{
+				PrivateDependencyModuleNames.Add("EditorFramework");
 				PrivateDependencyModuleNames.Add("UnrealEd");
 			}
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenGL");
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				// D3D
 				{
@@ -110,6 +113,8 @@ namespace UnrealBuildTool.Rules
 					//PublicDelayLoadDLLs.Add("OVRPlugin.dll");
 					RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Oculus/OVRPlugin/OVRPlugin/" + Target.Platform.ToString() + "/OVRPlugin.dll");
 				}
+
+				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Oculus/OVRPlugin/OVRPlugin/" + Target.Platform.ToString() + "/OpenXR/OVRPlugin.dll");
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Android)
 			{

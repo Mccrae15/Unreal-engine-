@@ -20,6 +20,7 @@ public class Launch : ModuleRules
 				"Engine",
 				"InputCore",
 				"MoviePlayer",
+				"MoviePlayerProxy",
 				"Networking",
 				"PakFile",
 				"Projects",
@@ -34,7 +35,7 @@ public class Launch : ModuleRules
 				"TraceLog",
 				"Overlay",
 				"PreLoadScreen",
-				"InstallBundleManager"
+				"InstallBundleManager",
 			});
 
 		// Set a macro allowing us to switch between debuggame/development configuration
@@ -50,8 +51,7 @@ public class Launch : ModuleRules
 		// Enable the LauncherCheck module to be used for platforms that support the Launcher.
 		// Projects should set Target.bUseLauncherChecks in their Target.cs to enable the functionality.
 		if (Target.bUseLauncherChecks &&
-			((Target.Platform == UnrealTargetPlatform.Win32) ||
-			(Target.Platform == UnrealTargetPlatform.Win64) ||
+			((Target.Platform == UnrealTargetPlatform.Win64) ||
 			(Target.Platform == UnrealTargetPlatform.Mac)))
 		{
 			PrivateDependencyModuleNames.Add("LauncherCheck");
@@ -70,7 +70,7 @@ public class Launch : ModuleRules
 					"MRMesh",
 			});
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				DynamicallyLoadedModuleNames.AddRange(new string[] {
 					"WindowsPlatformFeatures",
@@ -81,22 +81,18 @@ public class Launch : ModuleRules
 			{
 				DynamicallyLoadedModuleNames.AddRange(new string[] {
 					"AudioMixerXAudio2",
-					"XAudio2",
 				});
 			}
 			else if (Target.Platform == UnrealTargetPlatform.HoloLens)
 			{
 				DynamicallyLoadedModuleNames.Add("D3D11RHI");
-				DynamicallyLoadedModuleNames.Add("XAudio2");
 				DynamicallyLoadedModuleNames.Add("AudioMixerXAudio2");
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac)
 			{
 				DynamicallyLoadedModuleNames.AddRange(new string [] {
 					"AudioMixerCoreAudio",
-					"CoreAudio"
 				});
-				PublicFrameworks.Add("CoreAudio");
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 			{
@@ -123,7 +119,6 @@ public class Launch : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] {
 					"NetworkFile",
 					"StreamingFile",
-					"CookedIterativeFile",
 					"AutomationWorker"
 			});
 		}
@@ -139,7 +134,15 @@ public class Launch : ModuleRules
 			});
 
 			PublicDependencyModuleNames.Add("SessionServices");
-			PrivateIncludePaths.Add("Developer/DerivedDataCache/Public");
+
+			if (Target.bBuildWithEditorOnlyData)
+			{
+				PrivateDependencyModuleNames.Add("DerivedDataCache");
+			}
+			else
+			{
+				PrivateIncludePathModuleNames.Add("DerivedDataCache");
+			}
 
 			// LaunchEngineLoop.cpp will still attempt to load XMPP but not all projects require it so it will silently fail unless referenced by the project's build.cs file.
 			// DynamicallyLoadedModuleNames.Add("XMPP");
@@ -186,6 +189,7 @@ public class Launch : ModuleRules
 
 			PrivateDependencyModuleNames.AddRange(new string[] {
 					"SourceControl",
+					"EditorFramework",
 					"UnrealEd",
 					"DesktopPlatform",
 					"PIEPreviewDeviceProfileSelector",
@@ -196,9 +200,6 @@ public class Launch : ModuleRules
 			DynamicallyLoadedModuleNames.AddRange(new string[] {
 					"AutomationWindow",
 					"ProfilerClient",
-					"Toolbox",
-					"GammaUI",
-					"ModuleUI",
 					"OutputLog",
 					"TextureCompressor",
 					"MeshUtilities",
@@ -221,52 +222,22 @@ public class Launch : ModuleRules
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
 			PrivateDependencyModuleNames.Add("OpenGLDrv");
-			if (Target.Platform != UnrealTargetPlatform.Lumin)
-			{
-				PrivateDependencyModuleNames.Add("AndroidAudio");
-				PrivateDependencyModuleNames.Add("AudioMixerAndroid");
-			}
+			PrivateDependencyModuleNames.Add("AudioMixerAndroid");
+
 			// these are, for now, only for basic android
 			if (Target.Platform == UnrealTargetPlatform.Android)
 			{
 				DynamicallyLoadedModuleNames.Add("AndroidRuntimeSettings");
 				DynamicallyLoadedModuleNames.Add("AndroidLocalNotification");
 			}
-			else if (Target.Platform == UnrealTargetPlatform.Lumin)
-			{
-				DynamicallyLoadedModuleNames.Add("LuminRuntimeSettings");
-			}
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
-		{
-			PrivateDependencyModuleNames.AddRange(new string[] {
-				"AudioMixerAudioUnit",
-				"IOSAudio",
-				"LaunchDaemonMessages",
-			});
 
-			DynamicallyLoadedModuleNames.AddRange(new string[] {
-				"IOSLocalNotification",
-				"IOSRuntimeSettings",
-			});
-
-			// needed for Metal layer
-			PublicFrameworks.Add("QuartzCore");
-		}
-
-		if ((Target.Platform == UnrealTargetPlatform.Win32) ||
-			(Target.Platform == UnrealTargetPlatform.Win64) ||
+		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
 			(Target.IsInPlatformGroup(UnrealPlatformGroup.Linux) && Target.Type != TargetType.Server))
 		{
 			// TODO: re-enable after implementing resource tables for OpenGL.
 			DynamicallyLoadedModuleNames.Add("OpenGLDrv");
-		}
-
-        // @todo ps4 clang bug: this works around a PS4/clang compiler bug (optimizations)
-        if (Target.Platform == UnrealTargetPlatform.PS4)
-		{
-			bUseUnity = true;
 		}
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
@@ -281,11 +252,21 @@ public class Launch : ModuleRules
 			PrivateDependencyModuleNames.Add("UnixCommonStartup");
 		}
 
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PrivateDependencyModuleNames.Add("StorageServerClient");
+
+			if (Target.Type != TargetType.Program)
+			{
+				PublicDependencyModuleNames.Add("CookOnTheFly");
+			}
+		}
+
 		if(Target.LinkType == TargetLinkType.Monolithic && !Target.bFormalBuild)
 		{
 			PrivateDefinitions.Add(string.Format("COMPILED_IN_CL={0}", Target.Version.Changelist));
 			PrivateDefinitions.Add(string.Format("COMPILED_IN_COMPATIBLE_CL={0}", Target.Version.EffectiveCompatibleChangelist));
-			PrivateDefinitions.Add(string.Format("COMPILED_IN_BRANCH_NAME={0}", (Target.Version.BranchName == null || Target.Version.BranchName.Length == 0)? "UE4" : Target.Version.BranchName));
+			PrivateDefinitions.Add(string.Format("COMPILED_IN_BRANCH_NAME={0}", (Target.Version.BranchName == null || Target.Version.BranchName.Length == 0)? "UE" : Target.Version.BranchName));
 		}
 	}
 }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
 
 class FDisplayClusterViewportManager;
 class FDisplayClusterViewport;
@@ -23,9 +24,8 @@ public:
 	{}
 
 public:
-	void Update(const TArray<FString>& InClusterNodeIds);
-	void UpdateClusterNodePostProcess(const FString& ClusterNodeId);
-	void UpdateTextureShare(const FString& ClusterNodeId);
+	void Update(const FString& ClusterNodeId);
+	void UpdateClusterNodePostProcess(const FString& ClusterNodeId, const FDisplayClusterRenderFrameSettings& InRenderFrameSettings);
 
 public:
 	static bool UpdateViewportConfiguration(FDisplayClusterViewportManager& ViewportManager, ADisplayClusterRootActor& RootActor, FDisplayClusterViewport* DesiredViewport, const UDisplayClusterConfigurationViewport* ConfigurationViewport);

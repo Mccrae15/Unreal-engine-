@@ -6,11 +6,15 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 
+#include "UnrealUSDWrapper.h"
 #include "USDMemory.h"
+#include "UsdWrappers/ForwardDeclarations.h"
+#include "UsdWrappers/SdfLayer.h"
 
 #if USE_USD_SDK
 #include "USDIncludesStart.h"
 	#include "pxr/pxr.h"
+	#include "pxr/usd/usdShade/tokens.h"
 #include "USDIncludesEnd.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -36,13 +40,16 @@ PXR_NAMESPACE_CLOSE_SCOPE
 #endif // #if USE_USD_SDK
 
 class UUsdAssetImportData;
+class USceneComponent;
 enum class EUsdUpAxis : uint8;
 namespace UE
 {
-	class FSdfLayer;
 	class FUsdPrim;
-	class FUsdStage;
 	class FSdfPath;
+}
+namespace UsdUtils
+{
+	struct FUsdPrimMaterialAssignmentInfo;
 }
 
 namespace UsdUtils
@@ -94,8 +101,22 @@ namespace UsdUtils
 	USDUTILITIES_API bool HasCompositionArcs( const pxr::UsdPrim& Prim );
 
 	USDUTILITIES_API UClass* GetActorTypeForPrim( const pxr::UsdPrim& Prim );
-
 	USDUTILITIES_API UClass* GetComponentTypeForPrim( const pxr::UsdPrim& Prim );
+
+	/** Returns the USD schema name that should be used when exporting Component (e.g. "Xform", "Mesh", "Camera", etc.) */
+	USDUTILITIES_API FString GetSchemaNameForComponent( const USceneComponent& Component );
+
+	/**
+	 * Returns a prim path to use when exporting a given ActorOrComponent, assuming we're exporting according to the component attachment hierarchy.
+	 * e.g. We have a top-level actor with label "Actor" with an attached child actor "Child" that has a component "Comp1" attached to its root, and "Comp2"
+	 * attached to "Comp1". If Comp2 is provided to this function, it will return "/Root/Actor/Child/Comp1/Comp2".
+	 *
+	 * The actor label is always used in place of the root component name.
+	 *
+	 * ParentPrimPath is optional, and without it the function will recurse upwards and build the full path all the way to the root. Actor folders
+	 * are handled just like if they were actors/components
+	 */
+	USDUTILITIES_API FString GetPrimPathForObject( const UObject* ActorOrComponent, const FString& ParentPrimPath = TEXT(""), bool bUseActorFolders = false );
 
 	USDUTILITIES_API TUsdStore< pxr::TfToken > GetUVSetName( int32 UVChannelIndex );
 
@@ -123,11 +144,17 @@ namespace UsdUtils
 	 * This overload will only return primvars with 'texcoord2f' role.	 *
 	 * @param UsdMesh - Mesh that contains primvars that can be used as texture coordinates.
 	 * @param MaterialToPrimvarsUVSetNames - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates, and which UVIndex the imported material will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). These are supposed to be the materials used by the mesh, and we do this because it helps identify which primvars are valid/used as texture coordinates, as the user may have these named as 'myUvSet2' and still expect it to work
+	 * @param UsdMeshMaterialAssignmentInfo - Result of calling GetPrimMaterialAssignments on UsdMesh's Prim. This can be provided or will be retrieved on-demand using RenderContext
+	 * @param RenderContext - Render context to use when traversing through material shaders looking for used primvars
 	 * @return Array where each index gives the primvar that should be used for that UV index
 	 */
-	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames );
+	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext );
+	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const UsdUtils::FUsdPrimMaterialAssignmentInfo& UsdMeshMaterialAssignmentInfo );
 
 	USDUTILITIES_API bool IsAnimated( const pxr::UsdPrim& Prim );
+
+	/** Returns whether Prim belongs to any of the default kinds, or a kind derived from them. The result can be a union of different kinds. */
+	USDUTILITIES_API EUsdDefaultKind GetDefaultKind( const pxr::UsdPrim& Prim );
 
 	/**
 	 * Returns all prims of type SchemaType (or a descendant type) in the subtree of prims rooted at StartPrim.
@@ -142,10 +169,11 @@ namespace UsdUtils
 	USDUTILITIES_API TArray< UE::FUsdPrim > GetAllPrimsOfType( const UE::FUsdPrim& StartPrim, const TCHAR* SchemaName );
 	USDUTILITIES_API TArray< UE::FUsdPrim > GetAllPrimsOfType( const UE::FUsdPrim& StartPrim, const TCHAR* SchemaName, TFunction< bool( const UE::FUsdPrim& ) > PruneChildren, const TArray<const TCHAR*>& ExcludeSchemaNames = {} );
 
-	USDUTILITIES_API bool IsAnimated( const UE::FUsdPrim& Prim );
-
 	/** Returns the time code for non-timesampled values. Usually a quiet NaN. */
 	USDUTILITIES_API double GetDefaultTimeCode();
+
+	/** Returns the earliest possible timecode. Use it to always fetch the first frame of an animated attribute */
+	USDUTILITIES_API double GetEarliestTimeCode();
 
 	USDUTILITIES_API UUsdAssetImportData* GetAssetImportData( UObject* Asset );
 
@@ -168,6 +196,21 @@ namespace UsdUtils
 	USDUTILITIES_API bool RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName );
 
 	/**
+	 * Removes any numbered suffix, followed by any number of underscores (e.g. Asset_2, Asset__232_31 or Asset94 all become 'Asset'), making
+	 * sure the string is kept at least one character long. Returns true if it removed anything.
+	 */
+	USDUTILITIES_API bool RemoveNumberedSuffix( FString& Prefix );
+
+	/**
+	 * Appends numbered suffixes to Name until the result is not contained in UsedNames, and returns it.
+	 * Does not add the result to UsedNames before returning (as it is const).
+	 * @param Name - Received string to make unique (e.g. "MyName")
+	 * @param UsedNames - Strings that cannot be used for the result
+	 * @return Modified Name so that it doesn't match anything in UsedNames (e.g. "MyName" again, or "MyName_0" or "MyName_423")
+	 */
+	USDUTILITIES_API FString GetUniqueName( FString Name, const TSet<FString>& UsedNames );
+
+	/**
 	 * Returns a modified version of InIdentifier that can be used as a USD prim or property name.
 	 * This means only allowing letters, numbers and the underscore character. All others are replaced with underscores.
 	 * Additionally, the first character cannot be a number.
@@ -180,10 +223,17 @@ namespace UsdUtils
 	USDUTILITIES_API void MakeInvisible( UE::FUsdPrim& Prim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
 
 	/** Returns if the ComputedVisibility for Prim says it should be visible */
-	USDUTILITIES_API bool IsVisible( UE::FUsdPrim& Prim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
+	USDUTILITIES_API bool IsVisible( const UE::FUsdPrim& Prim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
 
 	/** Returns whether Prim has visibility set to 'inherited' */
-	USDUTILITIES_API bool HasInheritedVisibility( UE::FUsdPrim& Prim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
+	USDUTILITIES_API bool HasInheritedVisibility( const UE::FUsdPrim& Prim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
+
+	/**
+	 * Travels up from Prim and returns true if we hit any invisible prim before we hit the stage pseudoroot.
+	 * Does not check `Prim` itself (or `RootPrim`, so that you can just pass the PseudoRoot in most cases).
+	 * Completely ignores whether non-UsdGeomImageable prims are visible or not and keeps travelling up.
+	 */
+	USDUTILITIES_API bool HasInvisibleParent( const UE::FUsdPrim& Prim, const UE::FUsdPrim& RootPrim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
 
 	/**
 	 * Returns a path exactly like Prim.GetPrimPath(), except that if the prim is within variant sets, it will return the
@@ -208,7 +258,11 @@ namespace UsdUtils
 	 * meaning the prim may still be left on the stage. Note that it's even possible to have both of those specs at the same time:
 	 * for example when we have a prim inside a variant set, but outside of it we have overrides to the same prim. This function
 	 * will remove both.
+	 *
+	 * @param Prim - Prim to remove
+	 * @param Layer - Layer to remove prim specs from. This can be left with the invalid layer (default) in order to remove all
+	 *				  specs from the entire stage's local layer stack.
 	 */
-	USDUTILITIES_API void RemoveAllPrimSpecs( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer );
+	USDUTILITIES_API void RemoveAllPrimSpecs( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer = UE::FSdfLayer{} );
 }
 

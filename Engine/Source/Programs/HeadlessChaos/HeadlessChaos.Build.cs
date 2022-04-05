@@ -1,9 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
-public class HeadlessChaos : ModuleRules
+[SupportedPlatforms("Win64")]
+public class HeadlessChaos : LowLevelTests
 {
+	public override string TestName => "HeadlessChaos";
+	public override string TestShortName => "Headless Chaos";
+
+	public override bool UsesCatch2 => false;
+
 	public HeadlessChaos(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PublicIncludePaths.Add("Runtime/Launch/Public");
@@ -20,13 +27,13 @@ public class HeadlessChaos : ModuleRules
 				"CoreUObject",
 				"Projects",
                 "GoogleTest",
-				"GeometricObjects",
+				"GeometryCore",
 				"ChaosVehiclesCore"
             }
         );
 
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.XboxOne)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PublicDefinitions.Add("GTEST_OS_WINDOWS=1");
 		}
@@ -38,11 +45,11 @@ public class HeadlessChaos : ModuleRules
 		{
 			PublicDefinitions.Add("GTEST_OS_IOS=1");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Android || Target.Platform == UnrealTargetPlatform.Lumin)
+		else if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PublicDefinitions.Add("GTEST_OS_LINUX_ANDROID=1");
 		}
-		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) || Target.Platform == UnrealTargetPlatform.PS4)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			PublicDefinitions.Add("GTEST_OS_LINUX=1");
 		}

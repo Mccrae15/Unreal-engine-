@@ -51,8 +51,10 @@ public:
 
 		constexpr float kDefaultSize = 50.0f;
 
-		FBox Bounds(ForceInitToZero);
-		PositionAccessor.GetReader(DataSet).GetMinMax(Bounds.Min, Bounds.Max);
+		FNiagaraPosition BoundsMin(ForceInitToZero);
+		FNiagaraPosition BoundsMax(ForceInitToZero);
+		PositionAccessor.GetReader(DataSet).GetMinMax(BoundsMin, BoundsMax);
+		FBox Bounds(BoundsMin, BoundsMax);
 
 		float MaxSize = KINDA_SMALL_NUMBER;
 		if (bUsedWithMeshes)
@@ -60,7 +62,7 @@ public:
 			FVector MaxScale(1.0f, 1.0f, 1.0f);
 			if (ScaleAccessor.IsValid())
 			{
-				MaxScale = ScaleAccessor.GetReader(DataSet).GetMax();
+				MaxScale = (FVector)ScaleAccessor.GetReader(DataSet).GetMax();
 			}
 
 			// NOTE: Since we're not taking particle rotation into account we have to treat the extents like a sphere,
@@ -89,7 +91,7 @@ public:
 
 			if (SpriteSizeAccessor.IsValid())
 			{
-				const FVector2D MaxSpriteSize2D = SpriteSizeAccessor.GetReader(DataSet).GetMax();
+				const FVector2f MaxSpriteSize2D = SpriteSizeAccessor.GetReader(DataSet).GetMax();
 				MaxSpriteSize = FMath::Max(MaxSpriteSize2D.X, MaxSpriteSize2D.Y);
 			}
 			MaxSize = FMath::Max(MaxSize, FMath::IsNearlyZero(MaxSpriteSize) ? 1.0f : MaxSpriteSize);
@@ -109,9 +111,9 @@ public:
 		return Bounds.ExpandBy(MaxSize);
 	}
 
-	FNiagaraDataSetAccessor<FVector> PositionAccessor;
-	FNiagaraDataSetAccessor<FVector2D> SpriteSizeAccessor;
-	FNiagaraDataSetAccessor<FVector> ScaleAccessor;
+	FNiagaraDataSetAccessor<FNiagaraPosition> PositionAccessor;
+	FNiagaraDataSetAccessor<FVector2f> SpriteSizeAccessor;
+	FNiagaraDataSetAccessor<FVector3f> ScaleAccessor;
 	FNiagaraDataSetAccessor<float> RibbonWidthAccessor;
 
 	const FVector MeshExtents = FVector::OneVector;

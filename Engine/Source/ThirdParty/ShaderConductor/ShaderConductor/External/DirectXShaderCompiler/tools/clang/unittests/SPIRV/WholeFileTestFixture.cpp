@@ -16,7 +16,7 @@ namespace clang {
 namespace spirv {
 
 namespace {
-const char hlslStartLabel[] = "// Run:";
+const char hlslStartLabel[] = "// RUN:";
 const char spirvStartLabel[] = "// CHECK-WHOLE-SPIR-V:";
 } // namespace
 
@@ -32,7 +32,7 @@ bool WholeFileTest::parseInputFile() {
       if (line.find(hlslStartLabel) != std::string::npos) {
         foundRunCommand = true;
         if (!utils::processRunCommandArgs(line, &targetProfile, &entryPoint,
-                                          &restArgs)) {
+                                          &targetEnv, &restArgs)) {
           // An error has occured when parsing the Run command.
           return false;
         }
@@ -50,6 +50,8 @@ bool WholeFileTest::parseInputFile() {
         if (found != std::string::npos) {
           line = line.substr(found);
         }
+        if (line[line.size()-1] == '\r')
+          line =  line.substr(0, line.size()-1);
         outString << line << std::endl;
       }
     }
@@ -64,7 +66,7 @@ bool WholeFileTest::parseInputFile() {
   }
 
   if (!foundRunCommand) {
-    fprintf(stderr, "Error: Missing \"Run:\" command.\n");
+    fprintf(stderr, "Error: Missing \"RUN:\" command.\n");
     return false;
   }
   if (!parseSpirv) {
@@ -94,7 +96,7 @@ void WholeFileTest::runWholeFileTest(llvm::StringRef filename,
   std::string errorMessages;
 
   // Feed the HLSL source into the Compiler.
-  ASSERT_TRUE(utils::runCompilerWithSpirvGeneration(
+  ASSERT_TRUE(utils::compileFileWithSpirvGeneration(
       inputFilePath, entryPoint, targetProfile, restArgs, &generatedBinary,
       &errorMessages));
 

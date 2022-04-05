@@ -13,6 +13,10 @@ class UNiagaraEffectType;
 class UWorld;
 class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
+class FNiagaraSystemSimulation;
+class FNiagaraGpuComputeDispatchInterface;
+
+using FNiagaraSystemSimulationPtr = TSharedPtr<FNiagaraSystemSimulation, ESPMode::ThreadSafe>;
 
 enum class ENiagaraGPUTickHandlingMode
 {
@@ -101,7 +105,7 @@ struct FNiagaraParameterStoreToDataSetBinding
 				{
 					// if parameter sets don't support half, then we need to write in floats into the parameter set, and
 					// for that we need to adjust the offset based on the difference in stride between float & half
-					// In reality 
+					// In reality
 					const int32 ParamOffset = ParameterOffset + sizeof(float) * Layout.LayoutInfo.HalfComponentByteOffsets[CompIdx] / sizeof(FFloat16);
 					const int32 DataSetOffset = Layout.HalfComponentStart + CompIdx;
 					HalfOffsets.Emplace(ParamOffset, DataSetOffset, !ParameterSetsSupportHalf);
@@ -238,6 +242,10 @@ class FNiagaraSystemSimulation : public TSharedFromThis<FNiagaraSystemSimulation
 public:
 	//FGCObject Interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector)override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FNiagaraSystemSimulation");
+	}
 	//FGCObject Interface END
 
 	FNiagaraSystemSimulation();
@@ -245,7 +253,7 @@ public:
 	bool Init(UNiagaraSystem* InSystem, UWorld* InWorld, bool bInIsSolo, ETickingGroup TickGroup);
 	void Destroy();
 
-	bool IsValid()const { return WeakSystem.Get() != nullptr && bCanExecute && World != nullptr; }
+	bool IsValid() const { return bCanExecute && World != nullptr; }
 
 	/** First phase of system sim tick. Must run on GameThread. */
 	void Tick_GameThread(float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent);
@@ -272,7 +280,7 @@ public:
 	void PauseInstance(FNiagaraSystemInstance* Instance);
 	void UnpauseInstance(FNiagaraSystemInstance* Instance);
 
-	FORCEINLINE UNiagaraSystem* GetSystem()const { return WeakSystem.Get(); }
+	FORCEINLINE UNiagaraSystem* GetSystem() const { return System; }
 
 	UNiagaraParameterCollectionInstance* GetParameterCollectionInstance(UNiagaraParameterCollection* Collection);
 
@@ -301,9 +309,9 @@ public:
 
 	ETickingGroup GetTickGroup() const { return SystemTickGroup; }
 
-	FORCEINLINE NiagaraEmitterInstanceBatcher* GetBatcher()const { return Batcher; }
+	FORCEINLINE FNiagaraGpuComputeDispatchInterface* GetDispatchInterface() const { return DispatchInterface; }
 
-	ENiagaraGPUTickHandlingMode GetGPUTickHandlingMode()const;
+	ENiagaraGPUTickHandlingMode GetGPUTickHandlingMode() const;
 
 	/** If true we use legacy simulation contexts that could not handle per instance DI calls in the system scripts and would force the whole simulation solo. */
 	static bool UseLegacySystemSimulationContexts();
@@ -312,6 +320,8 @@ public:
 	FORCEINLINE UWorld* GetWorld()const{return World;}
 
 protected:
+	void DumpStalledInfo();
+
 	/** Sets constant parameter values */
 	void SetupParameters_GameThread(float DeltaSeconds);
 
@@ -332,10 +342,12 @@ protected:
 	void AddSystemToTickBatch(FNiagaraSystemInstance* Instance, FNiagaraSystemSimulationTickContext& Context);
 	void FlushTickBatch(FNiagaraSystemSimulationTickContext& Context);
 
+	void Tick_GameThread_Internal(float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent);
+
 	TArray<FNiagaraSystemInstance*>& GetSystemInstances(ENiagaraSystemInstanceState State) { check(State != ENiagaraSystemInstanceState::None); return SystemInstancesPerState[int32(State)]; }
 
 	/** System of instances being simulated.  We use a weak object ptr here because once the last referencing object goes away this system may be come invalid at runtime. */
-	TWeakObjectPtr<UNiagaraSystem> WeakSystem;
+	UNiagaraSystem* System;
 
 	/** We cache off the effect type in the unlikely even that someone GCs the System from under us so that we can keep the effect types instance count etc accurate. */
 	UNiagaraEffectType* EffectType;
@@ -345,6 +357,11 @@ protected:
 
 	/** World this system simulation belongs to. */
 	UWorld* World;
+
+	uint32 bCanExecute : 1;
+	uint32 bBindingsInitialized : 1;
+	uint32 bInSpawnPhase : 1;
+	uint32 bIsSolo : 1;
 
 	/** System instance per state. */
 	TArray<FNiagaraSystemInstance*> SystemInstancesPerState[int32(ENiagaraSystemInstanceState::Num)];
@@ -399,11 +416,6 @@ protected:
 
 	void InitParameterDataSetBindings(FNiagaraSystemInstance* SystemInst);
 
-	uint32 bCanExecute : 1;
-	uint32 bBindingsInitialized : 1;
-	uint32 bInSpawnPhase : 1;
-	uint32 bIsSolo : 1;
-
 	/** A parameter store which contains the data interfaces parameters which were defined by the scripts. */
 	FNiagaraParameterStore ScriptDefinedDataInterfaceParameters;
 
@@ -419,7 +431,9 @@ protected:
 
 	mutable FString CrashReporterTag;
 
-	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+	FNiagaraGpuComputeDispatchInterface* DispatchInterface = nullptr;
 
 	static bool bUseLegacyExecContexts;
+
+	float FixedDeltaTickAge = 0;
 };

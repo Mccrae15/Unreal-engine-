@@ -13,7 +13,7 @@
 #include "Widgets/SWidget.h"
 #include "Sound/SlateSound.h"
 #include "Styling/SlateTypes.h"
-#include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 #include "Framework/SlateDelegates.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
@@ -39,11 +39,13 @@ class SComboRow : public STableRow< OptionType >
 public:
 
 	SLATE_BEGIN_ARGS( SComboRow )
-		: _Style(&FCoreStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"))
+		: _Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("ComboBox.Row"))
 		, _Content()
+		, _Padding(FMargin(0))
 		{}
 		SLATE_STYLE_ARGUMENT(FTableRowStyle, Style)
 		SLATE_DEFAULT_SLOT( FArguments, Content )
+		SLATE_ATTRIBUTE(FMargin, Padding)
 	SLATE_END_ARGS()
 
 public:
@@ -56,6 +58,7 @@ public:
 		STableRow< OptionType >::Construct(
 			typename STableRow<OptionType>::FArguments()
 			.Style(InArgs._Style)
+			.Padding(InArgs._Padding)
 			.Content()
 			[
 				InArgs._Content.Widget
@@ -94,6 +97,7 @@ class SComboBox : public SComboButton
 {
 public:
 
+	typedef TListTypeTraits< OptionType > ListTypeTraits;
 	typedef typename TListTypeTraits< OptionType >::NullableType NullableOptionType;
 
 	/** Type of list used for showing menu options. */
@@ -104,15 +108,15 @@ public:
 
 	SLATE_BEGIN_ARGS( SComboBox )
 		: _Content()
-		, _ComboBoxStyle( &FCoreStyle::Get().GetWidgetStyle< FComboBoxStyle >( "ComboBox" ) )
+		, _ComboBoxStyle(&FAppStyle::Get().GetWidgetStyle< FComboBoxStyle >("ComboBox"))
 		, _ButtonStyle(nullptr)
-		, _ItemStyle( &FCoreStyle::Get().GetWidgetStyle< FTableRowStyle >( "TableView.Row" ) )
-		, _ContentPadding(FMargin(4.0, 2.0))
-		, _ForegroundColor(FCoreStyle::Get().GetSlateColor("InvertedForeground"))
+		, _ItemStyle(&FAppStyle::Get().GetWidgetStyle< FTableRowStyle >("ComboBox.Row"))
+		, _ContentPadding(_ComboBoxStyle->ContentPadding)
+		, _ForegroundColor(FSlateColor::UseStyle())
 		, _OptionsSource()
 		, _OnSelectionChanged()
 		, _OnGenerateWidget()
-		, _InitiallySelectedItem( nullptr)
+		, _InitiallySelectedItem(ListTypeTraits::MakeNullPtr())
 		, _Method()
 		, _MaxListHeight(450.0f)
 		, _HasDownArrow( true )
@@ -187,6 +191,7 @@ public:
 		check(InArgs._ComboBoxStyle);
 
 		ItemStyle = InArgs._ItemStyle;
+		MenuRowPadding = InArgs._ComboBoxStyle->MenuRowPadding;
 
 		// Work out which values we should use based on whether we were given an override, or should use the style's version
 		const FComboButtonStyle& OurComboButtonStyle = InArgs._ComboBoxStyle->ComboButtonStyle;
@@ -487,6 +492,7 @@ private:
 		{
 			return SNew(SComboRow<OptionType>, OwnerTable)
 				.Style(ItemStyle)
+				.Padding(MenuRowPadding)
 				[
 					OnGenerateWidget.Execute(InItem)
 				];
@@ -589,6 +595,9 @@ private:
 
 	/** The item style to use. */
 	const FTableRowStyle* ItemStyle;
+
+	/** The padding around each menu row */
+	FMargin MenuRowPadding;
 
 private:
 	/** Delegate that is invoked when the selected item in the combo box changes */

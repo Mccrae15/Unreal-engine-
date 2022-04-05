@@ -6,8 +6,10 @@
 #include "LiveLinkComponentSettings.h"
 #include "LiveLinkControllerBase.h"
 
+#include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "Logging/LogMacros.h"
 #include "UObject/EnterpriseObjectVersion.h"
 #include "UObject/UObjectIterator.h"
@@ -20,6 +22,14 @@
 #endif // WITH_EDITOR
 
 #define LOCTEXT_NAMESPACE "LiveLinkController"
+
+
+static TAutoConsoleVariable<bool> CVarEnableLiveLinkEvaluation(
+	TEXT("LiveLink.Component.EnableLiveLinkEvaluation"),
+	true,
+	TEXT("Whether LiveLink components should evaluate their subject."),
+	ECVF_Default);
+
 
 
 ULiveLinkComponentController::ULiveLinkComponentController()
@@ -54,6 +64,7 @@ void ULiveLinkComponentController::OnSubjectRoleChanged()
 	}
 	else
 	{
+		TSubclassOf<UActorComponent> DesiredClass = nullptr;
 		UActorComponent* DesiredActorComponent = nullptr;
 		TArray<TSubclassOf<ULiveLinkRole>> SelectedRoleHierarchy = GetSelectedRoleHierarchyClasses(SubjectRepresentation.Role);
 		ControllerMap.Empty(SelectedRoleHierarchy.Num());
@@ -72,7 +83,7 @@ void ULiveLinkComponentController::OnSubjectRoleChanged()
 				{
 					if (AActor* Actor = GetOwner())
 					{
-						TSubclassOf<UActorComponent> DesiredClass = SelectedControllerClass.GetDefaultObject()->GetDesiredComponentClass();
+						DesiredClass = SelectedControllerClass.GetDefaultObject()->GetDesiredComponentClass();
 						if (UActorComponent* ActorComponent = Actor->GetComponentByClass(DesiredClass))
 						{
 							DesiredActorComponent = ActorComponent;
@@ -84,13 +95,33 @@ void ULiveLinkComponentController::OnSubjectRoleChanged()
 
 		//After creating the controller hierarchy, update component to control to the highest in the hierarchy.
 #if WITH_EDITOR
-		if (ComponentToControl.ComponentProperty == NAME_None && DesiredActorComponent != nullptr)
+		if (DesiredActorComponent)
 		{
-			AActor* Actor = GetOwner();
-			check(Actor);
-			ComponentToControl = FComponentEditorUtils::MakeComponentReference(Actor, DesiredActorComponent);
+			UActorComponent* CurrentComponentToControl = ComponentToControl.GetComponent(GetOwner());
+			if ((CurrentComponentToControl == nullptr) || !CurrentComponentToControl->IsA(DesiredClass))
+			{
+				AActor* Actor = GetOwner();
+				check(Actor);
+				ComponentToControl = FComponentEditorUtils::MakeComponentReference(Actor, DesiredActorComponent);
+			}
 		}
 #endif
+	}
+
+	if (OnControllerMapUpdatedDelegate.IsBound())
+	{
+		FEditorScriptExecutionGuard ScriptGuard;
+		OnControllerMapUpdatedDelegate.Broadcast();
+	}
+}
+
+void ULiveLinkComponentController::SetSubjectRepresentation(FLiveLinkSubjectRepresentation InSubjectRepresentation)
+{
+	SubjectRepresentation = InSubjectRepresentation;
+
+	if (IsControllerMapOutdated())
+	{
+		OnSubjectRoleChanged();
 	}
 }
 
@@ -98,7 +129,7 @@ void ULiveLinkComponentController::SetControllerClassForRole(TSubclassOf<ULiveLi
 {
 	if (ControllerMap.Contains(RoleClass))
 	{
-		ULiveLinkControllerBase*& CurrentController = ControllerMap.FindOrAdd(RoleClass);
+		TObjectPtr<ULiveLinkControllerBase>& CurrentController = ControllerMap.FindOrAdd(RoleClass);
 		if (CurrentController == nullptr || CurrentController->GetClass() != DesiredControllerClass)
 		{
 			//Controller is about to change, cleanup current one before 
@@ -117,11 +148,15 @@ void ULiveLinkComponentController::SetControllerClassForRole(TSubclassOf<ULiveLi
 				if (RoleClass == SubjectRepresentation.Role)
 				{
 					TSubclassOf<UActorComponent> DesiredComponent = CurrentController->GetDesiredComponentClass();
-					if (AActor* Actor = GetOwner())
+					UActorComponent* CurrentComponentToControl = ComponentToControl.GetComponent(GetOwner());
+					if ((CurrentComponentToControl == nullptr) || !CurrentComponentToControl->IsA(DesiredComponent))
 					{
-						if (UActorComponent* ActorComponent = Actor->GetComponentByClass(DesiredComponent))
+						if (AActor* Actor = GetOwner())
 						{
-							ComponentToControl = FComponentEditorUtils::MakeComponentReference(Actor, ActorComponent);
+							if (UActorComponent* ActorComponent = Actor->GetComponentByClass(DesiredComponent))
+							{
+								ComponentToControl = FComponentEditorUtils::MakeComponentReference(Actor, ActorComponent);
+							}
 						}
 					}
 				}
@@ -150,8 +185,12 @@ void ULiveLinkComponentController::OnRegister()
 #if WITH_EDITOR
 void ULiveLinkComponentController::OnEndPIE(bool bIsSimulating)
 {
-	// Cleanup each controller when PIE session is ending
-	CleanupControllersInMap();
+	const UWorld* const World = GetWorld();
+	if (World && World->WorldType == EWorldType::PIE)
+	{
+		// Cleanup each controller when PIE session is ending
+		CleanupControllersInMap();
+	}
 }
 #endif //WITH_EDITOR
 
@@ -165,6 +204,13 @@ void ULiveLinkComponentController::DestroyComponent(bool bPromoteChildren /*= fa
 
 void ULiveLinkComponentController::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	// Verify if we are in an editor preview world (blueprint editor). Without being able to select the desired component
+	// When you spawn a LL component, it defaults to the root component on which we can't reset the transform in case it's manipulated by LL automatically
+	if (GetWorld() && GetWorld()->WorldType == EWorldType::EditorPreview && bUpdateInPreviewEditor == false)
+	{
+		return;
+	}
+
 	// Check for spawnable
 	if (bIsDirty || !bIsSpawnableCache.IsSet())
 	{
@@ -181,13 +227,15 @@ void ULiveLinkComponentController::TickComponent(float DeltaTime, ELevelTick Tic
 
 	ILiveLinkClient& LiveLinkClient = IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
 
-	//Evaluate subject frame once and pass the data to our controllers
+	// Evaluate subject frame once and pass the data to our controllers
 	FLiveLinkSubjectFrameData SubjectData;
 
-	const bool bHasValidData = bEvaluateLiveLink ? LiveLinkClient.EvaluateFrame_AnyThread(SubjectRepresentation.Subject, SubjectRepresentation.Role, SubjectData) : false;
+	// Verify if global evaluation cvar is on or off. This can be used to stop LL evaluation at large for Pathtracing rendering for example
+	const bool bCanEvaluate = bEvaluateLiveLink && CVarEnableLiveLinkEvaluation.GetValueOnGameThread();
+	const bool bHasValidData = bCanEvaluate ? LiveLinkClient.EvaluateFrame_AnyThread(SubjectRepresentation.Subject, SubjectRepresentation.Role, SubjectData) : false;
 
 	//Go through each controllers and initialize them if we're dirty and tick them if there's valid data to process
-	for (TTuple<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*>& ControllerEntry : ControllerMap)
+	for (auto& ControllerEntry : ControllerMap)
 	{
 		ULiveLinkControllerBase* Controller = ControllerEntry.Value;
 		if (Controller)
@@ -278,6 +326,8 @@ void ULiveLinkComponentController::ConvertOldControllerSystem()
 	Controller_DEPRECATED = nullptr;
 }
 
+#endif //WITH_EDITOR
+
 bool ULiveLinkComponentController::IsControllerMapOutdated() const
 {
 	TArray<TSubclassOf<ULiveLinkRole>> SelectedRoleHierarchy = GetSelectedRoleHierarchyClasses(SubjectRepresentation.Role);
@@ -291,7 +341,7 @@ bool ULiveLinkComponentController::IsControllerMapOutdated() const
 	//Check if all map matches class hierarchy
 	for (const TSubclassOf<ULiveLinkRole>& RoleClass : SelectedRoleHierarchy)
 	{
-		const ULiveLinkControllerBase* const* FoundController = ControllerMap.Find(RoleClass);
+		TObjectPtr<ULiveLinkControllerBase> const* FoundController = ControllerMap.Find(RoleClass);
 
 		//If ControllerMap doesn't have an entry for one of the role class hierarchy, we need to update
 		if (FoundController == nullptr)
@@ -302,8 +352,6 @@ bool ULiveLinkComponentController::IsControllerMapOutdated() const
 
 	return false;
 }
-
-#endif //WITH_EDITOR
 
 TArray<TSubclassOf<ULiveLinkRole>> ULiveLinkComponentController::GetSelectedRoleHierarchyClasses(const TSubclassOf<ULiveLinkRole> InCurrentRoleClass) const
 {
@@ -347,7 +395,7 @@ TSubclassOf<ULiveLinkControllerBase> ULiveLinkComponentController::GetController
 void ULiveLinkComponentController::CleanupControllersInMap()
 {
 	//Cleanup the currently active controllers in the map
-	for (TPair<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*>& ControllerPair : ControllerMap)
+	for (auto& ControllerPair : ControllerMap)
 	{
 		if (ControllerPair.Value)
 		{

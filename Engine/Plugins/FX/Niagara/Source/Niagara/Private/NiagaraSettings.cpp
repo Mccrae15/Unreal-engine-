@@ -7,9 +7,11 @@ UNiagaraSettings::UNiagaraSettings(const FObjectInitializer& ObjectInitlaizer)
 	, NDISkelMesh_GpuMaxInfluences(ENDISkelMesh_GpuMaxInfluences::Unlimited)
 	, NDISkelMesh_GpuUniformSamplingFormat(ENDISkelMesh_GpuUniformSamplingFormat::Full)
 	, NDISkelMesh_AdjacencyTriangleIndexFormat(ENDISkelMesh_AdjacencyTriangleIndexFormat::Full)
-	, DefaultEffectTypePtr(nullptr)
 {
+	PositionPinTypeColor = FLinearColor(1.0f, 0.3f, 1.0f, 1.0f);
 
+	NDICollisionQuery_AsyncGpuTraceProviderOrder.Add(ENDICollisionQuery_AsyncGpuTraceProvider::Type::HWRT);
+	NDICollisionQuery_AsyncGpuTraceProviderOrder.Add(ENDICollisionQuery_AsyncGpuTraceProvider::Type::GSDF);
 }
 
 FName UNiagaraSettings::GetCategoryName() const
@@ -34,13 +36,6 @@ FText UNiagaraSettings::GetSectionText() const
 }
 #endif
 
-void UNiagaraSettings::PostInitProperties()
-{
-	Super::PostInitProperties();
-
-	DefaultEffectTypePtr = Cast<UNiagaraEffectType>(DefaultEffectType.TryLoad());
-}
-
 #if WITH_EDITOR
 void UNiagaraSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -48,8 +43,6 @@ void UNiagaraSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 	{
 		SettingsChangedDelegate.Broadcast(PropertyChangedEvent.Property->GetFName(), this);
 	}
-
-	DefaultEffectTypePtr = Cast<UNiagaraEffectType>(DefaultEffectType.TryLoad());
 }
 
 UNiagaraSettings::FOnNiagaraSettingsChanged& UNiagaraSettings::OnSettingsChanged()
@@ -62,5 +55,5 @@ UNiagaraSettings::FOnNiagaraSettingsChanged UNiagaraSettings::SettingsChangedDel
 
 UNiagaraEffectType* UNiagaraSettings::GetDefaultEffectType()const
 {
-	return DefaultEffectTypePtr;
+	return Cast<UNiagaraEffectType>(DefaultEffectType.TryLoad());
 }

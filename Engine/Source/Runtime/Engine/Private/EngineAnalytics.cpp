@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EngineAnalytics.h"
+#include "Misc/App.h"
 #include "Misc/Guid.h"
 #include "Stats/Stats.h"
 #include "Misc/ConfigCacheIni.h"
@@ -19,9 +20,11 @@
 #include "StudioAnalytics.h"
 
 #if WITH_EDITOR
-#include "EditorAnalyticsSession.h"
-#include "EditorSessionSummarySender.h"
-#include "Analytics/EditorSessionSummaryWriter.h"
+#include "AnalyticsPropertyStore.h"
+#include "AnalyticsSessionSummaryManager.h"
+#include "AnalyticsSessionSummarySender.h"
+#include "Analytics/EditorAnalyticsSessionSummary.h"
+#include "EditorAnalyticsSession.h" // DEPRECATED: kept around to clean up expired old sessions.
 #endif
 
 bool FEngineAnalytics::bIsInitialized;
@@ -29,8 +32,9 @@ TSharedPtr<IAnalyticsProviderET> FEngineAnalytics::Analytics;
 TSharedPtr<FEngineSessionManager> FEngineAnalytics::SessionManager;
 
 #if WITH_EDITOR
-static TSharedPtr<FEditorSessionSummaryWriter> SessionSummaryWriter;
-static TSharedPtr<FEditorSessionSummarySender> SessionSummarySender;
+static TUniquePtr<FAnalyticsSessionSummaryManager> AnalyticsSessionSummaryManager;
+static TUniquePtr<FEditorAnalyticsSessionSummary> EditorAnalyticSessionSummary;
+static TSharedPtr<FAnalyticsSessionSummarySender> AnalyticsSessionSummarySender;
 #endif
 
 static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
@@ -45,10 +49,10 @@ static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
 			!FEngineBuildSettings::IsInternalBuild();	// Internal Epic build
 		const TCHAR* BuildTypeStr = bUseReleaseAccount ? TEXT("Release") : TEXT("Dev");
 
-		FString UE4TypeOverride;
-		bool bHasOverride = GConfig->GetString(TEXT("Analytics"), TEXT("UE4TypeOverride"), UE4TypeOverride, GEngineIni);
-		const TCHAR* UE4TypeStr = bHasOverride ? *UE4TypeOverride : FEngineBuildSettings::IsPerforceBuild() ? TEXT("Perforce") : TEXT("UnrealEngine");
-		Config.APIKeyET = FString::Printf(TEXT("UEEditor.%s.%s"), UE4TypeStr, BuildTypeStr);
+		FString UETypeOverride;
+		bool bHasOverride = GConfig->GetString(TEXT("Analytics"), TEXT("UE4TypeOverride"), UETypeOverride, GEngineIni);
+		const TCHAR* UETypeStr = bHasOverride ? *UETypeOverride : FEngineBuildSettings::IsPerforceBuild() ? TEXT("Perforce") : TEXT("UnrealEngine");
+		Config.APIKeyET = FString::Printf(TEXT("UEEditor.%s.%s"), UETypeStr, BuildTypeStr);
 	}
 	Config.APIServerET = TEXT("https://datarouter.ol.epicgames.com/");
 	Config.AppEnvironment = TEXT("datacollector-binary");
@@ -143,18 +147,26 @@ void FEngineAnalytics::Initialize()
 		}
 
 #if WITH_EDITOR
-		if (!SessionSummaryWriter.IsValid())
+		if (!AnalyticsSessionSummaryManager)
 		{
-			SessionSummaryWriter = MakeShared<FEditorSessionSummaryWriter>(FGenericCrashContext::GetOutOfProcessCrashReporterProcessId());
-			SessionSummaryWriter->Initialize();
-		}
+			// Create the session summary manager for the Editor instance.
+			AnalyticsSessionSummaryManager = MakeUnique<FAnalyticsSessionSummaryManager>(
+				TEXT("Editor"), // The tag name of the process.
+				FApp::GetInstanceId().ToString(EGuidFormats::Digits), // Unique key to link the principal process (Editor) with subsidiary processes (CRC), that key is passed to CRC.
+				Analytics->GetUserID(),
+				Analytics->GetAppID(),
+				Analytics->GetAppVersion(),
+				Analytics->GetSessionID());
 
-		if (!SessionSummarySender.IsValid())
-		{
-			// if we're using out-of-process crash reporting, then we don't need to create a sender in this process.
-			if (!FGenericCrashContext::IsOutOfProcessCrashReporter())
+			// The sender will sends orphans sessions and maybe this session if CRC dies first.
+			AnalyticsSessionSummaryManager->SetSender(MakeShared<FAnalyticsSessionSummarySender>(FEngineAnalytics::GetProvider()));
+
+			// Create a property store file with enough pre-reserved capacity to store the analytics data. This reduce risk of running out of disk later.
+			constexpr uint32 ReservedFileCapacity = 16 * 1024;
+			if (TSharedPtr<IAnalyticsPropertyStore> EditorPropertyStore = AnalyticsSessionSummaryManager->MakeStore(ReservedFileCapacity))
 			{
-				SessionSummarySender = MakeShared<FEditorSessionSummarySender>(FEngineAnalytics::GetProvider(), TEXT("Editor"), FPlatformProcess::GetCurrentProcessId());
+				// Create the object responsible to collect the Editor session properties.
+				EditorAnalyticSessionSummary = MakeUnique<FEditorAnalyticsSessionSummary>(EditorPropertyStore, FGenericCrashContext::GetOutOfProcessCrashReporterProcessId());
 			}
 		}
 #endif
@@ -171,17 +183,26 @@ void FEngineAnalytics::Shutdown(bool bIsEngineShutdown)
 	}
 
 #if WITH_EDITOR
-	if (SessionSummaryWriter.IsValid())
+	if (EditorAnalyticSessionSummary)
 	{
-		SessionSummaryWriter->Shutdown();
-		SessionSummaryWriter.Reset();
+		EditorAnalyticSessionSummary->Shutdown();
+		EditorAnalyticSessionSummary.Reset();
 	}
 
-	if (SessionSummarySender.IsValid())
+	if (AnalyticsSessionSummaryManager)
 	{
-		SessionSummarySender->Shutdown();
-		SessionSummarySender.Reset();
+		bool bDiscard = !bIsEngineShutdown; // User toggled the 'Send Data' off.
+		AnalyticsSessionSummaryManager->Shutdown(bDiscard);
+		AnalyticsSessionSummaryManager.Reset();
 	}
+	else
+	{
+		// The manager cleans any left-over (crash, power outage) on shutdown  when analytics is on but if off, ensure to clean up what could be left from when it was on.
+		FAnalyticsSessionSummaryManager::CleanupExpiredFiles();
+	}
+
+	// Clean up the outdated sessions created by the deprecated system. If an older compabile Editor is launched, it can still send them up before they get expired.
+	CleanupDeprecatedAnalyticSessions(FAnalyticsSessionSummaryManager::GetSessionExpirationAge());
 #endif
 
 	bIsInitialized = false;
@@ -200,14 +221,14 @@ void FEngineAnalytics::Tick(float DeltaTime)
 	}
 
 #if WITH_EDITOR
-	if (SessionSummaryWriter.IsValid())
+	if (EditorAnalyticSessionSummary)
 	{
-		SessionSummaryWriter->Tick(DeltaTime);
+		EditorAnalyticSessionSummary->Tick(DeltaTime);
 	}
 
-	if (SessionSummarySender.IsValid())
+	if (AnalyticsSessionSummaryManager.IsValid())
 	{
-		SessionSummarySender->Tick(DeltaTime);
+		AnalyticsSessionSummaryManager->Tick();
 	}
 #endif
 }
@@ -215,9 +236,9 @@ void FEngineAnalytics::Tick(float DeltaTime)
 void FEngineAnalytics::LowDriveSpaceDetected()
 {
 #if WITH_EDITOR
-	if (SessionSummaryWriter.IsValid())
+	if (EditorAnalyticSessionSummary)
 	{
-		SessionSummaryWriter->LowDriveSpaceDetected();
+		EditorAnalyticSessionSummary->LowDriveSpaceDetected();
 	}
 #endif
 }

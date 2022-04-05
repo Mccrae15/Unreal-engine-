@@ -9,7 +9,7 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EditorStyleSet.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #include "EditorViewportCommands.h"
@@ -23,6 +23,7 @@
 #include "EngineUtils.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
+#include "Math/UnrealMathUtility.h"
 
 IMPLEMENT_HIT_PROXY(HSplineVisProxy, HComponentVisProxy);
 IMPLEMENT_HIT_PROXY(HSplineKeyProxy, HSplineVisProxy);
@@ -107,9 +108,9 @@ public:
 		UI_COMMAND(SetKeyToLinear, "Linear", "Set spline point to Linear type", EUserInterfaceActionType::RadioButton, FInputChord());
 		UI_COMMAND(SetKeyToConstant, "Constant", "Set spline point to Constant type", EUserInterfaceActionType::RadioButton, FInputChord());
 		UI_COMMAND(FocusViewportToSelection, "Focus Selected", "Moves the camera in front of the selection", EUserInterfaceActionType::Button, FInputChord(EKeys::F));
-		UI_COMMAND(SnapKeyToNearestSplinePoint, "Snap to Nearest Spline Point", "Snap selected spline point to nearest spline point.", EUserInterfaceActionType::Button, FInputChord(EKeys::P, EModifierKey::Shift));
-		UI_COMMAND(AlignKeyToNearestSplinePoint, "Align to Nearest Spline Point", "Align selected spline point to nearest spline point.", EUserInterfaceActionType::Button, FInputChord());
-		UI_COMMAND(AlignKeyPerpendicularToNearestSplinePoint, "Align Perpendicular to Nearest Spline Point", "Align perpendicular selected spline point to nearest spline point.", EUserInterfaceActionType::Button, FInputChord());
+		UI_COMMAND(SnapKeyToNearestSplinePoint, "Snap to Nearest Spline Point", "Snap selected spline point to nearest non-adjacent spline point on current or nearby spline.", EUserInterfaceActionType::Button, FInputChord(EKeys::P, EModifierKey::Shift));
+		UI_COMMAND(AlignKeyToNearestSplinePoint, "Align to Nearest Spline Point", "Align selected spline point to nearest non-adjacent spline point on current or nearby spline.", EUserInterfaceActionType::Button, FInputChord());
+		UI_COMMAND(AlignKeyPerpendicularToNearestSplinePoint, "Align Perpendicular to Nearest Spline Point", "Align perpendicular selected spline point to nearest non-adjacent spline point on current or nearby spline.", EUserInterfaceActionType::Button, FInputChord());
 		UI_COMMAND(SnapKeyToActor, "Snap to Actor", "Snap selected spline point to actor, Ctrl-LMB to select the actor after choosing this option.", EUserInterfaceActionType::Button, FInputChord(EKeys::P, (EModifierKey::Alt | EModifierKey::Shift)));
 		UI_COMMAND(AlignKeyToActor, "Align to Actor", "Align selected spline point to actor, Ctrl-LMB to select the actor after choosing this option.", EUserInterfaceActionType::Button, FInputChord());
 		UI_COMMAND(AlignKeyPerpendicularToActor, "Align Perpendicular to Actor", "Align perpendicular  selected spline point to actor, Ctrl-LMB to select the actor after choosing this option.", EUserInterfaceActionType::Button, FInputChord());
@@ -528,20 +529,28 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 
 						PDI->SetHitProxy(NULL);
 
-						PDI->DrawLine(Location, Location + LeaveTangent, TangentColor, SDPG_Foreground);
-						PDI->DrawLine(Location, Location - ArriveTangent, TangentColor, SDPG_Foreground);
+						// determine tangent coloration
+						const bool bTangentSelected = (SelectedKey == SelectionState->GetSelectedTangentHandle());
+						const ESelectedTangentHandle SelectedTangentHandleType = SelectionState->GetSelectedTangentHandleType();
+						const bool bArriveSelected = bTangentSelected && (SelectedTangentHandleType == ESelectedTangentHandle::Arrive);
+						const bool bLeaveSelected = bTangentSelected && (SelectedTangentHandleType == ESelectedTangentHandle::Leave);
+						FColor ArriveColor = bArriveSelected ? SelectedColor : TangentColor;
+						FColor LeaveColor = bLeaveSelected ? SelectedColor : TangentColor;
+						
+						PDI->DrawLine(Location, Location - ArriveTangent, ArriveColor, SDPG_Foreground);
+						PDI->DrawLine(Location, Location + LeaveTangent, LeaveColor, SDPG_Foreground);
 
 						if (bIsSplineEditable)
 						{
 							PDI->SetHitProxy(new HSplineTangentHandleProxy(Component, SelectedKey, false));
 						}
-						PDI->DrawPoint(Location + LeaveTangent, TangentColor, TangentHandleSize, SDPG_Foreground);
+						PDI->DrawPoint(Location + LeaveTangent, LeaveColor, TangentHandleSize, SDPG_Foreground);
 
 						if (bIsSplineEditable)
 						{
 							PDI->SetHitProxy(new HSplineTangentHandleProxy(Component, SelectedKey, true));
 						}
-						PDI->DrawPoint(Location - ArriveTangent, TangentColor, TangentHandleSize, SDPG_Foreground);
+						PDI->DrawPoint(Location - ArriveTangent, ArriveColor, TangentHandleSize, SDPG_Foreground);
 
 						PDI->SetHitProxy(NULL);
 					}
@@ -621,23 +630,57 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 				}
 				else
 				{
+					// Determine the colors to use
+					const bool bIsEdited = (SplineComp == EditedSplineComp);
+					const bool bKeyIdxLooped = (SplineInfo.bIsLooped && KeyIdx == NumPoints);
+					const int32 BeginIdx = bKeyIdxLooped ? 0 : KeyIdx;
+					const int32 EndIdx = KeyIdx - 1;
+					const bool bBeginSelected = SelectedKeys.Contains(BeginIdx);
+					const bool bEndSelected = SelectedKeys.Contains(EndIdx);
+					const FColor BeginColor = (bIsEdited && bBeginSelected) ? SelectedColor : NormalColor;
+					const FColor EndColor = (bIsEdited && bEndSelected) ? SelectedColor : NormalColor;
+					
 					// Find position on first keyframe.
 					FVector OldPos = OldKeyPos;
 					FVector OldRightVector = OldKeyRightVector;
 					FVector OldScale = OldKeyScale;
 
 					// Then draw a line for each substep.
-					const int32 NumSteps = 20;
+					constexpr int32 NumSteps = 20;
+					constexpr float PartialGradientProportion = 0.75f;
+					constexpr int32 PartialNumSteps = NumSteps * PartialGradientProportion;
 					const float SegmentLineThickness = GetDefault<ULevelEditorViewportSettings>()->SplineLineThicknessAdjustment;
 
 					for (int32 StepIdx = 1; StepIdx <= NumSteps; StepIdx++)
 					{
-						const float Key = (KeyIdx - 1) + (StepIdx / static_cast<float>(NumSteps));
+						const float StepRatio = StepIdx / static_cast<float>(NumSteps);
+						const float Key = EndIdx + StepRatio;
 						const FVector NewPos = SplineComp->GetLocationAtSplineInputKey(Key, ESplineCoordinateSpace::World);
 						const FVector NewRightVector = SplineComp->GetRightVectorAtSplineInputKey(Key, ESplineCoordinateSpace::World);
 						const FVector NewScale = SplineComp->GetScaleAtSplineInputKey(Key) * DefaultScale;
 
-						PDI->DrawLine(OldPos, NewPos, LineColor, SDPG_Foreground, SegmentLineThickness);
+						// creates a gradient that starts partway through the selection
+						FColor StepColor;
+						if (bBeginSelected == bEndSelected)
+						{
+							StepColor = BeginColor;
+						}
+						else if (bBeginSelected && StepIdx > (NumSteps - PartialNumSteps))
+						{
+							const float LerpRatio = (1.0f - StepRatio) / PartialGradientProportion;
+							StepColor = FMath::Lerp(BeginColor.ReinterpretAsLinear(), EndColor.ReinterpretAsLinear(), LerpRatio).ToFColor(false);
+						}
+						else if (bEndSelected && StepIdx <= PartialNumSteps)
+						{
+							const float LerpRatio = 1.0f - (StepRatio / PartialGradientProportion);
+							StepColor = FMath::Lerp(BeginColor.ReinterpretAsLinear(), EndColor.ReinterpretAsLinear(), LerpRatio).ToFColor(false);
+						}
+						else
+						{
+							StepColor = NormalColor; // unselected
+						}
+						
+						PDI->DrawLine(OldPos, NewPos, StepColor, SDPG_Foreground, SegmentLineThickness);
 						if (bShouldVisualizeScale)
 						{
 							PDI->DrawLine(OldPos - OldRightVector * OldScale.Y, NewPos - NewRightVector * NewScale.Y, LineColor, SDPG_Foreground);
@@ -800,6 +843,8 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 {
 	ResetTempModes();
 
+	bool bVisProxyClickHandled = false;
+
 	if(VisProxy && VisProxy->Component.IsValid())
 	{
 		check(SelectionState);
@@ -834,7 +879,7 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 
 				SelectionState->SetCachedRotation(SplineComp->GetQuaternionAtSplinePoint(SelectionState->GetLastKeyIndexSelected(), ESplineCoordinateSpace::World));
 
-				return true;
+				bVisProxyClickHandled = true;
 			}
 		}
 		else if (VisProxy->IsA(HSplineSegmentProxy::StaticGetType()))
@@ -896,7 +941,7 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 
 				SelectionState->SetSelectedSplinePosition(BestLocation);
 
-				return true;
+				bVisProxyClickHandled = true;
 			}
 		}
 		else if (VisProxy->IsA(HSplineTangentHandleProxy::StaticGetType()))
@@ -934,13 +979,17 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 				SelectionState->SetSelectedTangentHandleType(KeyProxy->bArriveTangent ? ESelectedTangentHandle::Arrive : ESelectedTangentHandle::Leave);
 				SelectionState->SetCachedRotation(SplineComp->GetQuaternionAtSplinePoint(SelectionState->GetSelectedTangentHandle(), ESplineCoordinateSpace::World));
 
-				return true;
+				bVisProxyClickHandled = true;
 			}
 		}
-
 	}
 
-	return false;
+	if (bVisProxyClickHandled)
+	{
+		GEditor->RedrawLevelEditingViewports(true);
+	}
+
+	return bVisProxyClickHandled;
 }
 
 void FSplineComponentVisualizer::SetEditedSplineComponent(const USplineComponent* InSplineComponent) 
@@ -1021,7 +1070,7 @@ bool FSplineComponentVisualizer::GetWidgetLocation(const FEditorViewportClient* 
 
 bool FSplineComponentVisualizer::GetCustomInputCoordinateSystem(const FEditorViewportClient* ViewportClient, FMatrix& OutMatrix) const
 {
-	if (ViewportClient->GetWidgetCoordSystemSpace() == COORD_Local || ViewportClient->GetWidgetMode() == FWidget::WM_Rotate)
+	if (ViewportClient->GetWidgetCoordSystemSpace() == COORD_Local || ViewportClient->GetWidgetMode() == UE::Widget::WM_Rotate)
 	{
 		USplineComponent* SplineComp = GetEditedSplineComponent();
 		if (SplineComp != nullptr)
@@ -1098,7 +1147,7 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 		}
 		else if (ViewportClient->IsAltPressed())
 		{
-			if (ViewportClient->GetWidgetMode() == FWidget::WM_Translate && ViewportClient->GetCurrentWidgetAxis() != EAxisList::None && SelectionState->GetSelectedKeys().Num() == 1)
+			if (ViewportClient->GetWidgetMode() == UE::Widget::WM_Translate && ViewportClient->GetCurrentWidgetAxis() != EAxisList::None && SelectionState->GetSelectedKeys().Num() == 1)
 			{
 				static const int MaxDuplicationDelay = 3;
 
@@ -1106,12 +1155,15 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 
 				if (bAllowDuplication)
 				{
-					if (DuplicateDelay < MaxDuplicationDelay)
+					float SmallestGridSize = 1.0f;
+					const TArray<float>& PosGridSizes = GEditor->GetCurrentPositionGridArray();
+					if (PosGridSizes.IsValidIndex(0))
 					{
-						DuplicateDelay++;
-						DuplicateDelayAccumulatedDrag += DeltaTranslate;
+						SmallestGridSize = PosGridSizes[0];
 					}
-					else
+
+					// When grid size is set to a value other than the smallest grid size, do not delay duplication
+					if (DuplicateDelay >= MaxDuplicationDelay || GEditor->GetGridSize() > SmallestGridSize)
 					{
 						Drag += DuplicateDelayAccumulatedDrag;
 						DuplicateDelayAccumulatedDrag = FVector::ZeroVector;
@@ -1120,6 +1172,11 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 						bDuplicatingSplineKey = true;
 
 						DuplicateKeyForAltDrag(Drag);
+					}
+					else
+					{ 
+						DuplicateDelay++;
+						DuplicateDelayAccumulatedDrag += DeltaTranslate;
 					}
 				}
 				else
@@ -1431,7 +1488,9 @@ bool FSplineComponentVisualizer::HandleBoxSelect(const FBox& InBox, FEditorViewp
 	if (SplineComp != nullptr)
 	{
 		bool bSelectionChanged = false;
+		bool bAppendToSelection = InViewportClient->IsShiftPressed();
 
+		const TSet<int32>& SelectedKeys = SelectionState->GetSelectedKeys();
 		const FInterpCurveVector& SplineInfo = SplineComp->GetSplinePointsPosition();
 		int32 NumPoints = SplineInfo.Points.Num();
 
@@ -1442,8 +1501,12 @@ bool FSplineComponentVisualizer::HandleBoxSelect(const FBox& InBox, FEditorViewp
 
 			if (InBox.IsInside(Pos))
 			{
-				ChangeSelectionState(KeyIdx, true);
-				bSelectionChanged = true;
+				if (!bAppendToSelection || !SelectedKeys.Contains(KeyIdx))
+				{
+					ChangeSelectionState(KeyIdx, bAppendToSelection);
+					bAppendToSelection = true;
+					bSelectionChanged = true;
+				}
 			}
 		}
 
@@ -1470,7 +1533,9 @@ bool FSplineComponentVisualizer::HandleFrustumSelect(const FConvexVolume& InFrus
 	if (SplineComp != nullptr)
 	{
 		bool bSelectionChanged = false;
+		bool bAppendToSelection = InViewportClient->IsShiftPressed();
 
+		const TSet<int32>& SelectedKeys = SelectionState->GetSelectedKeys();
 		const FInterpCurveVector& SplineInfo = SplineComp->GetSplinePointsPosition();
 		int32 NumPoints = SplineInfo.Points.Num();
 
@@ -1481,8 +1546,12 @@ bool FSplineComponentVisualizer::HandleFrustumSelect(const FConvexVolume& InFrus
 
 			if (InFrustum.IntersectPoint(Pos))
 			{
-				ChangeSelectionState(KeyIdx, true);
-				bSelectionChanged = true;
+				if (!bAppendToSelection || !SelectedKeys.Contains(KeyIdx))
+				{
+					ChangeSelectionState(KeyIdx, bAppendToSelection);
+					bAppendToSelection = true;
+					bSelectionChanged = true;
+				}
 			}
 		}
 
@@ -1517,7 +1586,7 @@ bool FSplineComponentVisualizer::HasFocusOnSelectionBoundingBox(FBox& OutBoundin
 				OutBoundingBox += Pos;
 			}
 
-			OutBoundingBox.ExpandBy(50.f);
+			OutBoundingBox = OutBoundingBox.ExpandBy(50.f);
 			return true;
 		}
 	}
@@ -1655,15 +1724,72 @@ void FSplineComponentVisualizer::OnSnapKeyToNearestSplinePoint(ESplineComponentS
 	static const float SnapTol = 5000.0f;
 	float SnapTolSquared = SnapTol * SnapTol;
 
-	// Search all spline components for nearest point.
+	auto UpdateNearestKey = [WorldPos, SnapTolSquared, &NearestDistanceSquared, &NearestSplineComp, &NearestKeyIndex](USplineComponent* InSplineComp, int InKeyIdx)
+	{
+		const FVector TestKeyWorldPos = InSplineComp->GetLocationAtSplinePoint(InKeyIdx, ESplineCoordinateSpace::World);
+		float TestDistanceSquared = FVector::DistSquared(TestKeyWorldPos, WorldPos);
+
+		if (TestDistanceSquared < SnapTolSquared && (NearestKeyIndex == INDEX_NONE || TestDistanceSquared < NearestDistanceSquared))
+		{
+			NearestDistanceSquared = TestDistanceSquared;
+			NearestSplineComp = InSplineComp;
+			NearestKeyIndex = InKeyIdx;
+		}
+	};
+
+	{
+		// Test non-adjacent points on current spline.
+		const FInterpCurveVector& SplineInfo = SplineComp->GetSplinePointsPosition();
+		const int32 NumPoints = SplineInfo.Points.Num();
+
+		// Don't test against current or adjacent points
+		TSet<int32> IgnoreIndices;
+		IgnoreIndices.Add(LastKeyIndexSelected);
+		int32 PrevIndex = LastKeyIndexSelected - 1;
+		int32 NextIndex = LastKeyIndexSelected + 1;
+
+		if (PrevIndex >= 0)
+		{
+			IgnoreIndices.Add(PrevIndex);
+		}
+		else if (SplineComp->IsClosedLoop())
+		{
+			IgnoreIndices.Add(NumPoints - 1);
+		}
+
+		if (NextIndex < NumPoints)
+		{
+			IgnoreIndices.Add(NextIndex);
+		}
+		else if (SplineComp->IsClosedLoop())
+		{
+			IgnoreIndices.Add(0);
+		}
+
+		for (int32 KeyIdx = 0; KeyIdx < NumPoints; KeyIdx++)
+		{
+			if (!IgnoreIndices.Contains(KeyIdx))
+			{
+				UpdateNearestKey(SplineComp, KeyIdx);
+			}
+		}
+	}
+
+	// Test whether component and its owning actor are valid and visible
+	auto IsValidAndVisible = [](const USplineComponent* Comp)
+	{
+		return (Comp && !Comp->IsBeingDestroyed() && Comp->IsVisibleInEditor() &&
+				Comp->GetOwner() && IsValid(Comp->GetOwner()) && !Comp->GetOwner()->IsHiddenEd());
+	};
+
+	// Next search all spline components for nearest point on splines, excluding current spline
 	// Only test points in splines whose bounding box contains this point.
 	for (TObjectIterator<USplineComponent> SplineIt; SplineIt; ++SplineIt)
 	{
 		USplineComponent* TestComponent = *SplineIt;
 
-		// Ignore current spline, those that are being destroyed, those with empty bbox.
-		if (TestComponent && TestComponent != SplineComp &&
-			!TestComponent->IsBeingDestroyed() && 
+		// Ignore current spline and those which are not valid 
+		if (TestComponent && TestComponent != SplineComp && IsValidAndVisible(TestComponent) &&
 			!FMath::IsNearlyZero(TestComponent->Bounds.SphereRadius))
 		{
 			FBox TestComponentBoundingBox = TestComponent->Bounds.GetBox().ExpandBy(FVector(SnapTol, SnapTol, SnapTol));
@@ -1674,15 +1800,7 @@ void FSplineComponentVisualizer::OnSnapKeyToNearestSplinePoint(ESplineComponentS
 				const int32 NumPoints = SplineInfo.Points.Num();
 				for (int32 KeyIdx = 0; KeyIdx < NumPoints; KeyIdx++)
 				{
-					const FVector TestKeyWorldPos = TestComponent->GetLocationAtSplinePoint(KeyIdx, ESplineCoordinateSpace::World);
-					float TestDistanceSquared = FVector::DistSquared(TestKeyWorldPos, WorldPos);
-
-					if (TestDistanceSquared < SnapTolSquared && (NearestKeyIndex == INDEX_NONE || TestDistanceSquared < NearestDistanceSquared))
-					{
-						NearestDistanceSquared = TestDistanceSquared;
-						NearestSplineComp = TestComponent;
-						NearestKeyIndex = KeyIdx;
-					}
+					UpdateNearestKey(TestComponent, KeyIdx);
 				}
 			}
 		}
@@ -2115,8 +2233,6 @@ void FSplineComponentVisualizer::OnAddKeyToSegment()
 	USplineComponent* SplineComp = GetEditedSplineComponent();
 	check(SplineComp != nullptr);
 	check(SelectionState);
-	const TSet<int32>& SelectedKeys = SelectionState->GetSelectedKeys();
-	int32 LastKeyIndexSelected = SelectionState->GetVerifiedLastKeyIndexSelected(SplineComp->GetNumberOfSplinePoints());
 	check(SelectionState->GetSelectedTangentHandle() == INDEX_NONE);
 	check(SelectionState->GetSelectedTangentHandleType() == ESelectedTangentHandle::None);
 
@@ -2210,7 +2326,9 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 	// Split existing segment or add new segment
 	if (SegmentIndex >= 0 && SegmentIndex < NumSegments)
 	{
-		SplitSegment(WorldPos, SegmentIndex);
+		bool bCopyFromSegmentBeginIndex = (LastKeyIndexSelected == SegmentIndex);
+		SplitSegment(WorldPos, SegmentIndex, bCopyFromSegmentBeginIndex);
+
 	}
 	else
 	{
@@ -2256,7 +2374,7 @@ float FSplineComponentVisualizer::FindNearest(const FVector& InLocalPos, int32 I
 	return t;
 }
 
-void FSplineComponentVisualizer::SplitSegment(const FVector& InWorldPos, int32 InSegmentIndex)
+void FSplineComponentVisualizer::SplitSegment(const FVector& InWorldPos, int32 InSegmentIndex, bool bCopyFromSegmentBeginIndex /* = true */)
 {
 	USplineComponent* SplineComp = GetEditedSplineComponent();
 	check(SplineComp != nullptr);
@@ -2322,12 +2440,15 @@ void FSplineComponentVisualizer::SplitSegment(const FVector& InWorldPos, int32 I
 	FInterpCurvePoint<FQuat>& NextRot = SplineRotation.Points[SegmentEndIndex];
 	NewRot = FMath::Lerp(PrevRot.OutVal, NextRot.OutVal, t);
 
+	// Determine which index to use when copying interp mode
+	int32 SourceIndex = bCopyFromSegmentBeginIndex ? SegmentBeginIndex : SegmentEndIndex;
+
 	FInterpCurvePoint<FVector> NewPoint(
 		SegmentSplitIndex,
 		SplinePos,
 		FVector::ZeroVector,
 		FVector::ZeroVector,
-		CIM_CurveAuto);
+		SplinePosition.Points[SourceIndex].InterpMode);
 
 	FInterpCurvePoint<FQuat> NewRotPoint(
 		SegmentSplitIndex,

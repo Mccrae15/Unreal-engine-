@@ -31,9 +31,11 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 {
 #if WITH_PHYSX
 	Params.LocalToWorld = Params.InitialTransform = OwningActor->GetTransform();
-	Chaos::FVec3 ActorOrigin;
-	Chaos::FVec3 ActorBoxExtent;
-	OwningActor->GetActorBounds(true, ActorOrigin, ActorBoxExtent);
+
+	FVector ActorOriginVec, ActorBoxExtentVec;	// LWC_TODO: Perf pessimization
+	OwningActor->GetActorBounds(true, ActorOriginVec, ActorBoxExtentVec);
+	Chaos::FVec3 ActorOrigin(ActorOriginVec);
+	Chaos::FVec3 ActorBoxExtent(ActorBoxExtentVec);
 
 	const USkeletalMesh* SkeletalMesh = SkelMeshComponent->SkeletalMesh;
 	if (!SkeletalMesh)
@@ -224,7 +226,7 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 			AnalyticShapeGroup->TaperedCylinders.Reserve(NumTaperedCapsules);
 			for (const FKTaperedCapsuleElem &Elem : FKTaperedCapsuleElems)
 			{
-				Chaos::FReal Radius0, Radius1;
+				float Radius0, Radius1;
 				Elem.GetScaledRadii(Scale3D, Radius0, Radius1);
 				if (Radius0 < SMALL_NUMBER && Radius1 < SMALL_NUMBER)
 					continue;
@@ -313,7 +315,7 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 
 					const Chaos::FVec3 Extents(Bounds.Max - Bounds.Min);
 					const Chaos::FReal LocalMaxExtent = Bounds.GetExtent().GetMax();
-					Bounds.ExpandBy(Extents.Size() / 10);
+					Bounds = Bounds.ExpandBy(Extents.Size() / 10);
 
 					//TODO: this gets used later which is incorrect. However, it was already broken because it passed a view and then moved the underlying data.
 					//Keeping as is for now, needs fixing
@@ -459,7 +461,7 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 #endif
 }
 
-bool FPhysicsAssetSimulationUtil::UpdateAnimState(const UObject* Caller, const AActor* OwningActor, const USkeletalMeshComponent* SkelMeshComponent, const Chaos::FReal Dt, FSkeletalMeshPhysicsProxyParams& Params)
+bool FPhysicsAssetSimulationUtil::UpdateAnimState(const UObject* Caller, const AActor* OwningActor, const USkeletalMeshComponent* SkelMeshComponent, const float Dt, FSkeletalMeshPhysicsProxyParams& Params)
 {
 	int32 UpdatedBones = 0;
 

@@ -5,6 +5,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Slate/SlateBrushAsset.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -13,19 +14,40 @@
 
 static FCheckBoxStyle* DefaultCheckboxStyle = nullptr;
 
+#if WITH_EDITOR
+static FCheckBoxStyle* EditorCheckboxStyle = nullptr;
+#endif 
+
 UCheckBox::UCheckBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	if (DefaultCheckboxStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultCheckboxStyle = new FCheckBoxStyle(FCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox"));
+		DefaultCheckboxStyle = new FCheckBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultCheckboxStyle->UnlinkColors();
 	}
 
 	WidgetStyle = *DefaultCheckboxStyle;
+
+#if WITH_EDITOR 
+	if (EditorCheckboxStyle == nullptr)
+	{
+		EditorCheckboxStyle = new FCheckBoxStyle(FCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorCheckboxStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorCheckboxStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 
 	CheckedState = ECheckBoxState::Unchecked;
 
@@ -185,7 +207,7 @@ void UCheckBox::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{
@@ -253,7 +275,7 @@ void UCheckBox::PostLoad()
 		}
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
+	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
 	{
 		WidgetStyle.Padding = Padding_DEPRECATED;
 		Padding_DEPRECATED = FMargin(0);

@@ -41,6 +41,7 @@ public class GraphEditor : ModuleRules
 				"SlateCore",
                 "EditorStyle",
 				"EditorWidgets",
+				"EditorFramework",
 				"UnrealEd",
 				"AssetRegistry",
 				"Kismet",
@@ -50,6 +51,7 @@ public class GraphEditor : ModuleRules
 				"RenderCore",
 				"RHI",
 				"ToolMenus",
+				"ToolWidgets",
 			}
 		);
 

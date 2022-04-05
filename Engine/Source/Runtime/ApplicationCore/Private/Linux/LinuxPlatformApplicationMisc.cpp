@@ -236,9 +236,9 @@ void UngrabAllInputImpl()
 		if (GrabbedWindow)
 		{
 			SDL_SetWindowGrab(GrabbedWindow, SDL_FALSE);
-			SDL_SetKeyboardGrab(GrabbedWindow, SDL_FALSE);
+			SDL_SetWindowKeyboardGrab(GrabbedWindow, SDL_FALSE);
 		}
-		SDL_ConfineCursor(nullptr, nullptr);
+		SDL_SetWindowMouseRect(nullptr, nullptr);
 		SDL_CaptureMouse(SDL_FALSE);
 	}
 }
@@ -251,6 +251,7 @@ uint32 FLinuxPlatformApplicationMisc::WindowStyle()
 void FLinuxPlatformApplicationMisc::PreInit()
 {
 	MessageBoxExtCallback = MessageBoxExtImpl;
+	FApp::SetHasFocusFunction(&FLinuxPlatformApplicationMisc::IsThisApplicationForeground);
 }
 
 void FLinuxPlatformApplicationMisc::Init()
@@ -313,11 +314,10 @@ bool FLinuxPlatformApplicationMisc::InitSDL()
 		SDL_version RunTimeSDLVersion;
 		SDL_VERSION(&CompileTimeSDLVersion);
 		SDL_GetVersion(&RunTimeSDLVersion);
-		int SdlRevisionNum = SDL_GetRevisionNumber();
 		FString SdlRevision = UTF8_TO_TCHAR(SDL_GetRevision());
-		UE_LOG(LogInit, Log, TEXT("Initialized SDL %d.%d.%d revision: %d (%s) (compiled against %d.%d.%d)"),
+		UE_LOG(LogInit, Log, TEXT("Initialized SDL %d.%d.%d revision: %s (compiled against %d.%d.%d)"),
 			RunTimeSDLVersion.major, RunTimeSDLVersion.minor, RunTimeSDLVersion.patch,
-			SdlRevisionNum, *SdlRevision,
+			*SdlRevision,
 			CompileTimeSDLVersion.major, CompileTimeSDLVersion.minor, CompileTimeSDLVersion.patch
 			);
 
@@ -442,7 +442,7 @@ void FLinuxPlatformApplicationMisc::PumpMessages( bool bFromMainLoop )
 			}
 		}
 
-		bool bHasFocus = FApp::UseVRFocus() ? FApp::HasVRFocus() : FLinuxPlatformApplicationMisc::IsThisApplicationForeground();
+		bool bHasFocus = FApp::HasFocus();
 
 		// if its our window, allow sound, otherwise apply multiplier
 		FApp::SetVolumeMultiplier( bHasFocus ? 1.0f : FApp::GetUnfocusedVolumeMultiplier() );

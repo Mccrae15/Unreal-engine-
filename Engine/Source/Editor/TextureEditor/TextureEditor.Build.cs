@@ -42,10 +42,14 @@ public class TextureEditor : ModuleRules
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
+				"EditorFramework",
 				"UnrealEd",
                 "PropertyEditor",
 				"MediaUtils",
-				"MediaAssets"
+				"EditorWidgets",
+				"MediaAssets",
+				"DerivedDataCache",
+				"DeveloperToolSettings"
 			}
 		);
 	}

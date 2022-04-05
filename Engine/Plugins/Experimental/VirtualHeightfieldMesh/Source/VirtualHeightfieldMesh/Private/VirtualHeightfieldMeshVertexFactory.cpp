@@ -15,7 +15,7 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FVirtualHeightfieldMeshVertexFactoryPar
 namespace
 {
 	template< typename T >
-	FIndexBufferRHIRef CreateIndexBuffer(uint32 NumQuadsPerSide)
+	FBufferRHIRef CreateIndexBuffer(uint32 NumQuadsPerSide)
 	{
 		TResourceArray<T, INDEXBUFFER_ALIGNMENT> Indices;
 
@@ -70,7 +70,7 @@ namespace
 		const uint32 Stride = sizeof(T);
 
 		// Create index buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&Indices);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FVirtualHeightfieldMeshIndexBuffer"), &Indices);
 		return RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 }
@@ -94,7 +94,7 @@ void FVirtualHeightfieldMeshIndexBuffer::InitRHI()
  */
 class FVirtualHeightfieldMeshVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FVirtualHeightfieldMeshVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FVirtualHeightfieldMeshVertexFactoryShaderParameters, NonVirtual);
 
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
@@ -129,6 +129,8 @@ protected:
 	LAYOUT_FIELD(FShaderParameter, LodViewOriginParameter);
 	LAYOUT_FIELD(FShaderParameter, LodDistancesParameter);
 };
+
+IMPLEMENT_TYPE_LAYOUT(FVirtualHeightfieldMeshVertexFactoryShaderParameters);
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FVirtualHeightfieldMeshVertexFactory, SF_Vertex, FVirtualHeightfieldMeshVertexFactoryShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FVirtualHeightfieldMeshVertexFactory, SF_Pixel, FVirtualHeightfieldMeshVertexFactoryShaderParameters);
@@ -207,7 +209,13 @@ void FVirtualHeightfieldMeshVertexFactory::ModifyCompilationEnvironment(const FV
 {
 	OutEnvironment.SetDefine(TEXT("VF_VIRTUAL_HEIGHFIELD_MESH"), 1);
 #if 0
-	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), Parameters.VertexFactoryType->SupportsPrimitiveIdStream() && UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform)));
+	const bool bUseGPUSceneAndPrimitiveIdStream =
+		Parameters.VertexFactoryType->SupportsPrimitiveIdStream() 
+		&& UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform))
+		// TODO: support GPUScene on mobile
+		&& !IsMobilePlatform(Parameters.Platform);
+		
+	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), bUseGPUSceneAndPrimitiveIdStream);
 #endif
 }
 
@@ -218,9 +226,13 @@ void FVirtualHeightfieldMeshVertexFactory::ValidateCompiledResult(const FVertexF
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform))
 		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
 	{
-		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters.PrimitiveId).Member instead of Primitive.Member."), Type->GetName()));
+		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
 #endif
 }
 
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FVirtualHeightfieldMeshVertexFactory, "/Plugin/VirtualHeightfieldMesh/Private/VirtualHeightfieldMeshVertexFactory.ush", true, false, true, false, false, false, true);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FVirtualHeightfieldMeshVertexFactory, "/Plugin/VirtualHeightfieldMesh/Private/VirtualHeightfieldMeshVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);

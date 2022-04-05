@@ -227,7 +227,7 @@ void UBlackboardComponent::PopulateSynchronizedKeys()
 		UBlackboardComponent* OtherBlackboard = Iter.Value();
 		if (OtherBlackboard != nullptr && ShouldSyncWithBlackboard(*OtherBlackboard))
 		{
-			for (const auto& Key : BlackboardAsset->Keys)
+			for (const FBlackboardEntry& Key : BlackboardAsset->Keys)
 			{
 				if (Key.bInstanceSynced)
 				{
@@ -237,7 +237,7 @@ void UBlackboardComponent::PopulateSynchronizedKeys()
 					{
 						const FBlackboardEntry* const OtherKey = OtherBlackboard->GetBlackboardAsset()->GetKey(OtherKeyID);
 						check(Key.EntryName == OtherKey->EntryName);
-						check(Key.KeyType == OtherKey->KeyType);
+						check(Key.KeyType && OtherKey->KeyType && Key.KeyType->GetClass() == OtherKey->KeyType->GetClass());
 
 						const bool bKeyHasInstance = Key.KeyType->HasInstance();
 						const uint16 DataOffset = bKeyHasInstance ? sizeof(FBlackboardInstancedKeyMemory) : 0;
@@ -246,8 +246,8 @@ void UBlackboardComponent::PopulateSynchronizedKeys()
 						uint8* RawData = GetKeyRawData(KeyID) + DataOffset;
 						uint8* RawSource = OtherBlackboard->GetKeyRawData(OtherKeyID) + DataOffset;
 
-						UBlackboardKeyType* KeyOb = bKeyHasInstance ? KeyInstances[KeyID] : Key.KeyType;
-						const UBlackboardKeyType* SourceKeyOb = bKeyHasInstance ? OtherBlackboard->KeyInstances[OtherKeyID] : Key.KeyType;
+						UBlackboardKeyType* KeyOb = bKeyHasInstance ? ToRawPtr(KeyInstances[KeyID]) : ToRawPtr(Key.KeyType);
+						const UBlackboardKeyType* SourceKeyOb = bKeyHasInstance ? ToRawPtr(OtherBlackboard->KeyInstances[OtherKeyID]) : ToRawPtr(Key.KeyType);
 
 						KeyOb->CopyValues(*this, RawData, SourceKeyOb, RawSource);
 					}
@@ -397,23 +397,6 @@ void UBlackboardComponent::ResumeObserverNotifications(bool bSendQueuedObserverN
 	QueuedUpdates.Empty();
 }
 
-void UBlackboardComponent::PauseUpdates()
-{
-	bPausedNotifies = true;
-}
-
-void UBlackboardComponent::ResumeUpdates()
-{
-	bPausedNotifies = false;
-
-	for (int32 UpdateIndex = 0; UpdateIndex < QueuedUpdates.Num(); UpdateIndex++)
-	{
-		NotifyObservers(QueuedUpdates[UpdateIndex]);
-	}
-
-	QueuedUpdates.Empty();
-}
-
 void UBlackboardComponent::NotifyObservers(FBlackboard::FKey KeyID) const
 {
 	TMultiMap<uint8, FOnBlackboardChangeNotificationInfo>::TKeyIterator KeyIt(Observers, KeyID);
@@ -517,7 +500,7 @@ EBlackboardCompare::Type UBlackboardComponent::CompareKeyValues(TSubclassOf<UBla
 	const uint8* KeyAMemory = GetKeyRawData(KeyA) + (KeyInstances[KeyA] ? sizeof(FBlackboardInstancedKeyMemory) : 0);
 	const uint8* KeyBMemory = GetKeyRawData(KeyB) + (KeyInstances[KeyB] ? sizeof(FBlackboardInstancedKeyMemory) : 0);
 
-	const UBlackboardKeyType* KeyAOb = KeyInstances[KeyA] ? KeyInstances[KeyA] : KeyType->GetDefaultObject<UBlackboardKeyType>();
+	const UBlackboardKeyType* KeyAOb = KeyInstances[KeyA] ? ToRawPtr(KeyInstances[KeyA]) : KeyType->GetDefaultObject<UBlackboardKeyType>();
 	return KeyAOb->CompareValues(*this, KeyAMemory, KeyInstances[KeyB], KeyBMemory);
 }
 

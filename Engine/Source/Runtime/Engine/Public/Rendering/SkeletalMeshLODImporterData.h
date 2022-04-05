@@ -12,7 +12,9 @@
 #include "Components.h"
 #include "Math/GenericOctree.h"
 #include "Animation/MorphTarget.h"
+#include "Templates/DontCopy.h"
 
+struct FMeshDescription;
 class FSkeletalMeshLODModel;
 
 #endif
@@ -49,10 +51,21 @@ enum class ESkeletalMeshSkinningImportVersions : uint8
 
 namespace SkeletalMeshImportData
 {
+	/**
+	* Some information per individual mesh, as appearing in the source asset.
+	* This could store the data for say meshes "UpperBody", "Legs", "Hat", etc.
+	*/
+	struct FMeshInfo
+	{
+		FName Name;	// The name of the mesh.
+		int32 NumVertices;	// The number of imported (dcc) vertices that are part of this mesh. This is a value of 8 for a cube. So NOT the number of render vertices.
+		int32 StartImportedVertex;	// The first index of imported (dcc) vertices in the mesh. So this NOT an index into the render vertex buffer. In range of 0..7 for a cube.
+	};
+
 	struct FMeshWedge
 	{
 		uint32			iVertex;			// Vertex index.
-		FVector2D		UVs[MAX_TEXCOORDS];	// UVs.
+		FVector2f		UVs[MAX_TEXCOORDS];	// UVs.
 		FColor			Color;			// Vertex color.
 		friend FArchive &operator<<(FArchive& Ar, FMeshWedge& T)
 		{
@@ -73,9 +86,9 @@ namespace SkeletalMeshImportData
 		// Source Material (= texture plus unique flags) index.
 		uint16		MeshMaterialIndex;
 
-		FVector	TangentX[3];
-		FVector	TangentY[3];
-		FVector	TangentZ[3];
+		FVector3f	TangentX[3];
+		FVector3f	TangentY[3];
+		FVector3f	TangentZ[3];
 
 		// 32-bit flag for smoothing groups.
 		uint32   SmoothingGroups;
@@ -84,7 +97,7 @@ namespace SkeletalMeshImportData
 	// A bone: an orientation, and a position, all relative to their parent.
 	struct FJointPos
 	{
-		FTransform	Transform;
+		::FTransform3f	Transform;	// LWC_TODO: UE::Geometry namespace issues
 
 		// For collision testing / debug drawing...
 		float       Length;
@@ -111,9 +124,9 @@ namespace SkeletalMeshImportData
 		// 32-bit flag for smoothing groups.
 		uint32   SmoothingGroups;
 
-		FVector	TangentX[3];
-		FVector	TangentY[3];
-		FVector	TangentZ[3];
+		FVector3f	TangentX[3];
+		FVector3f	TangentY[3];
+		FVector3f	TangentZ[3];
 
 
 		FTriangle& operator=(const FTriangle& Other)
@@ -245,7 +258,7 @@ namespace SkeletalMeshImportData
 	struct FVertex
 	{
 		uint32	VertexIndex; // Index to a vertex.
-		FVector2D UVs[MAX_TEXCOORDS];        // Scaled to BYTES, rather...-> Done in digestion phase, on-disk size doesn't matter here.
+		FVector2f UVs[MAX_TEXCOORDS];        // Scaled to BYTES, rather...-> Done in digestion phase, on-disk size doesn't matter here.
 		FColor	Color;		 // Vertex colors
 		uint8    MatIndex;    // At runtime, this one will be implied by the face that's pointing to us.
 		uint8    Reserved;    // Top secret.
@@ -267,7 +280,7 @@ namespace SkeletalMeshImportData
 			bool bUVsEqual = true;
 			for (uint32 UVIdx = 0; UVIdx < MAX_TEXCOORDS; ++UVIdx)
 			{
-				if (UVs[UVIdx] != Other.UVs[UVIdx])
+				if (!UVs[UVIdx].Equals(Other.UVs[UVIdx], SMALL_NUMBER))
 				{
 					bUVsEqual = false;
 					break;
@@ -304,7 +317,7 @@ namespace SkeletalMeshImportData
 	// Points: regular FVectors (for now..)
 	struct FPoint
 	{
-		FVector	Point; // Change into packed integer later IF necessary, for 3x size reduction...
+		FVector3f	Point; // Change into packed integer later IF necessary, for 3x size reduction...
 		
 		friend FArchive &operator<<(FArchive& Ar, FPoint& F)
 		{
@@ -328,11 +341,12 @@ class ENGINE_API FSkeletalMeshImportData
 {
 public:
 	TArray <SkeletalMeshImportData::FMaterial> Materials;
-	TArray <FVector> Points;
+	TArray <FVector3f> Points;
 	TArray <SkeletalMeshImportData::FVertex> Wedges;
 	TArray <SkeletalMeshImportData::FTriangle> Faces;
 	TArray <SkeletalMeshImportData::FBone> RefBonesBinary;
 	TArray <SkeletalMeshImportData::FRawBoneInfluence> Influences;
+	TArray <SkeletalMeshImportData::FMeshInfo> MeshInfos;
 	TArray <int32> PointToRawMap;	// Mapping from current point index to the original import point index
 	uint32 NumTexCoords; // The number of texture coordinate sets
 	uint32 MaxMaterialIndex; // The max material index found on a triangle
@@ -385,7 +399,7 @@ public:
 	* @param LODInfluences - weights/ influences to static LOD level.
 	*/
 	void CopyLODImportData(
-		TArray<FVector>& LODPoints,
+		TArray<FVector3f>& LODPoints,
 		TArray<SkeletalMeshImportData::FMeshWedge>& LODWedges,
 		TArray<SkeletalMeshImportData::FMeshFace>& LODFaces,
 		TArray<SkeletalMeshImportData::FVertInfluence>& LODInfluences,
@@ -405,6 +419,7 @@ public:
 		RefBonesBinary.Empty();
 		Influences.Empty();
 		PointToRawMap.Empty();
+		MeshInfos.Empty();
 	}
 
 	static bool ReplaceSkeletalMeshGeometryImportData(const USkeletalMesh* SkeletalMesh, FSkeletalMeshImportData* ImportData, int32 LodIndex);
@@ -417,10 +432,21 @@ public:
 	 * Use the faces corner normals to create the face smooth groups data
 	 */
 	void ComputeSmoothGroupFromNormals();
+
+	/**
+	 * Returns a mesh description from the import data
+	 */
+	bool GetMeshDescription(FMeshDescription &OutMeshDescription) const;
+
+	static FSkeletalMeshImportData CreateFromMeshDescription(const FMeshDescription &InMeshDescription);
+
+private:
+	void CleanUpUnusedMaterials();
+	void SplitVerticesBySmoothingGroups();
 };
 
 /**
-* Bulk data storage for raw ImportModel.
+* Bulk data storage for raw ImportModel. This structure is deprecated, we now only store the original vertex and triangle count, see FInlineReductionCacheData.
 */
 struct FReductionBaseSkeletalMeshBulkData
 {
@@ -467,13 +493,41 @@ public:
 	FORCEINLINE bool IsEmpty() const { return BulkData.GetBulkDataSize() == 0; }
 };
 
+struct FInlineReductionCacheData
+{
+	uint32 CacheLODVertexCount = MAX_uint32;
+	uint32 CacheLODTriCount = MAX_uint32;
+
+	/*
+	 * Caching those value since this is a slow operation to load the bulk data to retrieve the original geometry information
+	 */
+	ENGINE_API void SetCacheGeometryInfo(const FSkeletalMeshLODModel& SourceLODModel);
+
+	ENGINE_API void SetCacheGeometryInfo(uint32 LODVertexCount, uint32 LODTriCount);
+
+	/** Return the cache count of vertices and triangles. */
+	ENGINE_API void GetCacheGeometryInfo(uint32& LODVertexCount, uint32& LODTriCount) const;
+};
+
+FORCEINLINE FArchive& operator<<(FArchive& Ar, FInlineReductionCacheData& InlineReductionCacheData)
+{
+	Ar << InlineReductionCacheData.CacheLODVertexCount;
+	Ar << InlineReductionCacheData.CacheLODTriCount;
+	return Ar;
+}
+
 /**
 * Bulk data storage for raw meshes.
 */
 class FRawSkeletalMeshBulkData
 {
+#if WITH_EDITOR
+	/** Protects simultaneous access to BulkData */
+	TDontCopy<FRWLock> BulkDataLock;
+#endif
 	/** Internally store bulk data as bytes. */
 	FByteBulkData BulkData;
+	/** GUID associated with the data stored herein. */
 	FGuid Guid;
 	/** If true, the GUID is actually a hash of the contents. */
 	bool bGuidIsHash;
@@ -542,11 +596,14 @@ public:
 		return GeoImportVersion >= ESkeletalMeshGeoImportVersions::SkeletalMeshBuildRefactor &&
 			SkinningImportVersion >= ESkeletalMeshSkinningImportVersions::SkeletalMeshBuildRefactor;
 	}
+
+private:
+	ENGINE_API void UpdateRawMeshFormat();
 };
 
 namespace FWedgePositionHelper
 {
-	inline bool PointsEqual(const FVector& V1, const FVector& V2, float ComparisonThreshold)
+	inline bool PointsEqual(const FVector3f& V1, const FVector3f& V2, float ComparisonThreshold)
 	{
 		if (FMath::Abs(V1.X - V2.X) > ComparisonThreshold
 			|| FMath::Abs(V1.Y - V2.Y) > ComparisonThreshold
@@ -641,7 +698,7 @@ public:
 	* SearchPosition: The reference vertex position use to search the wedges
 	* OutNearestWedges: The nearest wedge indexes to SearchPosition
 	*/
-	ENGINE_API void FindNearestWedgeIndexes(const FVector& SearchPosition, TArray<FWedgeInfo>& OutNearestWedges);
+	ENGINE_API void FindNearestWedgeIndexes(const FVector3f& SearchPosition, TArray<FWedgeInfo>& OutNearestWedges);
 private:
 	const TWedgeInfoPosOctree *WedgePosOctree;
 };
@@ -676,21 +733,21 @@ struct FWedgePosition
 	 * OutResults: The wedge indexes that fit the Position parameter
 	 * ComparisonThreshold: The threshold use to exactly match the Position. Not use when bExactMatch is false
 	 */
-	void FindMatchingPositionWegdeIndexes(const FVector &Position, float ComparisonThreshold, TArray<int32>& OutResults);
+	void FindMatchingPositionWegdeIndexes(const FVector3f &Position, float ComparisonThreshold, TArray<int32>& OutResults);
 
 	// Fill the data:
 	// Create the SortedPosition use to find exact match (position)
 	// Create the wedge position octree to find the closest position, we use this when there is no exact match
 	static void FillWedgePosition(
 		FWedgePosition& OutOverlappingPosition,
-		const TArray<FVector>& Positions,
+		const TArray<FVector3f>& Positions,
 		const TArray<SkeletalMeshImportData::FVertex> Wedges,
 		float ComparisonThreshold);
 
 private:
 	TArray<FWedgePositionHelper::FIndexAndZ> SortedPositions;
 	TWedgeInfoPosOctree *WedgePosOctree;
-	TArray<FVector> Points;
+	TArray<FVector3f> Points;
 	TArray<SkeletalMeshImportData::FVertex> Wedges;
 };
 

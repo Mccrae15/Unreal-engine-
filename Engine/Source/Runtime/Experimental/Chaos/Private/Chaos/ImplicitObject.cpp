@@ -81,6 +81,12 @@ TUniquePtr<FImplicitObject> FImplicitObject::Copy() const
 	return nullptr;
 }
 
+TUniquePtr<FImplicitObject> FImplicitObject::CopyWithScale(const FVec3& Scale) const
+{
+	check(false);
+	return nullptr;
+}
+
 bool FImplicitObject::IsUnderlyingUnion() const
 {
 	return Type == ImplicitObjectType::Union;
@@ -119,7 +125,7 @@ Pair<FVec3, bool> FImplicitObject::FindDeepestIntersection(const FImplicitObject
 	FReal Phi = Thickness;
 	if (HasBoundingBox())
 	{
-		FAABB3 ImplicitBox = BoundingBox().TransformedAABB(OtherToLocalTransform.Inverse());
+		FAABB3 ImplicitBox = BoundingBox().TransformedAABB((FMatrix)OtherToLocalTransform.Inverse());
 		ImplicitBox.Thicken(Thickness);
 		TArray<int32> PotentialParticles = Particles->FindAllIntersections(ImplicitBox);
 		for (int32 i : PotentialParticles)

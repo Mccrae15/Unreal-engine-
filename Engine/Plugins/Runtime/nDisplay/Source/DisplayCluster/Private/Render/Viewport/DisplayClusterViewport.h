@@ -3,18 +3,21 @@
 #pragma once
 
 #include "Render/Viewport/IDisplayClusterViewport.h"
-#include "Render/Viewport/DisplayClusterViewport_CustomPostProcessSettings.h"
-#include "Render/Viewport/DisplayClusterViewport_VisibilitySettings.h"
-#include "Render/Viewport/DisplayClusterViewport_TextureShare.h"
 
 #include "Render/Viewport/Containers/ImplDisplayClusterViewport_CameraMotionBlur.h"
+#include "Render/Viewport/Containers/ImplDisplayClusterViewport_CustomFrustum.h"
 #include "Render/Viewport/Containers/ImplDisplayClusterViewport_Overscan.h"
+#include "Render/Viewport/Containers/DisplayClusterViewportRemap.h"
+#include "Render/Viewport/Containers/DisplayClusterViewport_Enums.h"
+
+#include "Render/Viewport/DisplayClusterViewport_CustomPostProcessSettings.h"
+#include "Render/Viewport/DisplayClusterViewport_VisibilitySettings.h"
 
 #include "SceneViewExtensionContext.h"
 #include "OpenColorIODisplayExtension.h"
 
-class FDisplayClusterRenderTargetResource;
-class FDisplayClusterTextureResource;
+class FDisplayClusterViewportRenderTargetResource;
+class FDisplayClusterViewportTextureResource;
 class FDisplayClusterViewportManager;
 class FDisplayClusterRenderTargetManager;
 class FDisplayClusterRenderFrameManager;
@@ -40,7 +43,7 @@ class FDisplayClusterViewport
 	: public IDisplayClusterViewport
 {
 public:
-	FDisplayClusterViewport(FDisplayClusterViewportManager& Owner, const FString& ViewportId, const TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InProjectionPolicy);
+	FDisplayClusterViewport(FDisplayClusterViewportManager& Owner, const FString& ClusterNodeId, const FString& ViewportId, const TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InProjectionPolicy);
 	
 	virtual ~FDisplayClusterViewport();
 
@@ -54,10 +57,29 @@ public:
 		return ViewportId; 
 	}
 
+	virtual FString GetClusterNodeId() const override
+	{
+		check(IsInGameThread());
+		return ClusterNodeId;
+	}
+
 	virtual const FDisplayClusterViewport_RenderSettings& GetRenderSettings() const override
 	{
 		check(IsInGameThread());
 		return RenderSettings;
+	}
+
+	virtual void SetRenderSettings(const FDisplayClusterViewport_RenderSettings& InRenderSettings) override
+	{
+		check(IsInGameThread());
+		RenderSettings = InRenderSettings;
+	}
+
+	virtual void SetContexts(TArray<FDisplayClusterViewport_Context>& InContexts) override
+	{
+		check(IsInGameThread());
+		Contexts.Empty();
+		Contexts.Append(InContexts);
 	}
 
 	virtual void CalculateProjectionMatrix(const uint32 InContextNum, float Left, float Right, float Top, float Bottom, float ZNear, float ZFar, bool bIsAnglesInput) override;
@@ -83,7 +105,6 @@ public:
 		return ProjectionPolicy;
 	}
 
-
 	virtual const TArray<FDisplayClusterViewport_Context>& GetContexts() const override
 	{
 		check(IsInGameThread());
@@ -101,6 +122,8 @@ public:
 
 	virtual IDisplayClusterViewportManager& GetOwner() const override;
 
+	const FDisplayClusterRenderFrameSettings& GetRenderFrameSettings() const;
+
 	//////////////////////////////////////////////////////
 	/// ~IDisplayClusterViewport
 	//////////////////////////////////////////////////////
@@ -111,18 +134,23 @@ public:
 	FSceneView* ImplCalcScenePreview(class FSceneViewFamilyContext& InOutViewFamily, uint32 ContextNum);
 	bool    ImplPreview_CalculateStereoViewOffset(const uint32 InContextNum, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation);
 	FMatrix ImplPreview_GetStereoProjectionMatrix(const uint32 InContextNum);
+
+	bool GetPreviewPixels(TSharedPtr<class FDisplayClusterViewportReadPixelsData, ESPMode::ThreadSafe>& OutPixelsData) const;
+
 #endif //WITH_EDITOR
 
 	// Get from logic request for additional targetable resource
 	bool ShouldUseAdditionalTargetableResource() const;
+	bool ShouldUseAdditionalFrameTargetableResource() const;
+	bool ShouldUseFullSizeFrameTargetableResource() const;
 
-	inline bool FindContext(const enum EStereoscopicPass StereoPassType, uint32* OutContextNum)
+	inline bool FindContext(const int32 ViewIndex, uint32* OutContextNum)
 	{
 		check(IsInGameThread());
 
-		for (int ContextNum = 0; ContextNum < Contexts.Num(); ContextNum++)
+		for (int32 ContextNum = 0; ContextNum < Contexts.Num(); ContextNum++)
 		{
-			if (StereoPassType == Contexts[ContextNum].StereoscopicPass)
+			if (ViewIndex == Contexts[ContextNum].StereoViewIndex)
 			{
 				if (OutContextNum != nullptr)
 				{
@@ -139,6 +167,8 @@ public:
 	bool HandleStartScene();
 	void HandleEndScene();
 
+	void AddReferencedObjects(FReferenceCollector& Collector);
+
 	void ResetRuntimeParameters()
 	{
 		// Reset runtim flags from prev frame:
@@ -148,18 +178,31 @@ public:
 		VisibilitySettings.ResetConfiguration();
 		CameraMotionBlur.ResetConfiguration();
 		OverscanRendering.ResetConfiguration();
+		CustomFrustumRendering.ResetConfiguration();
 	}
-
 
 	// Active view extension for this viewport
 	const TArray<FSceneViewExtensionRef> GatherActiveExtensions(FViewport* InViewport) const;
 
-	bool UpdateFrameContexts(const uint32 InViewPassNum, const FDisplayClusterRenderFrameSettings& InFrameSettings);
-
-	void ImplReleaseOpenColorIODisplayExtension();
+	bool UpdateFrameContexts(const uint32 InStereoViewIndex, const FDisplayClusterRenderFrameSettings& InFrameSettings);
 
 public:
 	FIntRect GetValidRect(const FIntRect& InRect, const TCHAR* DbgSourceName);
+
+private:
+	float GetClusterRenderTargetRatioMult(const FDisplayClusterRenderFrameSettings& InFrameSettings) const;
+	FIntPoint GetDesiredContextSize(const FIntPoint& InSize, const FDisplayClusterRenderFrameSettings& InFrameSettings) const;
+	float GetCustomBufferRatio(const FDisplayClusterRenderFrameSettings& InFrameSettings) const;
+
+#if WITH_EDITOR
+	// Support view states for preview
+private:
+	FSceneViewStateInterface* GetViewState(uint32 ViewIndex);
+	void CleanupViewState();
+
+private:
+	TArray<FSceneViewStateReference> ViewStates;
+#endif
 
 public:
 	// Support OCIO:
@@ -167,9 +210,6 @@ public:
 
 	// OCIO wrapper
 	TSharedPtr<FOpenColorIODisplayExtension, ESPMode::ThreadSafe> OpenColorIODisplayExtension;
-
-	//TextureShare
-	FDisplayClusterViewport_TextureShare TextureShare;
 
 public:
 	// Projection policy instance that serves this viewport
@@ -183,6 +223,10 @@ public:
 	// Additional features:
 	FImplDisplayClusterViewport_CameraMotionBlur CameraMotionBlur;
 	FImplDisplayClusterViewport_Overscan         OverscanRendering;
+	FImplDisplayClusterViewport_CustomFrustum    CustomFrustumRendering;
+
+	// viewport OutputRemap feature
+	FDisplayClusterViewportRemap ViewportRemap;
 
 protected:
 	friend FDisplayClusterViewportProxy;
@@ -192,7 +236,6 @@ protected:
 	friend FDisplayClusterRenderFrameManager;
 	friend FDisplayClusterViewportConfigurationCameraViewport;
 	friend FDisplayClusterViewportConfigurationCameraICVFX;
-	friend FDisplayClusterViewport_TextureShare;
 
 	friend FDisplayClusterViewportConfigurationICVFX;
 
@@ -202,11 +245,16 @@ protected:
 	friend FDisplayClusterViewportConfigurationHelpers_Postprocess;
 	friend FDisplayClusterViewportConfigurationProjectionPolicy;
 
+	friend FDisplayClusterViewportRemap;
+
 	// viewport render thread data
 	FDisplayClusterViewportProxy* ViewportProxy = nullptr;
 
 	// Unique viewport name
 	const FString ViewportId;
+
+	// Owner cluster node name
+	const FString ClusterNodeId;
 
 	// Viewport render params
 	FDisplayClusterViewport_RenderSettings       RenderSettings;
@@ -217,20 +265,22 @@ protected:
 	TArray<FDisplayClusterViewport_Context> Contexts;
 
 	// View family render to this resources
-	TArray<FDisplayClusterRenderTargetResource*> RenderTargets;
+	TArray<FDisplayClusterViewportRenderTargetResource*> RenderTargets;
 	
 	// Projection policy output resources
-	TArray<FDisplayClusterTextureResource*> OutputFrameTargetableResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> OutputFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalFrameTargetableResources;
 
 #if WITH_EDITOR
+	friend class UDisplayClusterPreviewComponent;
+
 	FTextureRHIRef OutputPreviewTargetableResource;
 #endif
 
 	// unique viewport resources
-	TArray<FDisplayClusterTextureResource*> InputShaderResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalTargetableResources;
-	TArray<FDisplayClusterTextureResource*> MipsShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> InputShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> MipsShaderResources;
 
 	FDisplayClusterViewportManager& Owner;
 

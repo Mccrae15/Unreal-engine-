@@ -4,6 +4,7 @@
 #include "Internationalization/TextLocalizationResource.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/LazySingleton.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Culture.h"
@@ -34,11 +35,11 @@ bool FInternationalization::IsAvailable()
 void FInternationalization::TearDown()
 {
 	TLazySingleton<FInternationalization>::TearDown();
-	FTextCache::TearDown();
 }
 
 FText FInternationalization::ForUseOnlyByLocMacroAndGraphNodeTextLiterals_CreateText(const TCHAR* InTextLiteral, const TCHAR* InNamespace, const TCHAR* InKey)
 {
+	LLM_SCOPE(ELLMTag::Localization);
 	return FTextCache::Get().FindOrCache(InTextLiteral, InNamespace, InKey);
 }
 
@@ -417,6 +418,7 @@ FString& FInternationalization::Leetify(FString& SourceString)
 
 void FInternationalization::LoadAllCultureData()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FInternationalization::LoadAllCultureData);
 	Implementation->LoadAllCultureData();
 }
 

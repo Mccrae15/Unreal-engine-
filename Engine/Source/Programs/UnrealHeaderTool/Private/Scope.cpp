@@ -2,10 +2,9 @@
 
 #include "Scope.h"
 #include "UnrealHeaderTool.h"
-#include "UObject/ErrorException.h"
 #include "ParserHelper.h"
-
-extern FCompilerMetadataManager GScriptHelper;
+#include "UnrealTypeDefinitionInfo.h"
+#include "ClassMaps.h"
 
 FScope::FScope(FScope* InParent)
 	: Parent(InParent)
@@ -17,92 +16,55 @@ FScope::FScope()
 
 }
 
-void FScope::AddType(UField* Type)
+void FScope::AddType(FUnrealFieldDefinitionInfo& Type)
 {
-	TypeMap.Add(Type->GetFName(), Type);
+	TypeMap.Add(Type.GetFName(), &Type);
 }
 
-/**
- * Dispatch type to one of three arrays Enums, Structs and DelegateFunctions.
- *
- * @param Type Input type.
- * @param Enums (Output parameter) Array to fill with enums.
- * @param Structs (Output parameter) Array to fill with structs.
- * @param DelegateFunctions (Output parameter) Array to fill with delegate functions.
- */
-void DispatchType(UField* Type, TArray<UEnum*> &Enums, TArray<UScriptStruct*> &Structs, TArray<UDelegateFunction*> &DelegateFunctions)
+void FScope::GatherTypes(TArray<FUnrealFieldDefinitionInfo*>& Types)
 {
-	UClass* TypeClass = Type->GetClass();
-
-	if (TypeClass == UClass::StaticClass() || TypeClass == UStruct::StaticClass())
+	for (TPair<FName, FUnrealFieldDefinitionInfo*>& TypePair : TypeMap)
 	{
-		// Inner scopes.
-		FScope::GetTypeScope((UStruct*)Type)->SplitTypesIntoArrays(Enums, Structs, DelegateFunctions);
-	}
-	else if (TypeClass == UEnum::StaticClass())
-	{
-		UEnum* Enum = (UEnum*)Type;
-		Enums.Add(Enum);
-	}
-	else if (TypeClass == UScriptStruct::StaticClass())
-	{
-		UScriptStruct* Struct = (UScriptStruct*)Type;
-		Structs.Add(Struct);
-	}
-	else if (TypeClass == UDelegateFunction::StaticClass() || TypeClass == USparseDelegateFunction::StaticClass())
-	{
-		bool bAdded = false;
-		UDelegateFunction* Function = (UDelegateFunction*)Type;
-
-		if (Function->GetSuperFunction() == NULL)
+		FUnrealFieldDefinitionInfo* FieldDef = TypePair.Value;
+		if (FUnrealClassDefinitionInfo* ClassDef = UHTCast<FUnrealClassDefinitionInfo>(FieldDef))
 		{
-			DelegateFunctions.Add(Function);
-			bAdded = true;
+			// Inner scopes.
+			ClassDef->GetScope()->GatherTypes(Types);
+			Types.Add(ClassDef);
 		}
-
-		check(bAdded);
+		else if (FUnrealEnumDefinitionInfo* EnumDef = UHTCast<FUnrealEnumDefinitionInfo>(FieldDef))
+		{
+			Types.Add(EnumDef);
+		}
+		else if (FUnrealScriptStructDefinitionInfo* ScriptStructDef = UHTCast<FUnrealScriptStructDefinitionInfo>(FieldDef))
+		{
+			Types.Add(ScriptStructDef);
+		}
+		else if (FUnrealFunctionDefinitionInfo* FunctionDef = UHTCast<FUnrealFunctionDefinitionInfo>(FieldDef))
+		{
+			if (FunctionDef->IsDelegateFunction())
+			{
+				bool bAdded = false;
+				if (FunctionDef->GetSuperFunction() == nullptr)
+				{
+					Types.Add(FunctionDef);
+					bAdded = true;
+				}
+				check(bAdded);
+			}
+		}
 	}
 }
 
-void FScope::SplitTypesIntoArrays(TArray<UEnum*>& Enums, TArray<UScriptStruct*>& Structs, TArray<UDelegateFunction*>& DelegateFunctions)
-{
-	for (TPair<FName, UField*>& TypePair : TypeMap)
-	{
-		UField* Type = TypePair.Value;
-		DispatchType(Type, Enums, Structs, DelegateFunctions);
-	}
-}
-
-TSharedRef<FScope> FScope::GetTypeScope(UStruct* Type)
-{
-	auto* ScopeRefPtr = ScopeMap.Find(Type);
-	if (!ScopeRefPtr)
-	{
-		FError::Throwf(TEXT("Couldn't find scope for the type %s."), *Type->GetName());
-	}
-
-	return *ScopeRefPtr;
-}
-
-TSharedRef<FScope> FScope::AddTypeScope(UStruct* Type, FScope* ParentScope)
-{
-	FStructScope* ScopePtr = new FStructScope(Type, ParentScope);
-	TSharedRef<FScope> Scope = MakeShareable(ScopePtr);
-
-	ScopeMap.Add(Type, Scope);
-
-	return Scope;
-}
-
-UField* FScope::FindTypeByName(FName Name)
+FUnrealFieldDefinitionInfo* FScope::FindTypeByName(FName Name)
 {
 	if (!Name.IsNone())
 	{
-		TDeepScopeTypeIterator<UField, false> TypeIterator(this);
+		TDeepScopeTypeIterator<FUnrealFieldDefinitionInfo, false> TypeIterator(this);
 
 		while (TypeIterator.MoveNext())
 		{
-			UField* Type = *TypeIterator;
+			FUnrealFieldDefinitionInfo* Type = *TypeIterator;
 			if (Type->GetFName() == Name)
 			{
 				return Type;
@@ -113,15 +75,15 @@ UField* FScope::FindTypeByName(FName Name)
 	return nullptr;
 }
 
-const UField* FScope::FindTypeByName(FName Name) const
+const FUnrealFieldDefinitionInfo* FScope::FindTypeByName(FName Name) const
 {
 	if (!Name.IsNone())
 	{
-		TScopeTypeIterator<UField, true> TypeIterator = GetTypeIterator();
+		TScopeTypeIterator<FUnrealFieldDefinitionInfo, true> TypeIterator = GetTypeIterator();
 
 		while (TypeIterator.MoveNext())
 		{
-			UField* Type = *TypeIterator;
+			FUnrealFieldDefinitionInfo* Type = *TypeIterator;
 			if (Type->GetFName() == Name)
 			{
 				return Type;
@@ -130,11 +92,6 @@ const UField* FScope::FindTypeByName(FName Name) const
 	}
 
 	return nullptr;
-}
-
-bool FScope::ContainsType(UField* Type)
-{
-	return FindTypeByName(Type->GetFName()) != nullptr;
 }
 
 bool FScope::IsFileScope() const
@@ -158,8 +115,6 @@ FFileScope* FScope::GetFileScope()
 	return CurrentScope->AsFileScope();
 }
 
-TMap<UStruct*, TSharedRef<FScope> > FScope::ScopeMap;
-
 FFileScope::FFileScope(FName InName, FUnrealSourceFile* InSourceFile)
 	: SourceFile(InSourceFile), Name(InName)
 { }
@@ -179,18 +134,7 @@ FName FFileScope::GetName() const
 	return Name;
 }
 
-UStruct* FStructScope::GetStruct() const
-{
-	return Struct;
-}
-
 FName FStructScope::GetName() const
 {
-	return Struct->GetFName();
-}
-
-FStructScope::FStructScope(UStruct* InStruct, FScope* InParent)
-	: FScope(InParent), Struct(InStruct)
-{
-
+	return StructDef.GetFName();
 }

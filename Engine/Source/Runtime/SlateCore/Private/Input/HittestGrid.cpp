@@ -9,10 +9,14 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogHittestDebug, Display, All);
 
+#define UE_SLATE_ENABLE_HITTEST_STATS !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+#if UE_SLATE_ENABLE_HITTEST_STATS
 DECLARE_CYCLE_STAT(TEXT("HitTestGrid AddWidget"), STAT_SlateHTG_AddWidget, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("HitTestGrid RemoveWidget"), STAT_SlateHTG_RemoveWidget, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("HitTestGrid Clear"), STAT_SlateHTG_Clear, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("HitTestGrid GetCollapsedWidgets"), STAT_SlateHTG_GetCollapsedWidgets, STATGROUP_Slate);
+#endif
 
 #define LOCTEXT_NAMESPACE "HittestGrid"
 #define UE_SLATE_HITTESTGRID_ARRAYSIZEMAX 0
@@ -46,10 +50,10 @@ FVector2D ClosestPointOnSlateRotatedRect(const FVector2D &Point, const FSlateRot
 
 	const static int32 NumOfCorners = 4;
 	FVector2D Corners[NumOfCorners];
-	Corners[0] = RotatedRect.TopLeft;
-	Corners[1] = Corners[0] + RotatedRect.ExtentX;
-	Corners[2] = Corners[1] + RotatedRect.ExtentY;
-	Corners[3] = Corners[0] + RotatedRect.ExtentY;
+	Corners[0] = FVector2D(RotatedRect.TopLeft);
+	Corners[1] = FVector2D(Corners[0]) + FVector2D(RotatedRect.ExtentX);
+	Corners[2] = FVector2D(Corners[1]) + FVector2D(RotatedRect.ExtentY);
+	Corners[3] = FVector2D(Corners[0]) + FVector2D(RotatedRect.ExtentY);
 
 	FVector2D RetPoint;
 	float ClosestDistSq = FLT_MAX;
@@ -190,7 +194,7 @@ TArray<FWidgetAndPointer> FHittestGrid::GetBubblePath(FVector2D DesktopSpaceCoor
 					FGeometry DesktopSpaceGeometry = CurWidget->GetPaintSpaceGeometry();
 					DesktopSpaceGeometry.AppendTransform(FSlateLayoutTransform(GridOrigin - GridWindowOrigin));
 
-					Path.Emplace(FArrangedWidget(CurWidget.ToSharedRef(), DesktopSpaceGeometry), TSharedPtr<FVirtualPointerPosition>());
+					Path.Emplace(FArrangedWidget(CurWidget.ToSharedRef(), DesktopSpaceGeometry));
 					CurWidget = CurWidget->Advanced_GetPaintParentWidget();
 				}
 
@@ -262,7 +266,9 @@ void FHittestGrid::Clear()
 
 void FHittestGrid::ClearInternal(int32 TotalCells)
 {
+#if UE_SLATE_ENABLE_HITTEST_STATS
 	SCOPE_CYCLE_COUNTER(STAT_SlateHTG_Clear);
+#endif
 	Cells.Reset(TotalCells);
 	Cells.SetNumZeroed(TotalCells);
 
@@ -271,16 +277,14 @@ void FHittestGrid::ClearInternal(int32 TotalCells)
 	AppendedGridArray.Reset();
 }
 
-bool FHittestGrid::IsDescendantOf(const TSharedRef<SWidget> Parent, const FWidgetData& ChildData) const
+bool FHittestGrid::IsDescendantOf(const SWidget* ParentWidget, const FWidgetData& ChildData) const
 {
 	const TSharedPtr<SWidget> ChildWidgetPtr = ChildData.GetWidget();
-	if (ChildWidgetPtr == Parent)
+	const SWidget* CurWidget = ChildWidgetPtr.Get();
+	if (CurWidget == ParentWidget)
 	{
 		return false;
 	}
-
-	const SWidget* ParentWidget = &Parent.Get();
-	const SWidget* CurWidget = ChildWidgetPtr.Get();
 
 	while (CurWidget)
 	{
@@ -391,7 +395,7 @@ TSharedPtr<SWidget> FHittestGrid::FindFocusableWidget(FSlateRect WidgetRect, con
 				// If we have a non escape boundary condition and this widget isn't a descendant of our boundary condition widget then it's invalid so we keep looking.
 				if (NavigationReply.GetBoundaryRule() != EUINavigationRule::Escape
 					&& NavigationReply.GetHandler().IsValid()
-					&& !IsDescendantOf(NavigationReply.GetHandler().ToSharedRef(), TestCandidate))
+					&& !IsDescendantOf(NavigationReply.GetHandler().Get(), TestCandidate))
 				{
 					AddToNextFocusableWidgetCondidateDebugResults(TestWidget, HittestGridDebuggingText::NotADescendant);
 					continue;
@@ -670,17 +674,25 @@ bool FHittestGrid::SameSize(const FHittestGrid* OtherGrid) const
 
 void FHittestGrid::AddWidget(const TSharedRef<SWidget>& InWidget, int32 InBatchPriorityGroup, int32 InLayerId, int32 InSecondarySort)
 {
-	AddWidget(InWidget, InBatchPriorityGroup, InLayerId, FSlateInvalidationWidgetSortOrder());
+	AddWidget(&(InWidget.Get()), InBatchPriorityGroup, InLayerId, FSlateInvalidationWidgetSortOrder());
 }
 
 void FHittestGrid::AddWidget(const TSharedRef<SWidget>& InWidget, int32 InBatchPriorityGroup, int32 InLayerId, FSlateInvalidationWidgetSortOrder InSecondarySort)
 {
+	AddWidget(&(InWidget.Get()), InBatchPriorityGroup, InLayerId, InSecondarySort);
+}
+
+void FHittestGrid::AddWidget(const SWidget* InWidget, int32 InBatchPriorityGroup, int32 InLayerId, FSlateInvalidationWidgetSortOrder InSecondarySort)
+{
+	check(InWidget);
 	if (!InWidget->GetVisibility().IsHitTestVisible())
 	{
 		return;
 	}
 
+#if UE_SLATE_ENABLE_HITTEST_STATS
 	SCOPE_CYCLE_COUNTER(STAT_SlateHTG_AddWidget);
+#endif
 
 	// Track the widget and identify it's Widget Index
 	FGeometry GridSpaceGeometry = InWidget->GetPaintSpaceGeometry();
@@ -696,7 +708,7 @@ void FHittestGrid::AddWidget(const TSharedRef<SWidget>& InWidget, int32 InBatchP
 	const int64 PrimarySort = (((int64)InBatchPriorityGroup << 32) | InLayerId);
 
 	bool bAddWidget = true;
-	if (int32* FoundIndex = WidgetMap.Find(&*InWidget))
+	if (int32* FoundIndex = WidgetMap.Find(InWidget))
 	{
 		FWidgetData& WidgetData = WidgetArray[*FoundIndex];
 		if (WidgetData.UpperLeftCell != UpperLeftCell || WidgetData.LowerRightCell != LowerRightCell)
@@ -716,8 +728,8 @@ void FHittestGrid::AddWidget(const TSharedRef<SWidget>& InWidget, int32 InBatchP
 
 	if (bAddWidget)
 	{
-		int32& WidgetIndex = WidgetMap.Add(&*InWidget);
-		WidgetIndex = WidgetArray.Emplace(InWidget, UpperLeftCell, LowerRightCell, PrimarySort, InSecondarySort, CurrentUserIndex);
+		int32& WidgetIndex = WidgetMap.Add(InWidget);
+		WidgetIndex = WidgetArray.Emplace(const_cast<SWidget*>(InWidget)->AsShared(), UpperLeftCell, LowerRightCell, PrimarySort, InSecondarySort, CurrentUserIndex);
 		for (int32 XIndex = UpperLeftCell.X; XIndex <= LowerRightCell.X; ++XIndex)
 		{
 			for (int32 YIndex = UpperLeftCell.Y; YIndex <= LowerRightCell.Y; ++YIndex)
@@ -738,7 +750,9 @@ void FHittestGrid::RemoveWidget(const TSharedRef<SWidget>& InWidget)
 
 void FHittestGrid::RemoveWidget(const SWidget* InWidget)
 {
+#if UE_SLATE_ENABLE_HITTEST_STATS
 	SCOPE_CYCLE_COUNTER(STAT_SlateHTG_RemoveWidget);
+#endif
 
 	int32 WidgetIndex = INDEX_NONE;
 	if (WidgetMap.RemoveAndCopyValue(InWidget, WidgetIndex))
@@ -766,7 +780,13 @@ void FHittestGrid::RemoveWidget(const SWidget* InWidget)
 
 void FHittestGrid::UpdateWidget(const TSharedRef<SWidget>& InWidget, FSlateInvalidationWidgetSortOrder InSecondarySort)
 {
-	if (int32* FoundWidgetIndex = WidgetMap.Find(&*InWidget))
+	UpdateWidget(&(InWidget.Get()), InSecondarySort);
+}
+
+void FHittestGrid::UpdateWidget(const SWidget* InWidget, FSlateInvalidationWidgetSortOrder InSecondarySort)
+{
+	check(InWidget);
+	if (int32* FoundWidgetIndex = WidgetMap.Find(InWidget))
 	{
 		WidgetArray[*FoundWidgetIndex].SecondarySort = InSecondarySort;
 	}
@@ -774,7 +794,12 @@ void FHittestGrid::UpdateWidget(const TSharedRef<SWidget>& InWidget, FSlateInval
 
 void FHittestGrid::InsertCustomHitTestPath(const TSharedRef<SWidget> InWidget, TSharedRef<ICustomHitTestPath> CustomHitTestPath)
 {
-	int32 WidgetIndex = WidgetMap.FindChecked(&*InWidget);
+	InsertCustomHitTestPath(&InWidget.Get(), CustomHitTestPath);
+}
+
+void FHittestGrid::InsertCustomHitTestPath(const SWidget* InWidget, const TSharedRef<ICustomHitTestPath>& CustomHitTestPath)
+{
+	int32 WidgetIndex = WidgetMap.FindChecked(InWidget);
 	FWidgetData& WidgetData = WidgetArray[WidgetIndex];
 	WidgetData.CustomPath = CustomHitTestPath;
 }
@@ -891,8 +916,9 @@ FHittestGrid::FIndexAndDistance FHittestGrid::GetHitIndexFromCellIndex(const FGr
 #define UE_VERIFY_WIDGET_VALIDITE 0
  void FHittestGrid::GetCollapsedWidgets(FCollapsedWidgetsArray& OutResult, const int32 X, const int32 Y) const
  {
+#if UE_SLATE_ENABLE_HITTEST_STATS
 	 SCOPE_CYCLE_COUNTER(STAT_SlateHTG_GetCollapsedWidgets);
-
+#endif
 	 const int32 CellIndex = Y * NumCells.X + X;
 	 check(Cells.IsValidIndex(CellIndex));
 
@@ -983,7 +1009,7 @@ void FHittestGrid::LogGrid() const
 	{
 		const FWidgetData& CurWidgetData = *It;
 		const TSharedPtr<SWidget> CachedWidget = CurWidgetData.GetWidget();
-		UE_LOG(LogHittestDebug, Warning, TEXT("  [%d][%d][%d] => %s @ %s"),
+		UE_LOG(LogHittestDebug, Warning, TEXT("  [%d][%lld] => %s @ %s"),
 			It.GetIndex(),
 			CurWidgetData.PrimarySort,
 			CachedWidget.IsValid() ? *CachedWidget->ToString() : TEXT("Invalid Widget"),
@@ -1084,3 +1110,4 @@ TArray<FHittestGrid::FWidgetSortData> FHittestGrid::GetAllWidgetSortDatas() cons
 
 #undef UE_SLATE_HITTESTGRID_ARRAYSIZEMAX
 #undef LOCTEXT_NAMESPACE
+#undef UE_SLATE_ENABLE_HITTEST_STATS

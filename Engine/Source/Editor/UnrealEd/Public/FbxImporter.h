@@ -153,9 +153,10 @@ struct FBXImportOptions
 	bool bCombineToSingle;
 	EVertexColorImportOption::Type VertexColorImportOption;
 	FColor VertexOverrideColor;
+	float DistanceFieldResolutionScale;
 	bool bRemoveDegenerates;
-	bool bBuildAdjacencyBuffer;
 	bool bBuildReversedIndexBuffer;
+	bool bBuildNanite;
 	bool bGenerateLightmapUVs;
 	bool bOneConvexHullPerUCX;
 	bool bAutoGenerateCollision;
@@ -906,7 +907,7 @@ public:
 	 * @param SortedLinks	skeleton nodes which are sorted
 	 * @param NodeArray node array of FBX meshes
 	 */
-	int32 GetMaxSampleRate(TArray<FbxNode*>& SortedLinks, TArray<FbxNode*>& NodeArray);
+	int32 GetMaxSampleRate(TArray<FbxNode*>& SortedLinks);
 	/**
 	 * Validate Anim Stack - multiple check for validating animstack
 	 *
@@ -1029,6 +1030,13 @@ public:
 	bool IsUnrealBone(FbxNode* Link);
 
 	/**
+	 * Returns if the passed FbxNode can be used as a transform attribute in Unreal.
+	 * 
+	 * @return bool
+	 */
+	bool IsUnrealTransformAttribute(FbxNode* Link);
+
+	/**
 	* Fill FBX skeletons to OutSortedLinks recursively
 	*
 	* @param Link Fbx node of skeleton root
@@ -1100,7 +1108,7 @@ public:
 	/**
 	 * Import FbxCurve to Curve
 	 */
-	static bool ImportCurve(const FbxAnimCurve* FbxCurve, FRichCurve& RichCurve, const FbxTimeSpan &AnimTimeSpan, const float ValueScale = 1.f, const bool bAutoSetTangents = true);
+	static bool ImportCurve(const FbxAnimCurve* FbxCurve, FRichCurve& RichCurve, const FbxTimeSpan &AnimTimeSpan, const bool bNegative = false, const float ValueScale = 1.f, const bool bAutoSetTangents = true);
 
 	/**
 	 * Merge all layers of one AnimStack to one layer.
@@ -1208,6 +1216,16 @@ private:
 	* @param StaticMesh - The imported static mesh which we'd like to verify
 	*/
 	void VerifyGeometry(UStaticMesh* StaticMesh);
+
+	/**
+	 * Get the epsilon value, according to the import settings, below which two vertex positions should be considered coincident.
+	 */
+	float GetPointComparisonThreshold() const;
+
+	/**
+	 * Get the epsilon value, according to the import settings, below which a triangle should be considered to have "zero area" and therefore be degenerate.
+	 */
+	float GetTriangleAreaThreshold() const;
 
 	/**
 	* When there is some materials with the same name we add a clash suffixe _ncl1_x.

@@ -10,6 +10,7 @@
 #include "Settings/ContentBrowserSettings.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
+#include "AssetViewSortManager.h"
 #include "ContentBrowserSingleton.h"
 #include "ContentBrowserUtils.h"
 #include "ContentBrowserLog.h"
@@ -23,7 +24,9 @@
 #include "SourcesViewWidgets.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "ContentBrowserModule.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/ComparisonUtility.h"
+#include "Misc/NamePermissionList.h"
+#include "Misc/PathViews.h"
 
 #include "IContentBrowserDataModule.h"
 #include "ContentBrowserDataSource.h"
@@ -31,7 +34,6 @@
 
 #include "Application/SlateApplicationBase.h"
 #include "ToolMenus.h"
-#include <Misc/PathViews.h>
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -106,17 +108,20 @@ void SPathView::Construct( const FArguments& InArgs )
 		RegisterActiveTimer( 0.f, FWidgetActiveTimerDelegate::CreateSP( this, &SPathView::SetFocusPostConstruct ) );
 	}
 
+	SortOverride = FSortTreeItemChildrenDelegate::CreateSP(this, &SPathView::DefaultSort);
+
 	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
 	ContentBrowserData->OnItemDataUpdated().AddSP(this, &SPathView::HandleItemDataUpdated);
 	ContentBrowserData->OnItemDataRefreshed().AddSP(this, &SPathView::HandleItemDataRefreshed);
 	ContentBrowserData->OnItemDataDiscoveryComplete().AddSP(this, &SPathView::HandleItemDataDiscoveryComplete);
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	FolderBlacklist = AssetToolsModule.Get().GetFolderBlacklist();
-	WritableFolderBlacklist = AssetToolsModule.Get().GetWritableFolderBlacklist();
+	FolderPermissionList = AssetToolsModule.Get().GetFolderPermissionList();
+	WritableFolderPermissionList = AssetToolsModule.Get().GetWritableFolderPermissionList();
 
 	// Listen for when view settings are changed
-	UContentBrowserSettings::OnSettingChanged().AddSP(this, &SPathView::HandleSettingChanged);
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::GetModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+	ContentBrowserModule.GetOnContentBrowserSettingChanged().AddSP(this, &SPathView::HandleSettingChanged);
 
 	//Setup the SearchBox filter
 	SearchBoxFolderFilter = MakeShareable( new FolderTextFilter( FolderTextFilter::FItemToStringArray::CreateSP( this, &SPathView::PopulateFolderSearchStrings ) ) );
@@ -130,7 +135,6 @@ void SPathView::Construct( const FArguments& InArgs )
 		AllPluginPathFilters.Add( MakeShareable(new FContentBrowserPluginFilter_ContentOnlyPlugins()) );
 
 		// Add external filters
-		FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 		for (const FContentBrowserModule::FAddPathViewPluginFilters& Delegate : ContentBrowserModule.GetAddPathViewPluginFilters())
 		{
 			if (Delegate.IsBound())
@@ -174,8 +178,6 @@ void SPathView::Construct( const FArguments& InArgs )
 	TSharedRef<SBox> SearchBox = SNew(SBox);
 	if (!InArgs._ExternalSearch)
 	{
-		SearchBox->SetPadding(FMargin(0, 1, 0, 3));
-
 		SearchBox->SetContent(
 			SNew(SHorizontalBox)
 
@@ -201,21 +203,33 @@ void SPathView::Construct( const FArguments& InArgs )
 	[
 		SNew(SVerticalBox)
 
-		// Search
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			SearchBox
-		]
-
-		// Tree title
 		+SVerticalBox::Slot()
 		.AutoHeight()
 		[
-			SNew(STextBlock)
-			.Font( FEditorStyle::GetFontStyle("ContentBrowser.SourceTitleFont") )
-			.Text(this, &SPathView::GetTreeTitle)
-			.Visibility(InArgs._ShowTreeTitle ? EVisibility::Visible : EVisibility::Collapsed)
+			SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
+			.Padding(8.f)
+			.Visibility((!InArgs._ExternalSearch || InArgs._ShowTreeTitle) ? EVisibility::Visible : EVisibility::Collapsed)
+			[
+				SNew(SVerticalBox)
+
+				// Search
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SearchBox
+				]
+
+				// Tree title
+				+SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font( FEditorStyle::GetFontStyle("ContentBrowser.SourceTitleFont") )
+					.Text(this, &SPathView::GetTreeTitle)
+					.Visibility(InArgs._ShowTreeTitle ? EVisibility::Visible : EVisibility::Collapsed)
+				]
+			]
 		]
 
 		// Separator
@@ -235,16 +249,16 @@ void SPathView::Construct( const FArguments& InArgs )
 		]
 	];
 
+	CustomFolderPermissionList = InArgs._CustomFolderPermissionList;
 	// Add all paths currently gathered from the asset registry
 	Populate();
 
-	// Always expand the game root initially
-	static const FName GameRootName = TEXT("Game");
-	for ( auto RootIt = TreeRootItems.CreateConstIterator(); RootIt; ++RootIt )
+	for (const FName PathToExpand : GetDefaultPathsToExpand())
 	{
-		if ( (*RootIt)->GetItem().GetItemName() == GameRootName )
+		if (TSharedPtr<FTreeItem> FoundItem = FindTreeItem(PathToExpand))
 		{
-			TreeViewPtr->SetItemExpansion(*RootIt, true);
+			RecursiveExpandParents(FoundItem);
+			TreeViewPtr->SetItemExpansion(FoundItem, true);
 		}
 	}
 }
@@ -354,6 +368,7 @@ void SPathView::SetSelectedPaths(const TArray<FString>& Paths)
 
 	// If the selection was changed before all pending initial paths were found, stop attempting to select them
 	PendingInitialPaths.Empty();
+	bPendingInitialPathsNeedsSelectionClear = false;
 
 	// Clear the selection to start, then add the selected paths as they are found
 	LastSelectedPaths.Empty();
@@ -418,7 +433,7 @@ void SPathView::SetSelectedPaths(const TArray<FString>& Paths)
 				}
 
 				// Set the selection to the closest found folder and scroll it into view
-				LastSelectedPaths.Add(TreeItems.Last()->GetItem().GetVirtualPath());
+				LastSelectedPaths.Add(TreeItems.Last()->GetItem().GetInvariantPath());
 				TreeViewPtr->SetItemSelection(TreeItems.Last(), true);
 				TreeViewPtr->RequestScrollIntoView(TreeItems.Last());
 			}
@@ -441,6 +456,7 @@ void SPathView::ClearSelection()
 
 	// If the selection was changed before all pending initial paths were found, stop attempting to select them
 	PendingInitialPaths.Empty();
+	bPendingInitialPathsNeedsSelectionClear = false;
 
 	// Clear the selection to start, then add the selected paths as they are found
 	TreeViewPtr->ClearSelection();
@@ -487,7 +503,7 @@ TArray<FContentBrowserItem> SPathView::GetSelectedFolderItems() const
 	return SelectedFolders;
 }
 
-TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem, const bool bUserNamed)
+TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem, const bool bUserNamed, TArray<TSharedPtr<FTreeItem>>* OutItemsCreated)
 {
 	if (!ensure(TreeViewPtr.IsValid()))
 	{
@@ -500,6 +516,18 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 		// Not a folder
 		return nullptr;
 	}
+
+	// Clear selection if user has not changed it yet or this is the first pending initial path being selected
+	auto SelectingPendingInitialPath = [this]()
+	{
+		if (bPendingInitialPathsNeedsSelectionClear)
+		{
+			bPendingInitialPathsNeedsSelectionClear = false;
+
+			LastSelectedPaths.Empty();
+			TreeViewPtr->ClearSelection();
+		}
+	};
 
 	// The path view will add a node for each level of the path tree
 	TArray<FString> PathItemList;
@@ -515,7 +543,7 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 	{
 		const bool bIsLeafmostItem = PathItemIndex == PathItemList.Num() - 1;
 
-		const FString FolderNameStr = PathItemList[PathItemIndex];
+		const FString& FolderNameStr = PathItemList[PathItemIndex];
 		const FName FolderName = *FolderNameStr;
 		FPathViews::Append(CurrentPathStr, FolderNameStr);
 
@@ -543,7 +571,14 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 				// No match - create a new item
 				CurrentTreeItem = MakeShared<FTreeItem>(MoveTemp(InItem));
 				CurrentTreeItem->Parent = ParentTreeItem;
+				CurrentTreeItem->SetSortOverride(SortOverride);
 				CurrentTreeItems->Add(CurrentTreeItem);
+				if (OutItemsCreated)
+				{
+					OutItemsCreated->Add(CurrentTreeItem);
+				}
+
+				TreeItemLookup.Add(CurrentTreeItem->GetItem().GetVirtualPath(), CurrentTreeItem);
 
 				if (ParentTreeItem)
 				{
@@ -558,6 +593,7 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 				// If we have pending initial paths, and this path added the path, we should select it now
 				if (PendingInitialPaths.Num() > 0 && PendingInitialPaths.Contains(CurrentTreeItem->GetItem().GetVirtualPath()))
 				{
+					SelectingPendingInitialPath();
 					RecursiveExpandParents(CurrentTreeItem);
 					TreeViewPtr->SetItemSelection(CurrentTreeItem, true);
 					TreeViewPtr->RequestScrollIntoView(CurrentTreeItem);
@@ -584,7 +620,14 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 		{
 			CurrentTreeItem = MakeShared<FTreeItem>(FContentBrowserItemData(InItem.GetOwnerDataSource(), EContentBrowserItemFlags::Type_Folder, *CurrentPathStr, FolderName, FText(), nullptr));
 			CurrentTreeItem->Parent = ParentTreeItem;
+			CurrentTreeItem->SetSortOverride(SortOverride);
 			CurrentTreeItems->Add(CurrentTreeItem);
+			if (OutItemsCreated)
+			{
+				OutItemsCreated->Add(CurrentTreeItem);
+			}
+
+			TreeItemLookup.Add(CurrentTreeItem->GetItem().GetVirtualPath(), CurrentTreeItem);
 
 			if (ParentTreeItem)
 			{
@@ -599,6 +642,7 @@ TSharedPtr<FTreeItem> SPathView::AddFolderItem(FContentBrowserItemData&& InItem,
 			// If we have pending initial paths, and this path added the path, we should select it now
 			if (PendingInitialPaths.Num() > 0 && PendingInitialPaths.Contains(CurrentTreeItem->GetItem().GetVirtualPath()))
 			{
+				SelectingPendingInitialPath();
 				RecursiveExpandParents(CurrentTreeItem);
 				TreeViewPtr->SetItemSelection(CurrentTreeItem, true);
 				TreeViewPtr->RequestScrollIntoView(CurrentTreeItem);
@@ -628,7 +672,8 @@ bool SPathView::RemoveFolderItem(const FContentBrowserItemData& InItem)
 	}
 
 	// Find the folder in the tree
-	if (TSharedPtr<FTreeItem> ItemToRemove = FindItemRecursive(InItem.GetVirtualPath()))
+	const FName VirtualPath = InItem.GetVirtualPath();
+	if (TSharedPtr<FTreeItem> ItemToRemove = FindTreeItem(VirtualPath))
 	{
 		// Only fully remove this item if every sub-item is removed (items become invalid when empty)
 		ItemToRemove->RemoveItemData(InItem);
@@ -648,6 +693,8 @@ bool SPathView::RemoveFolderItem(const FContentBrowserItemData& InItem)
 			// This is a root item. Remove the folder from the root items list.
 			TreeRootItems.Remove(ItemToRemove);
 		}
+
+		TreeItemLookup.Remove(VirtualPath);
 
 		// Refresh the tree
 		TreeViewPtr->RequestTreeRefresh();
@@ -674,7 +721,7 @@ void SPathView::RenameFolderItem(const FContentBrowserItem& InItem)
 	}
 
 	// Find the folder in the tree
-	if (TSharedPtr<FTreeItem> ItemToRename = FindItemRecursive(InItem.GetVirtualPath()))
+	if (TSharedPtr<FTreeItem> ItemToRename = FindTreeItem(InItem.GetVirtualPath()))
 	{
 		ItemToRename->SetNamingFolder(true);
 
@@ -689,38 +736,19 @@ FContentBrowserDataCompiledFilter SPathView::CreateCompiledFolderFilter() const
 
 	FContentBrowserDataFilter DataFilter;
 	DataFilter.bRecursivePaths = true;
-
 	DataFilter.ItemTypeFilter = EContentBrowserItemTypeFilter::IncludeFolders;
+	DataFilter.ItemCategoryFilter = GetContentBrowserItemCategoryFilter();
+	DataFilter.ItemAttributeFilter = GetContentBrowserItemAttributeFilter();
 
-	DataFilter.ItemCategoryFilter = InitialCategoryFilter;
-	if (bAllowClassesFolder && ContentBrowserSettings->GetDisplayCppFolders())
-	{
-		DataFilter.ItemCategoryFilter |= EContentBrowserItemCategoryFilter::IncludeClasses;
-	}
-	else
-	{
-		DataFilter.ItemCategoryFilter &= ~EContentBrowserItemCategoryFilter::IncludeClasses;
-	}
-	DataFilter.ItemCategoryFilter &= ~EContentBrowserItemCategoryFilter::IncludeCollections;
-	
-	DataFilter.ItemAttributeFilter = EContentBrowserItemAttributeFilter::IncludeProject
-		| (ContentBrowserSettings->GetDisplayEngineFolder() ? EContentBrowserItemAttributeFilter::IncludeEngine : EContentBrowserItemAttributeFilter::IncludeNone)
-		| (ContentBrowserSettings->GetDisplayPluginFolders() ? EContentBrowserItemAttributeFilter::IncludePlugins : EContentBrowserItemAttributeFilter::IncludeNone)
-		| (ContentBrowserSettings->GetDisplayDevelopersFolder() ? EContentBrowserItemAttributeFilter::IncludeDeveloper : EContentBrowserItemAttributeFilter::IncludeNone)
-		| (ContentBrowserSettings->GetDisplayL10NFolder() ? EContentBrowserItemAttributeFilter::IncludeLocalized : EContentBrowserItemAttributeFilter::IncludeNone);
+	TSharedPtr<FPathPermissionList> CombinedFolderPermissionList = ContentBrowserUtils::GetCombinedFolderPermissionList(FolderPermissionList, bAllowReadOnlyFolders ? nullptr : WritableFolderPermissionList);
 
-	TSharedPtr<FBlacklistPaths> CombinedFolderBlacklist;
-	if ((FolderBlacklist && FolderBlacklist->HasFiltering()) || (WritableFolderBlacklist && WritableFolderBlacklist->HasFiltering() && !bAllowReadOnlyFolders))
+	if (CustomFolderPermissionList.IsValid())
 	{
-		CombinedFolderBlacklist = MakeShared<FBlacklistPaths>();
-		if (FolderBlacklist)
+		if (!CombinedFolderPermissionList.IsValid())
 		{
-			CombinedFolderBlacklist->Append(*FolderBlacklist);
+			CombinedFolderPermissionList = MakeShared<FPathPermissionList>();
 		}
-		if (WritableFolderBlacklist && !bAllowReadOnlyFolders)
-		{
-			CombinedFolderBlacklist->Append(*WritableFolderBlacklist);
-		}
+		CombinedFolderPermissionList->Append(*CustomFolderPermissionList);
 	}
 
 	if (PluginPathFilters.IsValid() && PluginPathFilters->Num() > 0 && ContentBrowserSettings->GetDisplayPluginFolders())
@@ -733,16 +761,16 @@ FContentBrowserDataCompiledFilter SPathView::CreateCompiledFolderFilter() const
 				FString MountedAssetPath = Plugin->GetMountedAssetPath();
 				MountedAssetPath.RemoveFromEnd(TEXT("/"), ESearchCase::CaseSensitive);
 
-				if (!CombinedFolderBlacklist.IsValid())
+				if (!CombinedFolderPermissionList.IsValid())
 				{
-					CombinedFolderBlacklist = MakeShared<FBlacklistPaths>();
+					CombinedFolderPermissionList = MakeShared<FPathPermissionList>();
 				}
-				CombinedFolderBlacklist->AddBlacklistItem("PluginPathFilters", MountedAssetPath);
+				CombinedFolderPermissionList->AddDenyListItem("PluginPathFilters", MountedAssetPath);
 			}
 		}
 	}
 
-	ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(FARFilter(), nullptr, CombinedFolderBlacklist, DataFilter);
+	ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(FARFilter(), nullptr, CombinedFolderPermissionList, DataFilter);
 
 	FContentBrowserDataCompiledFilter CompiledDataFilter;
 	{
@@ -751,6 +779,74 @@ FContentBrowserDataCompiledFilter SPathView::CreateCompiledFolderFilter() const
 		ContentBrowserData->CompileFilter(RootPath, DataFilter, CompiledDataFilter);
 	}
 	return CompiledDataFilter;
+}
+
+EContentBrowserItemCategoryFilter SPathView::GetContentBrowserItemCategoryFilter() const
+{
+	const UContentBrowserSettings* ContentBrowserSettings = GetDefault<UContentBrowserSettings>();
+	EContentBrowserItemCategoryFilter ItemCategoryFilter = InitialCategoryFilter;
+	if (bAllowClassesFolder && ContentBrowserSettings->GetDisplayCppFolders())
+	{
+		ItemCategoryFilter |= EContentBrowserItemCategoryFilter::IncludeClasses;
+	}
+	else
+	{
+		ItemCategoryFilter &= ~EContentBrowserItemCategoryFilter::IncludeClasses;
+	}
+	ItemCategoryFilter &= ~EContentBrowserItemCategoryFilter::IncludeCollections;
+
+	return ItemCategoryFilter;
+}
+
+EContentBrowserItemAttributeFilter SPathView::GetContentBrowserItemAttributeFilter() const
+{
+	const UContentBrowserSettings* ContentBrowserSettings = GetDefault<UContentBrowserSettings>();
+	return EContentBrowserItemAttributeFilter::IncludeProject
+			| (ContentBrowserSettings->GetDisplayEngineFolder() ? EContentBrowserItemAttributeFilter::IncludeEngine : EContentBrowserItemAttributeFilter::IncludeNone)
+			| (ContentBrowserSettings->GetDisplayPluginFolders() ? EContentBrowserItemAttributeFilter::IncludePlugins : EContentBrowserItemAttributeFilter::IncludeNone)
+			| (ContentBrowserSettings->GetDisplayDevelopersFolder() ? EContentBrowserItemAttributeFilter::IncludeDeveloper : EContentBrowserItemAttributeFilter::IncludeNone)
+			| (ContentBrowserSettings->GetDisplayL10NFolder() ? EContentBrowserItemAttributeFilter::IncludeLocalized : EContentBrowserItemAttributeFilter::IncludeNone);
+}
+
+bool SPathView::InternalPathPassesBlockLists(const FStringView InInternalPath, const int32 InAlreadyCheckedDepth) const
+{
+	TArray<const FPathPermissionList*, TInlineAllocator<2>> BlockLists;
+	if (FolderPermissionList.IsValid() && FolderPermissionList->HasFiltering())
+	{
+		BlockLists.Add(FolderPermissionList.Get());
+	}
+
+	if (!bAllowReadOnlyFolders && WritableFolderPermissionList.IsValid() && WritableFolderPermissionList->HasFiltering())
+	{
+		BlockLists.Add(WritableFolderPermissionList.Get());
+	}
+
+	for (const FPathPermissionList* Filter : BlockLists)
+	{
+		if (!Filter->PassesStartsWithFilter(InInternalPath))
+		{
+			return false;
+		}
+	}
+
+	if (InAlreadyCheckedDepth < 1 && PluginPathFilters.IsValid() && PluginPathFilters->Num() > 0)
+	{
+		const UContentBrowserSettings* ContentBrowserSettings = GetDefault<UContentBrowserSettings>();
+		if (ContentBrowserSettings->GetDisplayPluginFolders())
+		{
+			bool bHadClassesPrefix;
+			const FStringView FirstFolderName = FContentBrowserVirtualPathTree::GetMountPointFromPath(InInternalPath, bHadClassesPrefix);
+			if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(FirstFolderName))
+			{
+				if (!PluginPathFilters->PassesAllFilters(Plugin.ToSharedRef()))
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
 }
 
 void SPathView::SyncToItems(TArrayView<const FContentBrowserItem> ItemsToSync, const bool bAllowImplicitSync)
@@ -793,7 +889,7 @@ void SPathView::SyncToVirtualPaths(TArrayView<const FName> VirtualPathsToSync, c
 			{
 				UniqueVirtualPathsToSync.Add(VirtualPathToSync);
 
-				TSharedPtr<FTreeItem> Item = FindItemRecursive(VirtualPathToSync);
+				TSharedPtr<FTreeItem> Item = FindTreeItem(VirtualPathToSync);
 				if (Item.IsValid())
 				{
 					SyncTreeItems.Add(Item);
@@ -869,37 +965,18 @@ void SPathView::SyncToLegacy(TArrayView<const FAssetData> AssetDataList, TArrayV
 	SyncToVirtualPaths(VirtualPathsToSync, bAllowImplicitSync);
 }
 
-TSharedPtr<FTreeItem> SPathView::FindItemRecursive(const FName Path) const
+void SPathView::ClearTreeItems()
 {
-	TStringBuilder<FName::StringBufferSize> PathStr;
-	Path.ToString(PathStr);
+	TreeRootItems.Empty();
+	TreeViewPtr->ClearSelection();
+	TreeItemLookup.Empty();
+}
 
-	for (auto TreeItemIt = TreeRootItems.CreateConstIterator(); TreeItemIt; ++TreeItemIt)
+TSharedPtr<FTreeItem> SPathView::FindTreeItem(FName InPath) const
+{
+	if (const TWeakPtr<FTreeItem>* FoundWeak = TreeItemLookup.Find(InPath))
 	{
-		if ( (*TreeItemIt)->GetItem().GetVirtualPath() == Path)
-		{
-			// This root item is the path
-			return *TreeItemIt;
-		}
-
-		// Test whether the node we want is potentially under this root before recursing
-		{
-			TStringBuilder<FName::StringBufferSize> RootPathStr;
-			(*TreeItemIt)->GetItem().GetVirtualPath().ToString(RootPathStr);
-
-			if (!FStringView(PathStr).StartsWith(FStringView(RootPathStr)))
-			{
-				continue;
-			}
-		}
-
-		// Try to find the item under this root
-		TSharedPtr<FTreeItem> Item = (*TreeItemIt)->FindItemRecursive(Path);
-		if ( Item.IsValid() )
-		{
-			// The item was found under this root
-			return Item;
-		}
+		return FoundWeak->Pin();
 	}
 
 	return TSharedPtr<FTreeItem>();
@@ -930,7 +1007,9 @@ void SPathView::SaveSettings(const FString& IniFilename, const FString& IniSecti
 			SelectedPathsString += TEXT(",");
 		}
 
-		(*PathIt)->GetItem().GetVirtualPath().AppendString(SelectedPathsString);
+		FName InvariantPath;
+		IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath((*PathIt)->GetItem().GetVirtualPath(), InvariantPath);
+		InvariantPath.AppendString(SelectedPathsString);
 	}
 
 	GConfig->SetString(*IniSection, *(SettingsString + TEXT(".SelectedPaths")), *SelectedPathsString, IniFilename);
@@ -964,14 +1043,45 @@ void SPathView::LoadSettings(const FString& IniFilename, const FString& IniSecti
 		UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
 		const bool bDiscoveringAssets = ContentBrowserData->IsDiscoveringItems();
 
+		// Replace each path in NewSelectedPaths with virtual version of that path
+		for (FString& Path : NewSelectedPaths)
+		{
+			FNameBuilder PathBuffer;
+			IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(Path, PathBuffer);
+			Path = PathBuffer;
+		}
+
+
 		// Batch the selection changed event
 		FScopedSelectionChangedEvent ScopedSelectionChangedEvent(SharedThis(this));
 
+		bPendingInitialPathsNeedsSelectionClear = false;
+
 		if ( bDiscoveringAssets )
 		{
-			// Clear any previously selected paths
-			LastSelectedPaths.Empty();
-			TreeViewPtr->ClearSelection();
+			// Determine if any of the items already exist
+			bool bFoundAnyItemInTree = false;
+			for (const FString& Path : NewSelectedPaths)
+			{
+				if (TSharedPtr<FTreeItem> FoundItem = FindTreeItem(*Path))
+				{
+					bFoundAnyItemInTree = true;
+					break;
+				}
+			}
+
+			if (bFoundAnyItemInTree)
+			{
+				// Clear any previously selected paths
+				LastSelectedPaths.Empty();
+				TreeViewPtr->ClearSelection();
+			}
+			else
+			{
+				// Delay clear until first path discovered
+				// No clear occurs if selection changes during asset discovery
+				bPendingInitialPathsNeedsSelectionClear = true;
+			}
 
 			// If the selected paths is empty, the path was "All assets"
 			// This should handle that case properly
@@ -1062,11 +1172,11 @@ bool SPathView::ExplicitlyAddPathToSelection(const FName Path)
 		return false;
 	}
 
-	if (TSharedPtr<FTreeItem> FoundItem = FindItemRecursive(Path))
+	if (TSharedPtr<FTreeItem> FoundItem = FindTreeItem(Path))
 	{
 		// Set the selection to the closest found folder and scroll it into view
 		RecursiveExpandParents(FoundItem);
-		LastSelectedPaths.Add(FoundItem->GetItem().GetVirtualPath());
+		LastSelectedPaths.Add(FoundItem->GetItem().GetInvariantPath());
 		TreeViewPtr->SetItemSelection(FoundItem, true);
 		TreeViewPtr->RequestScrollIntoView(FoundItem);
 
@@ -1150,7 +1260,7 @@ void SPathView::TreeSelectionChanged( TSharedPtr< FTreeItem > TreeItem, ESelectI
 			}
 
 			// Keep track of the last paths that we broadcasted for selection reasons when filtering
-			LastSelectedPaths.Add(Item->GetItem().GetVirtualPath());
+			LastSelectedPaths.Add(Item->GetItem().GetInvariantPath());
 		}
 
 		if ( OnItemSelectionChanged.IsBound() )
@@ -1178,23 +1288,7 @@ void SPathView::TreeExpansionChanged( TSharedPtr< FTreeItem > TreeItem, bool bIs
 {
 	if ( ShouldAllowTreeItemChangedDelegate() )
 	{
-		TSet<TSharedPtr<FTreeItem>> ExpandedItemSet;
-		TreeViewPtr->GetExpandedItems(ExpandedItemSet);
-		const TArray<TSharedPtr<FTreeItem>> ExpandedItems = ExpandedItemSet.Array();
-
-		LastExpandedPaths.Empty();
-		for (int32 ItemIdx = 0; ItemIdx < ExpandedItems.Num(); ++ItemIdx)
-		{
-			const TSharedPtr<FTreeItem> Item = ExpandedItems[ItemIdx];
-			if ( !ensure(Item.IsValid()) )
-			{
-				// All items must exist
-				continue;
-			}
-
-			// Keep track of the last paths that we broadcasted for expansion reasons when filtering
-			LastExpandedPaths.Add(Item->GetItem().GetVirtualPath());
-		}
+		DirtyLastExpandedPaths();
 
 		if (!bIsExpanded)
 		{
@@ -1243,6 +1337,9 @@ FText SPathView::GetHighlightText() const
 
 void SPathView::Populate(const bool bIsRefreshingFilter)
 {
+	// Update the list of expanded path before removing the items
+	UpdateLastExpandedPathsIfDirty();
+
 	const bool bFilteringByText = !SearchBoxFolderFilter->GetRawFilterText().IsEmpty();
 
 	// Batch the selection changed event
@@ -1250,8 +1347,7 @@ void SPathView::Populate(const bool bIsRefreshingFilter)
 	FScopedSelectionChangedEvent ScopedSelectionChangedEvent(SharedThis(this), !bFilteringByText && !bIsRefreshingFilter);
 
 	// Clear all root items and clear selection
-	TreeRootItems.Empty();
-	TreeViewPtr->ClearSelection();
+	ClearTreeItems();
 
 	// Populate the view
 	{
@@ -1261,7 +1357,8 @@ void SPathView::Populate(const bool bIsRefreshingFilter)
 		UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
 		const FContentBrowserDataCompiledFilter CompiledDataFilter = CreateCompiledFolderFilter();
 
-		ContentBrowserData->EnumerateItemsMatchingFilter(CompiledDataFilter, [this, bFilteringByText, bDisplayEmpty, ContentBrowserData](FContentBrowserItemData&& InItemData)
+		TArray<TSharedPtr<FTreeItem>> ItemsCreated;
+		ContentBrowserData->EnumerateItemsMatchingFilter(CompiledDataFilter, [this, bFilteringByText, bDisplayEmpty, ContentBrowserData, &ItemsCreated](FContentBrowserItemData&& InItemData)
 		{
 			bool bPassesFilter = bDisplayEmpty || ContentBrowserData->IsFolderVisibleIfHidingEmpty(InItemData.GetVirtualPath());
 			if (bPassesFilter && bFilteringByText)
@@ -1273,10 +1370,15 @@ void SPathView::Populate(const bool bIsRefreshingFilter)
 
 			if (bPassesFilter)
 			{
-				if (TSharedPtr<FTreeItem> Item = AddFolderItem(MoveTemp(InItemData)))
+				// Using array of all items created to handle item expansion of fully virtual paths that may not be included in enumeration
+				ItemsCreated.Reset();
+				AddFolderItem(MoveTemp(InItemData), /*bUserNamed=*/ false, &ItemsCreated);
+
+				for (TSharedPtr<FTreeItem> Item : ItemsCreated)
 				{
-					const bool bSelectedItem = LastSelectedPaths.Contains(Item->GetItem().GetVirtualPath());
-					const bool bExpandedItem = LastExpandedPaths.Contains(Item->GetItem().GetVirtualPath());
+					const FName InvariantPath = Item->GetItem().GetInvariantPath();
+					const bool bSelectedItem = LastSelectedPaths.Contains(InvariantPath);
+					const bool bExpandedItem = LastExpandedPaths.Contains(InvariantPath);
 
 					if (bFilteringByText || bSelectedItem)
 					{
@@ -1311,81 +1413,126 @@ void SPathView::Populate(const bool bIsRefreshingFilter)
 	SortRootItems();
 }
 
-void SPathView::SortRootItems()
+void SPathView::DefaultSort(const FTreeItem* InTreeItem, TArray<TSharedPtr<FTreeItem>>& InChildren)
 {
-	// TODO: Make more abstract sorting via the new API?
-
-	// First sort the root items by their display name, but also making sure that content to appears before classes
-	TreeRootItems.Sort([](const TSharedPtr<FTreeItem>& One, const TSharedPtr<FTreeItem>& Two) -> bool
+	if (InChildren.Num() < 2)
 	{
-		static const FString ClassesPrefix = TEXT("Classes_");
+		return;
+	}
 
-		FString OneModuleName = One->GetItem().GetItemName().ToString();
-		const bool bOneIsClass = OneModuleName.StartsWith(ClassesPrefix);
-		if(bOneIsClass)
-		{
-			OneModuleName.MidInline(ClassesPrefix.Len(), MAX_int32, false);
-		}
+	static const FString ClassesPrefix = TEXT("Classes_");
 
-		FString TwoModuleName = Two->GetItem().GetItemName().ToString();
-		const bool bTwoIsClass = TwoModuleName.StartsWith(ClassesPrefix);
-		if(bTwoIsClass)
-		{
-			TwoModuleName.MidInline(ClassesPrefix.Len(), MAX_int32, false);
-		}
-
-		// We want to sort content before classes if both items belong to the same module
-		if(OneModuleName == TwoModuleName)
-		{
-			if(!bOneIsClass && bTwoIsClass)
-			{
-				return true;
-			}
-			return false;
-		}
-
-		return One->GetItem().GetDisplayName().ToString() < Two->GetItem().GetDisplayName().ToString();
-	});
-
-	// We have some manual sorting requirements that game must come before engine, and engine before everything else - we do that here after sorting everything by name
-	// The array below is in the inverse order as we iterate through and move each match to the beginning of the root items array
-	const TArray<FString> SpecialDefaultFolders = {
-		TEXT("Game"),
-		TEXT("Classes_Game"),
-		TEXT("Engine"),
-		TEXT("Classes_Engine"),
-	};
-
-	const FString ClassesPrefix = TEXT("Classes_");
-
-	struct FRootItemSortInfo
+	struct FItemSortInfo
 	{
+		// Name to display
 		FString FolderName;
 		float Priority;
 		int32 SpecialDefaultFolderPriority;
 		bool bIsClassesFolder;
+		TSharedPtr<FTreeItem> TreeItem;
+		// Name to use when comparing "MyPlugin" vs "Classes_MyPlugin", looking up a plugin by name and other situations
+		FName ItemNameWithoutClassesPrefix;
 	};
 
-	TMap<FTreeItem*, FRootItemSortInfo> SortInfoMap;
-	for (const TSharedPtr<FTreeItem>& RootItem : TreeRootItems)
+	TArray<FItemSortInfo> SortInfoArray;
+	SortInfoArray.Reserve(InChildren.Num());
+
+	const TArray<FName>& SpecialSortFolders = IContentBrowserDataModule::Get().GetSubsystem()->GetPathViewSpecialSortFolders();
+
+	// Generate information needed to perform sort
+	for (TSharedPtr<FTreeItem>& It : InChildren)
 	{
-		FRootItemSortInfo SortInfo;
-		SortInfo.FolderName = RootItem->GetItem().GetItemName().ToString();
-		SortInfo.bIsClassesFolder = SortInfo.FolderName.StartsWith(ClassesPrefix);
-		int32 SpecialDefaultFolderIdx = SpecialDefaultFolders.IndexOfByKey(SortInfo.FolderName);
+		FItemSortInfo& SortInfo = SortInfoArray.AddDefaulted_GetRef();
+		SortInfo.TreeItem = It;
+
+		const FName InvariantPathFName = It->GetItem().GetInvariantPath();
+		FNameBuilder InvariantPathBuilder(InvariantPathFName);
+		const FStringView InvariantPath(InvariantPathBuilder);
+
+		bool bIsRootInvariantFolder = false;
+		if (InvariantPath.Len() > 1)
+		{
+			FStringView RootInvariantFolder(InvariantPath);
+			RootInvariantFolder.RightChopInline(1);
+			int32 SecondSlashIndex = INDEX_NONE;
+			bIsRootInvariantFolder = !RootInvariantFolder.FindChar(TEXT('/'), SecondSlashIndex);
+		}
+
+		SortInfo.FolderName = It->GetItem().GetDisplayName().ToString();
+
+		SortInfo.bIsClassesFolder = false;
+		if (bIsRootInvariantFolder)
+		{
+			FNameBuilder ItemNameBuilder(It->GetItem().GetItemName());
+			const FStringView ItemNameView(ItemNameBuilder);
+			if (ItemNameView.StartsWith(ClassesPrefix))
+			{
+				SortInfo.bIsClassesFolder = true;
+				SortInfo.ItemNameWithoutClassesPrefix = FName(ItemNameView.RightChop(ClassesPrefix.Len()));
+			}
+
+			if (SortInfo.FolderName.StartsWith(ClassesPrefix))
+			{
+				SortInfo.bIsClassesFolder = true;
+				SortInfo.FolderName.RightChopInline(ClassesPrefix.Len(), false);
+			}
+		}
+
+		if (SortInfo.ItemNameWithoutClassesPrefix.IsNone())
+		{
+			SortInfo.ItemNameWithoutClassesPrefix = It->GetItem().GetItemName();
+		}
+
 		if (SortInfo.bIsClassesFolder)
 		{
-			SortInfo.FolderName.MidInline(ClassesPrefix.Len(), MAX_int32, false);
+			// Sort using a path without "Classes_" prefix
+			FStringView InvariantWithoutClassesPrefix(InvariantPath);
+			InvariantWithoutClassesPrefix.RightChopInline(1);
+			if (InvariantWithoutClassesPrefix.StartsWith(ClassesPrefix))
+			{
+				InvariantWithoutClassesPrefix.RightChopInline(ClassesPrefix.Len());
+				FNameBuilder Builder;
+				Builder.Append(TEXT("/"));
+				Builder.Append(InvariantWithoutClassesPrefix);
+				SortInfo.SpecialDefaultFolderPriority = SpecialSortFolders.IndexOfByKey(FName(Builder));
+			}
+			else
+			{
+				SortInfo.SpecialDefaultFolderPriority = SpecialSortFolders.IndexOfByKey(InvariantPathFName);
+			}
 		}
-		SortInfo.SpecialDefaultFolderPriority = SpecialDefaultFolderIdx != INDEX_NONE ? SpecialDefaultFolders.Num() - SpecialDefaultFolderIdx : 0;
-		SortInfo.Priority = SpecialDefaultFolderIdx == INDEX_NONE ? FContentBrowserSingleton::Get().GetPluginSettings(FName(*SortInfo.FolderName)).RootFolderSortPriority : 1.f;
-		SortInfoMap.Add(RootItem.Get(), SortInfo);
+		else
+		{
+			SortInfo.SpecialDefaultFolderPriority = SpecialSortFolders.IndexOfByKey(InvariantPathFName);
+		}
+
+		if (bIsRootInvariantFolder)
+		{
+			if (SortInfo.SpecialDefaultFolderPriority == INDEX_NONE)
+			{
+				SortInfo.Priority = FContentBrowserSingleton::Get().GetPluginSettings(SortInfo.ItemNameWithoutClassesPrefix).RootFolderSortPriority;
+			}
+			else
+			{
+				SortInfo.Priority = 1.f;
+			}
+		}
+		else
+		{
+			if (SortInfo.SpecialDefaultFolderPriority != INDEX_NONE)
+			{
+				SortInfo.Priority = 1.f;
+			}
+			else
+			{
+				SortInfo.Priority = 0.f;
+			}
+		}
 	}
 
-	
-	TreeRootItems.Sort([&SortInfoMap](const TSharedPtr<FTreeItem>& RootItemA, const TSharedPtr<FTreeItem>& RootItemB) {
-		const FRootItemSortInfo& SortInfoA = SortInfoMap.FindChecked(RootItemA.Get());
-		const FRootItemSortInfo& SortInfoB = SortInfoMap.FindChecked(RootItemB.Get());
+	// Perform sort
+	SortInfoArray.Sort([](const FItemSortInfo& SortInfoA, const FItemSortInfo& SortInfoB) -> bool
+	{
 		if (SortInfoA.Priority != SortInfoB.Priority)
 		{
 			// Not the same priority, use priority to sort
@@ -1394,19 +1541,50 @@ void SPathView::SortRootItems()
 		else if (SortInfoA.SpecialDefaultFolderPriority != SortInfoB.SpecialDefaultFolderPriority)
 		{
 			// Special folders use the index to sort. Non special folders are all set to 0.
-			return SortInfoA.SpecialDefaultFolderPriority > SortInfoB.SpecialDefaultFolderPriority;
-		}
-		else if (SortInfoA.FolderName != SortInfoB.FolderName)
-		{
-			// Two non special folders of the same priority, sort alphabetically
-			return SortInfoA.FolderName < SortInfoB.FolderName;
+			return SortInfoA.SpecialDefaultFolderPriority < SortInfoB.SpecialDefaultFolderPriority;
 		}
 		else
 		{
-			// Classes folders have the same name so sort them adjacent but under non-classes
-			return !SortInfoA.bIsClassesFolder;
+			// If either is a class folder and names without classes prefix are same
+			if ((SortInfoA.bIsClassesFolder != SortInfoB.bIsClassesFolder) && (SortInfoA.ItemNameWithoutClassesPrefix == SortInfoB.ItemNameWithoutClassesPrefix))
+			{
+				return !SortInfoA.bIsClassesFolder;
+			}
+
+			// Two non special folders of the same priority, sort alphabetically
+			const int32 CompareResult = UE::ComparisonUtility::CompareWithNumericSuffix(SortInfoA.FolderName, SortInfoB.FolderName);
+			if (CompareResult != 0)
+			{
+				return CompareResult < 0;
+			}
+			else
+			{
+				// Classes folders have the same name so sort them adjacent but under non-classes
+				return !SortInfoA.bIsClassesFolder;
+			}
 		}
 	});
+
+	// Replace with sorted array
+	TArray<TSharedPtr<FTreeItem>> NewList;
+	NewList.Reserve(SortInfoArray.Num());
+	for (const FItemSortInfo& It : SortInfoArray)
+	{
+		NewList.Add(It.TreeItem);
+	}
+	InChildren = MoveTemp(NewList);
+}
+
+void SPathView::SortRootItems()
+{
+	if (SortOverride.IsBound())
+	{
+		SortOverride.Execute(nullptr, TreeRootItems);
+	}
+	else
+	{
+		DefaultSort(nullptr, TreeRootItems);
+	}
 
 	TreeViewPtr->RequestTreeRefresh();
 }
@@ -1473,6 +1651,9 @@ void SPathView::FolderNameChanged( const TSharedPtr< FTreeItem >& TreeItem, cons
 		}
 		else
 		{
+			UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+			FScopedSuppressContentBrowserDataTick TickSuppression(ContentBrowserData);
+
 			if (PendingNewFolderContext.ValidateItem(ProposedName, &ErrorMessage))
 			{
 				NewItem = PendingNewFolderContext.FinalizeItem(ProposedName, &ErrorMessage);
@@ -1487,6 +1668,9 @@ void SPathView::FolderNameChanged( const TSharedPtr< FTreeItem >& TreeItem, cons
 	}
 	else if (CommitType != ETextCommit::OnCleared && !TreeItem->GetItem().GetItemName().ToString().Equals(ProposedName))
 	{
+		UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+		FScopedSuppressContentBrowserDataTick TickSuppression(ContentBrowserData);
+
 		if (TreeItem->GetItem().CanRename(&ProposedName, &ErrorMessage) && TreeItem->GetItem().Rename(ProposedName, &NewItem))
 		{
 			bSuccess = true;
@@ -1574,6 +1758,10 @@ void SPathView::RemoveFolderItem(const TSharedPtr< FTreeItem >& TreeItem)
 			TreeRootItems.Remove(TreeItem);
 		}
 
+		const FName VirtualPath = TreeItem->GetItem().GetVirtualPath();
+		ensure(!FindTreeItem(VirtualPath) || (FindTreeItem(VirtualPath) == TreeItem));
+		TreeItemLookup.Remove(VirtualPath);
+
 		TreeViewPtr->RequestTreeRefresh();
 	}
 }
@@ -1659,6 +1847,12 @@ void SPathView::HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUp
 		switch (ItemDataUpdate.GetUpdateType())
 		{
 		case EContentBrowserItemUpdateType::Added:
+			if (DoesItemPassFilter(ItemData))
+			{
+				AddFolderItem(CopyTemp(ItemData));
+			}
+			break;
+
 		case EContentBrowserItemUpdateType::Modified:
 			if (DoesItemPassFilter(ItemData))
 			{
@@ -1711,13 +1905,14 @@ void SPathView::HandleItemDataDiscoveryComplete()
 {
 	// If there were any more initial paths, they no longer exist so clear them now.
 	PendingInitialPaths.Empty();
+	bPendingInitialPathsNeedsSelectionClear = false;
 }
 
 bool SPathView::PathIsFilteredFromViewBySearch(const FString& InPath) const
 {
 	return !SearchBoxFolderFilter->GetRawFilterText().IsEmpty()
 		&& !SearchBoxFolderFilter->PassesFilter(InPath)
-		&& !FindItemRecursive(*InPath);
+		&& !FindTreeItem(*InPath);
 }
 
 void SPathView::HandleSettingChanged(FName PropertyName)
@@ -1727,47 +1922,33 @@ void SPathView::HandleSettingChanged(FName PropertyName)
 		(PropertyName == "DisplayEngineFolder") ||
 		(PropertyName == "DisplayPluginFolders") ||
 		(PropertyName == "DisplayL10NFolder") ||
+		(PropertyName == GET_MEMBER_NAME_CHECKED(UContentBrowserSettings, bDisplayContentFolderSuffix)) ||
+		(PropertyName == GET_MEMBER_NAME_CHECKED(UContentBrowserSettings, bDisplayFriendlyNameForPluginFolders)) ||
 		(PropertyName == NAME_None))	// @todo: Needed if PostEditChange was called manually, for now
 	{
-		// If the dev or engine folder is no longer visible but we're inside it...
-		const bool bDisplayEmpty = GetDefault<UContentBrowserSettings>()->DisplayEmptyFolders;
-		const bool bDisplayDev = GetDefault<UContentBrowserSettings>()->GetDisplayDevelopersFolder();
-		const bool bDisplayEngine = GetDefault<UContentBrowserSettings>()->GetDisplayEngineFolder();
-		const bool bDisplayPlugins = GetDefault<UContentBrowserSettings>()->GetDisplayPluginFolders();
-		const bool bDisplayL10N = GetDefault<UContentBrowserSettings>()->GetDisplayL10NFolder();
-		if (!bDisplayEmpty || !bDisplayDev || !bDisplayEngine || !bDisplayPlugins || !bDisplayL10N)
-		{
-			const TArray<FContentBrowserItem> OldSelectedItems = GetSelectedFolderItems();
-			if (OldSelectedItems.Num() > 0)
-			{
-				const FContentBrowserItem& OldSelectedItem = OldSelectedItems[0];
-				UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
-
-				if ((!bDisplayEmpty && !ContentBrowserData->IsFolderVisibleIfHidingEmpty(OldSelectedItem.GetVirtualPath())) ||
-					(!bDisplayDev && ContentBrowserUtils::IsItemDeveloperContent(OldSelectedItem)) ||
-					(!bDisplayEngine && ContentBrowserUtils::IsItemEngineContent(OldSelectedItem)) ||
-					(!bDisplayPlugins && ContentBrowserUtils::IsItemPluginContent(OldSelectedItem)) ||
-					(!bDisplayL10N && ContentBrowserUtils::IsItemLocalizedContent(OldSelectedItem))
-					)
-				{
-					// Set the folder back to the root, and refresh the contents
-					TSharedPtr<FTreeItem> GameRoot = FindItemRecursive(TEXT("/Game"));
-					if (GameRoot.IsValid())
-					{
-						TreeViewPtr->SetSelection(GameRoot);
-					}
-					else
-					{
-						TreeViewPtr->ClearSelection();
-					}
-				}
-			}
-		}
+		const bool bHadSelectedPath = TreeViewPtr->GetNumItemsSelected() > 0;
 
 		// Update our path view so that it can include/exclude the dev folder
 		Populate();
 
+		// If folder is no longer visible but we're inside it...
+		if (TreeViewPtr->GetNumItemsSelected() == 0 && bHadSelectedPath)
+		{
+			for (const FName VirtualPath : GetDefaultPathsToSelect())
+			{
+				if (TSharedPtr<FTreeItem> TreeItemToSelect = FindTreeItem(VirtualPath))
+				{
+					TreeViewPtr->SetSelection(TreeItemToSelect);
+					break;
+				}
+			}
+		}
+
 		// If the dev or engine folder has become visible and we're inside it...
+		const bool bDisplayDev = GetDefault<UContentBrowserSettings>()->GetDisplayDevelopersFolder();
+		const bool bDisplayEngine = GetDefault<UContentBrowserSettings>()->GetDisplayEngineFolder();
+		const bool bDisplayPlugins = GetDefault<UContentBrowserSettings>()->GetDisplayPluginFolders();
+		const bool bDisplayL10N = GetDefault<UContentBrowserSettings>()->GetDisplayL10NFolder();
 		if (bDisplayDev || bDisplayEngine || bDisplayPlugins || bDisplayL10N)
 		{
 			const TArray<FContentBrowserItem> NewSelectedItems = GetSelectedFolderItems();
@@ -1789,6 +1970,73 @@ void SPathView::HandleSettingChanged(FName PropertyName)
 	}
 }
 
+TArray<FName> SPathView::GetDefaultPathsToSelect() const
+{
+	TArray<FName> VirtualPaths;
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().GetModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+	if (!ContentBrowserModule.GetDefaultSelectedPathsDelegate().ExecuteIfBound(VirtualPaths))
+	{
+		VirtualPaths.Add(IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(TEXT("/Game")));
+	}
+
+	return VirtualPaths;
+}
+
+TArray<FName> SPathView::GetRootPathItemNames() const
+{
+	TArray<FName> RootPathItemNames;
+	RootPathItemNames.Reserve(TreeRootItems.Num());
+	for (const TSharedPtr<FTreeItem>& RootItem : TreeRootItems)
+	{
+		if (RootItem.IsValid())
+		{
+			RootPathItemNames.Add(RootItem->GetItem().GetItemName());
+		}
+	}
+
+	return RootPathItemNames;
+}
+
+TArray<FName> SPathView::GetDefaultPathsToExpand() const
+{
+	TArray<FName> VirtualPaths;
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().GetModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+	if (!ContentBrowserModule.GetDefaultPathsToExpandDelegate().ExecuteIfBound(VirtualPaths))
+	{
+		VirtualPaths.Add(IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(TEXT("/Game")));
+	}
+
+	return VirtualPaths;
+}
+
+void SPathView::DirtyLastExpandedPaths()
+{
+	bLastExpandedPathsDirty = true;
+}
+
+void SPathView::UpdateLastExpandedPathsIfDirty()
+{
+	if (bLastExpandedPathsDirty)
+	{
+		TSet<TSharedPtr<FTreeItem>> ExpandedItemSet;
+		TreeViewPtr->GetExpandedItems(ExpandedItemSet);
+
+		LastExpandedPaths.Empty(ExpandedItemSet.Num());
+		for (const TSharedPtr<FTreeItem>& Item : ExpandedItemSet)
+		{
+			if (!ensure(Item.IsValid()))
+			{
+				// All items must exist
+				continue;
+			}
+
+			// Keep track of the last paths that we broadcasted for expansion reasons when filtering
+			LastExpandedPaths.Add(Item->GetItem().GetInvariantPath());
+		}
+
+		bLastExpandedPathsDirty = false;
+	}
+}
 
 void SFavoritePathView::Construct(const FArguments& InArgs)
 {
@@ -1815,8 +2063,7 @@ void SFavoritePathView::Populate(const bool bIsRefreshingFilter)
 	FScopedPreventTreeItemChangedDelegate DelegatePrevention(SharedThis(this));
 
 	// Clear all root items and clear selection
-	TreeRootItems.Empty();
-	TreeViewPtr->ClearSelection();
+	ClearTreeItems();
 
 	const TArray<FString>& FavoritePaths = ContentBrowserUtils::GetFavoriteFolders();
 	if (FavoritePaths.Num() > 0)
@@ -1824,8 +2071,12 @@ void SFavoritePathView::Populate(const bool bIsRefreshingFilter)
 		UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
 		const FContentBrowserDataCompiledFilter CompiledDataFilter = CreateCompiledFolderFilter();
 
-		for (const FString& Path : FavoritePaths)
+		for (const FString& InvariantPath : FavoritePaths)
 		{
+			FName VirtualPath;
+			IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(InvariantPath, VirtualPath);
+			const FString Path = VirtualPath.ToString();
+
 			// Use the whole path so we deliberately include any children of matched parents in the filtered list
 			if (SearchBoxFolderFilter->PassesFilter(Path))
 			{
@@ -1836,7 +2087,7 @@ void SFavoritePathView::Populate(const bool bIsRefreshingFilter)
 					{
 						if (TSharedPtr<FTreeItem> Item = AddFolderItem(MoveTemp(InItemData)))
 						{
-							const bool bSelectedItem = LastSelectedPaths.Contains(Item->GetItem().GetVirtualPath());
+							const bool bSelectedItem = LastSelectedPaths.Contains(Item->GetItem().GetInvariantPath());
 
 							if (bSelectedItem)
 							{
@@ -1899,8 +2150,10 @@ void SFavoritePathView::LoadSettings(const FString& IniFilename, const FString& 
 			// This should handle that case properly
 			for (int32 PathIdx = 0; PathIdx < NewFavoritePaths.Num(); ++PathIdx)
 			{
-				const FString& Path = NewFavoritePaths[PathIdx];
-				ContentBrowserUtils::AddFavoriteFolder(Path, false);
+				const FString& InvariantPath = NewFavoritePaths[PathIdx];
+				FName VirtualPath;
+				IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(FStringView(InvariantPath), VirtualPath);
+				ContentBrowserUtils::AddFavoriteFolder(VirtualPath.ToString(), false);
 				bAddedAtLeastOnePath = true;
 			}
 		}
@@ -1912,7 +2165,7 @@ void SFavoritePathView::LoadSettings(const FString& IniFilename, const FString& 
 	}
 }
 
-TSharedPtr<FTreeItem> SFavoritePathView::AddFolderItem(FContentBrowserItemData&& InItem, const bool bUserNamed)
+TSharedPtr<FTreeItem> SFavoritePathView::AddFolderItem(FContentBrowserItemData&& InItem, const bool bUserNamed, TArray<TSharedPtr<FTreeItem>>* OutItemsCreated)
 {
 	if (!ensure(TreeViewPtr.IsValid()))
 	{
@@ -1936,8 +2189,14 @@ TSharedPtr<FTreeItem> SFavoritePathView::AddFolderItem(FContentBrowserItemData&&
 	// No match - create a new item
 	TSharedPtr<FTreeItem> CurrentTreeItem = MakeShared<FTreeItem>(MoveTemp(InItem));
 	TreeRootItems.Add(CurrentTreeItem);
+	TreeItemLookup.Add(CurrentTreeItem->GetItem().GetVirtualPath(), CurrentTreeItem);
 	//TreeViewPtr->SetSelection(CurrentTreeItem);
 	TreeViewPtr->RequestTreeRefresh();
+	if (OutItemsCreated)
+	{
+		OutItemsCreated->Add(CurrentTreeItem);
+	}
+
 	return CurrentTreeItem;
 }
 
@@ -1970,9 +2229,11 @@ void SFavoritePathView::HandleItemDataUpdated(TArrayView<const FContentBrowserIt
 	TSet<FName> FavoritePaths;
 	{
 		const TArray<FString>& FavoritePathStrs = ContentBrowserUtils::GetFavoriteFolders();
-		for (const FString& Path : FavoritePathStrs)
+		for (const FString& InvariantPath : FavoritePathStrs)
 		{
-			FavoritePaths.Add(*Path);
+			FName VirtualPath;
+			IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(InvariantPath, VirtualPath);
+			FavoritePaths.Add(VirtualPath);
 		}
 	}
 	if (FavoritePaths.Num() == 0)
@@ -2038,6 +2299,12 @@ void SFavoritePathView::HandleItemDataUpdated(TArrayView<const FContentBrowserIt
 		switch (ItemDataUpdate.GetUpdateType())
 		{
 		case EContentBrowserItemUpdateType::Added:
+			if (DoesItemPassFilter(ItemData))
+			{
+				AddFolderItem(CopyTemp(ItemData));
+			}
+			break;
+
 		case EContentBrowserItemUpdateType::Modified:
 			if (DoesItemPassFilter(ItemData))
 			{
@@ -2096,7 +2363,7 @@ void SFavoritePathView::FixupFavoritesFromExternalChange(TArrayView<const AssetV
 			// Add the new path to favorites instead
 			const FString& NewPath = MovedFolder.Value;
 			ContentBrowserUtils::AddFavoriteFolder(NewPath, false);
-			TSharedPtr<FTreeItem> Item = FindItemRecursive(*NewPath);
+			TSharedPtr<FTreeItem> Item = FindTreeItem(*NewPath);
 			if (Item.IsValid())
 			{
 				TreeViewPtr->SetItemSelection(Item, true);

@@ -28,8 +28,8 @@ DECLARE_CYCLE_STAT(TEXT("Send Fixture Group Item"), STAT_DMXPixelMaping_FixtureG
 UDMXPixelMappingFixtureGroupItemComponent::UDMXPixelMappingFixtureGroupItemComponent()
 	: DownsamplePixelIndex(0)
 {
-	SizeX = 25.f;
-	SizeY = 25.f;
+	SizeX = 32.f;
+	SizeY = 32.f;
 
 	ColorMode = EDMXColorMode::CM_RGB;
 	AttributeRExpose = AttributeGExpose = AttributeBExpose = true;
@@ -43,7 +43,6 @@ UDMXPixelMappingFixtureGroupItemComponent::UDMXPixelMappingFixtureGroupItemCompo
 	ZOrder = 2;
 #endif // WITH_EDITOR
 }
-
 
 void UDMXPixelMappingFixtureGroupItemComponent::PostLoad()
 {
@@ -205,8 +204,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::QueueDownsample()
 	// Store pixel position
 	DownsamplePixelIndex = RendererComponent->GetDownsamplePixelNum();
 	
-	const uint32 TextureSizeX = InputTexture->Resource->GetSizeX();
-	const uint32 TextureSizeY = InputTexture->Resource->GetSizeY();
+	const uint32 TextureSizeX = InputTexture->GetResource()->GetSizeX();
+	const uint32 TextureSizeY = InputTexture->GetResource()->GetSizeY();
 	check(TextureSizeX > 0 && TextureSizeY > 0);
 	const FIntPoint PixelPosition = RendererComponent->GetPixelPosition(DownsamplePixelIndex);
 	const FVector2D UV = FVector2D(PositionX / TextureSizeX, PositionY / TextureSizeY);

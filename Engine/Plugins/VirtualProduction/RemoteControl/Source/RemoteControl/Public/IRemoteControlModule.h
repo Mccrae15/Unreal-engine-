@@ -18,6 +18,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FExposedProperty;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 struct FRemoteControlProperty;
+class IRemoteControlPropertyFactory;
 
 /**
  * Delegate called to initialize an exposed entity metadata entry registered with the RegisterDefaultEntityMetadata method.
@@ -101,10 +102,26 @@ enum class ERCAccess : uint8
 };
 
 /**
+ * Type of operation to perform when setting a remote property's value
+ */
+UENUM()
+enum class ERCModifyOperation : uint8
+{
+	EQUAL,
+	ADD,
+	SUBTRACT,
+	MULTIPLY,
+	DIVIDE
+};
+
+/**
  * Reference to a UObject or one of its properties
  */
 struct FRCObjectReference
 {
+	/** Callback type for post set object properties */
+	using FPostSetObjectPropertyCallback = TFunction<bool(UObject* /*InObject*/, const FRCFieldPathInfo& /*InPathInfo*/, bool /*bInSuccess*/)>;
+	
 	FRCObjectReference() = default;
 
 	FRCObjectReference(ERCAccess InAccessType, UObject* InObject)
@@ -262,9 +279,10 @@ public:
 	 * @param Backend the struct deserializer backend to use to deserialize the object properties.
 	 * @param InPayloadType the payload type archive.
 	 * @param InInterceptPayload the payload reference archive for the interception.
+	 * @param Operation the type of operation to perform when setting the value.
 	 * @return true if the deserialization succeeded
 	 */
-	virtual bool SetObjectProperties(const FRCObjectReference& ObjectAccess, IStructDeserializerBackend& Backend, ERCPayloadType InPayloadType = ERCPayloadType::Json, const TArray<uint8>& InInterceptPayload = TArray<uint8>()) = 0;
+	virtual bool SetObjectProperties(const FRCObjectReference& ObjectAccess, IStructDeserializerBackend& Backend, ERCPayloadType InPayloadType = ERCPayloadType::Json, const TArray<uint8>& InInterceptPayload = TArray<uint8>(), ERCModifyOperation Operation = ERCModifyOperation::EQUAL) = 0;
 
 	/**
 	 * Reset the property or the object the Object Reference is pointing to
@@ -340,4 +358,20 @@ public:
 	 * Returns whether the property can be modified through SetObjectProperties when running without an editor.
 	 */
 	virtual bool PropertySupportsRawModificationWithoutEditor(FProperty* Property, UClass* OwnerClass = nullptr) const = 0;
+
+	/**
+	 * Register factory 
+	 * @param InFactoryName the factory unique name
+	 * @param InFactory Factory instance
+	 */
+	virtual void RegisterEntityFactory( const FName InFactoryName, const TSharedRef<IRemoteControlPropertyFactory>& InFactory) = 0;
+
+	/**
+	 * Remove factory by name
+	 * @param InFactoryName the factory unique name
+	 */
+	virtual void UnregisterEntityFactory( const FName InFactoryName ) = 0;
+
+	/** Get map of the factories which is responsible for the Remote Control property creation */
+	virtual const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& GetEntityFactories() const = 0;
 };

@@ -18,13 +18,6 @@
 	#endif
 #endif
 
-// Temporarily disable AsyncIODelete on Mac until we can diagnose why it's failing
-#if PLATFORM_MAC
-#define ASYNCIODELETE_ASYNC_ENABLED 0
-#else
-#define ASYNCIODELETE_ASYNC_ENABLED 1
-#endif
-
 class FEvent;
 
 /**
@@ -53,9 +46,10 @@ public:
 	/**
 	 * Set the TempRoot directory used to hold the deleted directories from elsewhere.  The FAsyncIODelete takes ownership of this directory, and deletes it when destructed or when it is changed.
 	 * If the FAsyncIODelete has already been used to delete files, this Set will block until all deletes are finished.
+	 * If the given TempRoot is unavailable, falls back to _digit suffixes.
 	 */
 	void SetTempRoot(const FStringView& InOwnedTempRoot);
-	FStringView GetTempRoot() const { return TempRoot; }
+	FStringView GetTempRoot() const { return TempRoot.IsEmpty() ? RequestedTempRoot : TempRoot; }
 
 	/**
 	 * Set whether new background deletes are paused.  If paused, paths will be moved immediately but will not be deleted from the temporary location until unpaused (or at the FAsyncIODelete's destruction).
@@ -67,9 +61,8 @@ public:
 	/**
 	 * Prepare the directory on disk.  Called OnDemand from the other interface functions.  Can also be called if desired by client code.
 	 * May take a long time to run if cleanup from a crashed previous process is required.
-	 * @return False if the TempRoot directory could not be constructed; calls to DeleteDirectory will fail in this case
 	 */
-	bool Setup();
+	void Setup();
 
 	/** Synchronously wait for all tasks to complete, and remove the temproot. */
 	void Teardown();
@@ -100,11 +93,14 @@ public:
 	/** Synchronously wait for all deletes to complete.  */
 	bool WaitForAllTasks(float TimeLimitSeconds = 0.0f);
 
+	static bool AsyncEnabled()
+	{
+		return FPlatformMisc::SupportsMultithreadedFileHandles();
+	}
+
 private:
-#if ASYNCIODELETE_ASYNC_ENABLED
 	/** Update the ActiveTaskCount and events for a task completing */
 	void OnTaskComplete();
-#endif
 
 	enum class EPathType
 	{
@@ -114,27 +110,23 @@ private:
 	/** Asynchronously delete a file or directory.  We handle both in the same function, but we want the interface to be explicit. */
 	bool Delete(const FStringView& PathToDelete, EPathType ExpectedType);
 
-#if ASYNCIODELETE_ASYNC_ENABLED
 	/** Create and store the task to delete the given Directory or File */
 	void CreateDeleteTask(const FStringView& InDeletePath, EPathType PathType);
-#endif
 
 	/** Delete the given path synchronously; called from a task or in error fallback cases from the public thread */
 	bool SynchronousDelete(const TCHAR* InDeletePath, EPathType PathType);
 
-#if ASYNCIODELETE_ASYNC_ENABLED
-	bool DeleteTempRootDirectory(uint32& OutErrorCode);
-#endif
+	bool TryPurgeTempRootFamily(FString* OutNextTempRoot);
 
-	FString	TempRoot;
-#if ASYNCIODELETE_ASYNC_ENABLED
+	FString	RequestedTempRoot; 
+	FString TempRoot;
 	TArray<FString> PausedDeletes;
 	FCriticalSection CriticalSection; // We use a CriticalSection instead of a TAtomic ActiveTaskCount so that we can atomically { trigger TasksComplete if ActiveTaskCount == 0 }
 	FEvent* TasksComplete = nullptr;
 	uint32 ActiveTaskCount = 0;
 	uint32 DeleteCounter = 0;
-#endif
 	bool bInitialized = false;
+	bool bAsyncInitialized = false;
 	bool bPaused = false;
 
 #if WITH_ASYNCIODELETE_DEBUG

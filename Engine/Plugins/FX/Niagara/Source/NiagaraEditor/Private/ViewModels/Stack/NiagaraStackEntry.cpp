@@ -4,11 +4,13 @@
 #include "ViewModels/Stack/NiagaraStackErrorItem.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
+#include "ViewModels/Stack/NiagaraStackItemGroup.h"
 #include "NiagaraStackEditorData.h"
 #include "NiagaraScriptMergeManager.h"
 #include "Misc/SecureHash.h"
 #include "ScopedTransaction.h"
 
+class UNiagaraStackItemGroup;
 const FName UNiagaraStackEntry::FExecutionCategoryNames::System = TEXT("System");
 const FName UNiagaraStackEntry::FExecutionCategoryNames::Emitter = TEXT("Emitter");
 const FName UNiagaraStackEntry::FExecutionCategoryNames::Particle = TEXT("Particle");
@@ -217,6 +219,11 @@ UObject* UNiagaraStackEntry::GetDisplayedObject() const
 	return nullptr;
 }
 
+FGuid UNiagaraStackEntry::GetSelectionId() const
+{
+	return FGuid();
+}
+
 UNiagaraStackEditorData& UNiagaraStackEntry::GetStackEditorData() const
 {
 	return *StackEditorData;
@@ -235,6 +242,11 @@ FText UNiagaraStackEntry::GetTooltipText() const
 bool UNiagaraStackEntry::GetCanExpand() const
 {
 	return true;
+}
+
+bool UNiagaraStackEntry::GetCanExpandInOverview() const
+{
+	return false;
 }
 
 bool UNiagaraStackEntry::IsExpandedByDefault() const
@@ -286,6 +298,32 @@ void UNiagaraStackEntry::SetIsExpanded_Recursive(bool bInExpanded)
 	ExpansionChangedDelegate.Broadcast();
 }
 
+bool UNiagaraStackEntry::GetIsExpandedInOverview() const
+{
+	if (GetCanExpandInOverview() == false)
+	{
+		// Entries that can't expand are always expanded.
+		return true;
+	}
+
+	if (bIsExpandedInOverviewCache.IsSet() == false)
+	{
+		bIsExpandedInOverviewCache = StackEditorData->GetStackEntryIsExpandedInOverview(GetStackEditorDataKey(), IsExpandedByDefault());
+	}
+	return bIsExpandedInOverviewCache.GetValue();
+}
+
+void UNiagaraStackEntry::SetIsExpandedInOverview(bool bInExpanded)
+{
+	if (StackEditorData && GetCanExpandInOverview())
+	{
+		StackEditorData->SetStackEntryIsExpandedInOverview(GetStackEditorDataKey(), bInExpanded);
+	}
+
+	bIsExpandedInOverviewCache.Reset();
+	ExpansionInOverviewChangedDelegate.Broadcast();	
+}
+
 bool UNiagaraStackEntry::GetIsEnabled() const
 {
 	return true;
@@ -311,17 +349,12 @@ UNiagaraStackEntry::EStackRowStyle UNiagaraStackEntry::GetStackRowStyle() const
 	return EStackRowStyle::None;
 }
 
-bool UNiagaraStackEntry::HasFrontDivider() const
+bool UNiagaraStackEntry::GetShouldShowInStack() const
 {
-	UNiagaraStackEntry* Outer = Cast<UNiagaraStackEntry>(GetOuter());
-	if (Outer == nullptr)
-	{
-		return false;
-	}
-	return Outer->HasFrontDivider();
+	return true;
 }
 
-bool UNiagaraStackEntry::GetShouldShowInStack() const
+bool UNiagaraStackEntry::GetShouldShowInOverview() const
 {
 	return true;
 }
@@ -353,6 +386,27 @@ void UNiagaraStackEntry::GetFilteredChildren(TArray<UNiagaraStackEntry*>& OutFil
 		}
 	}
 	OutFilteredChildren.Append(FilteredChildren);
+}
+
+void UNiagaraStackEntry::GetCustomFilteredChildren(TArray<UNiagaraStackEntry*>& OutFilteredChildren, const TArray<FOnFilterChild>& CustomChildFilters) const
+{
+	for (UNiagaraStackEntry* Child : Children)
+	{
+		bool bPassesFilter = true;
+		for (const FOnFilterChild& ChildFilter : CustomChildFilters)
+		{
+			if (ChildFilter.Execute(*Child) == false)
+			{
+				bPassesFilter = false;
+				break;
+			}
+		}
+
+		if (bPassesFilter)
+		{
+			OutFilteredChildren.Add(Child);
+		}
+	}
 }
 
 void UNiagaraStackEntry::GetUnfilteredChildren(TArray<UNiagaraStackEntry*>& OutUnfilteredChildren) const
@@ -389,6 +443,11 @@ TSharedPtr<FNiagaraEmitterViewModel> UNiagaraStackEntry::GetEmitterViewModel() c
 UNiagaraStackEntry::FOnExpansionChanged& UNiagaraStackEntry::OnExpansionChanged()
 {
 	return ExpansionChangedDelegate;
+}
+
+UNiagaraStackEntry::FOnExpansionChanged& UNiagaraStackEntry::OnExpansionInOverviewChanged()
+{
+	return ExpansionInOverviewChangedDelegate;
 }
 
 UNiagaraStackEntry::FOnStructureChanged& UNiagaraStackEntry::OnStructureChanged()
@@ -573,6 +632,7 @@ void UNiagaraStackEntry::RefreshChildren()
 	for (UNiagaraStackEntry* Child : Children)
 	{
 		Child->OnExpansionChanged().RemoveAll(this);
+		Child->OnExpansionInOverviewChanged().RemoveAll(this);
 		Child->OnStructureChanged().RemoveAll(this);
 		Child->OnDataObjectModified().RemoveAll(this);
 		Child->OnRequestFullRefresh().RemoveAll(this);
@@ -587,6 +647,7 @@ void UNiagaraStackEntry::RefreshChildren()
 	for (UNiagaraStackErrorItem* ErrorChild : ErrorChildren)
 	{
 		ErrorChild->OnExpansionChanged().RemoveAll(this);
+		ErrorChild->OnExpansionInOverviewChanged().RemoveAll(this);
 		ErrorChild->OnStructureChanged().RemoveAll(this);
 		ErrorChild->OnDataObjectModified().RemoveAll(this);
 		ErrorChild->OnRequestFullRefresh().RemoveAll(this);
@@ -606,7 +667,7 @@ void UNiagaraStackEntry::RefreshChildren()
 	// they weren't reused.
 	for (UNiagaraStackEntry* Child : Children)
 	{
-		if (NewChildren.Contains(Child) == false && Child->GetOuter() == this)
+		if (!NewChildren.Contains(Child) && Child->GetOuter() == this)
 		{
 			Child->Finalize();
 		}
@@ -618,11 +679,12 @@ void UNiagaraStackEntry::RefreshChildren()
 	for (UNiagaraStackEntry* Child : Children)
 	{
 		UNiagaraStackEntry* OuterOwner = Cast<UNiagaraStackEntry>(Child->GetOuter());
-		Child->IndentLevel = GetChildIndentLevel();
+		Child->IndentLevel = GetChildIndentLevel() + (Child->IsSemanticChild() ? 1 : 0);
 		Child->bOwnerIsEnabled = OuterOwner == nullptr || (OuterOwner->GetIsEnabled() && OuterOwner->GetOwnerIsEnabled());
 		Child->RefreshChildren();
 		Child->OnStructureChanged().AddUObject(this, &UNiagaraStackEntry::ChildStructureChanged);
 		Child->OnExpansionChanged().AddUObject(this, &UNiagaraStackEntry::ChildExpansionChanged);
+		Child->OnExpansionInOverviewChanged().AddUObject(this, &UNiagaraStackEntry::ChildExpansionInOverviewChanged);
 		Child->OnDataObjectModified().AddUObject(this, &UNiagaraStackEntry::ChildDataObjectModified);
 		Child->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackEntry::ChildRequestFullRefresh);
 		Child->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackEntry::ChildRequestFullRefreshDeferred);
@@ -645,6 +707,7 @@ void UNiagaraStackEntry::RefreshChildren()
 		ErrorChild->RefreshChildren();
 		ErrorChild->OnStructureChanged().AddUObject(this, &UNiagaraStackEntry::ChildStructureChanged);
 		ErrorChild->OnExpansionChanged().AddUObject(this, &UNiagaraStackEntry::ChildExpansionChanged);
+		ErrorChild->OnExpansionInOverviewChanged().AddUObject(this, &UNiagaraStackEntry::ChildExpansionInOverviewChanged);
 		ErrorChild->OnDataObjectModified().AddUObject(this, &UNiagaraStackEntry::ChildDataObjectModified);
 		ErrorChild->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackEntry::ChildRequestFullRefresh);
 		ErrorChild->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackEntry::ChildRequestFullRefreshDeferred);
@@ -692,7 +755,7 @@ void UNiagaraStackEntry::RefreshStackErrorChildren()
 	{
 		const FStackIssue& Issue = StackIssues[i];
 		UNiagaraStackErrorItem* ErrorEntry = nullptr;
-		UNiagaraStackErrorItem** Found = ErrorChildren.FindByPredicate(
+		TObjectPtr<UNiagaraStackErrorItem>* Found = ErrorChildren.FindByPredicate(
 			[&](UNiagaraStackErrorItem* CurrentChild) { return CurrentChild->GetStackIssue().GetUniqueIdentifier() == Issue.GetUniqueIdentifier(); });
 		if (Found == nullptr)
 		{
@@ -832,6 +895,11 @@ void UNiagaraStackEntry::ChildExpansionChanged()
 	ExpansionChangedDelegate.Broadcast();
 }
 
+void UNiagaraStackEntry::ChildExpansionInOverviewChanged()
+{
+	ExpansionInOverviewChangedDelegate.Broadcast();
+}
+
 void UNiagaraStackEntry::ChildDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType)
 {
 	DataObjectModifiedDelegate.Broadcast(ChangedObjects, ChangeType);
@@ -913,4 +981,11 @@ void UNiagaraStackEntry::OnRenamed(FText NewName)
 			AlternateDisplayNameChangedDelegate.Broadcast();
 		}
 	}
+}
+
+void UNiagaraStackSpacer::Initialize(FRequiredEntryData InRequiredEntryData, float InSpacerHeight, TAttribute<bool> InShouldShowInStack, FString InOwningStackItemEditorDataKey)
+{
+	Super::Initialize(InRequiredEntryData, InOwningStackItemEditorDataKey + TEXT("Spacer"));
+	SpacerHeight = InSpacerHeight;
+	ShouldShowInStack = InShouldShowInStack;
 }

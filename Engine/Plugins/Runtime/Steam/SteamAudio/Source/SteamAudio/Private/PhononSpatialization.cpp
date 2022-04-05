@@ -80,7 +80,7 @@ namespace SteamAudio
 		UPhononSpatializationSourceSettings* SpatializationSettings = static_cast<UPhononSpatializationSourceSettings*>(InSettings);
 		FBinauralSource& BinauralSource = BinauralSources[SourceId];
 
-		UE_LOG(LogSteamAudio, Log, TEXT("Creating spatialization effect."));
+		UE_LOG(LogSteamAudio, Verbose, TEXT("Creating spatialization effect."));
 
 		if (SpatializationSettings)
 		{
@@ -109,7 +109,7 @@ namespace SteamAudio
 	{
 		FBinauralSource& BinauralSource = BinauralSources[SourceId];
 
-		UE_LOG(LogSteamAudio, Log, TEXT("Destroying spatialization effect."));
+		UE_LOG(LogSteamAudio, Verbose, TEXT("Destroying spatialization effect."));
 
 		switch (BinauralSource.SpatializationMethod)
 		{
@@ -129,7 +129,7 @@ namespace SteamAudio
 		BinauralSource.OutBuffer.interleavedBuffer = OutputData.AudioBuffer.GetData();
 
 		// Workaround. The directions passed to spatializer is not consistent with the
-		// coordinate system of UE4, therefore special tranformation is performed here.
+		// coordinate system of UE, therefore special tranformation is performed here.
 		// Review this change if further changes are made to the direction passed to the
 		// spatializer.
 		IPLVector3 RelativeDirection;

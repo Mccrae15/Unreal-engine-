@@ -295,7 +295,7 @@ class AddConfigDialog(QtWidgets.QDialog):
             ]
 
         except Exception as e:
-            LOGGER.warning(f'Could not query p4: {e}')
+            LOGGER.warning(f'Could not query p4: {repr(e)}')
             return
 
         client = diagState.p4Workspace
@@ -309,7 +309,7 @@ class AddConfigDialog(QtWidgets.QDialog):
                 diagState.p4Workspace = client
                 diagState.p4Engine = p4path
             except Exception as e:
-                LOGGER.warning(f"Could not auto-fill Engine p4 settings: {e}")
+                LOGGER.warning(f"Could not auto-fill Engine p4 settings: {repr(e)}")
 
         # Infer project p4 path
         if bUpdateProject:
@@ -321,7 +321,7 @@ class AddConfigDialog(QtWidgets.QDialog):
                 diagState.p4Workspace = client
                 diagState.p4Project = p4path
             except Exception as e:
-                LOGGER.warning(f"Could not auto-fill project p4 settings: {e}")
+                LOGGER.warning(f"Could not auto-fill project p4 settings: {repr(e)}")
 
 
     def on_p4_toggled(self, checked):
@@ -445,7 +445,7 @@ class AddConfigDialog(QtWidgets.QDialog):
 
         # Not detecting Debug runs since it is not common and would increase detection time
         # At some point this might need UE6Editor added.
-        UEnames = ['UE4Editor', 'UE5Editor']
+        UEnames = ['UE4Editor', 'UnrealEditor']
 
         if sys.platform.startswith('win'):
             for UEname in UEnames:
@@ -490,8 +490,8 @@ class AddConfigDialog(QtWidgets.QDialog):
     def p4_settings(self):
         settings = {}
         settings['p4_enabled'] = self.p4_group.isChecked()
-        settings['p4_workspace_name'] = self.p4_workspace_line_edit.text() if self.p4_group.isChecked() else None
-        settings['p4_project_path'] = self.p4_project_path_line_edit.text() if self.p4_group.isChecked() else None
+        settings['source_control_workspace'] = self.p4_workspace_line_edit.text() if self.p4_group.isChecked() else None
+        settings['p4_sync_path'] = self.p4_project_path_line_edit.text() if self.p4_group.isChecked() else None
         settings['p4_engine_path'] = self.p4_engine_path_line_edit.text() if self.p4_group.isChecked() else None
         return settings
 
@@ -544,7 +544,7 @@ class AddConfigDialog(QtWidgets.QDialog):
         self.update_button_box()
 
     def on_browse_engine_dir(self):
-        self.engine_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select UE4 engine directory")
+        self.engine_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select UE 'Engine' directory")
         self.engine_dir = os.path.normpath(self.engine_dir)
         self.engine_dir_line_edit.setText(self.engine_dir)
 

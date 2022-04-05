@@ -198,9 +198,9 @@ FORCEINLINE void AEFConstantKeyLerp<FORMAT>::GetBoneAtomRotation(FTransform& Out
 	if (NumRotKeys == 1)
 	{
 		// For a rotation track of n=1 keys, the single key is packed as an FQuatFloat96NoW.
-		FQuat R0;
+		FQuat4f R0;
 		DecompressRotation<ACF_Float96NoW>( R0, RotStream, RotStream );
-		OutAtom.SetRotation(R0);
+		OutAtom.SetRotation( FQuat(R0) );
 	}
 	else
 	{
@@ -216,24 +216,24 @@ FORCEINLINE void AEFConstantKeyLerp<FORMAT>::GetBoneAtomRotation(FTransform& Out
 			// unpack and lerp between the two nearest keys
 			const uint8* RESTRICT KeyData0= RotStream + RotationStreamOffset +(Index0*CompressedRotationStrides[FORMAT]*CompressedRotationNum[FORMAT]);
 			const uint8* RESTRICT KeyData1= RotStream + RotationStreamOffset +(Index1*CompressedRotationStrides[FORMAT]*CompressedRotationNum[FORMAT]);
-			FQuat R0;
-			FQuat R1;
+			FQuat4f R0;
+			FQuat4f R1;
 			DecompressRotation<FORMAT>( R0, RotStream, KeyData0 );
 			DecompressRotation<FORMAT>( R1, RotStream, KeyData1 );
 
 			// Fast linear quaternion interpolation.
-			FQuat BlendedQuat = FQuat::FastLerp(R0, R1, Alpha);
+			FQuat4f BlendedQuat = FQuat4f::FastLerp(R0, R1, Alpha);
 			BlendedQuat.Normalize();
-			OutAtom.SetRotation( BlendedQuat );
+			OutAtom.SetRotation( FQuat(BlendedQuat) );
 		}
 		else // (Index0 == Index1)
 		{
 			
 			// unpack a single key
 			const uint8* RESTRICT KeyData= RotStream + RotationStreamOffset +(Index0*CompressedRotationStrides[FORMAT]*CompressedRotationNum[FORMAT]);
-			FQuat R0;
+			FQuat4f R0;
 			DecompressRotation<FORMAT>( R0, RotStream, KeyData );
-			OutAtom.SetRotation( R0 );
+			OutAtom.SetRotation( FQuat(R0) );
 		}
 	}
 }
@@ -265,19 +265,19 @@ FORCEINLINE void AEFConstantKeyLerp<FORMAT>::GetBoneAtomTranslation(FTransform& 
 	{
 		const uint8* RESTRICT KeyData0 = TransStream + TransStreamOffset + Index0*CompressedTranslationStrides[FORMAT]*CompressedTranslationNum[FORMAT];
 		const uint8* RESTRICT KeyData1 = TransStream + TransStreamOffset + Index1*CompressedTranslationStrides[FORMAT]*CompressedTranslationNum[FORMAT];
-		FVector P0;
-		FVector P1;
+		FVector3f P0;
+		FVector3f P1;
 		DecompressTranslation<FORMAT>( P0, TransStream, KeyData0 );
 		DecompressTranslation<FORMAT>( P1, TransStream, KeyData1 );
-		OutAtom.SetTranslation( FMath::Lerp( P0, P1, Alpha ) );
+		OutAtom.SetTranslation( (FVector)FMath::Lerp( P0, P1, Alpha ) );
 	}
 	else // (Index0 == Index1)
 	{
 		// unpack a single key
 		const uint8* RESTRICT KeyData = TransStream + TransStreamOffset + Index0*CompressedTranslationStrides[FORMAT]*CompressedTranslationNum[FORMAT];
-		FVector P0;
+		FVector3f P0;
 		DecompressTranslation<FORMAT>( P0, TransStream, KeyData);
-		OutAtom.SetTranslation(P0);
+		OutAtom.SetTranslation((FVector)P0);
 	}
 }
 
@@ -307,18 +307,27 @@ FORCEINLINE void AEFConstantKeyLerp<FORMAT>::GetBoneAtomScale(FTransform& OutAto
 	{
 		const uint8* RESTRICT KeyData0 = ScaleStream + ScaleStreamOffset + Index0*CompressedScaleStrides[FORMAT]*CompressedScaleNum[FORMAT];
 		const uint8* RESTRICT KeyData1 = ScaleStream + ScaleStreamOffset + Index1*CompressedScaleStrides[FORMAT]*CompressedScaleNum[FORMAT];
-		FVector P0;
-		FVector P1;
+		FVector3f P0;
+		FVector3f P1;
 		DecompressScale<FORMAT>( P0, ScaleStream, KeyData0 );
 		DecompressScale<FORMAT>( P1, ScaleStream, KeyData1 );
-		OutAtom.SetScale3D( FMath::Lerp( P0, P1, Alpha ) );
+		OutAtom.SetScale3D( (FVector)FMath::Lerp( P0, P1, Alpha ) );
 	}
 	else // (Index0 == Index1)
 	{
 		// unpack a single key
 		const uint8* RESTRICT KeyData = ScaleStream + ScaleStreamOffset + Index0*CompressedScaleStrides[FORMAT]*CompressedScaleNum[FORMAT];
-		FVector P0;
+		FVector3f P0;
 		DecompressScale<FORMAT>( P0, ScaleStream, KeyData);
-		OutAtom.SetScale3D(P0);
+		OutAtom.SetScale3D((FVector)P0);
 	}
 }
+
+// Support ISPC enable/disable in non-shipping builds
+#if !INTEL_ISPC
+const bool bAnim_ConstantKeyLerp_ISPC_Enabled = false;
+#elif UE_BUILD_SHIPPING
+const bool bAnim_ConstantKeyLerp_ISPC_Enabled = true;
+#else
+extern bool bAnim_ConstantKeyLerp_ISPC_Enabled;
+#endif

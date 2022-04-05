@@ -48,7 +48,7 @@ namespace Audio
 	struct FMixerSourceVoiceBuffer
 	{
 		/** PCM float data. */
-		AlignedFloatBuffer AudioData;
+		FAlignedFloatBuffer AudioData;
 
 		/** How many times this buffer will loop. */
 		int32 LoopCount = 0;
@@ -99,6 +99,7 @@ namespace Audio
 	{
 		uint32 AudioBusId = INDEX_NONE;
 		float SendLevel = 0.0f;
+		int32 BusChannels = 0;
 	};
 
 	struct FMixerSourceVoiceInitParams
@@ -108,6 +109,7 @@ namespace Audio
 		TArray<FMixerSourceSubmixSend> SubmixSends;
 		TArray<FInitAudioBusSend> AudioBusSends[(int32)EBusSendType::Count];
 		uint32 AudioBusId = INDEX_NONE;
+		int32 AudioBusChannels = 0;
 		float SourceBusDuration = 0.0f;
 		uint32 SourceEffectChainId = INDEX_NONE;
 		TArray<FSourceEffectChainEntry> SourceEffectChain;
@@ -120,10 +122,13 @@ namespace Audio
 		USpatializationPluginSourceSettingsBase* SpatializationPluginSettings = nullptr;
 		UOcclusionPluginSourceSettingsBase* OcclusionPluginSettings = nullptr;
 		UReverbPluginSourceSettingsBase* ReverbPluginSettings = nullptr;
+		USourceDataOverridePluginSourceSettingsBase* SourceDataOverridePluginSettings = nullptr;
 
 		FSoundModulationDefaultSettings ModulationSettings;
 
 		FQuartzQuantizedRequestData QuantizedRequestData;
+
+		FSharedISourceBufferListenerPtr SourceBufferListener;		
 
 		FName AudioComponentUserID;
 		uint64 AudioComponentID = 0;
@@ -138,6 +143,7 @@ namespace Audio
 		bool bIsVorbis = false;
 		bool bIsSoundfield = false;
 		bool bIsSeeking = false;
+		bool bShouldSourceBufferListenerZeroBuffer = false;
 	};
 
 	struct FSourceManagerInitParams
@@ -165,14 +171,31 @@ namespace Audio
 		void ReleaseSourceId(const int32 SourceId);
 		void InitSource(const int32 SourceId, const FMixerSourceVoiceInitParams& InitParams);
 
-		// Creates an audio bus manually. Returns an audio bus Id.
+		// Creates and starts an audio bus manually.
 		void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic);
+
+		// Stops an audio bus manually
 		void StopAudioBus(uint32 InAudioBusId);
-		bool IsAudioBusActive(uint32 InAudioBusId);
-		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float PatchGain);
+
+		// Queries if an audio bus is active. Must be called from the audio thread.
+		bool IsAudioBusActive(uint32 InAudioBusId) const;
+
+		// Returns the number of channels currently set for the audio bus associated with
+		// the provided BusId.  Returns 0 if the audio bus is inactive.
+		int32 GetAudioBusNumChannels(uint32 InAudioBusId) const;
+
+		// Adds a patch output for an audio bus from the Audio Render Thread
+		void AddPatchOutputForAudioBus(uint32 InAudioBusId, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
+
+		// Adds a patch output for an audio bus from the Audio Thread
+		void AddPatchOutputForAudioBus_AudioThread(uint32 InAudioBusId, const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
+
+		// Adds a patch input for an audio bus
+		void AddPatchInputForAudioBus(uint32 InAudioBusId, FPatchInput& InPatchInput);
 
 		void Play(const int32 SourceId);
 		void Stop(const int32 SourceId);
+		void CancelQuantizedSound(const int32 SourceId);
 		void StopInternal(const int32 SourceId);
 		void StopFade(const int32 SourceId, const int32 NumFrames);
 		void Pause(const int32 SourceId);
@@ -180,7 +203,7 @@ namespace Audio
 		void SetVolume(const int32 SourceId, const float Volume);
 		void SetDistanceAttenuation(const int32 SourceId, const float DistanceAttenuation);
 		void SetSpatializationParams(const int32 SourceId, const FSpatializationParams& InParams);
-		void SetChannelMap(const int32 SourceId, const uint32 NumInputChannels, const Audio::AlignedFloatBuffer& InChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly);
+		void SetChannelMap(const int32 SourceId, const uint32 NumInputChannels, const Audio::FAlignedFloatBuffer& InChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly);
 		void SetLPFFrequency(const int32 SourceId, const float Frequency);
 		void SetHPFFrequency(const int32 SourceId, const float Frequency);
 
@@ -200,11 +223,11 @@ namespace Audio
 		bool NeedsSpeakerMap(const int32 SourceId) const;
 		void ComputeNextBlockOfSamples();
 		void ClearStoppingSounds();
-		void MixOutputBuffers(const int32 SourceId, int32 InNumOutputChannels, const float InSendLevel, EMixerSourceSubmixSendStage InSubmixSendStage, AlignedFloatBuffer& OutWetBuffer) const;
+		void MixOutputBuffers(const int32 SourceId, int32 InNumOutputChannels, const float InSendLevel, EMixerSourceSubmixSendStage InSubmixSendStage, FAlignedFloatBuffer& OutWetBuffer) const;
 
 		// Retrieves a channel map for the given source ID for the given output channels
 		// can be used even when a source is 3D if the source is doing any kind of bus sending or otherwise needs a channel map
-		void Get2DChannelMap(const int32 SourceId, int32 InNumOutputChannels, Audio::AlignedFloatBuffer& OutChannelMap);
+		void Get2DChannelMap(const int32 SourceId, int32 InNumOutputChannels, Audio::FAlignedFloatBuffer& OutChannelMap);
 
 		// Called by a soundfield submix to get encoded audio.
 		// If this source wasn't encoded (possibly because it is paused or finished playing),
@@ -332,10 +355,10 @@ namespace Audio
 			int32 CurrentAudioChunkNumFrames;
 
 			// The post-attenuation source buffer, used to send audio to submixes
-			Audio::AlignedFloatBuffer SourceBuffer;
-			Audio::AlignedFloatBuffer PreEffectBuffer;
-			Audio::AlignedFloatBuffer PreDistanceAttenuationBuffer;
-			Audio::AlignedFloatBuffer SourceEffectScratchBuffer;
+			Audio::FAlignedFloatBuffer SourceBuffer;
+			Audio::FAlignedFloatBuffer PreEffectBuffer;
+			Audio::FAlignedFloatBuffer PreDistanceAttenuationBuffer;
+			Audio::FAlignedFloatBuffer SourceEffectScratchBuffer;
 
 			// Data used for delaying the rendering of source audio for sample-accurate quantization
 			int32 SubCallbackDelayLengthInFrames{ 0 };
@@ -391,7 +414,7 @@ namespace Audio
 			FAudioPluginSourceOutputData AudioPluginOutputData;
 
 			// A DSP object which tracks the amplitude envelope of a source.
-			Audio::FEnvelopeFollower SourceEnvelopeFollower;
+			Audio::FInlineEnvelopeFollower SourceEnvelopeFollower;
 			float SourceEnvelopeValue;
 
 			// Modulation destinations
@@ -407,10 +430,13 @@ namespace Audio
 			float HighpassModulationBase;
 
 			FSpatializationParams SpatParams;
-			Audio::AlignedFloatBuffer ScratchChannelMap;
+			Audio::FAlignedFloatBuffer ScratchChannelMap;
 
 			// Quantization data
 			FQuartzQuantizedCommandHandle QuantizedCommandHandle;
+
+			// Optional Source buffer listener.
+			FSharedISourceBufferListenerPtr SourceBufferListener;
 
 			// State management
 			uint8 bIs3D:1;
@@ -438,6 +464,7 @@ namespace Audio
 			uint8 bIsBypassingHPF:1;
 			uint8 bHasPreDistanceAttenuationSend:1;
 			uint8 bModFiltersUpdated : 1;
+			uint8 bShouldSourceBufferListenerZeroBuffer : 1;
 
 			// Source format info
 			int32 NumInputChannels;

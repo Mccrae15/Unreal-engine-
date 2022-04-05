@@ -4,43 +4,45 @@
 #include "RHI.h"
 #include "Misc/AutomationTest.h"
 
-#if WITH_DEV_AUTOMATION_TESTS
+#if WITH_DEV_AUTOMATION_TESTS || WITH_EDITOR
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRayTracingTestbed, "System.Renderer.RayTracing.BasicRayTracing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::HighPriority | EAutomationTestFlags::EngineFilter)
 
 #if RHI_RAYTRACING
 
-#include "Containers/DynamicRHIResourceArray.h"
-#include "GlobalShader.h"
+#include "RayTracingInstanceBufferUtil.h"
 #include "RayTracingDefinitions.h"
+#include "GlobalShader.h"
+#include "Containers/DynamicRHIResourceArray.h"
 
-
+// HINT: Execute this test via console command in editor: Automation RunTest System.Renderer.RayTracing.BasicRayTracing
 bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 {
 	check(IsInRenderingThread());
 
-	if (!GRHISupportsRayTracing)
+	// The ray tracing testbed currently rquires full ray tracing pipeline support.
+	if (!GRHISupportsRayTracing || !GRHISupportsRayTracingShaders)
 	{
 		//Return true so the test passes in DX11, until the testing framework allows to skip tests depending on defined preconditions
 		return true;
 	}
 
-	FVertexBufferRHIRef VertexBuffer;
+	FBufferRHIRef VertexBuffer;
 
 	{
-		TResourceArray<FVector> PositionData;
+		TResourceArray<FVector3f> PositionData;
 		PositionData.SetNumUninitialized(3);
-		PositionData[0] = FVector( 1, -1, 0);
-		PositionData[1] = FVector( 1,  1, 0);
-		PositionData[2] = FVector(-1, -1, 0);
+		PositionData[0] = FVector3f( 1, -1, 0);
+		PositionData[1] = FVector3f( 1,  1, 0);
+		PositionData[2] = FVector3f(-1, -1, 0);
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("RayTracingTestbedVB"));
 		CreateInfo.ResourceArray = &PositionData;
 
 		VertexBuffer = RHICreateVertexBuffer(PositionData.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 
-	FIndexBufferRHIRef IndexBuffer;
+	FBufferRHIRef IndexBuffer;
 
 	{
 		TResourceArray<uint16> IndexData;
@@ -49,7 +51,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		IndexData[1] = 1;
 		IndexData[2] = 2;
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("RayTracingTestbedIB"));
 		CreateInfo.ResourceArray = &IndexData;
 
 		IndexBuffer = RHICreateIndexBuffer(2, IndexData.GetResourceDataSize(), BUF_Static, CreateInfo);
@@ -57,7 +59,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 
 	static constexpr uint32 NumRays = 4;
 
-	FStructuredBufferRHIRef RayBuffer;
+	FBufferRHIRef RayBuffer;
 	FShaderResourceViewRHIRef RayBufferView;
 
 	{
@@ -68,27 +70,27 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		RayData[2] = FBasicRayData{ { 0.75f, 0.0f,  1.0f}, 0xFFFFFFFF, {0.0f, 0.0f, -1.0f}, 100000.0f }; // expected to hit  (should hit back face)
 		RayData[3] = FBasicRayData{ {-0.75f, 0.0f, -1.0f}, 0xFFFFFFFF, {0.0f, 0.0f,  1.0f}, 100000.0f }; // expected to miss (doesn't intersect)
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("RayBuffer"));
 		CreateInfo.ResourceArray = &RayData;
 
 		RayBuffer = RHICreateStructuredBuffer(sizeof(FBasicRayData), RayData.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 		RayBufferView = RHICreateShaderResourceView(RayBuffer);
 	}
 
-	FVertexBufferRHIRef OcclusionResultBuffer;
+	FBufferRHIRef OcclusionResultBuffer;
 	FUnorderedAccessViewRHIRef OcclusionResultBufferView;
 
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("OcclusionResultBuffer"));
 		OcclusionResultBuffer = RHICreateVertexBuffer(sizeof(uint32)*NumRays, BUF_Static | BUF_UnorderedAccess, CreateInfo);
 		OcclusionResultBufferView = RHICreateUnorderedAccessView(OcclusionResultBuffer, PF_R32_UINT);
 	}
 
-	FVertexBufferRHIRef IntersectionResultBuffer;
+	FBufferRHIRef IntersectionResultBuffer;
 	FUnorderedAccessViewRHIRef IntersectionResultBufferView;
 
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("IntersectionResultBuffer"));
 		IntersectionResultBuffer = RHICreateVertexBuffer(sizeof(FIntersectionPayload)*NumRays, BUF_Static | BUF_UnorderedAccess, CreateInfo);
 		IntersectionResultBufferView = RHICreateUnorderedAccessView(IntersectionResultBuffer, PF_R32_UINT);
 	}
@@ -101,30 +103,129 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 	FRayTracingGeometrySegment Segment;
 	Segment.VertexBuffer = VertexBuffer;
 	Segment.NumPrimitives = 1;
+	Segment.MaxVertices = 3;
 	GeometryInitializer.Segments.Add(Segment);
 	GeometryInitializer.TotalPrimitiveCount = Segment.NumPrimitives;
 	FRayTracingGeometryRHIRef Geometry = RHICreateRayTracingGeometry(GeometryInitializer);
 
-	FRHIResourceCreateInfo CreateInfo;
-	FShaderResourceViewRHIRef GPUTransforms = nullptr;
-	const uint32 NumTransforms = 1;
+	static constexpr uint32 NumTransforms = 1;
+	static constexpr uint32 NumInstances = 1;
 
-	FRayTracingGeometryInstance Instances[] = {
-		FRayTracingGeometryInstance { Geometry, {FMatrix::Identity}, NumTransforms, GPUTransforms, {0}, 0xFF }
-	};
+	FRayTracingGeometryInstance Instances[NumInstances] = {};
+	Instances[0].GeometryRHI = Geometry;
+	Instances[0].NumTransforms = NumTransforms;
+	Instances[0].Transforms = MakeArrayView(&FMatrix::Identity, 1);
 
-	FRayTracingSceneInitializer Initializer;
-	Initializer.Instances = Instances;
-	Initializer.ShaderSlotsPerGeometrySegment = RAY_TRACING_NUM_SHADER_SLOTS;
-	FRayTracingSceneRHIRef Scene = RHICreateRayTracingScene(Initializer);
+	FRayTracingSceneWithGeometryInstances RayTracingScene = CreateRayTracingSceneWithGeometryInstances(
+		Instances,
+		RAY_TRACING_NUM_SHADER_SLOTS,
+		1);
+
+	const FRayTracingSceneInitializer2& SceneInitializer = RayTracingScene.Scene->GetInitializer();
+
+	ERayTracingAccelerationStructureFlags SceneBuildFlags = ERayTracingAccelerationStructureFlags::FastTrace;
+	FRayTracingAccelerationStructureSize SceneSizeInfo = RHICalcRayTracingSceneSize(1, SceneBuildFlags);
+	FRHIResourceCreateInfo SceneBufferCreateInfo(TEXT("RayTracingTestBedSceneBuffer"));
+	FBufferRHIRef SceneBuffer = RHICreateBuffer(
+		uint32(SceneSizeInfo.ResultSize),
+		BUF_AccelerationStructure, 0 /*Stride*/, ERHIAccess::BVHWrite,
+		SceneBufferCreateInfo);
+
+	FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("RayTracingTestBedScratchBuffer"));
+	FBufferRHIRef ScratchBuffer = RHICreateBuffer(
+		uint32(SceneSizeInfo.BuildScratchSize),
+		BUF_UnorderedAccess, GRHIRayTracingScratchBufferAlignment, ERHIAccess::UAVCompute,
+		ScratchBufferCreateInfo);
+
+	FRWBufferStructured InstanceBuffer;
+	InstanceBuffer.Initialize(TEXT("RayTracingTestBedInstanceBuffer"), GRHIRayTracingInstanceDescriptorSize, SceneInitializer.NumNativeInstances);
+
+	FByteAddressBuffer AccelerationStructureAddressesBuffer;
+	AccelerationStructureAddressesBuffer.Initialize(TEXT("RayTracingTestBedAccelerationStructureAddressesBuffer"), sizeof(FRayTracingAccelerationStructureAddress), BUF_Volatile);
+
+	const uint32 InstanceUploadBufferSize = SceneInitializer.NumNativeInstances * sizeof(FRayTracingInstanceDescriptorInput);
+	FBufferRHIRef InstanceUploadBuffer;
+	FShaderResourceViewRHIRef InstanceUploadSRV;
+	{
+		FRHIResourceCreateInfo CreateInfo(TEXT("RayTracingTestBedInstanceUploadBuffer"));
+		InstanceUploadBuffer = RHICreateStructuredBuffer(sizeof(FRayTracingInstanceDescriptorInput), InstanceUploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+		InstanceUploadSRV = RHICreateShaderResourceView(InstanceUploadBuffer);
+	}
+
+	const uint32 TransformUploadBufferSize = RayTracingScene.NumNativeCPUInstances * 3 * sizeof(FVector4f);
+	FBufferRHIRef TransformUploadBuffer;
+	FShaderResourceViewRHIRef TransformUploadSRV;
+	{
+		FRHIResourceCreateInfo CreateInfo(TEXT("RayTracingTestBedInstanceUploadBuffer"));
+		TransformUploadBuffer = RHICreateStructuredBuffer(sizeof(FVector4f), TransformUploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+		TransformUploadSRV = RHICreateShaderResourceView(TransformUploadBuffer);
+	}
 
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-	RHICmdList.BuildAccelerationStructure(Geometry);
-	RHICmdList.BuildAccelerationStructure(Scene);
+	{
+		FRayTracingInstanceDescriptorInput* InstanceUploadData = (FRayTracingInstanceDescriptorInput*)RHICmdList.LockBuffer(InstanceUploadBuffer, 0, InstanceUploadBufferSize, RLM_WriteOnly);
+		FVector4f* TransformUploadData = (FVector4f*)RHICmdList.LockBuffer(TransformUploadBuffer, 0, TransformUploadBufferSize, RLM_WriteOnly);
+		FillRayTracingInstanceUploadBuffer(
+			RayTracingScene.Scene,
+			Instances,
+			RayTracingScene.InstanceGeometryIndices,
+			RayTracingScene.BaseUploadBufferOffsets,
+			RayTracingScene.NumNativeGPUSceneInstances,
+			RayTracingScene.NumNativeCPUInstances,
+			MakeArrayView(InstanceUploadData, SceneInitializer.NumNativeInstances),
+			MakeArrayView(TransformUploadData, RayTracingScene.NumNativeCPUInstances * 3));
+		RHICmdList.UnlockBuffer(TransformUploadBuffer);
+		RHICmdList.UnlockBuffer(InstanceUploadBuffer);
+	}
 
-	RHICmdList.RayTraceOcclusion(Scene, RayBufferView, OcclusionResultBufferView, NumRays);
-	RHICmdList.RayTraceIntersection(Scene, RayBufferView, IntersectionResultBufferView, NumRays);
+	RHICmdList.EnqueueLambda([&AccelerationStructureAddressesBuffer, &SceneInitializer](FRHICommandListImmediate& RHICmdList)
+		{
+			FRayTracingAccelerationStructureAddress* AddressesPtr = (FRayTracingAccelerationStructureAddress*)RHICmdList.LockBuffer(
+				AccelerationStructureAddressesBuffer.Buffer, 
+				0, 
+				SceneInitializer.ReferencedGeometries.Num() * sizeof(FRayTracingAccelerationStructureAddress), RLM_WriteOnly);
+
+			const uint32 NumGeometries = SceneInitializer.ReferencedGeometries.Num();
+			for (uint32 GeometryIndex = 0; GeometryIndex < NumGeometries; ++GeometryIndex)
+			{
+				AddressesPtr[GeometryIndex] = SceneInitializer.ReferencedGeometries[GeometryIndex]->GetAccelerationStructureAddress(RHICmdList.GetGPUMask().ToIndex());
+			}
+
+			RHICmdList.UnlockBuffer(AccelerationStructureAddressesBuffer.Buffer);
+		});
+
+	BuildRayTracingInstanceBuffer(
+		RHICmdList,
+		nullptr,
+		InstanceBuffer.UAV,
+		InstanceUploadSRV,
+		AccelerationStructureAddressesBuffer.SRV,
+		TransformUploadSRV,
+		RayTracingScene.NumNativeGPUSceneInstances,
+		RayTracingScene.NumNativeCPUInstances,
+		{});
+
+	RHICmdList.BindAccelerationStructureMemory(RayTracingScene.Scene, SceneBuffer, 0);
+
+	RHICmdList.BuildAccelerationStructure(Geometry);
+
+	// #yuriy_todo: explicit transitions and state validation for BLAS
+	// RHICmdList.Transition(FRHITransitionInfo(Geometry.GetReference(), ERHIAccess::BVHWrite, ERHIAccess::BVHRead));
+
+	FRayTracingSceneBuildParams Params;
+	Params.Scene = RayTracingScene.Scene;
+	Params.ScratchBuffer = ScratchBuffer;
+	Params.ScratchBufferOffset = 0;
+	Params.InstanceBuffer = InstanceBuffer.Buffer;
+	Params.InstanceBufferOffset = 0;
+
+	RHICmdList.BuildAccelerationStructure(Params);
+
+	RHICmdList.Transition(FRHITransitionInfo(RayTracingScene.Scene.GetReference(), ERHIAccess::BVHWrite, ERHIAccess::BVHRead));
+
+	RHICmdList.RayTraceOcclusion(RayTracingScene.Scene, RayBufferView, OcclusionResultBufferView, NumRays);
+	RHICmdList.RayTraceIntersection(RayTracingScene.Scene, RayBufferView, IntersectionResultBufferView, NumRays);
 
 	const bool bValidateResults = true;
 	bool bOcclusionTestOK = false;
@@ -138,7 +239,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		// Read back and validate occlusion trace results
 
 		{
-			auto MappedResults = (const uint32*)RHILockVertexBuffer(OcclusionResultBuffer, 0, sizeof(uint32)*NumRays, RLM_ReadOnly);
+			auto MappedResults = (const uint32*)RHILockBuffer(OcclusionResultBuffer, 0, sizeof(uint32)*NumRays, RLM_ReadOnly);
 
 			check(MappedResults);
 
@@ -147,7 +248,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 			check(MappedResults[2] != 0); // expect hit
 			check(MappedResults[3] == 0); // expect miss
 
-			RHIUnlockVertexBuffer(OcclusionResultBuffer);
+			RHIUnlockBuffer(OcclusionResultBuffer);
 
 			bOcclusionTestOK = (MappedResults[0] != 0) && (MappedResults[1] == 0) && (MappedResults[2] != 0) && (MappedResults[3] == 0);
 		}
@@ -155,7 +256,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		// Read back and validate intersection trace results
 
 		{
-			auto MappedResults = (const FIntersectionPayload*)RHILockVertexBuffer(IntersectionResultBuffer, 0, sizeof(FIntersectionPayload)*NumRays, RLM_ReadOnly);
+			auto MappedResults = (const FIntersectionPayload*)RHILockBuffer(IntersectionResultBuffer, 0, sizeof(FIntersectionPayload)*NumRays, RLM_ReadOnly);
 
 			check(MappedResults);
 
@@ -170,7 +271,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 			check(MappedResults[2].HitT >= 0); // expect hit back face
 			check(MappedResults[3].HitT < 0); // expect miss
 
-			RHIUnlockVertexBuffer(IntersectionResultBuffer);
+			RHIUnlockBuffer(IntersectionResultBuffer);
 
 			bIntersectionTestOK = (MappedResults[0].HitT >= 0) && (MappedResults[1].HitT < 0) && (MappedResults[2].HitT >= 0) && (MappedResults[3].HitT < 0);
 		}

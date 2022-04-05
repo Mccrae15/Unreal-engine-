@@ -189,7 +189,7 @@ class FAsyncLoadingThread final : public FRunnable, public IAsyncPackageLoader
 	TArray<FAsyncPackage*> PackagesToDelete;
 	TMap<FName, FAsyncPackage*> LoadedPackagesToProcessNameLookup;
 #if WITH_EDITOR
-	TArray<FWeakObjectPtr> LoadedAssets;
+	TSet<FWeakObjectPtr> LoadedAssets;
 #endif
 #if THREADSAFE_UOBJECTS
 	/** [ASYNC/GAME THREAD] Critical section for LoadedPackagesToProcess list. 
@@ -265,19 +265,20 @@ public:
 	/** Start the async loading thread */
 	void StartThread() override;
 
+	bool ShouldAlwaysLoadPackageAsync(const FPackagePath& InPackagePath) override;
+
 	int32 LoadPackage(
-			const FString& InPackageName,
-			const FGuid* InGuid,
-			const TCHAR* InPackageToLoadFrom,
+			const FPackagePath& InPackagePath,
+			FName InCustomName,
 			FLoadPackageAsyncDelegate InCompletionDelegate,
 			EPackageFlags InPackageFlags,
 			int32 InPIEInstanceID,
 			int32 InPackagePriority,
 			const FLinkerInstancingContext* InstancingContext) override;
 
-	EAsyncPackageState::Type ProcessLoading(bool bUseTimeLimit, bool bUseFullTimeLimit, float TimeLimit) override;
+	EAsyncPackageState::Type ProcessLoading(bool bUseTimeLimit, bool bUseFullTimeLimit, double TimeLimit) override;
 
-	EAsyncPackageState::Type ProcessLoadingUntilComplete(TFunctionRef<bool()> CompletionPredicate, float TimeLimit) override;
+	EAsyncPackageState::Type ProcessLoadingUntilComplete(TFunctionRef<bool()> CompletionPredicate, double TimeLimit) override;
 
 	void FlushLoading(int32 PackageId) override;
 

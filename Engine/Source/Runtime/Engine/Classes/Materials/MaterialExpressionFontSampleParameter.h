@@ -48,15 +48,39 @@ class UMaterialExpressionFontSampleParameter : public UMaterialExpressionFontSam
 	virtual FName GetParameterName() const override { return ParameterName; }
 	virtual void SetParameterName(const FName& Name) override { ParameterName = Name; }
 	virtual void ValidateParameterName(const bool bAllowDuplicateName) override;
-	virtual void SetValueToMatchingExpression(UMaterialExpression* OtherExpression) override;
+	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
+	{
+		OutMeta.Value = FMaterialParameterValue(Font, FontTexturePage);
+		OutMeta.Description = Desc;
+		OutMeta.ExpressionGuid = ExpressionGUID;
+		OutMeta.Group = Group;
+		OutMeta.SortPriority = SortPriority;
+		return true;
+	}
+	virtual bool SetParameterValue(const FName& Name, const FMaterialParameterMetadata& Meta, EMaterialExpressionSetParameterValueFlags Flags) override
+	{
+		if (Meta.Value.Type == EMaterialParameterType::Font)
+		{
+			if (SetParameterValue(Name, Meta.Value.Font.Value, Meta.Value.Font.Page, Flags))
+			{
+				if (EnumHasAnyFlags(Flags, EMaterialExpressionSetParameterValueFlags::AssignGroupAndSortPriority))
+				{
+					Group = Meta.Group;
+					SortPriority = Meta.SortPriority;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
 #endif
 	//~ End UMaterialExpression Interface
 	
-	/** Return whether this is the named parameter, and fill in its value */
+	UE_DEPRECATED(5.0, "Use GetParameterValue and/or GetParameterName")
 	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, UFont*& OutFontValue, int32& OutFontPage) const;
 
 #if WITH_EDITOR
-	bool SetParameterValue(FName InParameterName, UFont* InFontValue, int32 InFontPage);
+	bool SetParameterValue(FName InParameterName, UFont* InFontValue, int32 InFontPage, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None);
 #endif
 
 	/**
@@ -69,6 +93,7 @@ class UMaterialExpressionFontSampleParameter : public UMaterialExpressionFontSam
 		return ExpressionGUID;
 	}
 
+	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const;
 };
 

@@ -236,11 +236,11 @@ void FFocusRemoveLensDataListItem::OnCheckStateChanged(ECheckBoxState NewState)
 
 TSharedRef<ITableRow> FZoomRemoveLensDataListItem::MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable)
 {
-	FText EntryLabel = LOCTEXT("ZoomLabel", "Zoom: ");
+	FText EntryLabel = LOCTEXT("ZoomLabelIncomplete", "Zoom: ");
 
 	if (!WeakParent.IsValid())
 	{
-		EntryLabel = FText::Format(LOCTEXT("ZoomLabel", "{0}. Focus: {1}, Zoom: "), FText::FromName(PointName), Focus);
+		EntryLabel = FText::Format(LOCTEXT("ZoomLabelComplete", "{0}. Focus: {1}, Zoom: "), FText::FromName(PointName), Focus);
 	}
 		
 	return SNew(SRemoveLensDataItem, InOwnerTable, SharedThis(this))
@@ -348,7 +348,7 @@ void SCameraCalibrationRemovePointDialog::Construct(const FArguments& InArgs, co
 		return;
 	}
 	
-	const FText DialogText = FText::Format(LOCTEXT("DialogTextLabel", "Select points to remove which have same raw input than {0}"), FText::FromName(BaseDataTable->GetScriptStruct()->GetFName()));
+	const FText DialogText = LOCTEXT("DialogTextLabel", "The calibration data you wish to delete may be inherently linked to additional data.\nChoose any and all linked data you wish to delete.");
 
 	const TSharedPtr<SWidget> ButtonsWidget = [this]()
 	{

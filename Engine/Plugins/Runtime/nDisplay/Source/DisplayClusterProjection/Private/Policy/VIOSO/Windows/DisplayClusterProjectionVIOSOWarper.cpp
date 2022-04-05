@@ -66,9 +66,9 @@ bool FViosoWarper::Initialize(void* pDxDevice, const FViosoPolicyConfiguration& 
 			// the transformation matrix to go from VIOSO coordinates to IG coordinates, defaults to indentity
 			// note VIOSO maps are always right-handed, to use with a left-handed world like DirectX, invert the z!
 			FMatrix TransMatrix = InConfigData.BaseMatrix.GetTransposed();
-			for (int i = 0; i < 16; i++)
+			for (uint32 MatrixElementIndex = 0; MatrixElementIndex < 16; MatrixElementIndex++)
 			{
-				pWarper->trans[i] = (&TransMatrix.M[0][0])[i];
+				pWarper->trans[MatrixElementIndex] = (&TransMatrix.M[0][0])[MatrixElementIndex];
 			}
 		}
 		else
@@ -110,8 +110,8 @@ bool FViosoWarper::Render(VWB_param RenderParam, VWB_uint StateMask)
 bool FViosoWarper::CalculateViewProjection(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, FMatrix& OutProjMatrix, const float WorldToMeters, const float NCP, const float FCP)
 {
 	// Convert to vioso space:
-	FVector InViosoEyeLocation = ToViosoLocation(InOutViewLocation, WorldToMeters);
-	FVector InViosoEyeEulerRotation = ToViosoEulerRotation(InOutViewRotation);
+	FVector3f InViosoEyeLocation = (FVector3f)ToViosoLocation(InOutViewLocation, WorldToMeters);
+	FVector3f InViosoEyeEulerRotation = (FVector3f)ToViosoEulerRotation(InOutViewRotation);
 
 	if (VWB_ERROR_NONE == FLibVIOSO::GetViewClip(pWarper, &InViosoEyeLocation.X, &InViosoEyeEulerRotation.X, &ViewMatrix[0], &ViewClip[0]) && IsViewClipValid())
 	{

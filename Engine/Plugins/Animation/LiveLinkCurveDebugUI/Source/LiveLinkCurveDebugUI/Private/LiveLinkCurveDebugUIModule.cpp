@@ -149,7 +149,7 @@ void FLiveLinkCurveDebugUIModule::RegisterTabSpawner()
 	//Register with the Developer Tools Menu
 #if WITH_EDITOR
 	const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-	SpawnerEntry.SetGroup(MenuStructure.GetDeveloperToolsMiscCategory());
+	SpawnerEntry.SetGroup(MenuStructure.GetDeveloperToolsDebugCategory());
 #endif //WITH_EDITOR
 }
 
@@ -292,7 +292,7 @@ UWorld* FLiveLinkCurveDebugUIModule::GetWorldForDebugUIModule()
 	if (GIsEditor && EEngine != nullptr)
 	{
 		// lets use PlayWorld during PIE/Simulate and regular world from editor otherwise, to draw debug information
-		World = EEngine->PlayWorld != nullptr ? EEngine->PlayWorld : EEngine->GetEditorWorldContext().World();
+		World = EEngine->PlayWorld != nullptr ? ToRawPtr(EEngine->PlayWorld) : EEngine->GetEditorWorldContext().World();
 	}
 #endif
 

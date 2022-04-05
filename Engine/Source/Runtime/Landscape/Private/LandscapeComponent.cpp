@@ -6,6 +6,12 @@
 #include "LandscapeEdit.h"
 #include "LandscapeRender.h"
 
+#if WITH_EDITOR
+
+#include "LandscapeHLODBuilder.h"
+
+#endif
+
 FName FWeightmapLayerAllocationInfo::GetLayerName() const
 {
 	if (LayerInfo)
@@ -64,6 +70,11 @@ void ULandscapeComponent::UpdateEditToolRenderData()
 				LandscapeSceneProxy->SetUsedMaterialForVerification(UsedMaterialsForVerification);
 			});
 	}
+}
+
+TSubclassOf<UHLODBuilder> ULandscapeComponent::GetCustomHLODBuilderClass() const
+{
+	return ULandscapeHLODBuilder::StaticClass();
 }
 
 #endif

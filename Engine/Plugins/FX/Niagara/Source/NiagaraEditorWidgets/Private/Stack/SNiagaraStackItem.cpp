@@ -16,6 +16,8 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "ViewModels/Stack/NiagaraStackClipboardUtilities.h"
+#include "Styling/StyleColors.h"
+#include "Stack/SNiagaraStackInheritanceIcon.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackItem"
 
@@ -27,8 +29,8 @@ void SNiagaraStackItem::Construct(const FArguments& InArgs, UNiagaraStackItem& I
 
 	TSharedRef<SHorizontalBox> RowBox = SNew(SHorizontalBox);
 
-	// Icon
-	if (Item->SupportsIcon())
+	// Icon Brush
+	if (Item->GetSupportedIconMode() == UNiagaraStackEntry::EIconMode::Brush)
 	{
 		RowBox->AddSlot()
 		.Padding(2, 0, 3, 0)
@@ -40,16 +42,54 @@ void SNiagaraStackItem::Construct(const FArguments& InArgs, UNiagaraStackItem& I
 		];
 	}
 
+	// Icon Text
+	if (Item->GetSupportedIconMode() == UNiagaraStackEntry::EIconMode::Text)
+	{
+		RowBox->AddSlot()
+		.Padding(2, 0, 3, 0)
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+			.Text(Item->GetIconText())
+		];
+	}
+
 	// Display name
 	RowBox->AddSlot()
 		.Padding(2, 0, 2, 0)
 		.VAlign(VAlign_Center)
 		[
 			SAssignNew(DisplayNameWidget, SNiagaraStackDisplayName, InItem, *InStackViewModel)
+			.NameStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.ItemText")
+			.EditableNameStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.EditableItemText")
 		];
 
 	// Allow derived classes to add additional widgets.
 	AddCustomRowWidgets(RowBox);
+
+	// Edit Mode Button
+	if (Item->SupportsEditMode())
+	{
+		RowBox->AddSlot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0, 0, 2, 0)
+		[
+			SNew(SButton)
+			.IsFocusable(false)
+			.ToolTipText(this, &SNiagaraStackItem::GetEditModeButtonToolTipText)
+			.ButtonStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.SimpleButton")
+			.OnClicked(this, &SNiagaraStackItem::EditModeButtonClicked)
+			.ContentPadding(1)
+			[
+				SNew(SImage)
+				.Image(FAppStyle::Get().GetBrush("Icons.Edit"))
+				.ColorAndOpacity(this, &SNiagaraStackItem::GetEditModeButtonIconColor)
+			]
+		];
+	}
 
 	// Reset to base button
 	if (Item->SupportsResetToBase())
@@ -75,6 +115,18 @@ void SNiagaraStackItem::Construct(const FArguments& InArgs, UNiagaraStackItem& I
 		];
 	}
 
+	// Inheritance Icon
+	if (Item->SupportsInheritance())
+	{
+		RowBox->AddSlot()
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		.Padding(0, 0, 2, 0)
+		[
+			SNew(SNiagaraStackInheritanceIcon, Item)
+		];
+	}
+
 	// Delete button
 	if (Item->SupportsDelete())
 	{
@@ -86,15 +138,14 @@ void SNiagaraStackItem::Construct(const FArguments& InArgs, UNiagaraStackItem& I
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 			.IsFocusable(false)
-			.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
 			.ToolTipText(this, &SNiagaraStackItem::GetDeleteButtonToolTipText)
-			.IsEnabled(this, &SNiagaraStackItem::GetDeleteButtonEnabled)
+			.Visibility(this, &SNiagaraStackItem::GetDeleteButtonVisibility)
 			.OnClicked(this, &SNiagaraStackItem::DeleteClicked)
 			.Content()
 			[
-				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Trash)
+				SNew(SImage)
+				.Image(FAppStyle::Get().GetBrush("Icons.Delete"))
+				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		];
 	}
@@ -138,6 +189,29 @@ TSharedRef<SWidget> SNiagaraStackItem::AddContainerForRowWidgets(TSharedRef<SWid
 	return RowWidgets;
 }
 
+FText SNiagaraStackItem::GetEditModeButtonToolTipText() const
+{
+	return Item->GetEditModeIsActive() 
+		? LOCTEXT("DisableEditModeToolTip", "Disable Edit Mode")
+		: LOCTEXT("EnableEditModeToolTip", "Enable Edit Mode");
+}
+
+FReply SNiagaraStackItem::EditModeButtonClicked()
+{
+	if (Item->SupportsEditMode())
+	{
+		Item->SetEditModeIsActive(!Item->GetEditModeIsActive());
+	}
+	return FReply::Handled();
+}
+
+FSlateColor SNiagaraStackItem::GetEditModeButtonIconColor() const
+{
+	return Item->GetEditModeIsActive()
+		? FStyleColors::AccentYellow
+		: FSlateColor::UseSubduedForeground();
+}
+
 EVisibility SNiagaraStackItem::GetResetToBaseButtonVisibility() const
 {
 	FText Unused;
@@ -164,10 +238,10 @@ FText SNiagaraStackItem::GetDeleteButtonToolTipText() const
 	return CanDeleteMessage;
 }
 
-bool SNiagaraStackItem::GetDeleteButtonEnabled() const
+EVisibility SNiagaraStackItem::GetDeleteButtonVisibility() const
 {
 	FText Unused;
-	return Item->TestCanDeleteWithMessage(Unused);
+	return Item->TestCanDeleteWithMessage(Unused) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SNiagaraStackItem::DeleteClicked()

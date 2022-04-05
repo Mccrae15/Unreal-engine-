@@ -250,6 +250,9 @@ bool UMediaCapture::CaptureSceneViewport(TSharedPtr<FSceneViewport>& InSceneView
 	SetState(EMediaCaptureState::Preparing);
 	bool bInitialized = CaptureSceneViewportImpl(InSceneViewport);
 
+	// This could have been updated by the call to CaptureSceneViewportImpl
+	bShouldCaptureRHITexture = ShouldCaptureRHITexture(); 
+
 	if (bInitialized)
 	{
 		InitializeResolveTarget(MediaOutput->NumberOfTextureBuffers);
@@ -313,6 +316,9 @@ bool UMediaCapture::CaptureTextureRenderTarget2D(UTextureRenderTarget2D* InRende
 
 	SetState(EMediaCaptureState::Preparing);
 	bool bInitialized = CaptureRenderTargetImpl(InRenderTarget2D);
+
+	// This could have been updated by the call to CaptureSceneViewportImpl
+	bShouldCaptureRHITexture = ShouldCaptureRHITexture();
 
 	if (bInitialized)
 	{
@@ -530,12 +536,10 @@ void UMediaCapture::StopCapture(bool bAllowPendingFrameToBeProcess)
 
 			// CaptureFrames contains FTexture2DRHIRef, therefore should be released on Render Tread thread.
 			// Keep references frames to be released in a temporary array and clear CaptureFrames on Game Thread.
-			TSharedPtr<TArray<FCaptureFrame>> TempArrayToBeReleasedOnRenderThread = MakeShared<TArray<FCaptureFrame>>();
-			*TempArrayToBeReleasedOnRenderThread = MoveTemp(CaptureFrames);
 			ENQUEUE_RENDER_COMMAND(MediaOutputReleaseCaptureFrames)(
-				[TempArrayToBeReleasedOnRenderThread](FRHICommandListImmediate& RHICmdList)
+				[TempArrayToBeReleasedOnRenderThread = MoveTemp(CaptureFrames)](FRHICommandListImmediate& RHICmdList) mutable
 				{
-					TempArrayToBeReleasedOnRenderThread->Reset();
+					TempArrayToBeReleasedOnRenderThread.Reset();
 				});
 		}
 	}
@@ -614,25 +618,29 @@ void UMediaCapture::InitializeResolveTarget(int32 InNumberOfBuffers)
 		return;
 	}
 
-	if (bShouldCaptureRHITexture)
-	{
-		// No buffer is needed if the callback is with the RHI Texture
-		InNumberOfBuffers = 1;
-	}
-
 	NumberOfCaptureFrame = InNumberOfBuffers;
 	check(CaptureFrames.Num() == 0);
 	CaptureFrames.AddDefaulted(InNumberOfBuffers);
 
-	// Only create CPU readback texture when we are using the CPU callback
-	if (!bShouldCaptureRHITexture)
-	{
-		UMediaCapture* This = this;
-		ENQUEUE_RENDER_COMMAND(MediaOutputCaptureFrameCreateTexture)(
-			[This](FRHICommandListImmediate& RHICmdList)
+	UMediaCapture* This = this;
+	ENQUEUE_RENDER_COMMAND(MediaOutputCaptureFrameCreateTexture)(
+		[This](FRHICommandListImmediate& RHICmdList)
+		{
+			FRHIResourceCreateInfo CreateInfo(TEXT("UMediaCapture"));
+			for (int32 Index = 0; Index < This->NumberOfCaptureFrame; ++Index)
 			{
-				FRHIResourceCreateInfo CreateInfo;
-				for (int32 Index = 0; Index < This->NumberOfCaptureFrame; ++Index)
+				FPooledRenderTargetDesc OutputDesc = FPooledRenderTargetDesc::Create2DDesc(
+					This->DesiredOutputSize,
+					This->DesiredOutputPixelFormat,
+					FClearValueBinding::None,
+					TexCreate_Shared,
+					TexCreate_RenderTargetable,
+					false);
+
+				GRenderTargetPool.FindFreeElement(RHICmdList, OutputDesc, This->CaptureFrames[Index].RenderTarget, *FString::Format(TEXT("MediaCapture RenderTarget {0}"), { Index }));
+
+				// Only create CPU readback texture when we are using the CPU callback
+				if (!This->bShouldCaptureRHITexture)
 				{
 					This->CaptureFrames[Index].ReadbackTexture = RHICreateTexture2D(
 						This->DesiredOutputSize.X,
@@ -644,13 +652,10 @@ void UMediaCapture::InitializeResolveTarget(int32 InNumberOfBuffers)
 						CreateInfo
 					);
 				}
-				This->bResolvedTargetInitialized = true;
-			});
-	}
-	else
-	{
-		bResolvedTargetInitialized = true;
-	}
+
+			}
+			This->bResolvedTargetInitialized = true;
+		});
 }
 
 bool UMediaCapture::ValidateMediaOutput() const
@@ -673,6 +678,9 @@ bool UMediaCapture::ValidateMediaOutput() const
 
 void UMediaCapture::OnEndFrame_GameThread()
 {
+	const FString EndFrameTraceName = FString::Format(TEXT("MediaCapture::OnEndFrame_GameThread (Index {0})"), { CurrentResolvedTargetIndex });
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*EndFrameTraceName);
+
 	if (!bResolvedTargetInitialized)
 	{
 		FlushRenderingCommands();
@@ -699,12 +707,29 @@ void UMediaCapture::OnEndFrame_GameThread()
 	}
 
 	CurrentResolvedTargetIndex = (CurrentResolvedTargetIndex + 1) % NumberOfCaptureFrame;
-	int32 ReadyFrameIndex = (CurrentResolvedTargetIndex + 1) % NumberOfCaptureFrame; // Next one in the buffer queue
+	int32 ReadyFrameIndex = (CurrentResolvedTargetIndex - 1); // Previous one in the buffer queue
+	if (ReadyFrameIndex < 0)
+	{
+		ReadyFrameIndex = NumberOfCaptureFrame - 1;
+	}
 
 	// Frame that should be on the system ram and we want to send to the user
 	FCaptureFrame* ReadyFrame = &CaptureFrames[ReadyFrameIndex];
 	// Frame that we want to transfer to system ram
 	FCaptureFrame* CapturingFrame = (GetState() != EMediaCaptureState::StopRequested) ? &CaptureFrames[CurrentResolvedTargetIndex] : nullptr;
+
+	if (!ShouldCaptureRHITexture())
+	{
+		TStringBuilder<256> ResolveTargetInfoBuilder;
+		ResolveTargetInfoBuilder << "\n";
+		for (int32 Index = 0; Index < NumberOfCaptureFrame; Index++)
+		{
+			ResolveTargetInfoBuilder << FString::Format(TEXT("Frame {0} requested: {1}\n"), { Index, CaptureFrames[Index].bResolvedTargetRequested ? TEXT("true") : TEXT("false") });
+		}
+		FString FinalString = ResolveTargetInfoBuilder.ToString();
+		UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("%s"), *FinalString);
+	}
+
 
 	UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("MediaOutput: '%s'. ReadyFrameIndex: '%d' '%s'. CurrentResolvedTargetIndex: '%d'.")
 		, *MediaOutputName, ReadyFrameIndex, (CaptureFrames[ReadyFrameIndex].bResolvedTargetRequested) ? TEXT("Y"): TEXT("N"), CurrentResolvedTargetIndex);
@@ -720,6 +745,10 @@ void UMediaCapture::OnEndFrame_GameThread()
 		//Verify if game thread is overrunning the render thread.
 		if (CapturingFrame->bResolvedTargetRequested)
 		{
+			FString TraceName = FString::Format(TEXT("MediaCapture::FlushRenderingCommands (Index {0}/{1})"), { CurrentResolvedTargetIndex, NumberOfCaptureFrame });
+			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*TraceName);
+			UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("MediaOutput: '%s'. Flushing commands.")
+				, *MediaOutputName);
 			FlushRenderingCommands();
 		}
 
@@ -765,7 +794,24 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 	FIntPoint InDesiredSize,
 	FMediaCaptureStateChangedSignature InOnStateChanged)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UMediaCapture::Capture_RenderThread);
 	FTexture2DRHIRef SourceTexture;
+
+	if (CapturingFrame)
+	{
+		if (!CapturingFrame->RenderTarget)
+		{
+			InMediaCapture->SetState(EMediaCaptureState::Error);
+			UE_LOG(LogMediaIOCore, Error, TEXT("The capture will stop for '%s'. A capture frame had an invalid render target."), *InMediaCapture->MediaOutputName);
+		}
+		else
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UMediaCapture::BeforeFrameCaptured);
+			UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("Before Locking texture %p"), reinterpret_cast<uintptr_t>(CapturingFrame->RenderTarget->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetNativeResource()));
+			BeforeFrameCaptured_RenderingThread(CapturingFrame->CaptureBaseData, CapturingFrame->UserData, CapturingFrame->RenderTarget->GetRenderTargetItem().TargetableTexture);
+			UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("After Locking texture %p"), reinterpret_cast<uintptr_t>(CapturingFrame->RenderTarget->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetNativeResource()));
+		}
+	}
 
 	{
 		if (InCapturingSceneViewport)
@@ -846,19 +892,10 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 
 	if (CapturingFrame && InMediaCapture->GetState() != EMediaCaptureState::Error)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UMediaCapture::CopyToResolve);
 		SCOPE_CYCLE_COUNTER(STAT_MediaCapture_RenderThread_CopyToResolve);
 
-		FPooledRenderTargetDesc OutputDesc = FPooledRenderTargetDesc::Create2DDesc(
-			InMediaCapture->DesiredOutputSize,
-			InMediaCapture->DesiredOutputPixelFormat,
-			FClearValueBinding::None,
-			TexCreate_None,
-			TexCreate_RenderTargetable,
-			false);
-		TRefCountPtr<IPooledRenderTarget> ResampleTexturePooledRenderTarget;
-		GRenderTargetPool.FindFreeElement(RHICmdList, OutputDesc, ResampleTexturePooledRenderTarget, TEXT("MediaCapture"));
-		const FSceneRenderTargetItem& DestRenderTarget = ResampleTexturePooledRenderTarget->GetRenderTargetItem();
-
+		FSceneRenderTargetItem& DestRenderTarget = CapturingFrame->RenderTarget->GetRenderTargetItem();
 		// Do we need to crop
 		float ULeft = 0.0f;
 		float URight = 1.0f;
@@ -896,6 +933,7 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 		}
 
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UMediaCapture::DrawViewportInRenderTarget);
 			SCOPED_DRAW_EVENTF(RHICmdList, MediaCapture, TEXT("MediaCapture"));
 
 			bool bRequiresFormatConversion = InMediaCapture->DesiredPixelFormat != SourceTexture->GetFormat();
@@ -912,6 +950,7 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 			}
 			else
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UMediaCapture::FormatConversion);
 				// convert the source with a draw call
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;
 				FRHITexture* RenderTarget = DestRenderTarget.TargetableTexture.GetReference();
@@ -941,16 +980,16 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 				{
 					TShaderMapRef<FRGB8toUYVY8ConvertPS> ConvertShader(ShaderMap);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-					ConvertShader->SetParameters(RHICmdList, SourceTexture, MediaShaders::RgbToYuvRec709Full, MediaShaders::YUVOffset8bits, bDoLinearToSRGB);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+					ConvertShader->SetParameters(RHICmdList, SourceTexture, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset8bits, bDoLinearToSRGB);
 				}
 				break;
 				case EMediaCaptureConversionOperation::RGB10_TO_YUVv210_10BIT:
 				{
 					TShaderMapRef<FRGB10toYUVv210ConvertPS> ConvertShader(ShaderMap);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-					ConvertShader->SetParameters(RHICmdList, SourceTexture, MediaShaders::RgbToYuvRec709Full, MediaShaders::YUVOffset10bits, bDoLinearToSRGB);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+					ConvertShader->SetParameters(RHICmdList, SourceTexture, MediaShaders::RgbToYuvRec709Scaled, MediaShaders::YUVOffset10bits, bDoLinearToSRGB);
 				}
 				break;
 				case EMediaCaptureConversionOperation::INVERT_ALPHA:
@@ -968,14 +1007,14 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 						PermutationVector.Set<FModifyAlphaSwizzleRgbaPS::FConversionOp>(static_cast<int32>(MediaConversionOperation));
 						TShaderMapRef<FModifyAlphaSwizzleRgbaPS> ConvertShader(ShaderMap, PermutationVector);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
-						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 						ConvertShader->SetParameters(RHICmdList, SourceTexture);
 					}
 				break;
 				}
 
 				// draw full size quad into render target
-				FVertexBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer(ULeft, URight, VTop, VBottom);
+				FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer(ULeft, URight, VTop, VBottom);
 				RHICmdList.SetStreamSource(0, VertexBuffer, 0);
 
 				// set viewport to RT size
@@ -988,7 +1027,6 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 
 			if (InMediaCapture->bShouldCaptureRHITexture)
 			{
-				SCOPE_CYCLE_COUNTER(STAT_MediaCapture_RenderThread_Callback);
 				InMediaCapture->OnRHITextureCaptured_RenderingThread(CapturingFrame->CaptureBaseData, CapturingFrame->UserData, DestRenderTarget.TargetableTexture);
 				CapturingFrame->bResolvedTargetRequested = false;
 			}
@@ -997,6 +1035,8 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 				// Asynchronously copy duplicate target from GPU to System Memory
 				RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, CapturingFrame->ReadbackTexture, FResolveParams());
 				CapturingFrame->bResolvedTargetRequested = true;
+				const int32 FrameIndex = CaptureFrames.IndexOfByPredicate([&CapturingFrame](const FCaptureFrame& InCaptureFrame) { return &InCaptureFrame == CapturingFrame; });
+				UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("Requested copy for capture frame %d"), FrameIndex);
 				++NumberOfTexturesToResolve;
 			}
 		}
@@ -1026,11 +1066,18 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 				SCOPE_CYCLE_COUNTER(STAT_MediaCapture_RenderThread_MapStaging);
 				RHICmdList.MapStagingSurface(ReadyFrame->ReadbackTexture, ColorDataBuffer, Width, Height);
 			}
+
 			{
 				SCOPE_CYCLE_COUNTER(STAT_MediaCapture_RenderThread_Callback);
-				InMediaCapture->OnFrameCaptured_RenderingThread(ReadyFrame->CaptureBaseData, ReadyFrame->UserData, ColorDataBuffer, Width, Height);
+
+				// The Width/Height of the surface may be different then the DesiredOutputSize : Some underlying implementations enforce a specific stride, therefore
+				// there may be padding at the end of each row.
+				InMediaCapture->OnFrameCaptured_RenderingThread(ReadyFrame->CaptureBaseData, ReadyFrame->UserData, ColorDataBuffer, InMediaCapture->DesiredOutputSize.X, InMediaCapture->DesiredOutputSize.Y, Width * 4);
 			}
 			ReadyFrame->bResolvedTargetRequested = false;
+
+			const int32 FrameIndex = CaptureFrames.IndexOfByPredicate([&CapturingFrame](const FCaptureFrame& InCaptureFrame) { return &InCaptureFrame == CapturingFrame; });
+			UE_LOG(LogMediaIOCore, VeryVerbose, TEXT("Copy completed for capture frame %d."), FrameIndex);
 			--NumberOfTexturesToResolve;
 
 			RHICmdList.UnmapStagingSurface(ReadyFrame->ReadbackTexture);

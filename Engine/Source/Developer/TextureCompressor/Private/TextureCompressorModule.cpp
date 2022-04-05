@@ -7,11 +7,12 @@
 #include "Async/AsyncWork.h"
 #include "Async/ParallelFor.h"
 #include "Modules/ModuleManager.h"
-#include "Engine/Texture.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Engine/TextureDefines.h"
+#include "TextureFormatManager.h"
 #include "Interfaces/ITextureFormat.h"
 #include "Misc/Paths.h"
 #include "ImageCore.h"
+#include <cmath>
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -313,77 +314,195 @@ private:
 	float KernelWeights[MaxKernelExtend * MaxKernelExtend];
 };
 
-template <EMipGenAddressMode AddressMode>
-static FVector4 ComputeAlphaCoverage(const FVector4& Thresholds, const FVector4& Scales, const FImageView2D& SourceImageData)
+static float DetermineScaledThreshold(float Threshold, float Scale)
 {
-	FVector4 Coverage(0, 0, 0, 0);
+	check(Threshold > 0.f && Scale > 0.f);
 
-	int32 NumJobs = FTaskGraphInterface::Get().GetNumWorkerThreads();
-	int32 NumRowsEachJob = SourceImageData.SizeY / NumJobs;
-	if (NumRowsEachJob * NumJobs < SourceImageData.SizeY)
+	// Assuming Scale > 0 and Threshold > 0, find ScaledThreshold such that
+	//	 x * Scale >= Threshold
+	// is exactly equivalent to
+	//	 x >= ScaledThreshold.
+	//
+	// This is for a test that was originally written in the first form that we want to
+	// transform to the second form without changing results (which would in turn change
+	// texture cooks).
+	//
+	// In exact arithmetic, this is just ScaledThreshold = Threshold / Scale.
+	//
+	// In floating point, we need to consider rounding. Computed in floating point
+	// and assuming round-to-nearest (breaking ties towards even), we get 
+	//
+	//	 RN(x * Scale) >= Threshold
+	//
+	// The smallest conceivable x that passes RN(x * Scale) >= Threshold is
+	// x = (Threshold - 0.5u) / Scale, landing exactly halfway with the rounding
+	// going up; this is slightly less than an exact Threshold/Scale.
+	//
+	// For regular floating point division, we get
+	//	 RN(Threshold / Scale)
+	// = (Threshold / Scale) * (1 + e),  |e| < 0.5u (the inequality is strict for divisions)
+	//
+	// That gets us relatively close to the target value, but we have no guarantee that rounding
+	// on the division was in the direction we wanted. Just check whether our target inequality
+	// is satisfied and bump up or down to the next representable float as required.
+	float ScaledThreshold = Threshold / Scale;
+	float SteppedDown = std::nextafter(ScaledThreshold, 0.f);
+
+	// We want ScaledThreshold to be the smallest float such that
+	//	 ScaledThreshold * Scale >= Threshold
+	// meaning the next-smaller float below ScaledThreshold (which is SteppedDown)
+	// should not be >=Threshold. 
+
+	if (SteppedDown * Scale >= Threshold)
 	{
-		++NumRowsEachJob;
+		// We were too large, go down by 1 ulp
+		ScaledThreshold = SteppedDown;
+	}
+	else if (ScaledThreshold * Scale < Threshold)
+	{
+		// We were too small, go up by 1 ulp
+		ScaledThreshold = std::nextafter(ScaledThreshold, 2.f * ScaledThreshold);
 	}
 
-	int32 CommonResults[4] = { 0, 0, 0, 0 };
-	ParallelFor(NumJobs, [&](int32 Index)
+	// We should now have the right threshold:
+	check(ScaledThreshold * Scale >= Threshold); // ScaledThreshold is large enough
+	check(std::nextafter(ScaledThreshold, 0.f) * Scale < Threshold); // next below is too small
+
+	return ScaledThreshold;
+}
+
+
+static FVector4f ComputeAlphaCoverage(const FVector4f& Thresholds, const FVector4f& Scales, const FImageView2D& SourceImageData)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ComputeAlphaCoverage);
+
+	FVector4f Coverage(0, 0, 0, 0);
+
+	int32 NumRowsEachJob;
+	int32 NumJobs = ImageParallelForComputeNumJobsForRows(NumRowsEachJob,SourceImageData.SizeX,SourceImageData.SizeY);
+
+	if ( Thresholds[0] == 0.f && Thresholds[1] == 0.f && Thresholds[2] == 0.f )
 	{
-		int32 StartIndex = Index * NumRowsEachJob;
-		int32 EndIndex = FMath::Min(StartIndex + NumRowsEachJob, SourceImageData.SizeY);
-		int32 LocalCoverage[4] = { 0, 0, 0, 0 };
-		for (int32 y = StartIndex; y < EndIndex; ++y)
+		// common case that only channel 3 (A) is used for alpha coverage :
+		
+		check( Thresholds[3] != 0.f );
+
+		const float ThresholdScaled = DetermineScaledThreshold(Thresholds[3] , Scales[3]);
+		
+		int32 CommonResult = 0;
+		ParallelFor(NumJobs, [&](int32 Index)
 		{
-			for (int32 x = 0; x < SourceImageData.SizeX; ++x)
+			TRACE_CPUPROFILER_EVENT_SCOPE(ComputeAlphaCoverage.PF);
+
+			int32 StartIndex = Index * NumRowsEachJob;
+			int32 EndIndex = FMath::Min(StartIndex + NumRowsEachJob, SourceImageData.SizeY);
+			int32 LocalCoverage = 0;
+			for (int32 y = StartIndex; y < EndIndex; ++y)
 			{
-				// Sample channel values at pixel neighborhood
-				FVector4 PixelValue(LookupSourceMip<AddressMode>(SourceImageData, x, y));
+				const FLinearColor * RowPixels = &SourceImageData.Access(0,y);
 
-				// Calculate coverage for each channel (if being used as an alpha mask)
-				for (int32 i = 0; i < 4; ++i)
+				for (int32 x = 0; x < SourceImageData.SizeX; ++x)
 				{
-					// Skip channel if Threshold is 0
-					if (Thresholds[i] == 0)
-					{
-						continue;
-					}
-
-					if (PixelValue[i] * Scales[i] >= Thresholds[i])
-					{
-						++LocalCoverage[i];
-					}
+					LocalCoverage += (RowPixels[x].A >= ThresholdScaled);
 				}
 			}
-		}
+
+			FPlatformAtomics::InterlockedAdd(&CommonResult, LocalCoverage);
+		});
+
+		Coverage[3] = float(CommonResult) / float(SourceImageData.SizeX * SourceImageData.SizeY);
+		
+		UE_LOG(LogTextureCompressor, VeryVerbose, TEXT("Thresholds = 000 %f Coverage = 000 %f"),  \
+			Thresholds[3], Coverage[3] );
+	}
+	else
+	{
+		FVector4f ThresholdsScaled;
 
 		for (int32 i = 0; i < 4; ++i)
 		{
-			FPlatformAtomics::InterlockedAdd(&CommonResults[i], LocalCoverage[i]);
+			// Skip channel if Threshold is 0
+			if (Thresholds[i] == 0)
+			{
+				// stuff a value that we will always be less than
+				ThresholdsScaled[i] = FLT_MAX;
+			}
+			else
+			{
+				check( Scales[i] != 0.f );
+				ThresholdsScaled[i] = DetermineScaledThreshold( Thresholds[i] , Scales[i] );
+			}
 		}
-	});
 
-	for (int32 i = 0; i < 4; ++i)
-	{
-		Coverage[i] = float(CommonResults[i]);
+		int32 CommonResults[4] = { 0, 0, 0, 0 };
+		ParallelFor(NumJobs, [&](int32 Index)
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(ComputeAlphaCoverage.PF);
+
+			int32 StartIndex = Index * NumRowsEachJob;
+			int32 EndIndex = FMath::Min(StartIndex + NumRowsEachJob, SourceImageData.SizeY);
+			int32 LocalCoverage[4] = { 0, 0, 0, 0 };
+			for (int32 y = StartIndex; y < EndIndex; ++y)
+			{
+				const FLinearColor * RowPixels = &SourceImageData.Access(0,y);
+
+				for (int32 x = 0; x < SourceImageData.SizeX; ++x)
+				{
+					const FLinearColor & PixelValue = RowPixels[x];
+
+					// Calculate coverage for each channel
+					for (int32 i = 0; i < 4; ++i)
+					{
+						LocalCoverage[i] += ( PixelValue.Component(i) >= ThresholdsScaled[i] );
+					}
+				}
+			}
+
+			for (int32 i = 0; i < 4; ++i)
+			{
+				FPlatformAtomics::InterlockedAdd(&CommonResults[i], LocalCoverage[i]);
+			}
+		});
+
+		for (int32 i = 0; i < 4; ++i)
+		{
+			Coverage[i] = float(CommonResults[i]) / float(SourceImageData.SizeX * SourceImageData.SizeY);
+		}
+		
+		UE_LOG(LogTextureCompressor, VeryVerbose, TEXT("Thresholds = %f %f %f %f Coverage = %f %f %f %f"),  \
+			Thresholds[0], Thresholds[1], Thresholds[2], Thresholds[3], \
+			Coverage[0], Coverage[1], Coverage[2], Coverage[3] );
 	}
-
-	return Coverage / float(SourceImageData.SizeX * SourceImageData.SizeY);
+	
+	return Coverage;
 }
 
-template <EMipGenAddressMode AddressMode>
-static FVector4 ComputeAlphaScale(const FVector4& Coverages, const FVector4& AlphaThresholds, const FImageView2D& SourceImageData)
+static FVector4f ComputeAlphaScale(const FVector4f& Coverages, const FVector4f& AlphaThresholds, const FImageView2D& SourceImageData)
 {
-	FVector4 MinAlphaScales (0, 0, 0, 0);
-	FVector4 MaxAlphaScales (4, 4, 4, 4);
-	FVector4 AlphaScales (1, 1, 1, 1);
+	TRACE_CPUPROFILER_EVENT_SCOPE(ComputeAlphaScale);
+
+	// This function is not a good way to do this
+	// but we cannot change it without changing output pixels
+	// A better method would be to histogram the channel and scale the histogram to meet the desired threshold
+	// even if using this binary search method, you should remember which value gave the closest result
+	//	 don't assume that each binary search step is an improvement
+	// 
+
+	FVector4f MinAlphaScales (0, 0, 0, 0);
+	FVector4f MaxAlphaScales (4, 4, 4, 4);
+	FVector4f AlphaScales (1, 1, 1, 1);
 
 	//Binary Search to find Alpha Scale
+	// limit binary search to 8 steps
 	for (int32 i = 0; i < 8; ++i)
 	{
-		FVector4 ComputedCoverages = ComputeAlphaCoverage<AddressMode>(AlphaThresholds, AlphaScales, SourceImageData);
+		FVector4f ComputedCoverages = ComputeAlphaCoverage(AlphaThresholds, AlphaScales, SourceImageData);
+		
+		UE_LOG(LogTextureCompressor, VeryVerbose, TEXT("Tried AlphaScale = %f ComputedCoverage = %f Goal = %f"), AlphaScales[3], ComputedCoverages[3], Coverages[3] );
 
 		for (int32 j = 0; j < 4; ++j)
 		{
-			if (AlphaThresholds[j] == 0 || fabs(ComputedCoverages[j] - Coverages[j]) < KINDA_SMALL_NUMBER)
+			if (AlphaThresholds[j] == 0 || fabsf(ComputedCoverages[j] - Coverages[j]) < KINDA_SMALL_NUMBER)
 			{
 				continue;
 			}
@@ -397,14 +516,19 @@ static FVector4 ComputeAlphaScale(const FVector4& Coverages, const FVector4& Alp
 				MaxAlphaScales[j] = AlphaScales[j];
 			}
 
+			// guess alphascale is best at next midpoint :
+			//  this means we wind up returning an alphascale value we have never tested
 			AlphaScales[j] = (MinAlphaScales[j] + MaxAlphaScales[j]) * 0.5f;
 		}
 
+		// Equals default tolerance is KINDA_SMALL_NUMBER so it checks the same condition as above
 		if (ComputedCoverages.Equals(Coverages))
 		{
 			break;
 		}
 	}
+
+	UE_LOG(LogTextureCompressor, VeryVerbose, TEXT("Final AlphaScales = %f %f %f %f"), AlphaScales[0], AlphaScales[1], AlphaScales[2], AlphaScales[3] );
 
 	return AlphaScales;
 }
@@ -424,8 +548,9 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 	const FImageView2D& SourceImageData, 
 	FImageView2D& DestImageData, 
 	bool bDitherMipMapAlpha,
-	FVector4 AlphaCoverages,
-	FVector4 AlphaThresholds,
+	bool bDoScaleMipsForAlphaCoverage,
+	FVector4f AlphaCoverages,
+	FVector4f AlphaThresholds,
 	const FImageKernel2D& Kernel,
 	uint32 ScaleFactor,
 	bool bSharpenWithoutColorShift,
@@ -433,21 +558,30 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 {
 	check( SourceImageData.SizeX == ScaleFactor * DestImageData.SizeX || DestImageData.SizeX == 1 );
 	check( SourceImageData.SizeY == ScaleFactor * DestImageData.SizeY || DestImageData.SizeY == 1 );
-	check( Kernel.GetFilterTableSize() >= 2 );
+	checkf( Kernel.GetFilterTableSize() >= 2, TEXT("Kernel table size %d, expected at least 2!"), Kernel.GetFilterTableSize());
 
 	const int32 KernelCenter = (int32)Kernel.GetFilterTableSize() / 2 - 1;
 
 	// Set up a random number stream for dithering.
 	FRandomStream RandomStream(0);
 
-	FVector4 AlphaScale(1, 1, 1, 1);
-	if (AlphaThresholds != FVector4(0,0,0,0))
+	FVector4f AlphaScale(1, 1, 1, 1);
+	if (bDoScaleMipsForAlphaCoverage)
 	{
-		AlphaScale = ComputeAlphaScale<AddressMode>(AlphaCoverages, AlphaThresholds, SourceImageData);
+		AlphaScale = ComputeAlphaScale(AlphaCoverages, AlphaThresholds, SourceImageData);
 	}
 	
-	ParallelFor(DestImageData.SizeY, [&](int32 DestY)
+	int32 NumRowsEachJob;
+	int32 NumJobs = ImageParallelForComputeNumJobsForRows(NumRowsEachJob,DestImageData.SizeX,DestImageData.SizeY);
+
+	ParallelFor(NumJobs, [&](int32 Index)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(GenerateSharpenedMip.PF);
+
+		int32 StartIndex = Index * NumRowsEachJob;
+		int32 EndIndex = FMath::Min(StartIndex + NumRowsEachJob, DestImageData.SizeY);
+		for (int32 DestY = StartIndex; DestY < EndIndex; ++DestY)
+		{
 		for ( int32 DestX = 0;DestX < DestImageData.SizeX; DestX++ )
 		{
 			const int32 SourceX = DestX * ScaleFactor;
@@ -473,7 +607,7 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 					}
 				}
 
-				float NewLuminance = SharpenedColor.ComputeLuminance();
+				float NewLuminance = SharpenedColor.GetLuminance();
 
 				// simple 2x2 kernel to compute the color
 				FilteredColor =
@@ -482,7 +616,7 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 					+ LookupSourceMip<AddressMode>( SourceImageData, SourceX + 0, SourceY + 1 )
 					+ LookupSourceMip<AddressMode>( SourceImageData, SourceX + 1, SourceY + 1 ) ) * 0.25f;
 
-				float OldLuminance = FilteredColor.ComputeLuminance();
+				float OldLuminance = FilteredColor.GetLuminance();
 
 				if ( OldLuminance > 0.001f )
 				{
@@ -533,6 +667,7 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 			FLinearColor& DestColor = DestImageData.Access(DestX, DestY);
 			DestColor = FilteredColor;
 		}
+		}
 	});
 }
 
@@ -544,24 +679,27 @@ static void GenerateSharpenedMipB8G8R8A8(
 	FImageView2D& DestImageData, 
 	EMipGenAddressMode AddressMode, 
 	bool bDitherMipMapAlpha,
-	FVector4 AlphaCoverages,
-	FVector4 AlphaThresholds,
+	bool bDoScaleMipsForAlphaCoverage,
+	FVector4f AlphaCoverages,
+	FVector4f AlphaThresholds,
 	const FImageKernel2D &Kernel,
 	uint32 ScaleFactor,
 	bool bSharpenWithoutColorShift,
 	bool bUnfiltered
 	)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateSharpenedMip);
+
 	switch(AddressMode)
 	{
 	case MGTAM_Wrap:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData, DestImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	case MGTAM_Clamp:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData, DestImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	case MGTAM_BorderBlack:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData, DestImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	default:
 		check(0);
@@ -576,13 +714,13 @@ static void GenerateSharpenedMipB8G8R8A8(
 		switch(AddressMode)
 		{
 		case MGTAM_Wrap:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData2, TempImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		case MGTAM_Clamp:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData2, TempImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		case MGTAM_BorderBlack:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData2, TempImageData, bDitherMipMapAlpha, bDoScaleMipsForAlphaCoverage, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		default:
 			check(0);
@@ -689,8 +827,9 @@ static void GenerateTopMip(const FImage& SrcImage, FImage& DestImage, const FTex
 			DestView,
 			AddressMode,
 			Settings.bDitherMipMapAlpha,
-			FVector4(0, 0, 0, 0),
-			FVector4(0, 0, 0, 0),
+			false,
+			FVector4f(0, 0, 0, 0),
+			FVector4f(0, 0, 0, 0),
 			KernelDownsample,
 			1,
 			Settings.bSharpenWithoutColorShift,
@@ -734,6 +873,8 @@ static void DownscaleImage(const FImage& SrcImage, FImage& DstImage, const FText
 		return;
 	}
 	
+	TRACE_CPUPROFILER_EVENT_SCOPE(DownscaleImage);
+		
 	float Downscale = FMath::Clamp(Settings.Downscale, 1.f, 8.f);
 	int32 FinalSizeX = FMath::CeilToInt(SrcImage.SizeX / Downscale);
 	int32 FinalSizeY = FMath::CeilToInt(SrcImage.SizeY / Downscale);
@@ -777,8 +918,9 @@ static void DownscaleImage(const FImage& SrcImage, FImage& DstImage, const FText
 			SrcImageData, 
 			DstImageData, 
 			Settings.bDitherMipMapAlpha, 
-			FVector4(0, 0, 0, 0),
-			FVector4(0, 0, 0, 0), 
+			false,
+			FVector4f(0, 0, 0, 0),
+			FVector4f(0, 0, 0, 0), 
 			AvgKernel, 
 			2, 
 			false,
@@ -891,6 +1033,8 @@ void ITextureCompressorModule::GenerateMipChain(
 	uint32 MipChainDepth 
 	)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateMipChain);
+
 	check(BaseImage.Format == ERawImageFormat::RGBA32F);
 
 	const FImage& BaseMip = BaseImage;
@@ -898,8 +1042,8 @@ void ITextureCompressorModule::GenerateMipChain(
 	const int32 SrcHeight= BaseMip.SizeY;
 	const int32 SrcNumSlices = BaseMip.NumSlices;
 	const ERawImageFormat::Type ImageFormat = ERawImageFormat::RGBA32F;
-	FVector4 AlphaScales(1, 1, 1, 1);
-	FVector4 AlphaCoverages(0, 0, 0, 0);
+
+	FVector4f AlphaCoverages(0, 0, 0, 0);
 
 
 	const FImage* IntermediateSrcPtr;
@@ -944,33 +1088,27 @@ void ITextureCompressorModule::GenerateMipChain(
 	}
 
 	// Calculate alpha coverage value to preserve along mip chain
-	if (Settings.AlphaCoverageThresholds != FVector4(0,0,0,0))
+	if ( Settings.bDoScaleMipsForAlphaCoverage )
 	{
+		check(Settings.AlphaCoverageThresholds != FVector4f(0,0,0,0));
 		check(IntermediateSrcPtr);
 		const FImageView2D IntermediateSrcView = FImageView2D::ConstructConst(*IntermediateSrcPtr, 0);
-		switch (AddressMode)
-		{
-		case MGTAM_Wrap:
-			AlphaCoverages = ComputeAlphaCoverage<MGTAM_Wrap>(Settings.AlphaCoverageThresholds, AlphaScales, IntermediateSrcView);
-			break;
-		case MGTAM_Clamp:
-			AlphaCoverages = ComputeAlphaCoverage<MGTAM_Clamp>(Settings.AlphaCoverageThresholds, AlphaScales, IntermediateSrcView);
-			break;
-		case MGTAM_BorderBlack:
-			AlphaCoverages = ComputeAlphaCoverage<MGTAM_BorderBlack>(Settings.AlphaCoverageThresholds, AlphaScales, IntermediateSrcView);
-			break;
-		default:
-			check(0);
-		}		
+
+		const FVector4f AlphaScales(1, 1, 1, 1);		
+		AlphaCoverages = ComputeAlphaCoverage(Settings.AlphaCoverageThresholds, AlphaScales, IntermediateSrcView);
 	}
 
 	// Generate mips
+	//  default value of MipChainDepth is MAX_uint32, means generate all mips down to 1x1
+	//	(break inside the loop)
 	for (; MipChainDepth != 0 ; --MipChainDepth)
 	{
 		check(IntermediateSrcPtr && IntermediateDstPtr);
 		const FImage& IntermediateSrc = *IntermediateSrcPtr;
 		FImage& IntermediateDst = *IntermediateDstPtr;
 
+		// add new mip to TArray<FImage> &OutMipChain :
+		//	placement new on TArray does AddUninitialized then constructs in the last element
 		FImage& DestImage = *new(OutMipChain) FImage(IntermediateDst.SizeX, IntermediateDst.SizeY, IntermediateDst.NumSlices, ImageFormat);
 		
 		for (int32 SliceIndex = 0; SliceIndex < IntermediateDst.NumSlices; ++SliceIndex)
@@ -987,6 +1125,7 @@ void ITextureCompressorModule::GenerateMipChain(
 				DestView,
 				AddressMode,
 				Settings.bDitherMipMapAlpha,
+				Settings.bDoScaleMipsForAlphaCoverage,
 				AlphaCoverages,
 				Settings.AlphaCoverageThresholds,
 				KernelDownsample,
@@ -1004,6 +1143,7 @@ void ITextureCompressorModule::GenerateMipChain(
 					IntermediateDstView,
 					AddressMode,
 					Settings.bDitherMipMapAlpha,
+					Settings.bDoScaleMipsForAlphaCoverage,
 					AlphaCoverages,
 					Settings.AlphaCoverageThresholds,
 					KernelSimpleAverage,
@@ -1073,11 +1213,11 @@ struct FImageViewLongLat
 	int32 SizeY;
 
 	/** Initialization constructor. */
-	explicit FImageViewLongLat(FImage& Image)
+	explicit FImageViewLongLat(FImage& Image, int32 SliceIndex)
 	{
-		ImageColors = (&Image.AsRGBA32F()[0]);
 		SizeX = Image.SizeX;
 		SizeY = Image.SizeY;
+		ImageColors = (&Image.AsRGBA32F()[0]) + SliceIndex * SizeY * SizeX;
 	}
 
 	/** Wraps X around W. */
@@ -1206,26 +1346,31 @@ static uint32 ComputeLongLatCubemapExtents(const FImage& SrcImage, const uint32 
 	return FMath::Clamp(1U << FMath::FloorLog2(SrcImage.SizeX / 2), 32U, MaxCubemapTextureResolution);
 }
 
-void ITextureCompressorModule::GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const uint32 MaxCubemapTextureResolution)
+void ITextureCompressorModule::GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const uint32 MaxCubemapTextureResolution, uint8 SourceEncodingOverride)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateBaseCubeMipFromLongitudeLatitude2D);
+
 	FImage LongLatImage;
-	SrcImage.CopyTo(LongLatImage, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
-	FImageViewLongLat LongLatView(LongLatImage);
+	SrcImage.Linearize(SourceEncodingOverride, LongLatImage);
 
 	// TODO_TEXTURE: Expose target size to user.
 	uint32 Extent = ComputeLongLatCubemapExtents(LongLatImage, MaxCubemapTextureResolution);
 	float InvExtent = 1.0f / Extent;
-	OutMip->Init(Extent, Extent, 6, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
+	OutMip->Init(Extent, Extent, SrcImage.NumSlices * 6, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
 
-	for(uint32 Face = 0; Face < 6; ++Face)
+	for (int32 Slice = 0; Slice < SrcImage.NumSlices; ++Slice)
 	{
-		FImageView2D MipView(*OutMip, Face);
-		for(uint32 y = 0; y < Extent; ++y)
+		FImageViewLongLat LongLatView(LongLatImage, Slice);
+		for (uint32 Face = 0; Face < 6; ++Face)
 		{
-			for(uint32 x = 0; x < Extent; ++x)
+			FImageView2D MipView(*OutMip, Slice * 6 + Face);
+			for (uint32 y = 0; y < Extent; ++y)
 			{
-				FVector DirectionWS = ComputeWSCubeDirectionAtTexelCenter(Face, x, y, InvExtent);
-				MipView.Access(x, y) = LongLatView.LookupLongLat(DirectionWS);
+				for (uint32 x = 0; x < Extent; ++x)
+				{
+					FVector DirectionWS = ComputeWSCubeDirectionAtTexelCenter(Face, x, y, InvExtent);
+					MipView.Access(x, y) = LongLatView.LookupLongLat(DirectionWS);
+				}
 			}
 		}
 	}
@@ -1415,6 +1560,8 @@ static inline float ComputeTexelArea(uint32 x, uint32 y, float InvSideExtentMul2
  */
 static void GenerateAngularFilteredMip(FImage* DestMip, FImage& SrcMip, float ConeAngle)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateAngularFilteredMip);
+
 	int32 MipExtent = DestMip->SizeX;
 	float MipInvSideExtent = 1.0f / MipExtent;
 
@@ -1507,6 +1654,8 @@ static void GenerateAngularFilteredMip(FImage* DestMip, FImage& SrcMip, float Co
 
 void ITextureCompressorModule::GenerateAngularFilteredMips(TArray<FImage>& InOutMipChain, int32 NumMips, uint32 DiffuseConvolveMipLevel)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateAngularFilteredMips);
+
 	TArray<FImage> SrcMipChain;
 	Exchange(SrcMipChain, InOutMipChain);
 	InOutMipChain.Empty(NumMips);
@@ -1598,30 +1747,30 @@ void ITextureCompressorModule::AdjustImageColors(FImage& Image, const FTextureBu
 		!FMath::IsNearlyEqual( InParams.AdjustMaxAlpha, 1.0f, (float)KINDA_SMALL_NUMBER ) ||
 		InBuildSettings.bChromaKeyTexture )
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AdjustImageColors);
+
 		const FLinearColor ChromaKeyTarget = InBuildSettings.ChromaKeyColor;
 		const float ChromaKeyThreshold = InBuildSettings.ChromaKeyThreshold + SMALL_NUMBER;
-		const int32 NumPixels = Image.SizeX * Image.SizeY * Image.NumSlices;
+		const int64 NumPixels = (int64)Image.SizeX * Image.SizeY * Image.NumSlices;
 		TArrayView64<FLinearColor> ImageColors = Image.AsRGBA32F();
 
-		int32 NumJobs = FTaskGraphInterface::Get().GetNumWorkerThreads();
-		int32 NumPixelsEachJob = NumPixels / NumJobs;
-		if (NumPixelsEachJob * NumJobs < NumPixels)
-		{
-			++NumPixelsEachJob;
-		}
+		int64 NumPixelsEachJob;
+		int32 NumJobs = ImageParallelForComputeNumJobsForPixels(NumPixelsEachJob,NumPixels);
 
 		// bForceSingleThread is set to true when: 
-		// (a) editor or cooker is loading as this is when the derived data cache is rebuilt as it will already be limited to a single thread 
+		// editor or cooker is loading as this is when the derived data cache is rebuilt as it will already be limited to a single thread 
 		//     and thus overhead of multithreading will simply make it slower
-		// (b) texture is smaller than 256x256 as it will cost more to multithread than to run on single thread.	
-		const static int MinPixelsToMultithread = 16384;
-		bool bForceSingleThread = (NumPixels < MinPixelsToMultithread) || GIsEditorLoadingPackage || GIsCookerLoadingPackage || IsInAsyncLoadingThread();
+		bool bForceSingleThread = GIsEditorLoadingPackage || GIsCookerLoadingPackage || IsInAsyncLoadingThread();
 
+		// TFunction or auto are okay here
+		// TFunctionRef is not
 		TFunction<void (int32)> AdjustImageColorsFunc = [&](int32 Index)
 		{
-			int32 StartIndex = Index * NumPixelsEachJob;
-			int32 EndIndex = FMath::Min(StartIndex + NumPixelsEachJob, NumPixels);
-			for (int32 CurPixelIndex = StartIndex; CurPixelIndex < EndIndex; ++CurPixelIndex)
+			TRACE_CPUPROFILER_EVENT_SCOPE(AdjustImageColors.PF);
+
+			int64 StartIndex = Index * NumPixelsEachJob;
+			int64 EndIndex = FMath::Min(StartIndex + NumPixelsEachJob, NumPixels);
+			for (int64 CurPixelIndex = StartIndex; CurPixelIndex < EndIndex; ++CurPixelIndex)
 			{
 				const FLinearColor OriginalColorRaw = ImageColors[CurPixelIndex];
 
@@ -1892,7 +2041,7 @@ static void ApplyYCoCgBlockScale(TArray<FImage>& InOutMipChain)
 	}
 }
 
-float RoughnessToSpecularPower(float Roughness)
+static float RoughnessToSpecularPower(float Roughness)
 {
 	float Div = FMath::Pow(Roughness, 4);
 
@@ -1903,7 +2052,7 @@ float RoughnessToSpecularPower(float Roughness)
 	return 2.0f / Div - 2.0f;
 }
 
-float SpecularPowerToRoughness(float SpecularPower)
+static float SpecularPowerToRoughness(float SpecularPower)
 {
 	float Out = FMath::Pow( SpecularPower * 0.5f + 1.0f, -0.25f );
 
@@ -1979,13 +2128,13 @@ void ApplyCompositeTexture(FImage& RoughnessSourceMips, const FImage& NormalSour
 /**
  * Asynchronous compression, used for compressing mips simultaneously.
  */
-class FAsyncCompressionWorker : public FNonAbandonableTask 
+class FAsyncCompressionWorker
 {
 public:
 	/**
 	 * Initializes the data and creates the async compression task.
 	 */
-	FAsyncCompressionWorker(const ITextureFormat* InTextureFormat, const FImage* InImages, uint32 InNumImages, const FTextureBuildSettings& InBuildSettings, bool bInImageHasAlphaChannel, uint32 InExtData)
+	FAsyncCompressionWorker(const ITextureFormat* InTextureFormat, const FImage* InImages, uint32 InNumImages, const FTextureBuildSettings& InBuildSettings, FStringView InDebugTexturePathName, bool bInImageHasAlphaChannel, uint32 InExtData)
 		: TextureFormat(*InTextureFormat)
 		, SourceImages(InImages)
 		, BuildSettings(InBuildSettings)
@@ -1993,6 +2142,7 @@ public:
 		, ExtData(InExtData)
 		, NumImages(InNumImages)
 		, bCompressionResults(false)
+		, DebugTexturePathName(InDebugTexturePathName)
 	{
 	}
 
@@ -2007,15 +2157,11 @@ public:
 			SourceImages,
 			NumImages,
 			BuildSettings,
+			DebugTexturePathName,
 			bImageHasAlphaChannel,
 			ExtData,
 			CompressedImage
 			);
-	}
-
-	FORCEINLINE TStatId GetStatId() const
-	{
-		RETURN_QUICK_DECLARE_CYCLE_STAT(FAsyncCompressionWorker, STATGROUP_ThreadPoolAsyncTasks);
 	}
 
 	/**
@@ -2046,31 +2192,33 @@ private:
 	uint32 NumImages;
 	/** true if compression was successful. */
 	bool bCompressionResults;
+	FStringView DebugTexturePathName;
 };
-typedef FAsyncTask<FAsyncCompressionWorker> FAsyncCompressionTask;
 
 // compress mip-maps in InMipChain and add mips to Texture, might alter the source content
 static bool CompressMipChain(
 	const ITextureFormat* TextureFormat,
 	const TArray<FImage>& MipChain,
 	const FTextureBuildSettings& Settings,
+	FStringView DebugTexturePathName,
 	TArray<FCompressedImage2D>& OutMips,
 	uint32& OutNumMipsInTail,
 	uint32& OutExtData)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(CompressMipChain)
 
-	const bool bImageHasAlphaChannel = DetectAlphaChannel(MipChain[0]);
+	const bool bImageHasAlphaChannel = !Settings.bForceNoAlphaChannel  && (Settings.bForceAlphaChannel || DetectAlphaChannel(MipChain[0]));
 
 	// now call the Ex version now that we have the proper MipChain
 	const FTextureFormatCompressorCaps CompressorCaps = TextureFormat->GetFormatCapabilitiesEx(Settings, MipChain.Num(), MipChain[0], bImageHasAlphaChannel);
 	OutNumMipsInTail = CompressorCaps.NumMipsInTail;
 	OutExtData = CompressorCaps.ExtData;
 
-	TIndirectArray<FAsyncCompressionTask> AsyncCompressionTasks;
 	int32 MipCount = MipChain.Num();
 	check(MipCount >= (int32)CompressorCaps.NumMipsInTail);
-	const int32 MinAsyncCompressionSize = 128;
+	// This number was too small (128) for current hardware and caused too many
+	// context switch for work taking < 1ms. Bump the value for 2020 CPUs.
+	const int32 MinAsyncCompressionSize = 512;
 	const bool bAllowParallelBuild = TextureFormat->AllowParallelBuild();
 	bool bCompressionSucceeded = true;
 	int32 FirstMipTailIndex = MipCount;
@@ -2083,50 +2231,70 @@ static bool CompressMipChain(
 	}
 
 	OutMips.Empty(MipCount);
+	TArray<FAsyncCompressionWorker> AsyncCompressionTasks;
+	AsyncCompressionTasks.Reserve(MipCount);
+
+	struct PreWork
+	{
+		int32 MipIndex;
+		const FImage& SrcMip;
+		FCompressedImage2D& DestMip;
+	};
+	TArray<PreWork> PreWorkTasks;
+	PreWorkTasks.Reserve(MipCount);
+
 	for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
 	{
 		const FImage& SrcMip = MipChain[MipIndex];
 		FCompressedImage2D& DestMip = *new(OutMips) FCompressedImage2D;
+
 		if (MipIndex > FirstMipTailIndex)
 		{
 			continue;
 		}
 		else if (bAllowParallelBuild && FMath::Min(SrcMip.SizeX, SrcMip.SizeY) >= MinAsyncCompressionSize)
 		{
-			FAsyncCompressionTask* AsyncTask = new FAsyncCompressionTask(
+			AsyncCompressionTasks.Emplace(
 				TextureFormat,
 				&SrcMip,
 				MipIndex == FirstMipTailIndex ? CompressorCaps.NumMipsInTail : 1, // number of mips pointed to by SrcMip
 				Settings,
+				DebugTexturePathName,
 				bImageHasAlphaChannel,
 				CompressorCaps.ExtData
-				);
-			AsyncCompressionTasks.Add(AsyncTask);
-#if WITH_EDITOR
-			AsyncTask->StartBackgroundTask(GLargeThreadPool);
-#else
-			AsyncTask->StartBackgroundTask();
-#endif
+			);
 		}
 		else
 		{
-			bCompressionSucceeded = bCompressionSucceeded && TextureFormat->CompressImageEx(
-				&SrcMip,
-				MipIndex == FirstMipTailIndex ? CompressorCaps.NumMipsInTail : 1, // number of mips pointed to by SrcMip
-				Settings,
-				bImageHasAlphaChannel,
-				CompressorCaps.ExtData,
-				DestMip
-				);
+			PreWorkTasks.Emplace(PreWork { MipIndex, SrcMip, DestMip });
 		}
 	}
 
+	ParallelForWithPreWork(AsyncCompressionTasks.Num(), [&AsyncCompressionTasks](int32 TaskIndex)
+	{
+		AsyncCompressionTasks[TaskIndex].DoWork();
+	},
+	[&PreWorkTasks, &TextureFormat, &OutMips, &bCompressionSucceeded, &CompressorCaps, &Settings, DebugTexturePathName, FirstMipTailIndex, bImageHasAlphaChannel]()
+	{
+		for (PreWork& Work : PreWorkTasks)
+		{
+			bCompressionSucceeded = bCompressionSucceeded && TextureFormat->CompressImageEx(
+				&Work.SrcMip,
+				Work.MipIndex == FirstMipTailIndex ? CompressorCaps.NumMipsInTail : 1, // number of mips pointed to by SrcMip
+				Settings,
+				DebugTexturePathName,
+				bImageHasAlphaChannel,
+				CompressorCaps.ExtData,
+				Work.DestMip
+			);
+		}
+	}, EParallelForFlags::Unbalanced);
+
 	for (int32 TaskIndex = 0; TaskIndex < AsyncCompressionTasks.Num(); ++TaskIndex)
 	{
-		FAsyncCompressionTask& AsynTask = AsyncCompressionTasks[TaskIndex];
-		AsynTask.EnsureCompletion();
+		FAsyncCompressionWorker& AsynTask = AsyncCompressionTasks[TaskIndex];
 		FCompressedImage2D& DestMip = OutMips[TaskIndex];
-		bCompressionSucceeded = bCompressionSucceeded && AsynTask.GetTask().ConsumeCompressionResults(DestMip);
+		bCompressionSucceeded = bCompressionSucceeded && AsynTask.ConsumeCompressionResults(DestMip);
 	}
 
 	for (int32 MipIndex = FirstMipTailIndex + 1; MipIndex < MipCount; ++MipIndex)
@@ -2186,37 +2354,22 @@ public:
 	{
 	}
 
-	virtual bool UsesTaskGraph(const FTextureBuildSettings& BuildSettings) const override
-	{
-		const ITextureFormat* TextureFormat = nullptr;
-		ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
-		if (TPM)
-		{
-			TextureFormat = TPM->FindTextureFormat(BuildSettings.TextureFormatName);
-		}
-
-		if (TextureFormat)
-		{
-			return TextureFormat->UsesTaskGraph();
-		}
-
-		return false;
-	}
-
 	virtual bool BuildTexture(
 		const TArray<FImage>& SourceMips,
 		const TArray<FImage>& AssociatedNormalSourceMips,
 		const FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		TArray<FCompressedImage2D>& OutTextureMips,
 		uint32& OutNumMipsInTail,
 		uint32& OutExtData
-		)
+	)
 	{
 		const ITextureFormat* TextureFormat = nullptr;
-		ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
-		if (TPM)
+
+		ITextureFormatManagerModule* TFM = GetTextureFormatManager();
+		if (TFM)
 		{
-			TextureFormat = TPM->FindTextureFormat(BuildSettings.TextureFormatName);
+			TextureFormat = TFM->FindTextureFormat(BuildSettings.TextureFormatName);
 		}
 		if (TextureFormat == nullptr)
 		{
@@ -2233,15 +2386,15 @@ public:
 		// we can't use the Ex version here because it needs an FImage, which needs BuildTextureMips to be called
 		const FTextureFormatCompressorCaps CompressorCaps = TextureFormat->GetFormatCapabilities();
 
-		if(!BuildTextureMips(SourceMips, BuildSettings, CompressorCaps, IntermediateMipChain))
+		if (!BuildTextureMips(SourceMips, BuildSettings, CompressorCaps, IntermediateMipChain))
 		{
 			return false;
 		}
 
 		// apply roughness adjustment depending on normal map variation
-		if(AssociatedNormalSourceMips.Num())
+		if (AssociatedNormalSourceMips.Num())
 		{
-//			check AssociatedNormalSourceMips.Format; 
+			//			check AssociatedNormalSourceMips.Format; 
 
 			TArray<FImage> IntermediateAssociatedNormalSourceMipChain;
 
@@ -2254,14 +2407,14 @@ public:
 			// important to make accurate computation with normal length
 			DefaultSettings.bRenormalizeTopMip = true;
 
-			if(!BuildTextureMips(AssociatedNormalSourceMips, DefaultSettings, CompressorCaps, IntermediateAssociatedNormalSourceMipChain))
+			if (!BuildTextureMips(AssociatedNormalSourceMips, DefaultSettings, CompressorCaps, IntermediateAssociatedNormalSourceMipChain))
 			{
-				UE_LOG(LogTexture, Warning, TEXT("Failed to generate texture mips for composite texture"));
+				UE_LOG(LogTextureCompressor, Warning, TEXT("Failed to generate texture mips for composite texture"));
 			}
 
-			if(!ApplyCompositeTexture(IntermediateMipChain, IntermediateAssociatedNormalSourceMipChain, BuildSettings.CompositeTextureMode, BuildSettings.CompositePower))
+			if (!ApplyCompositeTexture(IntermediateMipChain, IntermediateAssociatedNormalSourceMipChain, BuildSettings.CompositeTextureMode, BuildSettings.CompositePower))
 			{
-				UE_LOG(LogTexture, Warning, TEXT("Failed to apply composite texture"));
+				UE_LOG(LogTextureCompressor, Warning, TEXT("Failed to apply composite texture"));
 			}
 		}
 
@@ -2270,9 +2423,23 @@ public:
 		BuildSettings.TopMipSize.X = IntermediateMipChain[0].SizeX;
 		BuildSettings.TopMipSize.Y = IntermediateMipChain[0].SizeY;
 		BuildSettings.VolumeSizeZ = BuildSettings.bVolume ? IntermediateMipChain[0].NumSlices : 1;
-		BuildSettings.ArraySlices = BuildSettings.bTextureArray ? IntermediateMipChain[0].NumSlices : 1;
+		if (BuildSettings.bTextureArray)
+		{
+			if (BuildSettings.bCubemap)
+			{
+				BuildSettings.ArraySlices = IntermediateMipChain[0].NumSlices / 6;
+			}
+			else
+			{
+				BuildSettings.ArraySlices = IntermediateMipChain[0].NumSlices;
+			}
+		}
+		else
+		{
+			BuildSettings.ArraySlices = 1;
+		}
 		
-		return CompressMipChain(TextureFormat, IntermediateMipChain, BuildSettings, OutTextureMips, OutNumMipsInTail, OutExtData);
+		return CompressMipChain(TextureFormat, IntermediateMipChain, BuildSettings, DebugTexturePathName, OutTextureMips, OutNumMipsInTail, OutExtData);
 	}
 
 	// IModuleInterface implementation.
@@ -2280,7 +2447,14 @@ public:
 	{
 #if PLATFORM_WINDOWS
 	#if PLATFORM_64BITS
-		nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win64/nvtt_64.dll")));
+		if (FWindowsPlatformMisc::HasAVX2InstructionSupport())
+		{
+			nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win64/AVX2/nvtt_64.dll")));
+		}
+		else
+		{
+			nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win64/nvtt_64.dll")));
+		}
 	#else	//32-bit platform
 		nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win32/nvtt_.dll")));
 	#endif
@@ -2307,15 +2481,25 @@ private:
 		const FTextureFormatCompressorCaps& CompressorCaps,
 		TArray<FImage>& OutMipChain)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(BuildTextureMips);
+
 		check(InSourceMips.Num());
 		check(InSourceMips[0].SizeX > 0 && InSourceMips[0].SizeY > 0 && InSourceMips[0].NumSlices > 0);
 
 		// Identify long-lat cubemaps.
-		bool bLongLatCubemap = BuildSettings.bCubemap && InSourceMips[0].NumSlices == 1;
-
-		if (BuildSettings.bCubemap && InSourceMips[0].NumSlices != 6 && !bLongLatCubemap)
+		const bool bLongLatCubemap = BuildSettings.bLongLatSource;
+		if (BuildSettings.bCubemap && !bLongLatCubemap)
 		{
-			return false;
+			if (BuildSettings.bTextureArray && (InSourceMips[0].NumSlices % 6) != 0)
+			{
+				// Cube array must have multiiple of 6 slices
+				return false;
+			}
+			if (!BuildSettings.bTextureArray && InSourceMips[0].NumSlices != 6)
+			{
+				// Non-array cube must have exactly 6 slices
+				return false;
+			}
 		}
 
 		// Determine the maximum possible mip counts for source and dest.
@@ -2499,7 +2683,6 @@ private:
 		for (int32 MipIndex = StartMip; MipIndex < StartMip + CopyCount; ++MipIndex)
 		{
 			const FImage& Image = SourceMips[MipIndex];
-			ERawImageFormat::Type MipFormat = ERawImageFormat::RGBA32F;
 
 			// create base for the mip chain
 			FImage* Mip = new(OutMipChain) FImage();
@@ -2507,7 +2690,8 @@ private:
 			if (bLongLatCubemap)
 			{
 				// Generate the base mip from the long-lat source image.
-				GenerateBaseCubeMipFromLongitudeLatitude2D(Mip, Image, BuildSettings.MaxTextureResolution);
+				GenerateBaseCubeMipFromLongitudeLatitude2D(Mip, Image, BuildSettings.MaxTextureResolution, BuildSettings.SourceEncodingOverride);
+				break;
 			}
 			else
 			{
@@ -2515,9 +2699,7 @@ private:
 				if(BuildSettings.bApplyKernelToTopMip)
 				{
 					FImage Temp;
-					
-					Image.CopyTo(Temp, MipFormat, EGammaSpace::Linear);
-
+					Image.Linearize(BuildSettings.SourceEncodingOverride, Temp);
 					if(BuildSettings.bRenormalizeTopMip)
 					{
 						NormalizeMip(Temp);
@@ -2527,7 +2709,7 @@ private:
 				}
 				else
 				{
-					Image.CopyTo(*Mip, MipFormat, EGammaSpace::Linear);
+					Image.Linearize(BuildSettings.SourceEncodingOverride, *Mip);
 
 					if(BuildSettings.bRenormalizeTopMip)
 					{
@@ -2547,6 +2729,16 @@ private:
 				DownscaleImage(*Mip, *Mip, DownscaleSettings);
 			}
 
+			if (BuildSettings.bHasColorSpaceDefinition)
+			{
+				Mip->TransformToWorkingColorSpace(
+					FVector2D(BuildSettings.RedChromaticityCoordinate),
+					FVector2D(BuildSettings.GreenChromaticityCoordinate),
+					FVector2D(BuildSettings.BlueChromaticityCoordinate),
+					FVector2D(BuildSettings.WhiteChromaticityCoordinate),
+					static_cast<UE::Color::EChromaticAdaptationMethod>(BuildSettings.ChromaticAdaptationMethod));
+			}
+
 			// Apply color adjustments
 			AdjustImageColors(*Mip, BuildSettings);
 			if (BuildSettings.bComputeBokehAlpha)
@@ -2563,7 +2755,15 @@ private:
 		// Generate any missing mips in the chain.
 		if (NumOutputMips > OutMipChain.Num())
 		{
-			GenerateMipChain(BuildSettings, OutMipChain.Last(), OutMipChain);
+			// Do angular filtering of cubemaps if requested.
+			if (BuildSettings.MipGenSettings == TMGS_Angular)
+			{
+				GenerateAngularFilteredMips(OutMipChain, NumOutputMips, BuildSettings.DiffuseConvolveMipLevel);
+			}
+			else
+			{
+				GenerateMipChain(BuildSettings, OutMipChain.Last(), OutMipChain);
+			}
 		}
 		check(OutMipChain.Num() == NumOutputMips);
 

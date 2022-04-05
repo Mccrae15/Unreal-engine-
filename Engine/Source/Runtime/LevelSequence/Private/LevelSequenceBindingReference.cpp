@@ -21,23 +21,22 @@ FLevelSequenceBindingReference::FLevelSequenceBindingReference(UObject* InObject
 	}
 	else
 	{
-		UPackage* ObjectPackage = InObject->GetOutermost();
-		if (!ensure(ObjectPackage))
-		{
-			return;
-		}
+		FString FullPath = InObject->GetPathName();
 
-		FString PackageName = ObjectPackage->GetName();
 #if WITH_EDITORONLY_DATA
-		// If this is being set from PIE we need to remove the pie prefix and point to the editor object
-		if (ObjectPackage->PIEInstanceID != INDEX_NONE)
+		UPackage* ObjectPackage = InObject->GetOutermost();
+
+		if (ensure(ObjectPackage))
 		{
-			FString PIEPrefix = FString::Printf(PLAYWORLD_PACKAGE_PREFIX TEXT("_%d_"), ObjectPackage->PIEInstanceID);
-			PackageName.ReplaceInline(*PIEPrefix, TEXT(""));
+			// If this is being set from PIE we need to remove the pie prefix and point to the editor object
+			if (ObjectPackage->GetPIEInstanceID() != INDEX_NONE)
+			{
+				FString PIEPrefix = FString::Printf(PLAYWORLD_PACKAGE_PREFIX TEXT("_%d_"), ObjectPackage->GetPIEInstanceID());
+				FullPath.ReplaceInline(*PIEPrefix, TEXT(""));
+			}
 		}
 #endif
 		
-		FString FullPath = PackageName + TEXT(".") + InObject->GetPathName(ObjectPackage);
 		ExternalObjectPath = FSoftObjectPath(FullPath);
 	}
 }
@@ -66,7 +65,7 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, FName Strea
 		TempPath.PreSavePath();
 
 	#if WITH_EDITORONLY_DATA
-		int32 ContextPlayInEditorID = InContext ? InContext->GetOutermost()->PIEInstanceID : INDEX_NONE;
+		int32 ContextPlayInEditorID = InContext ? InContext->GetOutermost()->GetPIEInstanceID() : INDEX_NONE;
 
 		if (ContextPlayInEditorID != INDEX_NONE)
 		{
@@ -84,6 +83,11 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, FName Strea
 	}
 
 	return nullptr;
+}
+
+bool FLevelSequenceBindingReference::operator==(const FLevelSequenceBindingReference& Other) const
+{
+	return ExternalObjectPath == Other.ExternalObjectPath && ObjectPath == Other.ObjectPath;
 }
 
 void FLevelSequenceBindingReference::PostSerialize(const FArchive& Ar)
@@ -144,7 +148,7 @@ UObject* FLevelSequenceLegacyObjectReference::Resolve(UObject* InContext) const
 {
 	if (ObjectId.IsValid() && InContext != nullptr)
 	{
-		int32 PIEInstanceID = InContext->GetOutermost()->PIEInstanceID;
+		int32 PIEInstanceID = InContext->GetOutermost()->GetPIEInstanceID();
 		FUniqueObjectGuid FixedUpId = PIEInstanceID == -1 ? ObjectId : ObjectId.FixupForPIE(PIEInstanceID);
 
 		if (PIEInstanceID != -1 && FixedUpId == ObjectId)
@@ -257,7 +261,7 @@ void FLevelSequenceBindingReferences::RemoveInvalidObjects(const FGuid& ObjectId
 	{
 		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, NAME_None);
 
-		if (!ResolvedObject || ResolvedObject->IsPendingKill())
+		if (!IsValid(ResolvedObject))
 		{
 			ReferenceArray->References.RemoveAt(ReferenceIndex);
 		}
@@ -289,6 +293,21 @@ void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObj
 			OutObjects.Add(SkeletalMeshComponent->GetAnimInstance());
 		}
 	}
+}
+
+FGuid FLevelSequenceBindingReferences::FindBindingFromObject(UObject* InObject, UObject* InContext) const
+{
+	FLevelSequenceBindingReference Predicate(InObject, InContext);
+
+	for (const TPair<FGuid, FLevelSequenceBindingReferenceArray>& Pair : BindingIdToReferences)
+	{
+		if (Pair.Value.References.Contains(Predicate))
+		{
+			return Pair.Key;
+		}
+	}
+
+	return FGuid();
 }
 
 void FLevelSequenceBindingReferences::RemoveInvalidBindings(const TSet<FGuid>& ValidBindingIDs)

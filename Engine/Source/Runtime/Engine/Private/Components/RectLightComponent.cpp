@@ -6,6 +6,7 @@
 
 #include "Components/RectLightComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "RenderingThread.h"
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
@@ -30,8 +31,8 @@ URectLightComponent::URectLightComponent(const FObjectInitializer& ObjectInitial
 #if WITH_EDITORONLY_DATA
 	if (!IsRunningCommandlet())
 	{
-		static ConstructorHelpers::FObjectFinder<UTexture2D> StaticTexture(TEXT("/Engine/EditorResources/LightIcons/S_LightPoint"));
-		static ConstructorHelpers::FObjectFinder<UTexture2D> DynamicTexture(TEXT("/Engine/EditorResources/LightIcons/S_LightPointMove"));
+		static ConstructorHelpers::FObjectFinder<UTexture2D> StaticTexture(TEXT("/Engine/EditorResources/LightIcons/S_LightRect"));
+		static ConstructorHelpers::FObjectFinder<UTexture2D> DynamicTexture(TEXT("/Engine/EditorResources/LightIcons/S_LightRect"));
 
 		StaticEditorTexture = StaticTexture.Object;
 		StaticEditorTextureScale = 0.5f;
@@ -218,24 +219,23 @@ bool FRectLightSceneProxy::HasSourceTexture() const
 }
 
 /** Accesses parameters needed for rendering the light. */
-void FRectLightSceneProxy::GetLightShaderParameters(FLightShaderParameters& LightParameters) const
+void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters) const
 {
 	FLinearColor LightColor = GetColor();
 	LightColor /= 0.5f * SourceWidth * SourceHeight;
-
-	LightParameters.Position = GetOrigin();
+	LightParameters.WorldPosition = GetOrigin();
 	LightParameters.InvRadius = InvRadius;
-	LightParameters.Color = FVector(LightColor.R, LightColor.G, LightColor.B);
+	LightParameters.Color = LightColor;
 	LightParameters.FalloffExponent = 0.0f;
 
-	LightParameters.Direction = -GetDirection();
-	LightParameters.Tangent = FVector(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
-	LightParameters.SpotAngles = FVector2D(-2.0f, 1.0f);
+	LightParameters.Direction = FVector3f(-GetDirection());
+	LightParameters.Tangent = FVector3f(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
+	LightParameters.SpotAngles = FVector2f(-2.0f, 1.0f);
 	LightParameters.SpecularScale = SpecularScale;
 	LightParameters.SourceRadius = SourceWidth * 0.5f;
 	LightParameters.SoftSourceRadius = 0.0f;
 	LightParameters.SourceLength = SourceHeight * 0.5f;
-	LightParameters.SourceTexture = SourceTexture ? SourceTexture->Resource->TextureRHI : GWhiteTexture->TextureRHI;
+	LightParameters.SourceTexture = SourceTexture ? SourceTexture->GetResource()->TextureRHI : GWhiteTexture->TextureRHI;
 	LightParameters.RectLightBarnCosAngle = FMath::Cos(FMath::DegreesToRadians(BarnDoorAngle));
 	LightParameters.RectLightBarnLength = BarnDoorLength;
 }
@@ -252,15 +252,12 @@ bool FRectLightSceneProxy::GetWholeSceneProjectedShadowInitializer(const FSceneV
 		FWholeSceneProjectedShadowInitializer& OutInitializer = *new(OutInitializers) FWholeSceneProjectedShadowInitializer;
 		OutInitializer.PreShadowTranslation = -GetLightToWorld().GetOrigin();
 		OutInitializer.WorldToLight = GetWorldToLight().RemoveTranslation();
-		OutInitializer.Scales = FVector(1, 1, 1);
-		OutInitializer.FaceDirection = FVector(0, 0, 1);
+		OutInitializer.Scales = FVector2D(1, 1);
 		OutInitializer.SubjectBounds = FBoxSphereBounds(FVector(0, 0, 0), FVector(Radius, Radius, Radius), Radius);
 		OutInitializer.WAxis = FVector4(0, 0, 1, 0);
 		OutInitializer.MinLightW = 0.1f;
 		OutInitializer.MaxDistanceToCastInLightW = Radius;
-		
-		bool bSupportsGeometryShaders = RHISupportsGeometryShaders(GShaderPlatformForFeatureLevel[ViewFamily.GetFeatureLevel()]) || RHISupportsVertexShaderLayer(ViewFamily.GetShaderPlatform());
-		OutInitializer.bOnePassPointLightShadow = bSupportsGeometryShaders;
+		OutInitializer.bOnePassPointLightShadow = true;
 
 		OutInitializer.bRayTracedDistanceField = UseRayTracedDistanceFieldShadows() && DoesPlatformSupportDistanceFieldShadowing(ViewFamily.GetShaderPlatform());
 		return true;

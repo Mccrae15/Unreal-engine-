@@ -197,14 +197,15 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 	{
 		// Don't spawn solvers on the CDO
 
+#if WITH_CHAOS
 		// @question(Benn) : Does this need to be created on the Physics thread using a queued command?
 		PhysScene = MakeShareable(new FPhysScene_Chaos(this
-#if CHAOS_CHECKED
+#if CHAOS_DEBUG_NAME
 								  , TEXT("Solver Actor Physics")
 #endif
 		));
 		Solver = PhysScene->GetSolver();
-
+#endif
 		// Ticking setup for collision/breaking notifies
 		PrimaryActorTick.TickGroup = TG_PostPhysics;
 		PrimaryActorTick.bCanEverTick = true;
@@ -269,6 +270,12 @@ void AChaosSolverActor::BeginPlay()
 	if(!Solver)
 	{
 		return;
+	}
+
+	// Make sure that the solver is registered in the right world
+	if(FChaosSolversModule* Module = FChaosSolversModule::GetModule())
+	{
+		Module->MigrateSolver(GetSolver(), GetWorld());
 	}
 
 	Solver->EnqueueCommandImmediate(

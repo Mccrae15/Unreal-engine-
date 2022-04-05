@@ -7,7 +7,7 @@
 #include "Model/MonotonicTimeline.h"
 #include "Model/Tables.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 class FAnalysisSessionLock;
@@ -20,11 +20,12 @@ class FTimingProfilerProvider
 public:
 	typedef TMonotonicTimeline<FTimingProfilerEvent> TimelineInternal;
 
-	FTimingProfilerProvider(IAnalysisSession& InSession);
+	explicit FTimingProfilerProvider(IAnalysisSession& InSession);
 	virtual ~FTimingProfilerProvider();
-	uint32 AddCpuTimer(const TCHAR* Name);
-	uint32 AddGpuTimer(const TCHAR* Name);
-	void SetTimerName(uint32 TimerId, const TCHAR* Name);
+	uint32 AddCpuTimer(FStringView Name, const TCHAR* File = nullptr, uint32 Line = 0);
+	uint32 AddGpuTimer(FStringView Name, const TCHAR* File = nullptr, uint32 Line = 0);
+	void SetTimerName(uint32 TimerId, FStringView Name);
+	void SetTimerNameAndLocation(uint32 TimerId, FStringView Name, const TCHAR* File, uint32 Line);
 	uint32 AddMetadata(uint32 MasterTimerId, TArray<uint8>&& Metadata);
 	TimelineInternal& EditCpuThreadTimeline(uint32 ThreadId);
 	TimelineInternal& EditGpuTimeline();
@@ -43,7 +44,7 @@ public:
 	virtual TArrayView<const uint8> GetMetadata(uint32 TimerId) const override;
 
 private:
-	FTimingProfilerTimer& AddTimerInternal(const TCHAR* Name, bool IsGpuEvent);
+	FTimingProfilerTimer& AddTimerInternal(FStringView Name, const TCHAR* File, uint32 Line, bool IsGpuEvent);
 
 	struct FMetadata 
 	{
@@ -61,4 +62,4 @@ private:
 	TTableLayout<FTimingProfilerAggregatedStats> AggregatedStatsTableLayout;
 };
 
-}
+} // namespace TraceServices

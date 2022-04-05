@@ -81,12 +81,13 @@ DEFINE_STAT(STAT_DecalsDrawTime);
 // The purpose of these memory stats is to capture where most of the renderer allocated memory is going, 
 // Not to track all of the allocations, and not to track resource memory (index buffers, vertex buffers, etc).
 
-
 DEFINE_STAT(STAT_PrimitiveInfoMemory);
 DEFINE_STAT(STAT_RenderingSceneMemory);
 DEFINE_STAT(STAT_ViewStateMemory);
 DEFINE_STAT(STAT_RenderingMemStackMemory);
 DEFINE_STAT(STAT_LightInteractionMemory);
+
+DEFINE_STAT(STAT_CachedRayTracingInstancesMemory);
 
 // The InitViews stats group contains information on how long visibility culling took and how effective it was
 
@@ -112,15 +113,15 @@ DEFINE_STAT(STAT_StaticRelevance);
 DEFINE_STAT(STAT_ViewRelevance);
 DEFINE_STAT(STAT_ComputeViewRelevance);
 DEFINE_STAT(STAT_OcclusionCull);
-DEFINE_STAT(STAT_SoftwareOcclusionCull);
 DEFINE_STAT(STAT_UpdatePrimitiveFading);
-DEFINE_STAT(STAT_FrustumCull);
+DEFINE_STAT(STAT_PrimitiveCull);
 DEFINE_STAT(STAT_DecompressPrecomputedOcclusion);
 DEFINE_STAT(STAT_ViewVisibilityTime);
 
 DEFINE_STAT(STAT_RayTracingInstances);
 DEFINE_STAT(STAT_ProcessedPrimitives);
 DEFINE_STAT(STAT_CulledPrimitives);
+DEFINE_STAT(STAT_VisibleRayTracingPrimitives);
 DEFINE_STAT(STAT_StaticallyOccludedPrimitives);
 DEFINE_STAT(STAT_OccludedPrimitives);
 DEFINE_STAT(STAT_OcclusionQueries);
@@ -155,10 +156,8 @@ DEFINE_STAT(STAT_LightRendering);
 
 DEFINE_STAT(STAT_NumShadowedLights);
 DEFINE_STAT(STAT_NumLightFunctionOnlyLights);
-DEFINE_STAT(STAT_NumUnshadowedLights);
+DEFINE_STAT(STAT_NumBatchedLights);
 DEFINE_STAT(STAT_NumLightsInjectedIntoTranslucency);
-DEFINE_STAT(STAT_NumLightsUsingTiledDeferred);
-DEFINE_STAT(STAT_NumLightsUsingSimpleTiledDeferred);
 DEFINE_STAT(STAT_NumLightsUsingStandardDeferred);
 
 DEFINE_STAT(STAT_LightShaftsLights);
@@ -168,6 +167,8 @@ DEFINE_STAT(STAT_InfluenceWeightsUpdateRTTime);
 DEFINE_STAT(STAT_GPUSkinUpdateRTTime);
 DEFINE_STAT(STAT_CPUSkinUpdateRTTime);
 
+DEFINE_STAT(STAT_UpdateGPUSceneTime);
+
 DEFINE_STAT(STAT_RemoveSceneLightTime);
 DEFINE_STAT(STAT_UpdateSceneLightTime);
 DEFINE_STAT(STAT_AddSceneLightTime);
@@ -176,11 +177,13 @@ DEFINE_STAT(STAT_RemoveScenePrimitiveTime);
 DEFINE_STAT(STAT_AddScenePrimitiveRenderThreadTime);
 DEFINE_STAT(STAT_UpdateScenePrimitiveRenderThreadTime);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformRenderThreadTime);
+DEFINE_STAT(STAT_UpdatePrimitiveInstanceRenderThreadTime);
 DEFINE_STAT(STAT_FlushAsyncLPICreation);
 
 DEFINE_STAT(STAT_RemoveScenePrimitiveGT);
 DEFINE_STAT(STAT_AddScenePrimitiveGT);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformGT);
+DEFINE_STAT(STAT_UpdatePrimitiveInstanceGT);
 DEFINE_STAT(STAT_UpdateCustomPrimitiveDataGT);
 
 DEFINE_STAT(STAT_Scene_SetShaderMapsOnMaterialResources_RT);
@@ -188,9 +191,6 @@ DEFINE_STAT(STAT_Scene_UpdateStaticDrawLists_RT);
 DEFINE_STAT(STAT_Scene_UpdateStaticDrawListsForMaterials_RT);
 DEFINE_STAT(STAT_GameToRendererMallocTotal);
 
-DEFINE_STAT(STAT_UpdateLPVs);
-DEFINE_STAT(STAT_ReflectiveShadowMaps);
-DEFINE_STAT(STAT_ReflectiveShadowMapDrawTime);
 DEFINE_STAT(STAT_NumReflectiveShadowMapLights);
 
 DEFINE_STAT(STAT_ShadowmapAtlasMemory);
@@ -243,7 +243,7 @@ void FInputLatencyTimer::GameThreadTick()
 			LastCaptureTime	= FPlatformTime::Seconds();
 			bInitialized	= true;
 		}
-		float CurrentTimeInSeconds = FPlatformTime::Seconds();
+		const double CurrentTimeInSeconds = FPlatformTime::Seconds();
 		if ( (CurrentTimeInSeconds - LastCaptureTime) > UpdateFrequency )
 		{
 			LastCaptureTime		= CurrentTimeInSeconds;
@@ -341,4 +341,4 @@ RENDERCORE_API bool IsHDRAllowed()
 	return false;
 }
 
-FMatrix FVirtualTextureUniformData::Invalid = FMatrix::Identity;
+FMatrix44f FVirtualTextureUniformData::Invalid = FMatrix44f::Identity;

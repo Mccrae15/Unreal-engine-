@@ -44,11 +44,13 @@ public:
 
 	void SetCanCache(bool InCanCache);
 
-	// SWidget overrides
+	//~ SWidget overrides
 	virtual int32 OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const override;
 	virtual FChildren* GetChildren() override;
-	virtual FChildren* GetAllChildren() override;
-	// End SWidget
+#if WITH_SLATE_DEBUGGING
+	virtual FChildren* Debug_GetChildrenForReflector() override;
+#endif
+	//~ End SWidget
 
 	void SetContent(const TSharedRef< SWidget >& InContent);
 
@@ -64,8 +66,6 @@ private:
 	bool UpdateCachePrequisites(FSlateWindowElementList& OutDrawElements, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
 
 private:
-	FSimpleSlot EmptyChildSlot;
-
 	mutable TSharedRef<FHittestGrid> HittestGrid;
 
 	mutable TOptional<FSlateClippingState> LastClippingState;

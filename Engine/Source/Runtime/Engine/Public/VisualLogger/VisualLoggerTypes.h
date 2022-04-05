@@ -9,18 +9,12 @@ class AActor;
 class UCanvas;
 struct FLogEntryItem;
 
-
-#if ENABLE_VISUAL_LOG
 #define DEFINE_ENUM_TO_STRING(EnumType) FString EnumToString(const EnumType Value) \
 { \
 	static const UEnum* TypeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT(#EnumType)); \
 	return TypeEnum->GetNameStringByIndex(static_cast<int32>(Value)); \
 }
 #define DECLARE_ENUM_TO_STRING(EnumType) FString EnumToString(const EnumType Value)
-#else
-#define DEFINE_ENUM_TO_STRING(EnumType) 
-#define DECLARE_ENUM_TO_STRING(EnumType)
-#endif // ENABLE_VISUAL_LOG
 
 enum class ECreateIfNeeded : int8
 {
@@ -54,7 +48,8 @@ enum class EVisualLoggerShapeElement : uint8
 	Polygon,
 	Mesh,
 	NavAreaMesh, // convex based mesh with min and max Z values
-	Arrow, 
+	Arrow,
+	Circle,
 	// note that in order to remain backward compatibility in terms of log
 	// serialization new enum values need to be added at the end
 };
@@ -168,15 +163,17 @@ struct ENGINE_API FVisualLogEntry
 #if ENABLE_VISUAL_LOG
 	float TimeStamp;
 	FVector Location;
-	uint8 bIsClassWhitelisted : 1;
-	uint8 bIsObjectWhitelisted : 1;	
+	uint8 bPassedClassAllowList : 1;
+	uint8 bPassedObjectAllowList : 1;	
 	uint8 bIsAllowedToLog : 1;
+	uint8 bIsLocationValid : 1;
+	uint8 bIsInitialized : 1;
 
 	TArray<FVisualLogEvent> Events;
 	TArray<FVisualLogLine> LogLines;
 	TArray<FVisualLogStatusCategory> Status;
 	TArray<FVisualLogShapeElement> ElementsToDraw;
-	TArray<FVisualLogHistogramSample>	HistogramSamples;
+	TArray<FVisualLogHistogramSample> HistogramSamples;
 	TArray<FVisualLogDataBlock>	DataBlocks;
 
 	FVisualLogEntry() { Reset(); }
@@ -184,7 +181,22 @@ struct ENGINE_API FVisualLogEntry
 	FVisualLogEntry(const AActor* InActor, TArray<TWeakObjectPtr<UObject> >* Children);
 	FVisualLogEntry(float InTimeStamp, FVector InLocation, const UObject* Object, TArray<TWeakObjectPtr<UObject> >* Children);
 
+	bool ShouldLog(const ECreateIfNeeded ShouldCreate) const
+	{
+		// We serialize and reinitialize entries only when allowed to log and parameter
+		// indicates that new entry can be created.
+		return bIsAllowedToLog && ShouldCreate == ECreateIfNeeded::Create;
+	}
+
+	bool ShouldFlush(float InTimeStamp) const
+	{
+		//Same LogOwner can be used for logs at different time in the frame so need to flush entry right away
+		return bIsInitialized && InTimeStamp > TimeStamp;
+	}
+
+	void InitializeEntry( const float InTimeStamp );
 	void Reset();
+	void SetPassedObjectAllowList(const bool bPassed);
 	void UpdateAllowedToLog();
 
 	void AddText(const FString& TextLine, const FName& CategoryName, ELogVerbosity::Type Verbosity);
@@ -216,6 +228,8 @@ struct ENGINE_API FVisualLogEntry
 	void AddArrow(const FVector& Start, const FVector& End, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color = FColor::White, const FString& Description = TEXT(""));
 	// boxes
 	void AddBoxes(const TArray<FBox>& Boxes, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color = FColor::White);
+	// circle
+	void AddCircle(const FVector& Center, const FVector& UpAxis, const float Radius, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color, const FString& Description = TEXT(""), uint16 Thickness = 0);
 
 	// Custom data block
 	FVisualLogDataBlock& AddDataBlock(const FString& TagName, const TArray<uint8>& BlobDataArray, const FName& CategoryName, ELogVerbosity::Type Verbosity);
@@ -224,6 +238,8 @@ struct ENGINE_API FVisualLogEntry
 	// find index of status category
 	int32 FindStatusIndex(const FString& CategoryName);
 
+	// Moves all content to provided entry and reseting our content.
+	void MoveTo(FVisualLogEntry& Other);
 
 #endif // ENABLE_VISUAL_LOG
 };
@@ -399,7 +415,7 @@ FVisualLogShapeElement::FVisualLogShapeElement(const FString& InDescription, con
 inline
 void FVisualLogShapeElement::SetColor(const FColor& InColor)
 {
-	Color = ((InColor.DWColor() >> 30) << 6)	| (((InColor.DWColor() & 0x00ff0000) >> 22) << 4)	| (((InColor.DWColor() & 0x0000ff00) >> 14) << 2)	| ((InColor.DWColor() & 0x000000ff) >> 6);
+	Color = (uint8)(((InColor.DWColor() >> 30) << 6)	| (((InColor.DWColor() & 0x00ff0000) >> 22) << 4)	| (((InColor.DWColor() & 0x0000ff00) >> 14) << 2)	| ((InColor.DWColor() & 0x000000ff) >> 6));
 }
 
 inline

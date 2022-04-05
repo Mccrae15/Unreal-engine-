@@ -31,11 +31,7 @@
 class CORE_API FLoadTimeTracker
 {
 public:
-	static FLoadTimeTracker& Get()
-	{
-		static FLoadTimeTracker Singleton;
-		return Singleton;
-	}
+	static FLoadTimeTracker& Get();
 
 	/** Adds a scoped time for a given label.  Records each instance individually */
 	void ReportScopeTime(double ScopeTime, const FName ScopeLabel);
@@ -289,24 +285,21 @@ struct CORE_API FScopedLoadTimeAccumulatorTimer : public FScopedDurationTimer
 #define ADD_CUSTOM_LOADTIMER_META(TimerName, Key, Value)
 #else
 
-#if CPUPROFILERTRACE_ENABLED
-#define SCOPED_LOADTIMER_TEXT(TimerName) \
-	TOptional<FCpuProfilerTrace::FDynamicEventScope> PREPROCESSOR_JOIN(__LoadTimerEventScope, __LINE__); \
-	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(LoadTimeChannel|CpuChannel)) \
-	{ \
-		PREPROCESSOR_JOIN(__LoadTimerEventScope, __LINE__).Emplace(TimerName, LoadTimeChannel); \
-	}
-#else
-#define SCOPED_LOADTIMER_TEXT(TimerName)
-#endif
-
 #define CUSTOM_LOADTIMER_LOG Cpu
 
+#if LOADTIMEPROFILERTRACE_ENABLED
+#define SCOPED_LOADTIMER_TEXT(TimerName) TRACE_CPUPROFILER_EVENT_SCOPE_TEXT_ON_CHANNEL(TimerName, LoadTimeChannel)
 #define SCOPED_LOADTIMER(TimerName) TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(TimerName, LoadTimeChannel)
 #define SCOPED_CUSTOM_LOADTIMER(TimerName) UE_TRACE_LOG_SCOPED_T(CUSTOM_LOADTIMER_LOG, TimerName, LoadTimeChannel)
-#define SCOPED_LOADTIMER_CNT(TimerName)
-
 #define ADD_CUSTOM_LOADTIMER_META(TimerName, Key, Value) << TimerName.Key(Value)
+#define SCOPED_LOADTIMER_CNT(TimerName)
+#else
+#define SCOPED_LOADTIMER_TEXT(TimerName)
+#define SCOPED_LOADTIMER(TimerName)
+#define SCOPED_CUSTOM_LOADTIMER(TimerName)
+#define ADD_CUSTOM_LOADTIMER_META(TimerName, Key, Value)
+#define SCOPED_LOADTIMER_CNT(TimerName)
+#endif
 #endif
 
 #if ENABLE_LOADTIME_TRACKING_WITH_STATS && STATS

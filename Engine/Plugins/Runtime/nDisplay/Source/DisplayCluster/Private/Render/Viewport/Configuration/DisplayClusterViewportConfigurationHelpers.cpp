@@ -63,14 +63,18 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_Override
 
 	if (InOverride.bAllowReplace && InOverride.SourceTexture != nullptr)
 	{
-		FTextureRHIRef& TextureRHI = InOverride.SourceTexture->Resource->TextureRHI;
-
-		if (TextureRHI.IsValid())
+		FTextureResource* TextureResource = InOverride.SourceTexture->GetResource();
+		if(TextureResource)
 		{
-			DstViewport.PostRenderSettings.Replace.TextureRHI = TextureRHI;
-			FIntVector Size = TextureRHI->GetSizeXYZ();
+			FTextureRHIRef& TextureRHI = TextureResource->TextureRHI;
 
-			DstViewport.PostRenderSettings.Replace.Rect = DstViewport.GetValidRect((InOverride.bShouldUseTextureRegion) ? InOverride.TextureRegion.ToRect() : FIntRect(FIntPoint(0, 0), FIntPoint(Size.X, Size.Y)), TEXT("Configuration Override"));
+			if (TextureRHI.IsValid())
+			{
+				DstViewport.PostRenderSettings.Replace.TextureRHI = TextureRHI;
+				FIntVector Size = TextureRHI->GetSizeXYZ();
+
+				DstViewport.PostRenderSettings.Replace.Rect = DstViewport.GetValidRect((InOverride.bShouldUseTextureRegion) ? InOverride.TextureRegion.ToRect() : FIntRect(FIntPoint(0, 0), FIntPoint(Size.X, Size.Y)), TEXT("Configuration Override"));
+			}
 		}
 	}
 };
@@ -97,31 +101,35 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_Postproc
 void FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_Overscan(FDisplayClusterViewport& DstViewport, const FDisplayClusterConfigurationViewport_Overscan& InOverscan)
 {
 	FImplDisplayClusterViewport_OverscanSettings OverscanSettings;
+	OverscanSettings.bEnabled = InOverscan.bEnabled;
 	OverscanSettings.bOversize = InOverscan.bOversize;
-
-	switch (InOverscan.Mode)
+	
+	if (OverscanSettings.bEnabled)
 	{
-	case EDisplayClusterConfigurationViewportOverscanMode::Percent:
-		OverscanSettings.Mode = EDisplayClusterViewport_OverscanMode::Percent;
+		switch (InOverscan.Mode)
+		{
+		case EDisplayClusterConfigurationViewportOverscanMode::Percent:
+			OverscanSettings.Mode = EDisplayClusterViewport_OverscanMode::Percent;
 
-		// Scale 0..100% to 0..1 range
-		OverscanSettings.Left = .01f * InOverscan.Left;
-		OverscanSettings.Right = .01f * InOverscan.Right;
-		OverscanSettings.Top = .01f * InOverscan.Top;
-		OverscanSettings.Bottom = .01f * InOverscan.Bottom;
-		break;
+			// Scale 0..100% to 0..1 range
+			OverscanSettings.Left = .01f * InOverscan.Left;
+			OverscanSettings.Right = .01f * InOverscan.Right;
+			OverscanSettings.Top = .01f * InOverscan.Top;
+			OverscanSettings.Bottom = .01f * InOverscan.Bottom;
+			break;
 
-	case EDisplayClusterConfigurationViewportOverscanMode::Pixels:
-		OverscanSettings.Mode = EDisplayClusterViewport_OverscanMode::Pixels;
+		case EDisplayClusterConfigurationViewportOverscanMode::Pixels:
+			OverscanSettings.Mode = EDisplayClusterViewport_OverscanMode::Pixels;
 
-		OverscanSettings.Left = InOverscan.Left;
-		OverscanSettings.Right = InOverscan.Right;
-		OverscanSettings.Top = InOverscan.Top;
-		OverscanSettings.Bottom = InOverscan.Bottom;
-		break;
+			OverscanSettings.Left = InOverscan.Left;
+			OverscanSettings.Right = InOverscan.Right;
+			OverscanSettings.Top = InOverscan.Top;
+			OverscanSettings.Bottom = InOverscan.Bottom;
+			break;
 
-	default:
-		break;
+		default:
+			break;
+		}
 	}
 
 	DstViewport.OverscanRendering.Set(OverscanSettings);
@@ -164,6 +172,9 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 
 		DstViewport.RenderSettings.GPUIndex = InConfigurationViewport.GPUIndex;
 		DstViewport.RenderSettings.OverlapOrder = InConfigurationViewport.OverlapOrder;
+
+		// update viewport remap data
+		DstViewport.ViewportRemap.UpdateConfiguration(DstViewport, InConfigurationViewport.ViewportRemap);
 	}
 
 	const FDisplayClusterConfigurationViewport_RenderSettings& InRenderSettings = InConfigurationViewport.RenderSettings;
@@ -292,7 +303,7 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateProjectionPolicy(FDispla
 		{
 			if (DstViewport.Owner.IsSceneOpened())
 			{
-				// Try initialize proj policy every tick (mesh deffered load, etc)
+				// Try initialize proj policy every tick (mesh deferred load, etc)
 				DstViewport.HandleStartScene();
 			}
 		}

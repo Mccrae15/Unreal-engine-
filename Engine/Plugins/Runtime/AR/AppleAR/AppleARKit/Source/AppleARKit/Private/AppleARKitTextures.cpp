@@ -149,7 +149,7 @@ public:
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 		
 		// Default to an empty 1x1 texture if we don't have a camera image
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FARKitTextureResource"));
 		Size.X = Size.Y = 1;
 		TextureRHI = RHICreateTexture2D(Size.X, Size.Y, PF_B8G8R8A8, 1, 1, TexCreate_ShaderResource, CreateInfo);
 		
@@ -207,7 +207,7 @@ protected:
 			TextureRHI.SafeRelease();
 			
 			// Create the target texture that we'll update into
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FARKitTextureResource"));
 			TextureRHI = RHICreateTexture2D(Size.X, Size.Y, PixelFormat, 1, 1, TexCreate_Dynamic | TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
 		}
 	}
@@ -397,12 +397,12 @@ void UAppleARKitTextureCameraImage::UpdateCameraImage(float InTimestamp, CVPixel
 	
 	Timestamp = InTimestamp;
 	
-	if (!Resource)
+	if (!GetResource())
 	{
 		UpdateResource();
 	}
 	
-	if (auto MyResource = static_cast<FARKitTextureResource*>(Resource))
+	if (auto MyResource = static_cast<FARKitTextureResource*>(GetResource()))
 	{
 		MyResource->UpdateCameraImage(CameraImage, InPixelFormat, ColorSpace, BlurParams);
 	}
@@ -453,7 +453,7 @@ UAppleARKitEnvironmentCaptureProbeTexture::UAppleARKitEnvironmentCaptureProbeTex
 #if PLATFORM_APPLE
 void UAppleARKitEnvironmentCaptureProbeTexture::Init(float InTimestamp, id<MTLTexture> InEnvironmentTexture)
 {
-	if (Resource == nullptr)
+	if (GetResource() == nullptr)
 	{
 		UpdateResource();
 	}
@@ -481,10 +481,10 @@ void UAppleARKitEnvironmentCaptureProbeTexture::Init(float InTimestamp, id<MTLTe
 		Size.Y = MetalTexture.height;
 	}
 	// Force an update to our external texture on the render thread
-	if (Resource != nullptr)
+	if (GetResource() != nullptr)
 	{
 		ENQUEUE_RENDER_COMMAND(UpdateEnvironmentCapture)(
-			[InResource = Resource](FRHICommandListImmediate& RHICmdList)
+			[InResource = GetResource()](FRHICommandListImmediate& RHICmdList)
 			{
 				InResource->InitRHI();
 			});
@@ -571,7 +571,7 @@ public:
 	 */
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FARMetalResource"));
 
 		id<MTLTexture> MetalTexture = Owner->GetMetalTexture();
 		if (MetalTexture != nullptr)
@@ -743,12 +743,12 @@ void UAppleARKitOcclusionTexture::SetMetalTexture(float InTimestamp, id<MTLTextu
 		}
 	}
 	
-	if (Resource == nullptr)
+	if (GetResource() == nullptr)
 	{
 		UpdateResource();
 	}
 	
-	if (auto MyResource = static_cast<FARKitTextureResource*>(Resource))
+	if (auto MyResource = static_cast<FARKitTextureResource*>(GetResource()))
 	{
 		MyResource->UpdateMetalTexture(InMetalTexture, PixelFormat, ColorSpace);
 	}
@@ -840,9 +840,9 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_UAV(RWTexture2D<float4>, OutputTexture)
-		SHADER_PARAMETER(FVector2D, OutputTextureSize)
-		SHADER_PARAMETER(FVector2D, InputTextureYSize)
-		SHADER_PARAMETER(FVector2D, InputTextureCbCrSize)
+		SHADER_PARAMETER(FVector2f, OutputTextureSize)
+		SHADER_PARAMETER(FVector2f, InputTextureYSize)
+		SHADER_PARAMETER(FVector2f, InputTextureCbCrSize)
 		SHADER_PARAMETER(int, DeviceOrientation)
 		SHADER_PARAMETER_TEXTURE(Texture2D, InputTextureY)
 		SHADER_PARAMETER_TEXTURE(Texture2D, InputTextureCbCr)
@@ -883,7 +883,7 @@ public:
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 		
 		// Default to an empty 1x1 texture if we don't have a camera image
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("DecodedTextureRef"));
 		Size.X = Size.Y = 1;
 		{
 			FScopeLock ScopeLock(&DecodedTextureLock);
@@ -936,7 +936,7 @@ public:
 		
 		{
 			// Update the RHI texture wrapper for the Y and CbCr images
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("VideoTexture"));
 			const ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_NoTiling | TexCreate_ShaderResource;
 			CreateInfo.BulkData = new FAppleARKitCameraTextureResourceWrapper(CapturedYImage);
 			CreateInfo.ResourceArray = nullptr;
@@ -977,7 +977,7 @@ public:
 		if (!DecodedTextureRef || Size != OutputSize)
 		{
 			Size = OutputSize;
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FARKitCameraVideoResource_DecodedTexture"));
 			{
 				FScopeLock ScopeLock(&DecodedTextureLock);
 				DecodedTextureRef = RHICreateTexture2D(Size.X, Size.Y, PF_B8G8R8A8, 1, 1, TexCreate_Dynamic | TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
@@ -997,10 +997,10 @@ public:
 			FRDGBuilder GraphBuilder(RHICmdList);
 			FComputeShaderYCbCrToRGB::FParameters* PassParameters = GraphBuilder.AllocParameters<FComputeShaderYCbCrToRGB::FParameters>();
 			PassParameters->OutputTexture = DecodedTextureUAV;
-			PassParameters->OutputTextureSize = FVector2D(Size);
+			PassParameters->OutputTextureSize = FVector2f(Size);
 
 			PassParameters->InputTextureY = VideoTextureY;
-			PassParameters->InputTextureYSize = FVector2D(CapturedYImageSize);
+			PassParameters->InputTextureYSize = FVector2f(CapturedYImageSize);
 			
 			// This mapping must be the same as the comment above YCbCrToLinearRGB!
 			static const TMap<EDeviceScreenOrientation, int> DeviceOrientationIds =
@@ -1021,7 +1021,7 @@ public:
 			}
 			
 			PassParameters->InputTextureCbCr = VideoTextureCbCr;
-			PassParameters->InputTextureCbCrSize = FVector2D(CapturedCbCrImageSize);
+			PassParameters->InputTextureCbCrSize = FVector2f(CapturedCbCrImageSize);
 
 			TShaderMapRef<FComputeShaderYCbCrToRGB> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 			
@@ -1085,7 +1085,7 @@ UAppleARKitCameraVideoTexture::UAppleARKitCameraVideoTexture(const FObjectInitia
 
 void UAppleARKitCameraVideoTexture::Init()
 {
-	if (!Resource)
+	if (!GetResource())
 	{
 		UpdateResource();
 	}
@@ -1096,7 +1096,7 @@ void UAppleARKitCameraVideoTexture::UpdateFrame(const FAppleARKitFrame& InFrame)
 #if SUPPORTS_ARKIT_1_0
 	if (InFrame.CapturedYImage && InFrame.CapturedCbCrImage)
 	{
-		if (auto VideoResource = static_cast<FARKitCameraVideoResource*>(Resource))
+		if (auto VideoResource = static_cast<FARKitCameraVideoResource*>(GetResource()))
 		{
 			auto CapturedYImageCopy = InFrame.CapturedYImage;
 			auto CapturedCbCrImageCopy = InFrame.CapturedCbCrImage;
@@ -1120,7 +1120,7 @@ void UAppleARKitCameraVideoTexture::UpdateFrame(const FAppleARKitFrame& InFrame)
 #if SUPPORTS_ARKIT_1_0
 id<MTLTexture> UAppleARKitCameraVideoTexture::GetMetalTexture() const
 {
-	if (auto MyResource = (FARKitCameraVideoResource*)Resource)
+	if (auto MyResource = (FARKitCameraVideoResource*)GetResource())
 	{
 		return MyResource->GetMetalTexture();
 	}

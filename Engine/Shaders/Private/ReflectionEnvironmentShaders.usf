@@ -34,7 +34,9 @@ int CubeFace;
 Texture2D SceneColorTexture;
 SamplerState SceneColorSampler;
 
+#if !SHADING_PATH_DEFERRED
 Texture2D SceneDepthTexture;
+#endif
 SamplerState SceneDepthSampler;
 
 /** 
@@ -42,7 +44,7 @@ SamplerState SceneDepthSampler;
  * Y = Sky distance threshold, 
  * Z = whether a skylight's lower hemisphere should be replaced with LowerHemisphereColor.
  */
-float3 SkyLightCaptureParameters;
+float4 SkyLightCaptureParameters;
 float4 LowerHemisphereColor;
 
 void CopySceneColorToCubeFaceColorPS(
@@ -58,7 +60,7 @@ void CopySceneColorToCubeFaceColorPS(
 
 	// Convert INF's to valid values
 	SceneColor = ClampToHalfFloatRange(SceneColor);
-	float3 WorldPosition = Input.ScreenVector * SceneDepth + View.WorldCameraOrigin;
+	float3 TranslatedWorldPosition = Input.ScreenVector * SceneDepth + View.TranslatedWorldCameraOrigin;
 
 	float Alpha = 1;
 
@@ -73,7 +75,7 @@ void CopySceneColorToCubeFaceColorPS(
 	}
 	else if (SkyLightCaptureParameters.x == 1)
 	{
-		float RadialDistance = length(WorldPosition - View.WorldCameraOrigin);
+		float RadialDistance = length(TranslatedWorldPosition - View.TranslatedWorldCameraOrigin);
 		float MaxDistance = SkyLightCaptureParameters.y;
 
 		// Setup alpha to fade out smoothly past the max distance
@@ -201,7 +203,7 @@ void DownsamplePS(
 #endif // USE_COMPUTE
 	float3 CubeCoordinates = GetCubemapVector(ScaledUVs, SelectedCubeFace);
 
-	uint MipSize = 1 << ( NumMips - MipIndex - 1 );
+	uint MipSize = 1u << ( NumMips - MipIndex - 1 );
 
 	float3 TangentZ = normalize( CubeCoordinates );
 	float3 TangentX = normalize( cross( GetCubemapVector( ScaledUVs + float2(0,1), SelectedCubeFace), TangentZ ) );
@@ -351,7 +353,7 @@ void FilterPS(
 		return;
 	}
 
-	uint CubeSize = 1 << ( NumMips - 1 );
+	uint CubeSize = 1u << ( NumMips - 1 );
 	const float SolidAngleTexel = 4.0f * PI / float(6 * CubeSize * CubeSize) * 2.0f;
 
 	//const uint NumSamples = 1024;

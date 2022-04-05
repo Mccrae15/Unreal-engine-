@@ -7,6 +7,7 @@
 #include "ISourceCodeAccessModule.h"
 #include "ITargetDeviceProxy.h"
 #include "ITargetDeviceProxyManager.h"
+#include "ITurnkeyIOModule.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "HAL/ThreadSafeCounter.h"
@@ -19,6 +20,7 @@
 #include "PlatformInfo.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Profiles/LauncherProfile.h"
+#include "DerivedDataCache/Public/DerivedDataCacheInterface.h"
 
 
 #define LOCTEXT_NAMESPACE "LauncherWorker"
@@ -362,80 +364,15 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	for (int32 PlatformIndex = 0; PlatformIndex < InPlatforms.Num(); ++PlatformIndex)
 	{
 		// Platform info for the given platform
-		const PlatformInfo::FPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(FName(*InPlatforms[PlatformIndex]));
+		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(FName(*InPlatforms[PlatformIndex]));
 
 		if (ensure(PlatformInfo))
 		{
-			// switch server and no editor platforms to the proper type
-			if (PlatformInfo->TargetPlatformName == FName("LinuxServer"))
-			{
-				ServerPlatforms += TEXT("+Linux");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64Server"))
-			{
-				ServerPlatforms += TEXT("+LinuxAArch64");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("WindowsServer"))
-			{
-				ServerPlatforms += TEXT("+Win64");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("MacServer"))
-			{
-				ServerPlatforms += TEXT("+Mac");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxNoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxClient"))
-			{
-				Platforms += TEXT("+Linux");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64NoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxAArch64Client"))
-			{
-				Platforms += TEXT("+LinuxAArch64");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("WindowsNoEditor"))
-			{
-				// find out if the project is targeting 32bit
-				FConfigFile ProjectEngineConfig;
-				FString ProjectDir = FPaths::GetPath(InProfile->GetProjectPath());
-				FConfigCacheIni::LoadExternalIniFile(ProjectEngineConfig, TEXT("Engine"), *FPaths::EngineConfigDir(), *FPaths::Combine(ProjectDir, TEXT("Config/")), true, TEXT("Windows"));
-				bool bTarget32Bit = false;
-				ProjectEngineConfig.GetBool(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("bTarget32Bit"), bTarget32Bit);
+			// separate out Server platforms
+			FString& PlatformString = (PlatformInfo->PlatformType == EBuildTargetType::Server) ? ServerPlatforms : Platforms;
 
-				// normally this would get the 64bit one, so if we need the 32-bit one, swap it out
-				if (bTarget32Bit)
-				{
-					PlatformInfo = PlatformInfo::FindPlatformInfo(TEXT("WindowsNoEditorWin32"));
-					check(PlatformInfo != nullptr);
-				}
-			
-				// if target wants 32-bit, use 32-bit
-				Platforms += TEXT("+");
-				Platforms += PlatformInfo->UBTTargetId.ToString();
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("Windows") || PlatformInfo->TargetPlatformName == FName("WindowsClient"))
-			{
-				Platforms += TEXT("+Win64");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("MacNoEditor") || PlatformInfo->TargetPlatformName == FName("MacClient"))
-			{
-				Platforms += TEXT("+Mac");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("IOSClient"))
-			{
-				Platforms += TEXT("+IOS");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("TVOSClient"))
-			{
-				Platforms += TEXT("+TVOS");
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("HoloLens"))
-			{
-				Platforms += TEXT("+HoloLens");
-			}
-			else
-			{
-				Platforms += TEXT("+");
-				Platforms += PlatformInfo->UBTTargetId.ToString();
-			}
+			PlatformString += TEXT("+");
+			PlatformString += PlatformInfo->DataDrivenPlatformInfo->UBTPlatformString;
 
 			// Append any extra UAT flags specified for this platform flavor
 			if (!PlatformInfo->UATCommandLine.IsEmpty())
@@ -459,7 +396,7 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 				OptionalParams += TEXT(" ");
 				OptionalParams += OptionalUATCommandLine;
 			}
-			bUATClosesAfterLaunch |= PlatformInfo->bUATClosesAfterLaunch;
+			bUATClosesAfterLaunch |= PlatformInfo->DataDrivenPlatformInfo->bUATClosesAfterLaunch;
 		}
 	}
 	if (ServerPlatforms.Len() > 0)
@@ -487,6 +424,11 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	if (OptionalCookFlavors.Num() > 0)
 	{
 		UATCommand += (TEXT(" -cookflavor=") + Join(OptionalCookFlavors, TEXT("+")));
+	}
+
+	if (InProfile->GetBuildTarget().Len() > 0)
+	{
+		UATCommand += TEXT(" -target=") + InProfile->GetBuildTarget();
 	}
 
 	// device list
@@ -553,7 +495,7 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	}
 #endif	// WITH_EDITOR
 
-	// to reduce UE4CommandLine.txt churn (timestamp causing extra work), for LaunchOn (ie iterative deploy) we use a single session guid
+	// to reduce UECommandLine.txt churn (timestamp causing extra work), for LaunchOn (ie iterative deploy) we use a single session guid
 	if (InProfile->GetDeploymentMode() == ELauncherProfileDeploymentModes::CopyToDevice && Profile->IsDeployingIncrementally())
 	{
 		static FGuid StaticGuid(FGuid::NewGuid());
@@ -572,35 +514,31 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 		*InProfile->GetAdditionalCommandLineParameters());
 
 	// map list
-	FString MapList = TEXT("");
+	FString MapList = TEXT(" -map=");
 	const TArray<FString>& CookedMaps = InProfile->GetCookedMaps();
 	if (CookedMaps.Num() > 0 && (InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBook || InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBookInEditor))
 	{
-		MapList += TEXT(" -map=");
-		for (int32 MapIndex = 0; MapIndex < CookedMaps.Num(); ++MapIndex)
-		{
-			MapList += CookedMaps[MapIndex];
-			if (MapIndex+1 < CookedMaps.Num())
-			{
-				MapList += "+";
-			}
-		}
+		MapList += InitialMap;
+		MapList += TEXT("+");
+		MapList += FString::Join(CookedMaps, TEXT("+"));
 	}
 	else
 	{
-		MapList = TEXT(" -map=") + InitialMap;
+		MapList += InitialMap;
+	}
+
+	// culture list
+	FString CultureList;
+	{
+		const TArray<FString>& CookedCultures = InProfile->GetCookedCultures();
+		if (CookedCultures.Num() > 0 && (InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBook || InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBookInEditor))
+		{
+			CultureList += TEXT(" -CookCultures=");
+			CultureList += FString::Join(CookedCultures, TEXT("+"));
+		}
 	}
 
 	bool bIsBuilding = InProfile->ShouldBuild();
-
-	// Override the Blueprint nativization method for anything other than "cook by the book" mode. Nativized assets
-	// won't get regenerated otherwise, and we don't want UBT to include generated code assets from a previous cook.
-	// Also disable Blueprint nativization if the profile is not configured to also build code. Otherwise nativized
-	// assets generated at cook time will not be linked into the game's executable prior to stage/deployment phases.
-	if (InProfile->GetCookMode() != ELauncherProfileCookModes::ByTheBook || !bIsBuilding)
-	{
-		UATCommand += TEXT(" -ini:Game:[/Script/UnrealEd.ProjectPackagingSettings]:BlueprintNativizationMethod=Disabled");
-	}
 
 	// build
 	if (bIsBuilding)
@@ -625,6 +563,7 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			UATCommand += TEXT(" -cook");
 
 			UATCommand += MapList;
+			UATCommand += CultureList;
 
 			if (InProfile->IsCookingUnversioned())
 			{
@@ -657,6 +596,19 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			{
 				// if our editor has nomcp then pass it through the launched game
 				UATCommand += TEXT(" -fastcook");
+			}
+
+			if (InProfile->IsUsingZenStore())
+			{
+				// TODO: launch the zen server from the client once the external CBTB is done
+				// -fileserver tells UAT to take the cotf/fileserver path and stage a thin client that loads data via the network
+				// -skipserver prevents UAT from launching a COTF server for this CBTB scenario
+				UATCommand += TEXT(" -zenstore -fileserver -skipserver");
+			}
+
+			if (FDerivedDataCacheInterface* DDC = GetDerivedDataCache())
+			{
+				UATCommand += FString::Printf(TEXT(" -ddc=%s"), DDC->GetGraphName());
 			}
 
 			if (InProfile->IsPackingWithUnrealPak())
@@ -755,6 +707,16 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	case ELauncherProfileCookModes::OnTheFly:
 		{
 			UATCommand += TEXT(" -cookonthefly");
+			
+			if (InProfile->IsUsingZenStore())
+			{
+				UATCommand += TEXT(" -zenstore");
+			}
+
+			if (FDerivedDataCacheInterface* DDC = GetDerivedDataCache())
+			{
+				UATCommand += FString::Printf(TEXT(" -ddc=%s"), DDC->GetGraphName());
+			}
 
 			//if UAT doesn't stick around as long as the process we are going to run, then we can't kill the COTF server when UAT goes down because the program
 			//will still need it.  If UAT DOES stick around with the process then we DO want the COTF server to die with UAT so the next time we launch we don't end up
@@ -780,13 +742,29 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 	case ELauncherProfileCookModes::OnTheFlyInEditor:
 		UATCommand += MapList;
 		UATCommand += " -skipcook -cookonthefly -CookInEditor";
+		if (InProfile->IsUsingZenStore())
+		{
+			UATCommand += TEXT(" -zenstore");
+		}
 		break;
 	case ELauncherProfileCookModes::ByTheBookInEditor:
 		UATCommand += MapList;
+		UATCommand += CultureList;
 		UATCommand += TEXT(" -skipcook -CookInEditor"); // don't cook anything the editor is doing it ;)
+		if (InProfile->IsUsingZenStore())
+		{
+			// TODO: launch the zen server from the client once the external CBTB is done
+			// -fileserver tells UAT to take the cotf/fileserver path and stage a thin client that loads data via the network
+			// -skipserver prevents UAT from launching a COTF server for this CBTB scenario
+			UATCommand += TEXT(" -zenstore -fileserver -skipserver");
+		}
 		if (InProfile->IsPackingWithUnrealPak())
 		{
 			UATCommand += TEXT(" -pak");
+		}
+		if (InProfile->IsUsingIoStore())
+		{
+			UATCommand += TEXT(" -iostore");
 		}
 		break;
 	case ELauncherProfileCookModes::DoNotCook:
@@ -1022,7 +1000,15 @@ void FLauncherWorker::CreateAndExecuteTasks( const ILauncherProfileRef& InProfil
 	TArray<FCommandDesc> Commands;
 	FString StartString;
 	FString UATCommand = CreateUATCommand(InProfile, Platforms, Commands, StartString);
-	TSharedPtr<FLauncherTask> BuildTask = MakeShareable(new FLauncherUATTask(UATCommand, TEXT("Build Task"), TEXT("Launching UAT..."), ReadPipe, WritePipe, InProfile->GetEditorExe(), ProcHandle, this, StartString));
+	
+	// have Turnkey 
+	FString TurnkeyCommand;
+	if (Profile->ShouldUpdateDeviceFlash() && DeviceGroup->GetDeviceIDs().Num() >= 0)
+	{
+		TurnkeyCommand = FString::Printf(TEXT("Turnkey -command=VerifySdk -type=Flash -device=%s -UpdateIfNeeded -utf8output -WaitForUATMutex %s"), *FString::Join(DeviceGroup->GetDeviceIDs(), TEXT("+")), *ITurnkeyIOModule::Get().GetUATParams());
+	}
+
+	TSharedPtr<FLauncherTask> BuildTask = MakeShareable(new FLauncherUATTask(UATCommand, TEXT("Build Task"), TEXT("Launching UAT..."), ReadPipe, WritePipe, InProfile->GetEditorExe(), ProcHandle, this, StartString, TurnkeyCommand));
 	BuildTask->OnStarted().AddRaw(this, &FLauncherWorker::OnTaskStarted);
 	BuildTask->OnCompleted().AddRaw(this, &FLauncherWorker::OnTaskCompleted);
 	NextTask->AddContinuation(BuildTask);

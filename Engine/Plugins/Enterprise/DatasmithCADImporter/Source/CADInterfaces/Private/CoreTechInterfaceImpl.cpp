@@ -2,7 +2,7 @@
 #include "CoreTechInterfaceImpl.h"
 
 #include "CADInterfacesModule.h"
-#include "CoretechFileReader.h"
+#include "CoreTechFileParser.h"
 
 #include "Misc/Paths.h"
 
@@ -63,12 +63,12 @@ namespace CADLibrary
 		switch (Status)
 		{
 			case IO_ERROR_LICENSE:
-				UE_LOG(CADInterfaces, Error, TEXT("CoreTech dll license is missing. Plug-in will not be functional."));
+				UE_LOG(LogCADInterfaces, Error, TEXT("CoreTech dll license is missing. Plug-in will not be functional."));
 				break;
 
 			case IO_ERROR_NOT_INITIALIZED:
 			default:
-				UE_LOG(CADInterfaces, Error, TEXT("CoreTech dll is not initialize. Plug - in will not be functional."));
+				UE_LOG(LogCADInterfaces, Error, TEXT("CoreTech dll is not initialize. Plug - in will not be functional."));
 				break;
 		}
 
@@ -94,7 +94,7 @@ namespace CADLibrary
 		}
 		return CT_KERNEL_IO::ChangeTolerance(0.00001 / SceneUnit) == IO_OK;
 	}
-
+	
 	bool FCoreTechInterfaceImpl::CreateModel(uint64& OutMainObjectId)
 	{
 		OutMainObjectId = 0;
@@ -446,31 +446,20 @@ namespace CADLibrary
 
 	bool FCoreTechInterfaceImpl::SetCoreTechTessellationState(const FImportParameters& ImportParams)
 	{
-		bScaleUVMap = ImportParams.bScaleUVMap;
-		ScaleFactor = ImportParams.ScaleFactor;
+		bScaleUVMap = ImportParams.NeedScaleUVMap();
+		ScaleFactor = ImportParams.GetScaleFactor();
 
 		CT_DOUBLE CurrentUnit = 0.001;
 
 		// convert max edge length to model units
 		double ModelUnit = FLT_MAX; // default value is huge, as 0.0 causes bugs in KernelIO...
-		if (ImportParams.MaxEdgeLength > SMALL_NUMBER)
+		if (ImportParams.GetMaxEdgeLength() > SMALL_NUMBER)
 		{
-			ModelUnit = ImportParams.MaxEdgeLength / ImportParams.ScaleFactor;
+			ModelUnit = ImportParams.GetMaxEdgeLength() / ImportParams.GetScaleFactor();
 		}
 
 		// Apply retrieved tessellation parameters to CoreTech tessellation engine
-		return ChangeTesselationParameters(ImportParams.ChordTolerance / ImportParams.ScaleFactor, ModelUnit, ImportParams.MaxNormalAngle);
-	}
-
-	ECoreTechParsingResult FCoreTechInterfaceImpl::LoadFile(const FFileDescription& InFileDescription, const FImportParameters& InImportParameters, const FString& InCachePath, FArchiveSceneGraph& OutSceneGraphArchive, TArray<FString>& OutWarningMessages, TArray<FBodyMesh>& OutBodyMeshes)
-	{
-		FCoreTechFileReader::FContext Context(InImportParameters, InCachePath, OutSceneGraphArchive, OutWarningMessages, OutBodyMeshes);
-
-		FCoreTechFileReader FileReader(Context);
-
-		ECoreTechParsingResult Result = FileReader.ProcessFile(InFileDescription);
-
-		return Result;
+		return ChangeTesselationParameters(ImportParams.GetChordTolerance() / ImportParams.GetScaleFactor(), ModelUnit, ImportParams.GetMaxNormalAngle());
 	}
 
 	int32 GetColorName(CT_OBJECT_ID ObjectID)
@@ -519,13 +508,13 @@ namespace CADLibrary
 
 			if (bScaleUVMap && Tessellation.TexCoordArray.Num() > 0)
 			{
-				CoreTechFileReaderUtils::ScaleUV(FaceID, Tessellation.TexCoordArray, (float) ScaleFactor);
+				CoreTechFileParserUtils::ScaleUV(FaceID, Tessellation.TexCoordArray, (float) ScaleFactor);
 			}
 		};
 
 		if (bIsBody)
 		{
-			CoreTechFileReaderUtils::GetBodyTessellation(ObjectId, OutBodyMesh, ProcessFace);
+			CoreTechFileParserUtils::GetBodyTessellation(ObjectId, OutBodyMesh, ProcessFace);
 		}
 		else
 		{
@@ -539,7 +528,7 @@ namespace CADLibrary
 
 			while (CT_OBJECT_ID BodyId = ObjectList.IteratorIter())
 			{
-				CoreTechFileReaderUtils::GetBodyTessellation(BodyId, OutBodyMesh, ProcessFace);
+				CoreTechFileParserUtils::GetBodyTessellation(BodyId, OutBodyMesh, ProcessFace);
 			}
 		}
 	}

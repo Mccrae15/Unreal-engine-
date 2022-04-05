@@ -10,6 +10,7 @@
 #include "UObject/NameTypes.h"
 #include "Logging/LogMacros.h"
 #include "Misc/Parse.h"
+#include "Misc/StringBuilder.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 #include "Misc/SingleThreadRunnable.h"
@@ -18,12 +19,14 @@
 #include "Misc/CommandLine.h"
 #include "Containers/Map.h"
 #include "Stats/Stats.h"
+#include "String/Find.h"
 #include "Async/AsyncWork.h"
 #include "Containers/Ticker.h"
 #include "Stats/StatsData.h"
 #include "HAL/IConsoleManager.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "Tasks/Pipe.h"
 
 /*-----------------------------------------------------------------------------
 	Global
@@ -40,12 +43,15 @@ struct FStats2Globals
 	}
 };
 
+#if STATS
+CORE_API UE::Tasks::FPipe GStatsPipe{ UE_SOURCE_LOCATION };
+#endif
+
 static struct FForceInitAtBootFStats2 : public TForceInitAtBoot<FStats2Globals>
 {} FForceInitAtBootFStats2;
 
 DECLARE_DWORD_COUNTER_STAT( TEXT("Frame Packets Received"),STAT_StatFramePacketsRecv,STATGROUP_StatSystem);
 
-DECLARE_CYCLE_STAT(TEXT("WaitForStats"),STAT_WaitForStats,STATGROUP_Engine);
 DECLARE_CYCLE_STAT(TEXT("StatsNew Tick"),STAT_StatsNewTick,STATGROUP_StatSystem);
 DECLARE_CYCLE_STAT(TEXT("Parse Meta"),STAT_StatsNewParseMeta,STATGROUP_StatSystem);
 DECLARE_CYCLE_STAT(TEXT("Scan For Advance"),STAT_ScanForAdvance,STATGROUP_StatSystem);
@@ -235,7 +241,7 @@ void FStats::TickCommandletStats()
 		//check( ThreadStats->ScopeCount == 0 && TEXT( "FStats::TickCommandletStats must be called outside any scope counters" ) );
 
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle( ENamedThreads::GameThread );
-		FTicker::GetCoreTicker().Tick( 1 / 60.0f );
+		FTSTicker::GetCoreTicker().Tick( 1 / 60.0f );
 
 		FStats::AdvanceFrame( false );
 	}
@@ -611,9 +617,17 @@ public:
 #if STATSTRACE_ENABLED
 		if (!bCycleStat && (InStatType == EStatDataType::ST_int64 || InStatType == EStatDataType::ST_double))
 		{
-			ANSICHAR NameBuffer[1024];
-			StatShortName.GetPlainANSIString(NameBuffer);
-			FStatsTrace::DeclareStat(Stat, NameBuffer, *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
+			if (!StatShortName.GetDisplayNameEntry()->IsWide())
+			{
+				ANSICHAR NameBuffer[1024];
+				StatShortName.GetPlainANSIString(NameBuffer);
+				FStatsTrace::DeclareStat(Stat, NameBuffer, *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
+			}
+			else
+			{
+				FString StatShortNameString = StatShortName.GetPlainNameString();
+				FStatsTrace::DeclareStat(Stat, TCHAR_TO_ANSI(*StatShortNameString), *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
+			}
 		}
 #endif
 		return TStatId(Result);
@@ -723,8 +737,7 @@ IStatGroupEnableManager& IStatGroupEnableManager::Get()
 
 FName FStatNameAndInfo::ToLongName(FName InStatName, char const* InGroup, char const* InCategory, TCHAR const* InDescription, bool InSortByName)
 {
-	FString LongName;
-	LongName.Reserve(255);
+	TStringBuilder<256> LongName;
 	if (InGroup)
 	{
 		LongName += TEXT("//");
@@ -735,7 +748,7 @@ FName FStatNameAndInfo::ToLongName(FName InStatName, char const* InGroup, char c
 	if (InDescription)
 	{
 		LongName += TEXT("///");
-		LongName += FStatsUtils::ToEscapedFString(InDescription);
+		FStatsUtils::ToEscapedString(InDescription, LongName);
 		LongName += TEXT("///");
 	}
 	if (InCategory)
@@ -755,56 +768,60 @@ FName FStatNameAndInfo::ToLongName(FName InStatName, char const* InGroup, char c
 
 FName FStatNameAndInfo::GetShortNameFrom(FName InLongName)
 {
-	FString Input(InLongName.ToString());
+	TStringBuilder<256> Temp;
+	Temp << InLongName;
+	FStringView Input(Temp);
 
 	if (Input.StartsWith(TEXT("//"), ESearchCase::CaseSensitive))
 	{
-		Input.RightChopInline(2, false);
-		const int32 IndexEnd = Input.Find(TEXT("//"), ESearchCase::CaseSensitive);
+		Input.RemovePrefix(2);
+		const int32 IndexEnd = UE::String::FindFirst(Input, TEXT("//"));
 		if (IndexEnd == INDEX_NONE)
 		{
 			checkStats(0);
 			return InLongName;
 		}
-		Input.RightChopInline(IndexEnd + 2, false);
+		Input.RightChopInline(IndexEnd + 2);
 	}
-	const int32 DescIndexEnd = Input.Find(TEXT("///"), ESearchCase::CaseSensitive);
+	const int32 DescIndexEnd = UE::String::FindFirst(Input, TEXT("///"), ESearchCase::CaseSensitive);
 	if (DescIndexEnd != INDEX_NONE)
 	{
-		Input.LeftInline(DescIndexEnd, false);
+		Input.LeftInline(DescIndexEnd);
 	}
-	const int32 CategoryIndexEnd = Input.Find( TEXT( "####" ), ESearchCase::CaseSensitive );
+	const int32 CategoryIndexEnd = UE::String::FindFirst(Input, TEXT( "####" ), ESearchCase::CaseSensitive );
 	if( DescIndexEnd == INDEX_NONE && CategoryIndexEnd != INDEX_NONE )
 	{
-		Input.LeftInline(CategoryIndexEnd, false);
+		Input.LeftInline(CategoryIndexEnd);
 	}
-	const int32 SortByNameIndexEnd = Input.Find( TEXT( "/#/#" ), ESearchCase::CaseSensitive );
+	const int32 SortByNameIndexEnd = UE::String::FindFirst(Input, TEXT( "/#/#" ), ESearchCase::CaseSensitive );
 	if( DescIndexEnd == INDEX_NONE && CategoryIndexEnd == INDEX_NONE && SortByNameIndexEnd != INDEX_NONE )
 	{
-		Input.LeftInline(SortByNameIndexEnd, false);
+		Input.LeftInline(SortByNameIndexEnd);
 	}
-	return FName(*Input);
+	return FName(Input);
 }
 
 FName FStatNameAndInfo::GetGroupNameFrom(FName InLongName)
 {
-	FString Input(InLongName.ToString());
+	TStringBuilder<256> Temp;
+	Temp << InLongName;
+	FStringView Input(Temp);
 
 	if (Input.StartsWith(TEXT("//"), ESearchCase::CaseSensitive))
 	{
-		Input.RightChopInline(2, false);
+		Input.RemovePrefix(2);
 		if (Input.StartsWith(TEXT("Groups//")))
 		{
-			Input.RightChopInline(8, false);
+			Input.RemovePrefix(8);
 		}
-		const int32 IndexEnd = Input.Find(TEXT("//"), ESearchCase::CaseSensitive);
+		const int32 IndexEnd = UE::String::FindFirst(Input, TEXT("//"));
 		if (IndexEnd != INDEX_NONE)
 		{
-			return FName(*Input.Left(IndexEnd));
+			return FName(Input.Left(IndexEnd));
 		}
 		checkStats(0);
 	}
-	return NAME_None;
+	return FName();
 }
 
 FString FStatNameAndInfo::GetDescriptionFrom(FName InLongName)
@@ -818,7 +835,7 @@ FString FStatNameAndInfo::GetDescriptionFrom(FName InLongName)
 		const int32 IndexEnd = Input.Find(TEXT("///"), ESearchCase::CaseSensitive);
 		if (IndexEnd != INDEX_NONE)
 		{
-			return FStatsUtils::FromEscapedFString(*Input.Left(IndexEnd));
+			return FStatsUtils::FromEscapedString(*Input.Left(IndexEnd));
 		}
 	}
 	return FString();
@@ -857,7 +874,7 @@ bool FStatNameAndInfo::GetSortByNameFrom(FName InLongName)
 		}
 		checkStats(0);
 	}
-	return NAME_None;
+	return false;
 }
 
 /*-----------------------------------------------------------------------------
@@ -866,6 +883,127 @@ bool FStatNameAndInfo::GetSortByNameFrom(FName InLongName)
 
 static TAutoConsoleVariable<int32> CVarDumpStatPackets(	TEXT("DumpStatPackets"),0,	TEXT("If true, dump stat packets."));
 
+#if UE_STATS_THREAD_AS_PIPE
+
+/** The rendering thread runnable object. */
+class FStatsThread
+{
+	/** Array of stat packets, queued data to be processed on this thread. */
+	FStatPacketArray IncomingData;
+
+	/** Stats state. */
+	FStatsThreadState& State;
+
+	/** Whether we are ready to process the packets, sets by game or render packets. */
+	bool bReadyToProcess;
+
+public:
+	static FStatsThread& Get()
+	{
+		static FStatsThread Singleton;
+		return Singleton;
+	}
+
+	/** Default constructor. */
+	FStatsThread()
+		: State(FStatsThreadState::GetLocalState())
+		, bReadyToProcess(false)
+	{
+	}
+
+	/** Received a stat packet from other thread and add to the processing queue. */
+	void StatMessage(FStatPacket* Packet)
+	{
+		LLM_SCOPE(ELLMTag::Stats);
+
+		if (CVarDumpStatPackets.GetValueOnAnyThread())
+		{
+			UE_LOG(LogStats, Log, TEXT("Packet from %x with %d messages"), Packet->ThreadId, Packet->StatMessages.Num());
+		}
+
+		bReadyToProcess = Packet->ThreadType != EThreadType::Other;
+		IncomingData.Packets.Add(Packet);
+		State.NumStatMessages.Add(Packet->StatMessages.Num());
+
+		Process();
+	}
+
+private:
+	void Process()
+	{
+		static double LastTime = -1.0;
+		bool bShouldProcess = false;
+
+		const int32 MaxIncomingPackets = 16;
+		if (FThreadStats::bIsRawStatsActive)
+		{
+			// For raw stats we process every 24MB of packet data to minimize the stats messages memory usage.
+			//const bool bShouldProcessRawStats = IncomingData.Packets.Num() > 10;
+			const int32 MaxIncomingMessages = 24 * 1024 * 1024 / sizeof(FStatMessage);
+
+			int32 IncomingDataMessages = 0;
+			for (FStatPacket* Packet : IncomingData.Packets)
+			{
+				IncomingDataMessages += Packet->StatMessages.Num();
+			}
+
+			bShouldProcess = IncomingDataMessages > MaxIncomingMessages || IncomingData.Packets.Num() > MaxIncomingPackets;
+		}
+		else
+		{
+			// For regular stats we won't process more than every 5ms or every 16 packets.
+			// Commandlet stats are flushed as soon as.
+			bShouldProcess = bReadyToProcess && (FPlatformTime::Seconds() - LastTime > 0.005f || IncomingData.Packets.Num() > MaxIncomingPackets || FStats::EnabledForCommandlet());
+		}
+
+		if (bShouldProcess)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_StatsNewTick);
+
+			IStatGroupEnableManager::Get().UpdateMemoryUsage();
+			State.UpdateStatMessagesMemoryUsage();
+
+			bReadyToProcess = false;
+			FStatPacketArray NowData;
+			Exchange(NowData.Packets, IncomingData.Packets);
+			INC_DWORD_STAT_BY(STAT_StatFramePacketsRecv, NowData.Packets.Num());
+			{
+				SCOPE_CYCLE_COUNTER(STAT_StatsNewParseMeta);
+				TArray<FStatMessage> MetaMessages;
+				{
+					FScopeLock Lock(&FStartupMessages::Get().CriticalSection);
+					Exchange(FStartupMessages::Get().DelayedMessages, MetaMessages);
+				}
+				if (MetaMessages.Num())
+				{
+					State.ProcessMetaDataOnly(MetaMessages);
+				}
+			}
+			{
+				SCOPE_CYCLE_COUNTER(STAT_ScanForAdvance);
+				State.ScanForAdvance(NowData);
+			}
+
+			if (FThreadStats::bIsRawStatsActive)
+			{
+				// Process raw stats.
+				State.ProcessRawStats(NowData);
+				State.ResetRegularStats();
+			}
+			else
+			{
+				// Process regular stats.
+				SCOPE_CYCLE_COUNTER(STAT_StatsNewAddToHistory);
+				State.ResetRawStats();
+				State.AddToHistoryAndEmpty(NowData);
+			}
+			check(!NowData.Packets.Num());
+			LastTime = FPlatformTime::Seconds();
+		}
+	}
+};
+
+#else // UE_STATS_THREAD_AS_PIPE
 
 /** The rendering thread runnable object. */
 class FStatsThread : public FRunnable, FSingleThreadRunnable
@@ -916,14 +1054,14 @@ public:
 		bool bShouldProcess = false;
 
 		const int32 MaxIncomingPackets = 16;
-		if( FThreadStats::bIsRawStatsActive )
+		if (FThreadStats::bIsRawStatsActive)
 		{
 			// For raw stats we process every 24MB of packet data to minimize the stats messages memory usage.
 			//const bool bShouldProcessRawStats = IncomingData.Packets.Num() > 10;
-			const int32 MaxIncomingMessages = 24*1024*1024/sizeof(FStatMessage);
+			const int32 MaxIncomingMessages = 24 * 1024 * 1024 / sizeof(FStatMessage);
 
 			int32 IncomingDataMessages = 0;
-			for( FStatPacket* Packet : IncomingData.Packets )
+			for (FStatPacket* Packet : IncomingData.Packets)
 			{
 				IncomingDataMessages += Packet->StatMessages.Num();
 			}
@@ -937,7 +1075,7 @@ public:
 			bShouldProcess = bReadyToProcess && (FPlatformTime::Seconds() - LastTime > 0.005f || IncomingData.Packets.Num() > MaxIncomingPackets || FStats::EnabledForCommandlet());
 		}
 
-		if( bShouldProcess )
+		if (bShouldProcess)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_StatsNewTick);
 
@@ -965,7 +1103,7 @@ public:
 				State.ScanForAdvance(NowData);
 			}
 
-			if( FThreadStats::bIsRawStatsActive )
+			if (FThreadStats::bIsRawStatsActive)
 			{
 				// Process raw stats.
 				State.ProcessRawStats(NowData);
@@ -1066,6 +1204,7 @@ public:
 	}
 };
 
+#endif // UE_STATS_THREAD_AS_PIPE
 /*-----------------------------------------------------------------------------
 	FThreadStatsPool
 -----------------------------------------------------------------------------*/
@@ -1117,8 +1256,10 @@ FThreadStats::FThreadStats():
 	bWaitForExplicitFlush(0),
 	MemoryMessageScope(0),
 	bReentranceGuard(false),
-	bSawExplicitFlush(false),
-	bIsStatsThread(false)
+	bSawExplicitFlush(false)
+#if !UE_STATS_THREAD_AS_PIPE
+	, bIsStatsThread(false)
+#endif
 {
 	Packet.SetThreadProperties();
 
@@ -1132,8 +1273,10 @@ FThreadStats::FThreadStats( EConstructor ):
 	bWaitForExplicitFlush(0),
 	MemoryMessageScope(0),
 	bReentranceGuard(false),
-	bSawExplicitFlush(false),
-	bIsStatsThread(false)
+	bSawExplicitFlush(false)
+#if !UE_STATS_THREAD_AS_PIPE
+	, bIsStatsThread(false)
+#endif
 {}
 
 void FThreadStats::CheckEnable()
@@ -1163,6 +1306,18 @@ void FThreadStats::Flush( bool bHasBrokenCallstacks /*= false*/, bool bForceFlus
 	else
 	{
 		FlushRegularStats(bHasBrokenCallstacks, bForceFlush);
+	}
+}
+
+void FThreadStats::SendMessage_Async(FStatPacket* ToSend)
+{
+	if (FPlatformProcess::SupportsMultithreading())
+	{
+		GStatsPipe.Launch(UE_SOURCE_LOCATION, [ToSend] { FStatsThread::Get().StatMessage(ToSend); });
+	}
+	else
+	{
+		FFunctionGraphTask::CreateAndDispatchWhenReady([ToSend] { FStatsThread::Get().StatMessage(ToSend); }, TStatId{}, nullptr, ENamedThreads::GameThread);
 	}
 }
 
@@ -1225,6 +1380,10 @@ void FThreadStats::FlushRegularStats( bool bHasBrokenCallstacks, bool bForceFlus
 			}
 			Packet.StatMessages.Empty(MaxPresize);
 		}
+
+#if UE_STATS_THREAD_AS_PIPE
+		SendMessage_Async(ToSend);
+#else
 		if (bIsStatsThread)
 		{
 			FStatsThread::Get().SelfStatMessage(ToSend);
@@ -1233,6 +1392,8 @@ void FThreadStats::FlushRegularStats( bool bHasBrokenCallstacks, bool bForceFlus
 		{
 			TGraphTask<FStatMessagesTask>::CreateTask().ConstructAndDispatchWhenReady(ToSend);
 		}
+#endif
+
 		UpdateExplicitFlush();
 	}
 }
@@ -1270,6 +1431,9 @@ void FThreadStats::FlushRawStats( bool bHasBrokenCallstacks /*= false*/, bool bF
 
 		check(!Packet.StatMessages.Num());
 
+#if UE_STATS_THREAD_AS_PIPE
+		SendMessage_Async(ToSend);
+#else
 		if (bIsStatsThread)
 		{
 			FStatsThread::Get().SelfStatMessage(ToSend);
@@ -1278,6 +1442,8 @@ void FThreadStats::FlushRawStats( bool bHasBrokenCallstacks /*= false*/, bool bF
 		{
 			TGraphTask<FStatMessagesTask>::CreateTask().ConstructAndDispatchWhenReady(ToSend);
 		}
+#endif
+
 		UpdateExplicitFlush();
 
 		const float NumMessagesAsMB = float(NumMessages * sizeof(FStatMessage)) / 1024.0f / 1024.0f;
@@ -1386,8 +1552,11 @@ void FThreadStats::StartThread()
 		TlsSlot = FPlatformTLS::AllocTlsSlot();
 		check(TlsSlot);
 	}
+
+#if !UE_STATS_THREAD_AS_PIPE
 	FStatsThread::Get();
 	FStatsThread::Get().Start();
+#endif
 
 	check(IsThreadingReady());
 	CheckEnable();
@@ -1403,8 +1572,9 @@ void FThreadStats::StartThread()
 	UE_LOG( LogStats, Log, TEXT( "Stats thread started at %f" ), FPlatformTime::Seconds() - GStartTime );
 }
 
-static FGraphEventRef LastFramesEvents[MAX_STAT_LAG];
 static int32 CurrentEventIndex = 0;
+
+static FGraphEventRef LastFramesEvents[MAX_STAT_LAG];
 
 void FThreadStats::StopThread()
 {
@@ -1423,15 +1593,24 @@ void FThreadStats::StopThread()
 		FThreadStats::MasterDisableForever();
 
 		WaitForStats();
-		for (int32 Index = 0; Index < MAX_STAT_LAG; Index++)
-		{
-			LastFramesEvents[Index] = NULL;
-		}
-		FGraphEventRef QuitTask = TGraphTask<FReturnGraphTask>::CreateTask(NULL, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(FPlatformProcess::SupportsMultithreading() ? ENamedThreads::StatsThread : ENamedThreads::GameThread);
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(QuitTask, ENamedThreads::GameThread_Local);
-
-		FStatsThread::Get().End();
 	}
+
+#if UE_STATS_THREAD_AS_PIPE
+	// wait for the pipe to complete all currently piped tasks
+	while (GStatsPipe.HasWork())
+	{
+		FPlatformProcess::Yield();
+	}
+#else
+	for (int32 Index = 0; Index < MAX_STAT_LAG; Index++)
+	{
+		LastFramesEvents[Index] = NULL;
+	}
+	FGraphEventRef QuitTask = TGraphTask<FReturnGraphTask>::CreateTask(NULL, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(FPlatformProcess::SupportsMultithreading() ? ENamedThreads::StatsThread : ENamedThreads::GameThread);
+	FTaskGraphInterface::Get().WaitUntilTaskCompletes(QuitTask, ENamedThreads::GameThread_Local);
+
+	FStatsThread::Get().End();
+#endif
 }
 
 void FThreadStats::WaitForStats()
@@ -1444,19 +1623,36 @@ void FThreadStats::WaitForStats()
 	check(IsInGameThread());
 	if (IsThreadingReady() && !bMasterDisableForever)
 	{
+		DECLARE_CYCLE_STAT(TEXT("WaitForStats"), STAT_WaitForStats, STATGROUP_Engine);
+
+		int32 EventIndex = (CurrentEventIndex + MAX_STAT_LAG - 1) % MAX_STAT_LAG;
+
+#if UE_STATS_THREAD_AS_PIPE
+		if (FPlatformProcess::SupportsMultithreading())
 		{
-			SCOPE_CYCLE_COUNTER(STAT_WaitForStats);
-			if (LastFramesEvents[(CurrentEventIndex + MAX_STAT_LAG - 1) % MAX_STAT_LAG].GetReference())
+			static UE::Tasks::FTask LocalLastFramesEvents[MAX_STAT_LAG];
 			{
-				FTaskGraphInterface::Get().WaitUntilTaskCompletes(LastFramesEvents[(CurrentEventIndex + MAX_STAT_LAG - 1) % MAX_STAT_LAG], ENamedThreads::GameThread_Local);
+				SCOPE_CYCLE_COUNTER(STAT_WaitForStats);
+				LocalLastFramesEvents[EventIndex].Wait();
 			}
+
+			LocalLastFramesEvents[EventIndex] = GStatsPipe.Launch(UE_SOURCE_LOCATION, [] {});
+		}
+		else
+#endif
+		{
+			{
+				SCOPE_CYCLE_COUNTER(STAT_WaitForStats);
+				if (LastFramesEvents[EventIndex].GetReference())
+				{
+					FTaskGraphInterface::Get().WaitUntilTaskCompletes(LastFramesEvents[EventIndex], ENamedThreads::GameThread_Local);
+				}
+			}
+
+			LastFramesEvents[EventIndex] = TGraphTask<FNullGraphTask>::CreateTask(NULL, ENamedThreads::GameThread).
+				ConstructAndDispatchWhenReady(TStatId{}, ENamedThreads::GameThread);
 		}
 
-		DECLARE_CYCLE_STAT(TEXT("FNullGraphTask.StatWaitFence"),
-			STAT_FNullGraphTask_StatWaitFence,
-			STATGROUP_TaskGraphTasks);
-
-		LastFramesEvents[(CurrentEventIndex + MAX_STAT_LAG - 1) % MAX_STAT_LAG] = TGraphTask<FNullGraphTask>::CreateTask(NULL, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(GET_STATID(STAT_FNullGraphTask_StatWaitFence), FPlatformProcess::SupportsMultithreading() ? ENamedThreads::StatsThread : ENamedThreads::GameThread);
 		CurrentEventIndex++;
 
 #if	!UE_BUILD_SHIPPING

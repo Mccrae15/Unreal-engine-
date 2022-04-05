@@ -8,7 +8,7 @@ D3D12Stats.cpp:RHI Stats and timing implementation.
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 
-TStaticArray<uint32, MAX_NUM_GPUS> D3D12RHI::FD3DGPUProfiler::GGPUFrameCycles(0);
+TStaticArray<uint32, MAX_NUM_GPUS> D3D12RHI::FD3DGPUProfiler::GGPUFrameCycles(InPlace, 0);
 
 void D3D12RHI::FD3DGPUProfiler::BeginFrame(FD3D12DynamicRHI* InRHI)
 {
@@ -20,7 +20,7 @@ void D3D12RHI::FD3DGPUProfiler::BeginFrame(FD3D12DynamicRHI* InRHI)
 	static auto* CrashCollectionEnableCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.collectionenable"));
 	static auto* CrashCollectionDataDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.datadepth"));
 
-	bTrackingGPUCrashData = CrashCollectionEnableCvar ? (InRHI->GetAdapter().GetGPUCrashDebuggingMode() != ED3D12GPUCrashDebugginMode::Disabled && CrashCollectionEnableCvar->GetValueOnRenderThread() != 0) : false;
+	bTrackingGPUCrashData = CrashCollectionEnableCvar ? (InRHI->GetAdapter().GetGPUCrashDebuggingModes() != ED3D12GPUCrashDebuggingModes::None && CrashCollectionEnableCvar->GetValueOnRenderThread() != 0) : false;
 	GPUCrashDataDepth = CrashCollectionDataDepth ? CrashCollectionDataDepth->GetValueOnRenderThread() : -1;
 
 	// latch the bools from the game thread into our private copy
@@ -120,14 +120,25 @@ void D3D12RHI::FD3DGPUProfiler::EndFrame(FD3D12DynamicRHI* InRHI)
 			DoPostProfileGPUWork();
 			UE_LOG(LogD3D12RHI, Log, TEXT(""));
 			UE_LOG(LogD3D12RHI, Log, TEXT(""));
-			CurrentEventNodeFrame->DumpEventTree();
 			GTriggerGPUProfile = false;
 			bLatchedGProfilingGPU = false;
 
-			if (RHIConfig::ShouldSaveScreenshotAfterProfilingGPU()
-				&& GEngine->GameViewport)
+			// Only dump the event tree and generate the screenshot for the first GPU.  Eventually, we may want to collate
+			// profiling data for all GPUs into a single tree, but the short term goal is to make profiling in the editor
+			// functional at all with "r.AllowMultiGPUInEditor=1" and "-MaxGPUCount=2" (settings required to enable multiple
+			// GPUs for GPU Lightmass).  In the editor, we don't actually render anything on the additional GPUs, but the
+			// editor's profile visualizer will pick up whatever event tree we dumped last, which will be the empty one from
+			// the last GPU, making the results useless without this code fix.  Unreal Insights would be preferred for
+			// multi-GPU profiling outside the editor.
+			if (GPUIndex == 0)
 			{
-				GEngine->GameViewport->Exec(NULL, TEXT("SCREENSHOT"), *GLog);
+				CurrentEventNodeFrame->DumpEventTree();
+
+				if (RHIConfig::ShouldSaveScreenshotAfterProfilingGPU()
+					&& GEngine->GameViewport)
+				{
+					GEngine->GameViewport->Exec(NULL, TEXT("SCREENSHOT"), *GLog);
+				}
 			}
 		}
 	}
@@ -281,71 +292,47 @@ float FD3D12EventNode::GetTiming()
 	return Result;
 }
 
-void UpdateBufferStats(FD3D12ResourceLocation* ResourceLocation, bool bAllocating, uint32 BufferType)
+inline FName GetRHIBufferStats(EBufferUsageFlags Usage)
 {
-	uint64 RequestedSize = ResourceLocation->GetSize();
-
-	const bool bUniformBuffer = BufferType == D3D12_BUFFER_TYPE_CONSTANT;
-	const bool bIndexBuffer = BufferType == D3D12_BUFFER_TYPE_INDEX;
-	const bool bVertexBuffer = BufferType == D3D12_BUFFER_TYPE_VERTEX;
-
-	if (bAllocating)
+	if (EnumHasAnyFlags(Usage, BUF_VertexBuffer))
 	{
-		if (bUniformBuffer)
-		{
-			INC_MEMORY_STAT_BY(STAT_UniformBufferMemory, RequestedSize);
-		}
-		else if (bIndexBuffer)
-		{
-			INC_MEMORY_STAT_BY(STAT_IndexBufferMemory, RequestedSize);
-		}
-		else if (bVertexBuffer)
-		{
-			INC_MEMORY_STAT_BY(STAT_VertexBufferMemory, RequestedSize);
-		}
-		else
-		{
-			INC_MEMORY_STAT_BY(STAT_StructuredBufferMemory, RequestedSize);
-		}
-
-#if PLATFORM_WINDOWS
-		// this is a work-around on Windows. Due to the fact that there is no way
-		// to hook the actual d3d allocations it is very difficult to track memory
-		// in the normal way. The problem is that some buffers are allocated from
-		// the allocators and some are allocated from the device. Ideally this
-		// tracking would be moved to where the actual d3d resource is created and
-		// released and the tracking could be re-enabled in the buddy allocator.
-		// The problem is that the releasing of resources happens in a generic way
-		// (see FD3D12ResourceLocation) 
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, RequestedSize, ELLMTracker::Default, ELLMAllocType::None);
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::GraphicsPlatform, RequestedSize, ELLMTracker::Platform, ELLMAllocType::None);
-#endif
+		return GET_STATFNAME(STAT_VertexBufferMemory);
+	}
+	else if (EnumHasAnyFlags(Usage, BUF_IndexBuffer))
+	{
+		return GET_STATFNAME(STAT_IndexBufferMemory);
+	}
+	else if (EnumHasAnyFlags(Usage, BUF_AccelerationStructure))
+	{
+		return GET_STATFNAME(STAT_RTAccelerationStructureMemory);
 	}
 	else
 	{
-		if (bUniformBuffer)
-		{
-			DEC_MEMORY_STAT_BY(STAT_UniformBufferMemory, RequestedSize);
-		}
-		else if (bIndexBuffer)
-		{
-			DEC_MEMORY_STAT_BY(STAT_IndexBufferMemory, RequestedSize);
-		}
-		else if (bVertexBuffer)
-		{
-			DEC_MEMORY_STAT_BY(STAT_VertexBufferMemory, RequestedSize);
-		}
-		else
-		{
-			DEC_MEMORY_STAT_BY(STAT_StructuredBufferMemory, RequestedSize);
-		}
-
-#if PLATFORM_WINDOWS
-		// this is a work-around on Windows. See comment above.
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, -(int64)RequestedSize, ELLMTracker::Default, ELLMAllocType::None);
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::GraphicsPlatform, -(int64)RequestedSize, ELLMTracker::Platform, ELLMAllocType::None);
-#endif
+		return GET_STATFNAME(STAT_StructuredBufferMemory);
 	}
+}
+
+static FName GetD3D12BufferStat(EBufferUsageFlags InUsageFlags)
+{
+	if (EnumHasAnyFlags(InUsageFlags, BUF_UnorderedAccess))
+	{
+		return GET_STATFNAME(STAT_D3D12UAVBuffers);
+	}
+	else if (EnumHasAnyFlags(InUsageFlags, BUF_AccelerationStructure))
+	{
+		return GET_STATFNAME(STAT_D3D12RTBuffers);
+	}
+	else
+	{
+		return GET_STATFNAME(STAT_D3D12Buffer);
+	}
+}
+
+void UpdateBufferStats(EBufferUsageFlags InUsageFlags, int64 RequestedSize)
+{
+	INC_MEMORY_STAT_BY_FName(GetRHIBufferStats(InUsageFlags), RequestedSize);
+	INC_MEMORY_STAT_BY_FName(GetD3D12BufferStat(InUsageFlags), RequestedSize);
+	INC_MEMORY_STAT_BY(STAT_D3D12MemoryCurrentTotal, RequestedSize);
 }
 
 #if NV_AFTERMATH
@@ -432,7 +419,21 @@ bool D3D12RHI::FD3DGPUProfiler::CheckGpuHeartbeat() const
 						UE_LOG(LogRHI, Error, TEXT("[Aftermath] Faulting resource dims: %d x %d x %d"), FaultInformation.resourceDesc.width, FaultInformation.resourceDesc.height, FaultInformation.resourceDesc.depth);
 						UE_LOG(LogRHI, Error, TEXT("[Aftermath] Faulting result size: %llu bytes"), FaultInformation.resourceDesc.size);
 						UE_LOG(LogRHI, Error, TEXT("[Aftermath] Faulting resource mips: %d"), FaultInformation.resourceDesc.mipLevels);
-						UE_LOG(LogRHI, Error, TEXT("[Aftermath] Faulting resource format: 0x%x"), FaultInformation.resourceDesc.format);
+
+						DXGI_FORMAT ResourceFormat = (DXGI_FORMAT)FaultInformation.resourceDesc.format;
+						const TCHAR* FormatStr = LexToString(ResourceFormat);
+						const TCHAR* FormatPrefix = TEXT("DXGI_FORMAT_");
+						if (FCString::Strstr(FormatStr, FormatPrefix) == FormatStr)
+						{
+							FormatStr += FCString::Strlen(FormatPrefix);
+						}
+						UE_LOG(LogRHI, Error, TEXT("[Aftermath] Faulting resource format: %s (0x%x)"), FormatStr, (int32)ResourceFormat);
+
+						if (FaultInformation.faultingGpuVA)
+						{
+							FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
+							D3D12RHI::LogPageFaultData(Adapter, D3D12_GPU_VIRTUAL_ADDRESS(FaultInformation.faultingGpuVA));
+						}
 					}
 					else
 					{

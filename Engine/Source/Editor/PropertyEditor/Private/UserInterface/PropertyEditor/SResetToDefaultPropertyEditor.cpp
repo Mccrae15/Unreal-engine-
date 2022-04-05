@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-#include "UserInterface/PropertyEditor/SResetToDefaultPropertyEditor.h"
+#include "SResetToDefaultPropertyEditor.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 
@@ -7,7 +7,7 @@
 
 SResetToDefaultPropertyEditor::~SResetToDefaultPropertyEditor()
 {
-	if (PropertyHandle.IsValid())
+	if (PropertyHandle.IsValid() && OptionalCustomResetToDefault.IsSet())
 	{
 		PropertyHandle->ClearResetToDefaultCustomized();
 	}
@@ -31,14 +31,15 @@ void SResetToDefaultPropertyEditor::Construct(const FArguments& InArgs, const TS
 		SNew(SButton)
 		.IsFocusable(false)
 		.ToolTipText(this, &SResetToDefaultPropertyEditor::GetResetToolTip)
-		.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 		.ContentPadding(0) 
-		.Visibility( this, &SResetToDefaultPropertyEditor::GetDiffersFromDefaultAsVisibility )
-		.OnClicked( this, &SResetToDefaultPropertyEditor::OnResetClicked )
+		.Visibility(this, &SResetToDefaultPropertyEditor::GetDiffersFromDefaultAsVisibility )
+		.OnClicked(this, &SResetToDefaultPropertyEditor::OnResetClicked)
 		.Content()
 		[
 			SNew(SImage)
-			.Image( FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
+			.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];
 
@@ -53,7 +54,7 @@ void SResetToDefaultPropertyEditor::Tick(const FGeometry& AllottedGeometry, cons
 FText SResetToDefaultPropertyEditor::GetResetToolTip() const
 {
 	FString Tooltip;
-	Tooltip = NSLOCTEXT("PropertyEditor", "ResetToDefaultToolTip", "Reset to Default").ToString();
+	Tooltip = LOCTEXT("ResetToDefaultToolTip", "Reset to Default").ToString();
 
 	if( PropertyHandle.IsValid() && !PropertyHandle->IsEditConst() && PropertyHandle->DiffersFromDefault() )
 	{
@@ -71,20 +72,13 @@ FText SResetToDefaultPropertyEditor::GetResetToolTip() const
 
 FReply SResetToDefaultPropertyEditor::OnResetClicked()
 {
-	if (PropertyHandle.IsValid())
+	if (OptionalCustomResetToDefault.IsSet())
 	{
-		if (OptionalCustomResetToDefault.IsSet())
-		{
-			PropertyHandle->ExecuteCustomResetToDefault(OptionalCustomResetToDefault.GetValue());
-		}
-		else
-		{
-			PropertyHandle->ResetToDefault();
-		}
+		OptionalCustomResetToDefault.GetValue().OnResetToDefaultClicked(PropertyHandle);
 	}
-	else if(OptionalCustomResetToDefault.IsSet())
+	else if (PropertyHandle.IsValid())
 	{
-		OptionalCustomResetToDefault.GetValue().OnResetToDefaultClicked().ExecuteIfBound(PropertyHandle);
+		PropertyHandle->ResetToDefault();
 	}
 
 	return FReply::Handled();

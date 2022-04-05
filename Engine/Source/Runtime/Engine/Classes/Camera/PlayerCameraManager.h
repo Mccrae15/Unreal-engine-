@@ -8,6 +8,7 @@
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "Camera/CameraTypes.h"
+#include "UObject/ScriptInterface.h"
 #include "PlayerCameraManager.generated.h"
 
 class AEmitterCameraLensEffectBase;
@@ -16,6 +17,7 @@ class FDebugDisplayInfo;
 class UCameraModifier;
 class UCameraShakeBase;
 class UCameraShakeSourceComponent;
+class ICameraLensEffectInterface;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAudioFadeChangeSignature, bool, bFadeOut, float, FadeTime);
 
@@ -73,7 +75,7 @@ public:
 
 	/** Target Actor used to compute POV */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TViewTarget)
-	class AActor* Target;
+	TObjectPtr<class AActor> Target;
 
 	/** Computed point of view */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TViewTarget)
@@ -82,7 +84,7 @@ public:
 protected:
 	/** PlayerState (used to follow same player through pawn transitions, etc., when spectating) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TViewTarget)
-	class APlayerState* PlayerState;
+	TObjectPtr<class APlayerState> PlayerState;
 
 public:
 	class APlayerState* GetPlayerState() const { return PlayerState; }
@@ -183,12 +185,12 @@ class ENGINE_API APlayerCameraManager : public AActor
 
 	/** PlayerController that owns this Camera actor */
 	UPROPERTY(transient)
-	class APlayerController* PCOwner;
+	TObjectPtr<class APlayerController> PCOwner;
 
 private:
 	/** Dummy component we can use to attach things to the camera. */
 	UPROPERTY(Category = PlayerCameraManager, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	class USceneComponent* TransformComponent;
+	TObjectPtr<class USceneComponent> TransformComponent;
 
 public:
 	/** Usable to define different camera behaviors. A few simple styles are implemented by default. */
@@ -281,7 +283,7 @@ private:
 protected:
 	/** List of active camera modifier instances that have a chance to update the final camera POV */
 	UPROPERTY(transient)
-	TArray<UCameraModifier*> ModifierList;
+	TArray<TObjectPtr<UCameraModifier>> ModifierList;
 
 public:
 	/** List of modifiers to create by default for this camera */
@@ -341,7 +343,7 @@ protected:
 	// "Lens" effects (e.g. blood, dirt on camera)
 	/** CameraBlood emitter attached to this camera */
 	UPROPERTY(transient)
-	TArray<class AEmitterCameraLensEffectBase*> CameraLensEffects;
+	TArray<TScriptInterface<class ICameraLensEffectInterface>> CameraLensEffects;
 
 	/////////////////////
 	// Camera Modifiers
@@ -349,7 +351,7 @@ protected:
 
 	/** Cached ref to modifier for code-driven screen shakes */
 	UPROPERTY(transient)
-	class UCameraModifier_CameraShake* CachedCameraShakeMod;
+	TObjectPtr<class UCameraModifier_CameraShake> CachedCameraShakeMod;
 
 
 	////////////////////////
@@ -360,7 +362,7 @@ protected:
 
 	/** Internal pool of camera anim instance objects available for playing camera animations. Defines the max number of camera anims that can play simultaneously. */
 	UPROPERTY(transient)
-	class UCameraAnimInst* AnimInstPool[8];    /*MAX_ACTIVE_CAMERA_ANIMS @fixme constant */
+	TObjectPtr<class UCameraAnimInst> AnimInstPool[8];    /*MAX_ACTIVE_CAMERA_ANIMS @fixme constant */
 
 	/** Internal list of active post process effects. Parallel array to PostProcessBlendCacheWeights. */
 	UPROPERTY(transient)
@@ -379,7 +381,7 @@ protected:
 public:
 	/** Array of camera anim instances that are currently playing and in-use */
 	UPROPERTY(transient)
-	TArray<class UCameraAnimInst*> ActiveAnims;
+	TArray<TObjectPtr<class UCameraAnimInst>> ActiveAnims;
 
 	/** Returns active post process info. */
 	void GetCachedPostProcessBlends(TArray<struct FPostProcessSettings> const*& OutPPSettings, TArray<float> const*& OutBlendWeigthts) const;
@@ -387,11 +389,11 @@ public:
 protected:
 	/** Array of camera anim instances that are not playing and available to be used. */
 	UPROPERTY(transient)
-	TArray<class UCameraAnimInst*> FreeAnims;
+	TArray<TObjectPtr<class UCameraAnimInst>> FreeAnims;
 
 	/** Internal. Receives the output of individual camera animations. */
 	UPROPERTY(transient)
-	class ACameraActor* AnimCameraActor;
+	TObjectPtr<class ACameraActor> AnimCameraActor;
 
 
 	////////////////////////
@@ -419,7 +421,7 @@ public:
 	/** True to smoothly interpolate color scale values when they change. */
 	uint32 bEnableColorScaleInterp : 1;
 
-	/** True if clients are handling setting their own viewtarget and the server should not replicate it (e.g. during certain Matinee sequences) */
+	/** True if clients are handling setting their own viewtarget and the server should not replicate it. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=PlayerCameraManager)
 	uint32 bClientSimulatingViewTarget : 1;
 
@@ -751,7 +753,7 @@ public:
 	//
 	
 	/** Returns first instance of a lens effect of the given class. */
-	virtual class AEmitterCameraLensEffectBase* FindCameraLensEffect(TSubclassOf<class AEmitterCameraLensEffectBase> LensEffectEmitterClass);
+	virtual TScriptInterface<class ICameraLensEffectInterface> FindGenericCameraLensEffect(UPARAM(meta=(MustImplement = "CameraLensEffectInterface")) TSubclassOf<AActor> LensEffectEmitterClass);
 	
 	/** 
 	 * Creates a camera lens effect of the given class on this camera. 
@@ -759,18 +761,31 @@ public:
 	 * @return Returns the new emitter actor.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
-	virtual AEmitterCameraLensEffectBase* AddCameraLensEffect(TSubclassOf<class AEmitterCameraLensEffectBase> LensEffectEmitterClass);
+	virtual TScriptInterface<class ICameraLensEffectInterface> AddGenericCameraLensEffect(UPARAM(meta=(MustImplement = "CameraLensEffectInterface")) TSubclassOf<AActor> LensEffectEmitterClass);
 	
 	/** 
 	 * Removes the given lens effect from the camera. 
 	 * @param Emitter - the emitter actor to remove from the camera
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
-	virtual void RemoveCameraLensEffect(class AEmitterCameraLensEffectBase* Emitter);
+	virtual void RemoveGenericCameraLensEffect(TScriptInterface<class ICameraLensEffectInterface> Emitter);
 	
 	/** Removes all camera lens effects. */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
 	virtual void ClearCameraLensEffects();
+
+	//
+	// Legacy Camera Lens Effect Functions
+	//
+
+	UE_DEPRECATED(5.0, "APlayerCameraManager::FindGenericCameraLensEffect is favored now, and this function forwards to that one.")
+	virtual AEmitterCameraLensEffectBase* FindCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass);
+
+	UFUNCTION(meta = (DeprecatedFunction, DeprecationMessage = "APlayerCameraManager::AddGenericCameraLensEffect is favored now, and this function forwards to that one."))
+	virtual AEmitterCameraLensEffectBase* AddCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass);
+
+	UFUNCTION(meta = (DeprecatedFunction, DeprecationMessage = "APlayerCameraManager::RemoveGenericCameraLensEffect is favored now, and this function forwards to that one."))
+	virtual void RemoveCameraLensEffect(AEmitterCameraLensEffectBase* Emitter);
 
 	//
 	// Camera Shakes.
@@ -895,7 +910,7 @@ public:
 
 	/** Sets the bGameCameraCutThisFrame flag to true (indicating we did a camera cut this frame; useful for game code to call, e.g., when performing a teleport that should be seamless) */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
-	void SetGameCameraCutThisFrame() { bGameCameraCutThisFrame = true; }
+	virtual void SetGameCameraCutThisFrame() { bGameCameraCutThisFrame = true; }
 
 protected:
 	/** Gets specified temporary CameraActor ready to update the specified Anim. */

@@ -93,7 +93,7 @@ bool FMeshPaintStaticMeshComponentAdapter::InitializeVertexData()
 	MeshVertices.AddDefaulted(NumVertices);
 	for (int32 Index = 0; Index < NumVertices; Index++)
 	{
-		const FVector& Position = LODModel->VertexBuffers.PositionVertexBuffer.VertexPosition(Index);
+		const FVector& Position = (FVector)LODModel->VertexBuffers.PositionVertexBuffer.VertexPosition(Index);
 		MeshVertices[Index] = Position;
 	}
 
@@ -174,11 +174,9 @@ void FMeshPaintStaticMeshComponentAdapter::OnAdded()
 
 void FMeshPaintStaticMeshComponentAdapter::OnRemoved()
 {
-	check(StaticMeshComponent);
-	
 	// If the referenced static mesh has been destroyed (and nulled by GC), don't try to do anything more.
 	// It should be in the process of removing all global geometry adapters if it gets here in this situation.
-	if (!ReferencedStaticMesh)
+	if (!ReferencedStaticMesh || !StaticMeshComponent)
 	{
 		return;
 	}
@@ -200,7 +198,7 @@ bool FMeshPaintStaticMeshComponentAdapter::LineTraceComponent(struct FHitResult&
 		float MinDistance = FLT_MAX;
 		FVector Intersect;
 		FVector Normal;
-		FIndex3i FoundTriangle;
+		UE::Geometry::FIndex3i FoundTriangle;
 		FVector HitPosition;
 		if (!RayIntersectAdapter(FoundTriangle, HitPosition, LocalStart, LocalEnd))
 		{
@@ -212,14 +210,15 @@ bool FMeshPaintStaticMeshComponentAdapter::LineTraceComponent(struct FHitResult&
 		const FVector& P1 = MeshVertices[FoundTriangle.B];
 		const FVector& P2 = MeshVertices[FoundTriangle.C];
 
-		FTriangle3d Triangle((FVector3d)P0, (FVector3d)P1, (FVector3d)P2);
+		UE::Geometry::FTriangle3d Triangle((FVector3d)P0, (FVector3d)P1, (FVector3d)P2);
 		FVector3d TriNormal = Triangle.Normal();
 
 		//check collinearity of A,B,C
 		if (TriNormal.SquaredLength() > (double)SMALL_NUMBER)
 		{
-			FRay3d LocalRay((FVector3d)LocalStart, ((FVector3d)LocalEnd - (FVector3d)LocalStart).Normalized());
-			FIntrRay3Triangle3d RayTriIntersection(LocalRay, Triangle);
+			FVector3d RayDirection = ((FVector3d)LocalEnd - (FVector3d)LocalStart);
+			FRay3d LocalRay((FVector3d)LocalStart, UE::Geometry::Normalized(RayDirection));
+			UE::Geometry::FIntrRay3Triangle3d RayTriIntersection(LocalRay, Triangle);
 			if (RayTriIntersection.Find())
 			{
 				double Distance = RayTriIntersection.RayParameter;
@@ -337,7 +336,7 @@ FMatrix FMeshPaintStaticMeshComponentAdapter::GetComponentToWorldMatrix() const
 
 void FMeshPaintStaticMeshComponentAdapter::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const
 {
-	OutTextureCoordinate = LODModel->VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex);
+	OutTextureCoordinate = FVector2D(LODModel->VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex));
 }
 
 

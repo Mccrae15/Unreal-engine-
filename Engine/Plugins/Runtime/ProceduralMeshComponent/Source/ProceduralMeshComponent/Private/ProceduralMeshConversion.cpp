@@ -56,12 +56,12 @@ void MeshDescriptionToProcMesh( const FMeshDescription& MeshDescription, UProced
 
 	FStaticMeshConstAttributes AttributeGetter(MeshDescription);
 	TPolygonGroupAttributesConstRef<FName> PolygonGroupNames = AttributeGetter.GetPolygonGroupMaterialSlotNames();
-	TVertexAttributesConstRef<FVector> VertexPositions = AttributeGetter.GetVertexPositions();
-	TVertexInstanceAttributesConstRef<FVector> Tangents = AttributeGetter.GetVertexInstanceTangents();
+	TVertexAttributesConstRef<FVector3f> VertexPositions = AttributeGetter.GetVertexPositions();
+	TVertexInstanceAttributesConstRef<FVector3f> Tangents = AttributeGetter.GetVertexInstanceTangents();
 	TVertexInstanceAttributesConstRef<float> BinormalSigns = AttributeGetter.GetVertexInstanceBinormalSigns();
-	TVertexInstanceAttributesConstRef<FVector> Normals = AttributeGetter.GetVertexInstanceNormals();
-	TVertexInstanceAttributesConstRef<FVector4> Colors = AttributeGetter.GetVertexInstanceColors();
-	TVertexInstanceAttributesConstRef<FVector2D> UVs = AttributeGetter.GetVertexInstanceUVs();
+	TVertexInstanceAttributesConstRef<FVector3f> Normals = AttributeGetter.GetVertexInstanceNormals();
+	TVertexInstanceAttributesConstRef<FVector4f> Colors = AttributeGetter.GetVertexInstanceColors();
+	TVertexInstanceAttributesConstRef<FVector2f> UVs = AttributeGetter.GetVertexInstanceUVs();
 
 	const int32 NumSections = ProcMeshComp->GetNumSections();
 
@@ -81,11 +81,11 @@ void MeshDescriptionToProcMesh( const FMeshDescription& MeshDescription, UProced
 				FVertexID VertexID = MeshDescription.GetVertexInstanceVertex( VertexInstanceID );
 				int32 NewVertexIndex = SectionData.IndexOfInstances.Num();
 				SectionData.IndexOfInstances.Add( VertexInstanceID,  NewVertexIndex );
-				SectionData.Positions.Add( VertexPositions[VertexID] );
+				SectionData.Positions.Add( (FVector)VertexPositions[VertexID] );
 				SectionData.Triangles.Add( NewVertexIndex );
-				SectionData.Normals.Add( Normals[VertexInstanceID] );
-				SectionData.UV0.Add( UVs[VertexInstanceID] );
-				SectionData.Tangents.Add( FProcMeshTangent( Tangents[VertexInstanceID], BinormalSigns[VertexInstanceID] < 0.f ) );
+				SectionData.Normals.Add( (FVector)Normals[VertexInstanceID] );
+				SectionData.UV0.Add( FVector2D(UVs[VertexInstanceID]) );
+				SectionData.Tangents.Add( FProcMeshTangent( (FVector)Tangents[VertexInstanceID], BinormalSigns[VertexInstanceID] < 0.f ) );
 			}
 		}
 	}
@@ -112,12 +112,12 @@ FMeshDescription BuildMeshDescription( UProceduralMeshComponent* ProcMeshComp )
 	AttributeGetter.Register();
 
 	TPolygonGroupAttributesRef<FName> PolygonGroupNames = AttributeGetter.GetPolygonGroupMaterialSlotNames();
-	TVertexAttributesRef<FVector> VertexPositions = AttributeGetter.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector> Tangents = AttributeGetter.GetVertexInstanceTangents();
+	TVertexAttributesRef<FVector3f> VertexPositions = AttributeGetter.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> Tangents = AttributeGetter.GetVertexInstanceTangents();
 	TVertexInstanceAttributesRef<float> BinormalSigns = AttributeGetter.GetVertexInstanceBinormalSigns();
-	TVertexInstanceAttributesRef<FVector> Normals = AttributeGetter.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector4> Colors = AttributeGetter.GetVertexInstanceColors();
-	TVertexInstanceAttributesRef<FVector2D> UVs = AttributeGetter.GetVertexInstanceUVs();
+	TVertexInstanceAttributesRef<FVector3f> Normals = AttributeGetter.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector4f> Colors = AttributeGetter.GetVertexInstanceColors();
+	TVertexInstanceAttributesRef<FVector2f> UVs = AttributeGetter.GetVertexInstanceUVs();
 
 	// Materials to apply to new mesh
 	const int32 NumSections = ProcMeshComp->GetNumSections();
@@ -142,7 +142,7 @@ FMeshDescription BuildMeshDescription( UProceduralMeshComponent* ProcMeshComp )
 	MeshDescription.ReserveNewVertexInstances(VertexInstanceCount);
 	MeshDescription.ReserveNewPolygons(PolygonCount);
 	MeshDescription.ReserveNewEdges(PolygonCount * 2);
-	UVs.SetNumIndices(4);
+	UVs.SetNumChannels(4);
 
 	// Create the Polygon Groups
 	for (int32 SectionIdx = 0; SectionIdx < NumSections; SectionIdx++)
@@ -175,7 +175,7 @@ FMeshDescription BuildMeshDescription( UProceduralMeshComponent* ProcMeshComp )
 		{
 			FProcMeshVertex &Vert = ProcSection->ProcVertexBuffer[VertexIndex];
 			const FVertexID VertexID = MeshDescription.CreateVertex();
-			VertexPositions[VertexID] = Vert.Position;
+			VertexPositions[VertexID] = (FVector3f)Vert.Position;
 			VertexIndexToVertexID.Add(VertexIndex, VertexID);
 		}
 		// Create the VertexInstance
@@ -193,17 +193,17 @@ FMeshDescription BuildMeshDescription( UProceduralMeshComponent* ProcMeshComp )
 
 			FProcMeshVertex &ProcVertex = ProcSection->ProcVertexBuffer[VertexIndex];
 
-			Tangents[VertexInstanceID] = ProcVertex.Tangent.TangentX;
-			Normals[VertexInstanceID] = ProcVertex.Normal;
+			Tangents[VertexInstanceID] = (FVector3f)ProcVertex.Tangent.TangentX;
+			Normals[VertexInstanceID] = (FVector3f)ProcVertex.Normal;
 			BinormalSigns[VertexInstanceID] =
 				ProcVertex.Tangent.bFlipTangentY ? -1.f : 1.f;
 
 			Colors[VertexInstanceID] = FLinearColor(ProcVertex.Color);
 
-			UVs.Set(VertexInstanceID, 0, ProcVertex.UV0);
-			UVs.Set(VertexInstanceID, 1, ProcVertex.UV1);
-			UVs.Set(VertexInstanceID, 2, ProcVertex.UV2);
-			UVs.Set(VertexInstanceID, 3, ProcVertex.UV3);
+			UVs.Set(VertexInstanceID, 0, FVector2f(ProcVertex.UV0));	// LWC_TODO: Precision loss
+			UVs.Set(VertexInstanceID, 1, FVector2f(ProcVertex.UV1));	// LWC_TODO: Precision loss
+			UVs.Set(VertexInstanceID, 2, FVector2f(ProcVertex.UV2));	// LWC_TODO: Precision loss
+			UVs.Set(VertexInstanceID, 3, FVector2f(ProcVertex.UV3));	// LWC_TODO: Precision loss
 		}
 
 		// Create the polygons for this section

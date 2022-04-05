@@ -13,6 +13,7 @@
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Logging/MessageLog.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlHelpers"
 
@@ -116,7 +117,7 @@ FString ConvertFileToQualifiedPath(const FString& InFile, bool bSilent, bool bAl
 		bool bPackage = true;
 
 		// Try to get filename by finding it on disk
-		if (!FPackageName::DoesPackageExist(SCFile, nullptr, &SCFile))
+		if (!FPackageName::DoesPackageExist(SCFile, &SCFile))
 		{
 			// First do the conversion without any extension set, as this will allow us to test whether the path represents an existing directory rather than an asset
 			if (FPackageName::TryConvertLongPackageNameToFilename(SCFile, SCFile))
@@ -163,7 +164,7 @@ FString ConvertFileToQualifiedPath(const FString& InFile, bool bSilent, bool bAl
 	}
 
 	// Qualify based on process base directory.
-	// Something akin to "C:/Epic/UE4/Engine/Binaries/Win64/" as a current path.
+	// Something akin to "C:/Epic/UE/Engine/Binaries/Win64/" as a current path.
 	SCFile = FPaths::ConvertRelativePathToFull(InFile);
 
 	if (FPaths::FileExists(SCFile) || (bAllowDirectories && FPaths::DirectoryExists(SCFile)))
@@ -292,6 +293,12 @@ bool USourceControlHelpers::SyncFile(const FString& InFile, bool bSilent)
 
 bool USourceControlHelpers::SyncFiles(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately 
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	ISourceControlProvider* Provider = SourceControlHelpersInternal::VerifySourceControl(bSilent);
 
 	if (!Provider)
@@ -311,6 +318,36 @@ bool USourceControlHelpers::SyncFiles(const TArray<FString>& InFiles, bool bSile
 	return !bFilesSkipped && (Result == ECommandResult::Succeeded);
 }
 
+void LogCheckoutFailure(const FString& InFile, const FString& SCFile, FSourceControlStatePtr SCState, bool bCheckoutFailed, bool bSilent)
+{
+	FString SimultaneousCheckoutUser;
+	FFormatNamedArguments Arguments;
+	Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
+	Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
+
+	if (bCheckoutFailed)
+	{
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CheckoutFailed", "Failed to check out file '{InFile}' ({SCFile})."), Arguments), bSilent);
+	}
+	else if (!SCState->IsSourceControlled())
+	{
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotSourceControlled", "Could not check out the file '{InFile}' because it is not under source control ({SCFile})."), Arguments), bSilent);
+	}
+	else if (!SCState->IsCurrent())
+	{
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotAtHeadRevision", "File '{InFile}' is not at head revision ({SCFile})."), Arguments), bSilent);
+	}
+	else if (SCState->IsCheckedOutOther(&(SimultaneousCheckoutUser)))
+	{
+		Arguments.Add(TEXT("SimultaneousCheckoutUser"), FText::FromString(SimultaneousCheckoutUser));
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("SimultaneousCheckout", "File '{InFile}' is checked out by another ({SimultaneousCheckoutUser}) ({SCFile})."), Arguments), bSilent);
+	}
+	else
+	{
+		// Improper or invalid SCC state
+		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+	}
+}
 
 bool USourceControlHelpers::CheckOutFile(const FString& InFile, bool bSilent)
 {
@@ -334,12 +371,7 @@ bool USourceControlHelpers::CheckOutFile(const FString& InFile, bool bSilent)
 
 	if (!SCState.IsValid())
 	{
-		// Improper or invalid SCC state
-		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
-		Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
-
+		LogCheckoutFailure(InFile, SCFile, SCState, false, bSilent);
 		return false;
 	}
 
@@ -349,7 +381,7 @@ bool USourceControlHelpers::CheckOutFile(const FString& InFile, bool bSilent)
 		return true;
 	}
 
-	bool bCheckOutFail = false;
+	bool bCheckOutFailed = false;
 
 	if (SCState->CanCheckout())
 	{
@@ -358,44 +390,22 @@ bool USourceControlHelpers::CheckOutFile(const FString& InFile, bool bSilent)
 			return true;
 		}
 
-		bCheckOutFail = true;
+		bCheckOutFailed = true;
 	}
 
-	// Only error info after this point
-
-	FString SimultaneousCheckoutUser;
-	FFormatNamedArguments Arguments;
-	Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
-	Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
-
-	if (bCheckOutFail)
-	{
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CheckoutFailed", "Failed to check out file '{InFile}' ({SCFile})."), Arguments), bSilent);
-	}
-	else if (!SCState->IsSourceControlled())
-	{
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotSourceControlled", "Could not check out the file '{InFile}' because it is not under source control ({SCFile})."), Arguments), bSilent);
-	}
-	else if (!SCState->IsCurrent())
-	{
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("NotAtHeadRevision", "File '{InFile}' is not at head revision ({SCFile})."), Arguments), bSilent);
-	}
-	else if (SCState->IsCheckedOutOther(&(SimultaneousCheckoutUser)))
-	{
-		Arguments.Add(TEXT("SimultaneousCheckoutUser"), FText::FromString(SimultaneousCheckoutUser));
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("SimultaneousCheckout", "File '{InFile}' is checked out by another ({SimultaneousCheckoutUser}) ({SCFile})."), Arguments), bSilent);
-	}
-	else
-	{
-		// Improper or invalid SCC state
-		SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
-	}
+	LogCheckoutFailure(InFile, SCFile, SCState, bCheckOutFailed, bSilent);
 
 	return false;
 }
 
 bool USourceControlHelpers::CheckOutFiles(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	// Determine file type and ensure it is in form source control wants
 	// Even if some files were skipped, still apply to the others
 	TArray<FString> SCFiles;
@@ -420,8 +430,8 @@ bool USourceControlHelpers::CheckOutFiles(const TArray<FString>& InFiles, bool b
 		FString SCFile = SCFiles[Index];
 		FSourceControlStateRef SCState = SCStates[Index];
 
-	// Less error checking and info is made for multiple files than the single file version.
-	// This multi-file version could be made similarly more sophisticated.
+		// Less error checking and info is made for multiple files than the single file version.
+		// This multi-file version could be made similarly more sophisticated.
 		if (!SCState->IsCheckedOut() && !SCState->IsAdded())
 		{
 			if (SCState->CanCheckout())
@@ -431,14 +441,15 @@ bool USourceControlHelpers::CheckOutFiles(const TArray<FString>& InFiles, bool b
 			else
 			{
 				bCannotCheckoutAtLeastOneFile = true;
+				LogCheckoutFailure(InFiles[Index], SCFile, SCState, false, bSilent);
 			}
 		}
 	}
 
 	bool bSuccess = !bFilesSkipped && !bCannotCheckoutAtLeastOneFile;
-	if (SCFilesToCheckout.Num())
+	if (bSuccess && SCFilesToCheckout.Num())
 	{
-		bSuccess &= Provider->Execute(ISourceControlOperation::Create<FCheckOut>(), SCFilesToCheckout) == ECommandResult::Succeeded;
+		bSuccess = Provider->Execute(ISourceControlOperation::Create<FCheckOut>(), SCFilesToCheckout) == ECommandResult::Succeeded;
 	}
 
 	return bSuccess;
@@ -542,6 +553,12 @@ bool USourceControlHelpers::CheckOutOrAddFile(const FString& InFile, bool bSilen
 
 bool USourceControlHelpers::CheckOutOrAddFiles(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	// Determine file type and ensure it is in form source control wants
 	// Even if some files were skipped, still apply to the others
 	TArray<FString> SCFiles;
@@ -663,6 +680,12 @@ bool USourceControlHelpers::MarkFileForAdd(const FString& InFile, bool bSilent)
 
 bool USourceControlHelpers::MarkFilesForAdd(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	ISourceControlProvider* Provider = SourceControlHelpersInternal::VerifySourceControl(bSilent);
 
 	if (!Provider)
@@ -766,6 +789,12 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 
 bool USourceControlHelpers::MarkFilesForDelete(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	// Determine file type and ensure it is in form source control wants
 	// Even if some files were skipped, still apply to the others
 	TArray<FString> SCFiles;
@@ -870,6 +899,12 @@ bool USourceControlHelpers::RevertFile(const FString& InFile, bool bSilent)
 
 bool USourceControlHelpers::RevertFiles(const TArray<FString>& InFiles,	bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	// Determine file type and ensure they are in form source control wants
 	// Even if some files were skipped, still apply to the others
 	TArray<FString> SCFiles;
@@ -944,6 +979,12 @@ bool USourceControlHelpers::RevertUnchangedFile(const FString& InFile, bool bSil
 
 bool USourceControlHelpers::RevertUnchangedFiles(const TArray<FString>& InFiles, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	// Determine file types and ensure they are in form source control wants
 	TArray<FString> FilePaths;
 	SourceControlHelpersInternal::ConvertFilesToQualifiedPaths(InFiles, FilePaths, bSilent);
@@ -995,6 +1036,12 @@ bool USourceControlHelpers::CheckInFile(const FString& InFile, const FString& In
 
 bool USourceControlHelpers::CheckInFiles(const TArray<FString>& InFiles, const FString& InDescription, bool bSilent)
 {
+	// If we have nothing to process, exit immediately
+	if (InFiles.IsEmpty())
+	{
+		return true;
+	}
+
 	ISourceControlProvider* Provider = SourceControlHelpersInternal::VerifySourceControl(bSilent);
 
 	if (!Provider)
@@ -1137,7 +1184,7 @@ static FString PackageFilename_Internal( const FString& InPackageName )
 	FString Filename = InPackageName;
 
 	// Get the filename by finding it on disk first
-	if ( !FPackageName::DoesPackageExist(InPackageName, nullptr, &Filename) )
+	if ( !FPackageName::DoesPackageExist(InPackageName, &Filename) )
 	{
 		// The package does not exist on disk, see if we can find it in memory and predict the file extension
 		// Only do this if the supplied package name is valid
@@ -1422,16 +1469,146 @@ const FString& USourceControlHelpers::GetGlobalSettingsIni()
 	return SourceControlGlobalSettingsIni;
 }
 
+bool USourceControlHelpers::GetAssetData(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	FString PackageName;
+	if (FPackageName::TryConvertFilenameToLongPackageName(InFileName, PackageName))
+	{
+		return GetAssetData(InFileName, PackageName, OutAssets, OutDependencies);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool USourceControlHelpers::GetAssetDataFromPackage(const FString& PackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	return GetAssetData(PackageFilename(PackageName), PackageName, OutAssets, OutDependencies);
+}
+
+bool USourceControlHelpers::GetAssetData(const FString & InFileName, const FString& InPackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	const bool bGetDependencies = (OutDependencies != nullptr);
+	OutAssets.Reset();
+	if (bGetDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	// Try the registry first
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	AssetRegistryModule.Get().GetAssetsByPackageName(*InPackageName, OutAssets, true);
+
+	if (OutAssets.Num() > 0)
+	{
+		// Assets are already in the cache, we can query dependencies directly
+		if (bGetDependencies)
+		{
+			AssetRegistryModule.Get().GetDependencies(*InPackageName, *OutDependencies);
+		}
+
+		return true;
+	}
+
+	// Filter on improbable file extensions
+	EPackageExtension PackageExtension = FPackagePath::ParseExtension(InFileName);
+
+	if (PackageExtension == EPackageExtension::Unspecified ||
+		PackageExtension == EPackageExtension::Custom)
+	{
+		return false;
+	}
+
+	// If nothing was done, try to get the data explicitly	
+	IAssetRegistry::FLoadPackageRegistryData LoadedData(bGetDependencies);
+
+	AssetRegistryModule.Get().LoadPackageRegistryData(InFileName, LoadedData);
+	OutAssets = MoveTemp(LoadedData.Data);
+
+	if (bGetDependencies)
+	{
+		*OutDependencies = MoveTemp(LoadedData.DataDependencies);
+	}	
+
+	return OutAssets.Num() > 0;
+}
+
+bool USourceControlHelpers::GetAssetDataFromFileHistory(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies, int64 MaxFetchSize)
+{
+	OutAssets.Reset();
+
+	if (OutDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	// Get the SCC state
+	FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(InFileName, EStateCacheUsage::Use);
+	if (SourceControlState.IsValid())
+	{
+		return GetAssetDataFromFileHistory(SourceControlState, OutAssets, OutDependencies, MaxFetchSize);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool USourceControlHelpers::GetAssetDataFromFileHistory(FSourceControlStatePtr InSourceControlState, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies /* = nullptr */, int64 MaxFetchSize /* = -1 */)
+{
+	check(InSourceControlState.IsValid());
+	OutAssets.Reset();
+
+	if (OutDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	// This code is similar to what's done in UAssetToolsImpl::DiffAgainstDepot but we'll force it quiet to prevent recursion issues
+	if (InSourceControlState->GetHistorySize() == 0)
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
+		UpdateStatusOperation->SetUpdateHistory(true);
+		UpdateStatusOperation->SetQuiet(true);
+		SourceControlProvider.Execute(UpdateStatusOperation, InSourceControlState->GetFilename());
+	}
+
+	if (InSourceControlState->GetHistorySize() > 0)
+	{
+		TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> Revision = InSourceControlState->GetHistoryItem(0);
+		check(Revision.IsValid());
+
+		const bool bShouldGetFile = (MaxFetchSize < 0 || MaxFetchSize >(int64)Revision->GetFileSize());
+
+		FString TempFileName;
+		if (bShouldGetFile && Revision->Get(TempFileName))
+		{
+			return GetAssetData(TempFileName, OutAssets, OutDependencies);
+		}
+	}
+
+	return false;
+}
 
 FScopedSourceControl::FScopedSourceControl()
 {
-	ISourceControlModule::Get().GetProvider().Init();
+	bInitSourceControl = !ISourceControlModule::Get().GetProvider().IsAvailable();
+	if (bInitSourceControl)
+	{
+		ISourceControlModule::Get().GetProvider().Init();
+	}
 }
 
 
 FScopedSourceControl::~FScopedSourceControl()
 {
-	ISourceControlModule::Get().GetProvider().Close();
+	if (bInitSourceControl)
+	{
+		ISourceControlModule::Get().GetProvider().Close();
+	}
 }
 
 

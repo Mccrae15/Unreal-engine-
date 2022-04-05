@@ -3,12 +3,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Containers/BitArray.h"
+
+#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetData.h"
+#include "Containers/BitArray.h"
+#include "Containers/StringFwd.h"
+#include "Misc/Optional.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "UObject/Interface.h"
-#include "AssetRegistry/ARFilter.h"
+
 #include "IAssetRegistry.generated.h"
+
+#ifndef ASSET_REGISTRY_STATE_DUMPING_ENABLED
+#define ASSET_REGISTRY_STATE_DUMPING_ENABLED !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif
 
 class FArchive;
 struct FARFilter;
@@ -134,6 +142,16 @@ public:
 	virtual bool GetAssetsByPath(FName PackagePath, TArray<FAssetData>& OutAssetData, bool bRecursive = false, bool bIncludeOnlyOnDiskAssets = false) const = 0;
 
 	/**
+	 * Gets asset data for all assets in any of the supplied folder paths
+	 *
+	 * @param PackagePaths the paths to query asset data in (eg, /Game/MyFolder)
+	 * @param OutAssetData the list of assets in this path
+	 * @param bRecursive if true, all supplied paths will be searched recursively
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "AssetRegistry")
+	virtual bool GetAssetsByPaths(TArray<FName> PackagePaths, TArray<FAssetData>& OutAssetData, bool bRecursive = false, bool bIncludeOnlyOnDiskAssets = false) const = 0;
+
+	/**
 	 * Gets asset data for all assets with the supplied class
 	 *
 	 * @param ClassName the class name of the assets requested
@@ -208,6 +226,25 @@ public:
 	 */
 	virtual bool EnumerateAllAssets(TFunctionRef<bool(const FAssetData&)> Callback, bool bIncludeOnlyOnDiskAssets = false) const = 0;
 
+	/**
+	 * Gets the LongPackageName for all packages with the given PackageName.
+	 * Call to check existence of a LongPackageName or find all packages with a ShortPackageName.
+	 * 
+	 * @param PackageName Name of the package to find, may be a LongPackageName or ShortPackageName.
+	 * @param OutPackageNames All discovered matching LongPackageNames are appended to this array.
+	 */
+	virtual void GetPackagesByName(FStringView PackageName, TArray<FName>& OutPackageNames) const = 0;
+
+	/**
+	 * Returns the first LongPackageName found for the given PackageName.
+	 * Issues a warning and returns the first (sorted lexically) if there is more than one.
+	 * Call to check existence of a LongPackageName or find a package with a ShortPackageName.
+	 *
+	 * @param PackageName Name of the package to find, may be a LongPackageName or ShortPackageName.
+	 * @return The first LongPackageName of the matching package, or NAME_None if not found.
+	 */
+	virtual FName GetFirstPackageByName(FStringView PackageName) const = 0;
+
 	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
 	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const = 0;
 	/**
@@ -279,6 +316,8 @@ public:
 	virtual bool K2_GetReferencers(FName PackageName, const FAssetRegistryDependencyOptions& ReferenceOptions, TArray<FName>& OutReferencers) const;
 
 	/** Finds Package data for a package name. This data is only updated on save and can only be accessed for valid packages */
+	virtual TOptional<FAssetPackageData> GetAssetPackageDataCopy(FName PackageName) const = 0;
+	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use GetAssetPackageDataCopy instead.")
 	virtual const FAssetPackageData* GetAssetPackageData(FName PackageName) const = 0;
 
 	/** Uses the asset registry to look for ObjectRedirectors. This will follow the chain of redirectors. It will return the original path if no redirectors are found */
@@ -337,6 +376,11 @@ public:
 
 	/** Enables or disable temporary search caching, when this is enabled scanning/searching is faster because we assume no objects are loaded between scans. Disabling frees any caches created */
 	virtual void SetTemporaryCachingMode(bool bEnable) = 0;
+	/**
+	 * Mark that the temporary cached needs to be updated before being used again, because e.g. a new class was loaded.
+	 * Does nothing if TemporaryCachingMode is not enabled
+	 */
+	virtual void SetTemporaryCachingModeInvalidated() = 0;
 
 	/** Returns true if temporary caching mode enabled */
 	virtual bool GetTemporaryCachingMode() const = 0;
@@ -381,7 +425,7 @@ public:
 
 	/** Scan the supplied paths recursively right now and populate the asset registry. If bForceRescan is true, the paths will be scanned again, even if they were previously scanned */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
-	virtual void ScanPathsSynchronous(const TArray<FString>& InPaths, bool bForceRescan = false) = 0;
+	virtual void ScanPathsSynchronous(const TArray<FString>& InPaths, bool bForceRescan = false, bool bIgnoreDenyListScanFilters = false) = 0;
 
 	/** Scan the specified individual files right now and populate the asset registry. If bForceRescan is true, the paths will be scanned again, even if they were previously scanned */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
@@ -391,9 +435,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void SearchAllAssets(bool bSynchronousSearch) = 0;
 
-	/** Wait for scan to be complete */
+	/**
+	 * Whether SearchAllAssets has been called, or was auto-called at startup. When async (editor or cooking), if SearchAllAssets has ever been called,
+	 * any newly-mounted directory will be automatically searched.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
+	virtual bool IsSearchAllAssets() const = 0;
+
+	/** Whether searching is done async (and was started at startup), or synchronously and on-demand, requiring ScanPathsSynchronous or SearchAllAssets. */
+	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
+	virtual bool IsSearchAsync() const = 0;
+
+	/**
+	 * Wait for scan to be complete. If called during editor startup before OnPostEngineInit, and there are any assets that use classes in 
+	 * not-yet-loaded plugin modules, WaitForCompletion will return silently with those assets still ungathered.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void WaitForCompletion() = 0;
+
+	/** Wait for the scan of a specific package to be complete */
+	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
+	virtual void WaitForPackage(const FString& PackageName) = 0;
 
 	/** If assets are currently being asynchronously scanned in the specified path, this will cause them to be scanned before other assets. */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
@@ -412,13 +474,16 @@ public:
 	virtual FPathRemovedEvent& OnPathRemoved() = 0;
 
 	/** Informs the asset registry that an in-memory asset has been created */
-	virtual void AssetCreated (UObject* NewAsset) = 0;
+	virtual void AssetCreated(UObject* NewAsset) = 0;
 
 	/** Informs the asset registry that an in-memory asset has been deleted */
-	virtual void AssetDeleted (UObject* DeletedAsset) = 0;
+	virtual void AssetDeleted(UObject* DeletedAsset) = 0;
 
 	/** Informs the asset registry that an in-memory asset has been renamed */
-	virtual void AssetRenamed (const UObject* RenamedAsset, const FString& OldObjectPath) = 0;
+	virtual void AssetRenamed(const UObject* RenamedAsset, const FString& OldObjectPath) = 0;
+
+	/** Informs the asset registry that an in-memory asset has been saved */
+	virtual void AssetSaved(const UObject& SavedAsset) = 0;
 
 	/** Informs the asset registry that an in-memory package has been deleted, and all associated assets should be removed */
 	virtual void PackageDeleted (UPackage* DeletedPackage) = 0;
@@ -438,6 +503,9 @@ public:
 	/** Event for when assets are updated in the registry */
 	DECLARE_EVENT_OneParam(IAssetRegistry, FAssetUpdatedEvent, const FAssetData&);
 	virtual FAssetUpdatedEvent& OnAssetUpdated() = 0;
+
+	/** Event for when assets are updated on disk and have been refreshed in the assetregistry */
+	virtual FAssetUpdatedEvent& OnAssetUpdatedOnDisk() = 0;
 
 	/** Event for when in-memory assets are created */
 	DECLARE_EVENT_OneParam( IAssetRegistry, FInMemoryAssetCreatedEvent, UObject* );
@@ -487,7 +555,7 @@ public:
 	virtual void AppendState(const FAssetRegistryState& InState) = 0;
 
 	/** Returns memory size of entire registry, optionally logging sizes */
-	virtual uint32 GetAllocatedSize(bool bLogDetailed = false) const = 0;
+	virtual SIZE_T GetAllocatedSize(bool bLogDetailed = false) const = 0;
 
 	/**
 	 * Fills in a AssetRegistryState with a copy of the data in the internal cache, overriding some
@@ -499,22 +567,56 @@ public:
 	 */
 	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false, const TMap<FName, FAssetData*>& OverrideData = TMap<FName, FAssetData*>()) const = 0;
 
-	/** Returns read only reference to the current asset registry state. The contents of this may change at any time so do not save internal pointers */
+	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use other functions on IAssetRegistry to access the same data, or contact Epic Core team to add the threadsafe functions you require..")
 	virtual const FAssetRegistryState* GetAssetRegistryState() const = 0;
 
+#if ASSET_REGISTRY_STATE_DUMPING_ENABLED
+	/**
+	 * Writes out the state in textual form. Use arguments to control which segments to emit.
+	 * @param Arguments List of segments to emit. Possible values: 'ObjectPath', 'PackageName', 'Path', 'Class', 'Tag', 'Dependencies' and 'PackageData'
+	 * @param OutPages Textual representation will be written to this array; each entry will have LinesPerPage lines of the full dump.
+	 * @param LinesPerPage - how many lines should be combined into each string element of OutPages, for e.g. breaking up the dump into separate files.
+	 *        To facilitate diffing between similar-but-different registries, the actual number of lines per page will be slightly less than LinesPerPage; we introduce partially deterministic pagebreaks near the end of each page.
+	 */
+	virtual void DumpState(const TArray<FString>& Arguments, TArray<FString>& OutPages, int32 LinesPerPage = 1) const = 0;
+#endif
+
 	/** Returns the set of empty package names fast iteration */
+	virtual TSet<FName> GetCachedEmptyPackagesCopy() const = 0;
+	UE_DEPRECATED(5.0, "Receiving a reference is not threadsafe. Use GetCachedEmptyPackagesCopy instead.")
 	virtual const TSet<FName>& GetCachedEmptyPackages() const = 0;
 
+	/** Return whether the given TagName occurs in the tags of any asset in the AssetRegistry */
+	virtual bool ContainsTag(FName TagName) const = 0;
+
 	/** Fills in FAssetRegistrySerializationOptions from ini, optionally using a target platform ini name */
-	virtual void InitializeSerializationOptions(FAssetRegistrySerializationOptions& Options, const FString& PlatformIniName = FString()) const = 0;
+	virtual void InitializeSerializationOptions(FAssetRegistrySerializationOptions& Options, const FString& PlatformIniName = FString(), UE::AssetRegistry::ESerializationTarget Target = UE::AssetRegistry::ESerializationTarget::ForGame) const = 0;
+
+	struct FLoadPackageRegistryData
+	{
+		FLoadPackageRegistryData(bool bInGetDependencies = false)
+			: bGetDependencies(bInGetDependencies)
+		{
+		}
+
+		TArray<FAssetData> Data;
+		TArray<FName> DataDependencies;
+		bool bGetDependencies;
+	};
 
 	/** Load FPackageRegistry data from the supplied package */
-	virtual void LoadPackageRegistryData(FArchive& Ar, TArray<FAssetData*>& Data) const = 0;
+	virtual void LoadPackageRegistryData(FArchive& Ar, FLoadPackageRegistryData& InOutData) const = 0;
 	
-protected:
-	// Functions specifically for calling from the asset manager
-	friend class UAssetManager;
-	
+	/** Load FAssetData from the specified package filename */
+	virtual void LoadPackageRegistryData(const FString& PackageFilename, FLoadPackageRegistryData& InOutData) const = 0;
+
+	/**
+	 * Enumerate all pairs in State->TagToAssetDataMapAssetRegistry and call a callback on each pair.
+	 * To avoid copies, the callback is called from within the ReadLock.
+	 * DO NOT CALL AssetRegistry functions from the callback; doing so will create a deadlock.
+	 */
+	virtual void ReadLockEnumerateTagToAssetDatas(TFunctionRef<void(FName TagName, const TArray<const FAssetData*>& Assets)> Callback) const = 0;
+
 	/**
 	 * Predicate called to decide whether to recurse into a reference when setting manager references
 	 *
@@ -526,6 +628,17 @@ protected:
 	 */
 	typedef TFunction<EAssetSetManagerResult::Type(const FAssetIdentifier& Manager, const FAssetIdentifier& Source, const FAssetIdentifier& Target,
 		UE::AssetRegistry::EDependencyCategory Category, UE::AssetRegistry::EDependencyProperty Properties, EAssetSetManagerFlags::Type Flags)> ShouldSetManagerPredicate;
+
+	/** 
+	 *	Indicates if path should be beautified before presented to the user.
+	 * @param InAssetPath	Path of the asset to check
+	 * @return True if the path should be beautified
+	 */
+	virtual bool IsPathBeautificationNeeded(const FString& InAssetPath) const = 0;
+
+protected:
+	// Functions specifically for calling from the asset manager
+	friend class UAssetManager;
 
 	/**
 	 * Specifies a list of manager mappings, optionally recursing to dependencies. These mappings can then be queried later to see which assets "manage" other assets
@@ -540,9 +653,6 @@ protected:
 
 	/** Sets the PrimaryAssetId for a specific asset. This should only be called by the AssetManager, and is needed when the AssetManager is more up to date than the on disk Registry */
 	virtual bool SetPrimaryAssetIdForObjectPath(const FName ObjectPath, FPrimaryAssetId PrimaryAssetId) = 0;
-
-	/** Returns pointer to cached AssetData for an object path. This is always the on disk version. This will return null if not found, and is exposed for  */
-	virtual const FAssetData* GetCachedAssetDataForObjectPath(const FName ObjectPath) const = 0;
 };
 
 namespace UE
@@ -560,5 +670,16 @@ namespace AssetRegistry
 	// WritePackageData is declared in AssetRegistryInterface.h, in the CoreUObject module, because it is needed by SavePackage in CoreUObject
 	ASSETREGISTRY_API bool ReadPackageDataMain(FArchive& BinaryArchive, const FString& PackageName, const FPackageFileSummary& PackageFileSummary, int64& OutDependencyDataOffset, TArray<FAssetData*>& OutAssetDataList, EReadPackageDataMainErrorCode& OutError);
 	ASSETREGISTRY_API bool ReadPackageDataDependencies(FArchive& BinaryArchive, TBitArray<>& OutImportUsedInGame, TBitArray<>& OutSoftPackageUsedInGame);
+
+	/**
+	 * Given a list of packages, gather the primary assets for each package.
+	 * If multiple assets are in a package, the most important asset will be added.
+	 * If a package does not exist or does not have any assets, no entry will be added for that package name.
+	 */
+	ASSETREGISTRY_API void GetAssetForPackages(TConstArrayView<FName> PackageNames, TMap<FName, FAssetData>& OutPackageToAssetData);
 }
 }
+
+/** Returns the filename without filepath for the DevelopmentAssetRegistry written by the cooker. */
+ASSETREGISTRY_API const TCHAR* GetDevelopmentAssetRegistryFilename();
+

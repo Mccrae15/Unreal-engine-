@@ -93,14 +93,6 @@ struct FWaveInstance;
 struct FReverbSettings;
 struct FSampleLoop;
 
-namespace Audio
-{
-	/**
-	 * Typed identifier for Audio Device Id
-	 */
-	using FDeviceId = uint32;
-}
-
 enum ELoopingMode
 {
 	/** One shot sound */
@@ -151,6 +143,27 @@ ENGINE_API UClass* GetAudioPluginCustomSettingsClass(EAudioPlugin PluginType);
 /** accessor for our Spatialization enabled CVar. */
 ENGINE_API bool IsSpatializationCVarEnabled();
 
+/**
+ * Interface for listening to source buffers being rendered.
+ */
+class ISourceBufferListener
+{
+public:
+	virtual ~ISourceBufferListener() = default;
+
+	struct FOnNewBufferParams
+	{
+		const float* AudioData = nullptr;
+		int32 SourceId = INDEX_NONE;
+		int32 NumSamples = 0;
+		int32 NumChannels = 0;
+		int32 SampleRate = 0;
+	};
+	virtual void OnNewBuffer(const FOnNewBufferParams&) = 0;
+	virtual void OnSourceReleased(const int32 InSourceId) = 0;
+};
+using FSharedISourceBufferListenerPtr = TSharedPtr<ISourceBufferListener, ESPMode::ThreadSafe>;
+
 /** Bus send types */
 enum class EBusSendType : uint8
 {
@@ -195,6 +208,10 @@ struct ENGINE_API FWaveInstance
 	/** Quantized Request data */
 	TUniquePtr<Audio::FQuartzQuantizedRequestData> QuantizedRequestData;
 
+	/** Source Buffer listener */
+	FSharedISourceBufferListenerPtr SourceBufferListener;
+	bool bShouldSourceBufferListenerZeroBuffer = false;
+
 private:
 
 	/** Current volume */
@@ -202,6 +219,9 @@ private:
 
 	/** Volume attenuation due to distance. */
 	float DistanceAttenuation;
+
+	/** Volume attenuation due to occlusion. */
+	float OcclusionAttenuation;
 
 	/** Current volume multiplier - used to zero the volume without stopping the source */
 	float VolumeMultiplier;
@@ -245,6 +265,9 @@ public:
 
 	/** Whether or not to enable Submix Sends in addition to the Main Submix*/
 	uint32 bEnableSubmixSends : 1;
+
+	/** Whether or not to use source data overrides */
+	uint32 bEnableSourceDataOverride : 1;
 
 	/** Set to true if the sound nodes state that the radio filter should be applied */
 	uint32 bApplyRadioFilter:1;
@@ -308,6 +331,9 @@ public:
 	/** The occlusion plugin settings to use for the wave instance. */
 	UReverbPluginSourceSettingsBase* ReverbPluginSettings;
 
+	/** The source data override plugin settings to use for the wave instance. */
+	USourceDataOverridePluginSourceSettingsBase* SourceDataOverridePluginSettings;
+
 	/** Which output target the sound should play on. */
 	EAudioOutputTarget::Type OutputTarget;
 
@@ -356,21 +382,12 @@ public:
 	/** The playback time of the wave instance. Updated from active sound. */
 	float PlaybackTime;
 
-	/** The reverb send method to use. */
-	EReverbSendMethod ReverbSendMethod;
+	/** The output reverb send level to use for tje wave instance. */
+	float ReverbSendLevel;
 
-	/** Reverb distance-based wet-level amount range. */
-	FVector2D ReverbSendLevelRange;
-
-	/** Reverb distance-based wet-level distance/radial range. */
-	FVector2D ReverbSendLevelDistanceRange;
-
-	/** Custom reverb send curve. */
-	FRuntimeFloatCurve CustomRevebSendCurve;
-
-	/** The manual send level to use if the sound is set to use manual send level. */
+	/** TODO remove */
 	float ManualReverbSendLevel;
-
+	
 	/** The submix send settings to use. */
 	TArray<FAttenuationSubmixSendSettings> SubmixSendSettings;
 
@@ -407,6 +424,7 @@ public:
 	/** Setters for various values on wave instances. */
 	void SetVolume(const float InVolume) { Volume = InVolume; }
 	void SetDistanceAttenuation(const float InDistanceAttenuation) { DistanceAttenuation = InDistanceAttenuation; }
+	void SetOcclusionAttenuation(const float InOcclusionAttenuation) { OcclusionAttenuation = InOcclusionAttenuation; }
 	void SetPitch(const float InPitch) { Pitch = InPitch; }
 	void SetVolumeMultiplier(const float InVolumeMultiplier) { VolumeMultiplier = InVolumeMultiplier; }
 
@@ -425,10 +443,16 @@ public:
 	float GetActualVolume() const;
 
 	/** Returns the volume of the sound including distance attenuation. */
-	float GetVolumeWithDistanceAttenuation() const;
+	float GetVolumeWithDistanceAndOcclusionAttenuation() const;
 
-	/** Returns the distance attenuation of the source voice. */
+	/** Returns the combined distance and occlusion attenuation of the source voice. */
+	float GetDistanceAndOcclusionAttenuation() const;
+
+	/** Returns the distance attenuation of the source voice */
 	float GetDistanceAttenuation() const;
+
+	/** Returns the occlusion attenuation of the source voice */
+	float GetOcclusionAttenuation() const;
 
 	/** Returns the dynamic volume of the sound */
 	float GetDynamicVolume() const;
@@ -489,7 +513,7 @@ public:
 
 	ENGINE_API virtual ~FSoundBuffer();
 
-	virtual int32 GetSize() PURE_VIRTUAL(FSoundBuffer::GetSize,return 0;);
+	ENGINE_API virtual int32 GetSize() PURE_VIRTUAL(FSoundBuffer::GetSize,return 0;);
 
 	/**
 	 * Describe the buffer (platform can override to add to the description, but should call the base class version)
@@ -555,7 +579,7 @@ class FSoundSource
 {
 public:
 	/** Constructor */
-	FSoundSource(FAudioDevice* InAudioDevice)
+	ENGINE_API FSoundSource(FAudioDevice* InAudioDevice)
 		: AudioDevice(InAudioDevice)
 		, WaveInstance(nullptr)
 		, Buffer(nullptr)
@@ -587,7 +611,7 @@ public:
 	}
 
 	/** Destructor */
-	virtual ~FSoundSource() {}
+	ENGINE_API virtual ~FSoundSource() {}
 
 	/* Prepares the source voice for initialization. This may parse a compressed asset header on some platforms */
 	virtual bool PrepareForInitialization(FWaveInstance* InWaveInstance) { return true; }
@@ -811,9 +835,18 @@ public:
 #endif //ENABLE_AUDIO_DEBUG
 };
 
-/*-----------------------------------------------------------------------------
-	FWaveModInfo. 
------------------------------------------------------------------------------*/
+// Data representing a cue in a wave file
+struct FWaveCue
+{
+	// Unique identifying gvalue for the cue
+	uint32 CuePointID = 0;
+	// Sample offset associated with the cue point
+	uint32 Position = 0;
+	// Cue label
+	FString Label;
+	// If this is a region, it will have a duration (sample length)
+	uint32 SampleLength = 0;
+};
 
 //
 // Structure for in-memory interpretation and modification of WAVE sound structures.
@@ -838,6 +871,9 @@ public:
 	const uint8*  WaveDataEnd;
 
 	uint32  NewDataSize;
+
+	// List of cues parsed from the wave file
+	TArray<FWaveCue> WaveCues;
 
 	// Constructor.
 	FWaveModInfo()

@@ -8,7 +8,6 @@
 #include "DataprepOperationsLibraryUtil.h"
 #include "DataprepGeometryOperations.h"
 #include "Materials/MaterialInstance.h"
-#include "MeshProcessingLibrary.h"
 #include "MeshDescriptionAdapter.h"
 #include "MeshMergeModule.h"
 #include "MeshMergeData.h"
@@ -229,10 +228,10 @@ namespace DataprepGeometryOperationsUtils
 				FMeshDescription* MeshDescription = BakeMeshDescription( StaticMeshComponent );
 				TestedMeshDescriptions.Add(MeshDescription);
 
-				TVertexAttributesConstRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+				TVertexAttributesConstRef<FVector3f> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector3f>(MeshAttribute::Vertex::Position);
 				for (FVertexID VertexID : MeshDescription->Vertices().GetElementIDs())
 				{
-					if (Volume->QueryDistance(VertexPositions[VertexID]) > MaxDistance)
+					if (Volume->QueryDistance((FVector)VertexPositions[VertexID]) > MaxDistance)
 					{
 						bComponentInside = false;
 						break;
@@ -335,12 +334,13 @@ namespace DataprepGeometryOperationsUtils
 
 		// Buil mesh tree to test intersections
 		FMeshDescriptionTriangleMeshAdapter MergedMeshAdapter( MergedMesh->GetMeshDescription(0) );
-		TMeshAABBTree3<FMeshDescriptionTriangleMeshAdapter> MergedMeshTree(&MergedMeshAdapter);
+		UE::Geometry::TMeshAABBTree3 <FMeshDescriptionTriangleMeshAdapter> MergedMeshTree(&MergedMeshAdapter);
 
 		MergedMeshTree.Build();
 
-		check( MergedMeshTree.IsValid() );
+		check( MergedMeshTree.IsValid(false) );
 
+		using FAxisAlignedBox3d = UE::Geometry::FAxisAlignedBox3d;
 		const FAxisAlignedBox3d MergedMeshBox = MergedMeshTree.GetBoundingBox();
 
 		TSet< AActor* > OverlappingActorSet;
@@ -390,7 +390,7 @@ void UDataprepOverlappingActorsSelectionTransform::OnExecution_Implementation(co
 
 	for (UObject* Object : InObjects)
 	{
-		if (!ensure(Object) || Object->IsPendingKill())
+		if (!ensure(Object) || !IsValidChecked(Object))
 		{
 			continue;
 		}
@@ -420,7 +420,7 @@ void UDataprepOverlappingActorsSelectionTransform::OnExecution_Implementation(co
 			if (Actor)
 			{
 				// Skip actors that are present in the input.
-				if (TargetActors.Contains(Actor) || Actor->IsPendingKillOrUnreachable())
+				if (TargetActors.Contains(Actor) || !IsValidChecked(Actor) || Actor->IsUnreachable())
 				{
 					continue;
 				}

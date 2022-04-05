@@ -4,7 +4,6 @@
 #include "NiagaraCommon.h"
 #include "NiagaraShared.h"
 #include "NiagaraDataInterface.h"
-#include "NiagaraParameterStore.h"
 #include "NiagaraDataInterfaceExport.generated.h"
 
 USTRUCT(BlueprintType, Blueprintable)
@@ -35,7 +34,7 @@ class INiagaraParticleCallbackHandler
 public:
 	/** This function is called once per tick with the gathered particle data. It will not be called if there is no particle data to call it with. */
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Niagara")
-	void ReceiveParticleData(const TArray<FBasicParticleData>& Data, UNiagaraSystem* NiagaraSystem);
+	void ReceiveParticleData(const TArray<FBasicParticleData>& Data, UNiagaraSystem* NiagaraSystem, const FVector& SimulationPositionOffset);
 };
 
 UENUM()
@@ -94,12 +93,13 @@ public:
 
 	virtual bool HasPreSimulateTick() const override { return true; }
 	virtual bool HasPostSimulateTick() const override { return true; }
+	virtual bool PostSimulateCanOverlapFrames() const { return false; }
 	//UNiagaraDataInterface Interface
 
 	virtual bool HasInternalAttributeReads(const UNiagaraEmitter* OwnerEmitter, const UNiagaraEmitter* Provider) const override { return OwnerEmitter == Provider; };
 
-	virtual void StoreData(FVectorVMContext& Context);
-	virtual void ExportData(FVectorVMContext& Context);
+	virtual void StoreData(FVectorVMExternalFunctionContext& Context);
+	virtual void ExportData(FVectorVMExternalFunctionContext& Context);
 
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;

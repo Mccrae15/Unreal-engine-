@@ -24,7 +24,7 @@ void SAlignmentRuler::Construct(const FArguments& InArgs)
 	[
 		SNew(SBorder)
 		.Padding(FMargin(0.5f))
-		.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+		.BorderImage(FAppStyle::Get().GetBrush("WhiteBrush"))
 		.BorderBackgroundColor(InArgs._ColorAndOpacity)
 		[
 			SAssignNew(BoxWidget, SBox)
@@ -105,10 +105,7 @@ void SDisplayClusterConfiguratorBaseNode::Construct(const FArguments& InArgs, UD
 
 FCursorReply SDisplayClusterConfiguratorBaseNode::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
 {
-	TOptional<EMouseCursor::Type> TheCursor = GetCursor();
-	return (TheCursor.IsSet())
-		? FCursorReply::Cursor(TheCursor.GetValue())
-		: FCursorReply::Unhandled();
+	return SWidget::OnCursorQuery(MyGeometry, CursorEvent);
 }
 
 void SDisplayClusterConfiguratorBaseNode::UpdateGraphNode()
@@ -160,6 +157,12 @@ FVector2D SDisplayClusterConfiguratorBaseNode::ComputeDesiredSize(float) const
 
 void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty)
 {
+	if (!IsNodeUnlocked())
+	{
+		NodeFilter.Add(SharedThis(this));
+		return;
+	}
+
 	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> Toolkit = ToolkitPtr.Pin();
 	check(Toolkit.IsValid());
 
@@ -186,6 +189,26 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 	const bool bIsParentSelected = SelectedBaseNodes.Contains(EdNode->GetParent());
 	if (bIsParentSelected)
 	{
+		return;
+	}
+
+	// The graph editor applies the "true" movement of the node after the user is done dragging the node around,
+	// first resetting the selected nodes back to their starting position, then moving them to their final position,
+	// at which point the nodes should be marking themselves as modified for the undo buffer. In this case,
+	// all positions have been properly computed and the NewPosition can be applied directly to each node.
+	if (!FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
+	{
+		SGraphNode::MoveTo(NewPosition, NodeFilter, bMarkDirty);
+
+		// If the parent node is being auto-positioned, add it to the undo stack here because we need to store its old position with the this node's old position
+		// so that if the move operation is undone, this node can appropriately reset the backing config object's position without requiring a full auto-positioning pass.
+		if (ParentEdNode && ParentEdNode->IsNodeAutoPositioned())
+		{
+			ParentEdNode->Modify(bMarkDirty);
+		}
+
+		EdNode->UpdateObject();
+
 		return;
 	}
 
@@ -259,7 +282,7 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 		{
 			if (BaseNode != EdNode)
 			{
-				BaseNode->Modify();
+				BaseNode->Modify(bMarkDirty);
 				BaseNode->NodePosX += BestOffset.X + AlignmentOffset.X;
 				BaseNode->NodePosY += BestOffset.Y + AlignmentOffset.Y;
 
@@ -272,13 +295,6 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 
 	if (!bIsNodeFiltered)
 	{
-		// If the parent node is being auto-positioned, add it to the undo stack here because we need to store its old position with the this node's old position
-		// so that if the move operation is undone, this node can appropriately reset the backing config object's position without requiring a full auto-positioning pass.
-		if (ParentEdNode && ParentEdNode->IsNodeAutoPositioned())
-		{
-			ParentEdNode->Modify();
-		}
-
 		EdNode->UpdateObject();
 		EdNode->UpdateChildNodes();
 	}
@@ -305,12 +321,12 @@ void SDisplayClusterConfiguratorBaseNode::EndUserInteraction() const
 
 const FSlateBrush* SDisplayClusterConfiguratorBaseNode::GetShadowBrush(bool bSelected) const
 {
-	return FEditorStyle::GetNoBrush();
+	return FStyleDefaults::GetNoBrush();
 }
 
 bool SDisplayClusterConfiguratorBaseNode::CanBeSelected(const FVector2D& MousePositionInNode) const
 {
-	return IsNodeEnabled();
+	return IsNodeEnabled() && IsNodeUnlocked();
 }
 
 bool SDisplayClusterConfiguratorBaseNode::ShouldAllowCulling() const
@@ -339,6 +355,12 @@ TArray<FOverlayWidgetInfo> SDisplayClusterConfiguratorBaseNode::GetOverlayWidget
 
 void SDisplayClusterConfiguratorBaseNode::BeginUserInteraction() const
 {
+	// If the user isn't attempting to click on the node, do not mark the node as being interacted
+	if (!FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
+	{
+		return;
+	}
+
 	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
 
 	bool bIsInteractingDirectly = false;
@@ -441,6 +463,12 @@ bool SDisplayClusterConfiguratorBaseNode::IsNodeEnabled() const
 {
 	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
 	return EdNode->IsNodeEnabled();
+}
+
+bool SDisplayClusterConfiguratorBaseNode::IsNodeUnlocked() const
+{
+	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
+	return EdNode->IsNodeUnlocked();
 }
 
 FVector2D SDisplayClusterConfiguratorBaseNode::GetSize() const

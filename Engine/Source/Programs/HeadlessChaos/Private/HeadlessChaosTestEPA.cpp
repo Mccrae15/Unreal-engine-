@@ -12,12 +12,13 @@
 #include "Chaos/ImplicitObjectScaled.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "Chaos/Triangle.h"
+#include "Chaos/TriangleRegister.h"
 
 namespace ChaosTest
 {
 	using namespace Chaos;
 
-	void ValidFace(const FVec3* Verts, const TArray<TEPAEntry<FReal>>& TetFaces, int32 Idx)
+	void ValidFace(const FVec3* Verts, const TEPAWorkingArray<TEPAEntry<FReal>>& TetFaces, int32 Idx)
 	{
 		const TEPAEntry<FReal>& Entry = TetFaces[Idx];
 
@@ -95,7 +96,7 @@ namespace ChaosTest
 		{
 			TArray<FVec3> VertsA = { {-1,-1,1}, {-1,-1,-1}, {-1,1,-1}, {1,1,-1} };
 			TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
-			TArray<TEPAEntry<FReal>> TetFaces;
+			TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 			FVec3 TouchingNormal;
 			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport,ErrorSupport,TetFaces,TouchingNormal));
 
@@ -109,7 +110,7 @@ namespace ChaosTest
 		{
 			TArray<FVec3> VertsA = { {-1,-1,-1}, {-1,-1,1}, {-1,1,-1}, {1,1,-1} };
 			TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0), FVec3(0) };
-			TArray<TEPAEntry<FReal>> TetFaces;
+			TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 			FVec3 TouchingNormal;
 
 			EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ErrorSupport,ErrorSupport,TetFaces,TouchingNormal));
@@ -179,7 +180,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[0], AllVerts[1], AllVerts[2] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
@@ -207,7 +208,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[3], AllVerts[3], 1e-4);
@@ -235,7 +236,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[1], AllVerts[0], AllVerts[2] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoX,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_EQ(TouchingNormal.Z,0);
@@ -278,7 +279,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[0], AllVerts[2] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[2], AllVerts[1], 1e-4);
@@ -299,7 +300,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_TRUE(InitializeEPA(VertsA,VertsB,ASupport,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_VECTOR_NEAR(VertsA[2], AllVerts[1], 1e-4);
@@ -337,7 +338,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoX,EmptySupport, TetFaces, TouchingNormal));
 				EXPECT_EQ(TouchingNormal.X,0);
@@ -366,7 +367,7 @@ namespace ChaosTest
 				TArray<FVec3> VertsA = { AllVerts[2], AllVerts[0] };
 				TArray<FVec3> VertsB = { FVec3(0), FVec3(0) };
 
-				TArray<TEPAEntry<FReal>> TetFaces;
+				TEPAWorkingArray<TEPAEntry<FReal>> TetFaces;
 				FVec3 TouchingNormal;
 				EXPECT_FALSE(InitializeEPA(VertsA,VertsB,ASupportNoXOrZ,EmptySupport,TetFaces,TouchingNormal));
 				EXPECT_EQ(TouchingNormal.X,0);
@@ -421,9 +422,10 @@ namespace ChaosTest
 		{
 			//sphere with deep penetration to make sure we have max iterations
 			TSphere<FReal,3> Sphere(FVec3(0), 10);
-			auto Support = [&Sphere](const auto& V)
+			int32 VertexIndex = INDEX_NONE;
+			auto Support = [&Sphere,&VertexIndex](const auto& V)
 			{
-				return Sphere.Support(V, 0);
+				return Sphere.Support(V, 0,VertexIndex);
 			};
 
 			TArray<FVec3> Tetrahedron = { 
@@ -444,9 +446,10 @@ namespace ChaosTest
 		{
 			//capsule with origin in middle
 			FCapsule Capsule(FVec3(0, 0, 10), FVec3(0, 0, -10), 3);
-			auto Support = [&Capsule](const auto& V)
+			int32 VertexIndex = INDEX_NONE;
+			auto Support = [&Capsule,&VertexIndex](const auto& V)
 			{
-				return Capsule.Support(V, 0);
+				return Capsule.Support(V, 0, VertexIndex);
 			};
 
 			TArray<FVec3> Tetrahedron = { 
@@ -465,9 +468,10 @@ namespace ChaosTest
 		{
 			//capsule with origin near top
 			FCapsule Capsule(FVec3(0, 0, -2), FVec3(0, 0, -12), 3);
-			auto Support = [&Capsule](const auto& V)
+			int32 VertexIndex = INDEX_NONE;
+			auto Support = [&Capsule,&VertexIndex](const auto& V)
 			{
-				return Capsule.Support(V, 0);
+				return Capsule.Support(V, 0, VertexIndex);
 			};
 
 			TArray<FVec3> Tetrahedron = { 
@@ -597,7 +601,7 @@ namespace ChaosTest
 			const FRigidTransform3 BToATM({ -8.74146843, 4.58291769, -100.029655 }, FRotation3::FromElements(6.63562241e-05, -0.000235952888, 0.00664712908, 0.999977887));
 			FVec3 ClosestA, ClosestB, Normal;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			float Penetration;
+			FReal Penetration;
 
 			GJKPenetration<true>(Box, Box, BToATM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB);
 			EXPECT_NEAR(Penetration, 0.0, 0.01);
@@ -612,11 +616,14 @@ namespace ChaosTest
 
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			float Penetration;
+			FReal Penetration;
 			GJKPenetration(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB);
 			FVec3 Normal = BToATM.InverseTransformVector(NormalA);
 
-			EXPECT_NEAR(Penetration, 0.025f, 0.005f);
+			// Why do we have two result depending on the precision of FReal:
+			// The double result is actually the correct one ( 0.04752 ), I have checked it in a 3D modeling package and I get the same value down to the 5th decimal digit
+			// The float version is certainly because of the imprecision of the quaternion and the rather large ( 200 x 200 x 20 ) object, amplifying the errors, 
+			EXPECT_NEAR(Penetration, 0.04752f, 0.005f);
 			EXPECT_NEAR(Normal.Z, -1.0f, 0.001f);
 		}
 
@@ -629,7 +636,7 @@ namespace ChaosTest
 
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			float Penetration;
+			FReal Penetration;
 			GJKPenetration(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB);
 			FVec3 Normal = BToATM.InverseTransformVector(NormalA);
 
@@ -660,7 +667,7 @@ namespace ChaosTest
 					{{768.000000, -448.000000, 3.81469727e-06}, {6.62273836e-09, 6.62273836e-09, -1.00000000}}
 				});
 
-			TArray<FVec3> SurfaceParticles(
+			TArray<FConvex::FVec3Type> SurfaceParticles(
 				{
 					{0.000000000, -1024.00000, 2.84217094e-14},
 					{768.000000, -1024.00000, 2.84217094e-14},
@@ -676,7 +683,7 @@ namespace ChaosTest
 
 			// Test used to pass the planes to FConvex, but this is not supported any more. Planes are derived from points.
 			TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(SurfaceParticles, 0.0f);
-			TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex), FVec3(1.0f), 0.0f);
+			TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex), nullptr, FVec3(1.0f), 0.0f);
 
 			TSphere<FReal, 3> Sphere(FVec3(0.0f), 34.2120171);
 
@@ -699,6 +706,10 @@ namespace ChaosTest
 		// Sphere sweep against triangle, fails when it should hit. Raycast added as well for verification purposes.
 		{
 			const FTriangle Triangle({ 0.000000000, 0.000000000, 0.000000000 }, { 128.000000, 0.000000000, -114.064575 }, { 128.000000, 128.000000, 2.35327148 });
+			const FTriangleRegister TriangleReg(
+				MakeVectorRegisterFloat( 0.000000000f, 0.000000000f, 0.000000000f, 0.0f ), 
+				MakeVectorRegisterFloat(128.000000f, 0.000000000f, -114.064575, 0.0f), 
+				MakeVectorRegisterFloat(128.000000, 128.000000, 2.35327148, 0.0f));
 			const TSphere<FReal, 3> Sphere({ 0.0, 0.0, 0.0 }, 4);
 			const TRigidTransform<FReal, 3> Transform({ 174.592773, -161.781250, -68.0469971 }, FQuat::Identity);
 			const FVec3 Dir(-0.406315684, 0.913382649, -0.0252906363);
@@ -710,7 +721,7 @@ namespace ChaosTest
 			FVec3 OutPosition;
 			FVec3 OutNormal;
 
-			bool bSweepResult = GJKRaycast2(Triangle, Sphere, Transform, Dir, Length, OutTime, OutPosition, OutNormal, Thickness, bComputeMTD);
+			bool bSweepResult = GJKRaycast2(TriangleReg, Sphere, Transform, Dir, Length, OutTime, OutPosition, OutNormal, Thickness, bComputeMTD);
 
 
 			// Do a raycast w/ same inputs instead of sweep against triangle to verify sweep should be a hit.
@@ -756,7 +767,7 @@ namespace ChaosTest
 					{{0.000000000,0.000000000,0.000000000},{-0.000000000,0.000000000,1.00000000}}
 					});
 
-				TArray<FVec3> SurfaceParticles(
+				TArray<FConvex::FVec3Type> SurfaceParticles(
 					{
 						{0.000000000,-512.000000,-32.0000000},
 					{512.000000,0.000000000,-32.0000000},
@@ -772,7 +783,7 @@ namespace ChaosTest
 				// Planes will derived from the points now, and also faces are merged (not triangles any more)
 				FVec3 ConvexScale ={25,25,1};
 				TUniquePtr<FConvex> Convex = MakeUnique<FConvex>(SurfaceParticles, 0.0f);
-				TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex),ConvexScale,0.0f);
+				TImplicitObjectScaled<FConvex> ScaledConvex(MakeSerializable(Convex), nullptr, ConvexScale,0.0f);
 
 				TBox<FReal,3> Box({-50.0000000,-60.0000000,-30.0000000},{50.0000000,60.0000000,30.0000000});
 
@@ -794,6 +805,10 @@ namespace ChaosTest
 			// Triangle v Box
 			{
 				FTriangle Triangle(FVec3(0.000000000,0.000000000,0.000000000),FVec3(128.000000,0.000000000,35.9375000),FVec3(128.000000,128.000000,134.381042));
+				FTriangleRegister TriangleReg(
+					MakeVectorRegisterFloat(0.000000000f, 0.000000000f, 0.000000000f, 0.0f), 
+					MakeVectorRegisterFloat(128.000000f, 0.000000000f, 35.9375000f, 0.0f), 
+					MakeVectorRegisterFloat(128.000000f, 128.000000f, 134.381042f, 0.0f));
 				TBox<FReal,3> Box(FVec3(-50.0000000,-60.0000000,-30.0000000),FVec3 (50.0000000,60.0000000,30.0000000));
 
 				const TRigidTransform<FReal,3> Transform({127.898438,35.0742188,109.781067},FQuat(0.374886870,-0.0289460570,0.313643545,0.871922970),FVec3(1.0));
@@ -806,12 +821,12 @@ namespace ChaosTest
 				FReal OutTime = -1;
 				FVec3 LocalPosition(-1);
 				FVec3 LocalNormal(-1);
-				GJKRaycast2(Triangle,Box,Transform,Dir,Length,OutTime,LocalPosition,LocalNormal,Thickness,bComputeMTD);
+				GJKRaycast2(TriangleReg,Box,Transform,Dir,Length,OutTime,LocalPosition,LocalNormal,Thickness,bComputeMTD);
 			}
 		}
 
 		// Defining boat geom data outside of single test scope as it's used in multiple.
-		const TArray<Chaos::FVec3> BoatSurfaceVertices(
+		const TArray<FConvex::FVec3Type> BoatSurfaceVertices(
 			{
 				{-118.965088, -100.379936, 105.818298},
 				{-128.562881, 80.0933762, 107.703270},
@@ -1021,7 +1036,7 @@ namespace ChaosTest
 					{{0.000000000,0.000000000,0.000000000},{-0.000000000,0.000000000,1.00000000}}
 				});
 
-			TArray<FVec3> GroundSurfaceParticles(
+			TArray<FConvex::FVec3Type> GroundSurfaceParticles(
 				{
 					{0.000000000,-512.000000,-32.0000000},
 					{512.000000,0.000000000,-32.0000000},
@@ -1039,7 +1054,7 @@ namespace ChaosTest
 			// Planes will derived from the points now, and also faces are merged (not triangles any more)
 			FVec3 GroundConvexScale = { 25,25,1 };
 			TUniquePtr<FConvex> GroundConvex = MakeUnique<FConvex>(GroundSurfaceParticles, 0.0f);
-			TImplicitObjectScaled<FConvex> ScaledGroundConvex(MakeSerializable(GroundConvex), GroundConvexScale, 0.0f);
+			TImplicitObjectScaled<FConvex> ScaledGroundConvex(MakeSerializable(GroundConvex), nullptr, GroundConvexScale, 0.0f);
 
 
 			// Test used to pass planes and verts to FConvex but this is not suported an more. 
@@ -1056,7 +1071,7 @@ namespace ChaosTest
 			FVec3 ClosestA, ClosestB, Normal;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
 
-			auto result = GJKPenetration<true>(BoatConvex, ScaledGroundConvex, BToATM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, FVec3(1, 0, 0));
+			auto result = GJKPenetration<true>(BoatConvex, ScaledGroundConvex, BToATM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0., (FReal)0., FVec3(1, 0, 0));
 
 			FVec3 WorldLocation = BoatTransform.TransformPosition(ClosestA);
 			FVec3 WorldNormal = BoatTransform.TransformVectorNoScale(Normal);
@@ -1084,7 +1099,7 @@ namespace ChaosTest
 			FVec3 ClosestA, ClosestB, Normal;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
 
-			auto result = GJKPenetration<true, float>(Triangle, BoatConvex, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB);
+			auto result = GJKPenetration<true, FReal>(Triangle, BoatConvex, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB);
 
 			// Confirm normal is valid and close to expected normal.
 			float dot = FVec3::DotProduct(ExpectedNormal, Normal);
@@ -1119,7 +1134,7 @@ namespace ChaosTest
 		FReal Penetration;
 		FVec3 ClosestA, ClosestB, NormalA;
 		int32 ClosestVertexIndexA, ClosestVertexIndexB;
-		GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
+		GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0., (FReal)0., InitialDir);
 
 		FVec3 Location = ATM.TransformPosition(ClosestA);
 		FVec3 Normal = -ATM.TransformVectorNoScale(NormalA);
@@ -1142,7 +1157,7 @@ namespace ChaosTest
 			FReal Penetration;
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
+			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0., (FReal)0., InitialDir);
 
 			FVec3 Location = ATM.TransformPosition(ClosestA);  // These transforms are not really necessary since they are identity
 			FVec3 Normal = ATM.TransformVectorNoScale(NormalA);
@@ -1166,7 +1181,7 @@ namespace ChaosTest
 			FReal Penetration;
 			FVec3 ClosestA, ClosestB, NormalA;
 			int32 ClosestVertexIndexA, ClosestVertexIndexB;
-			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, 0.0f, 0.0f, InitialDir);
+			GJKPenetration<true>(A, B, BToATM, Penetration, ClosestA, ClosestB, NormalA, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0., (FReal)0., InitialDir);
 
 			FVec3 Location = ATM.TransformPosition(ClosestA);  // These transforms are not really necessary since they are identity
 			FVec3 Normal = ATM.TransformVectorNoScale(NormalA);
@@ -1187,7 +1202,7 @@ namespace ChaosTest
 		GTEST_TEST(EPATests, EPARealFailures_ConvexTrimeshRotationalDifferencesBreakNormal)
 		{
 			using namespace Chaos;
-			TArray<FVec3> ConvexBoxSurfaceParticles(
+			TArray<FConvex::FVec3Type> ConvexBoxSurfaceParticles(
 				{
 				{50.0999985, -50.1124992, -50.1250000},
 				{-50.0999985, 50.1250000, -50.1250000},
@@ -1201,7 +1216,7 @@ namespace ChaosTest
 
 			FConvex ConvexBox(MoveTemp(ConvexBoxSurfaceParticles), 0.0f);
 
-			FParticles TrimeshParticles(
+			FTriangleMeshImplicitObject::ParticlesType TrimeshParticles(
 				{
 					{50.0000000, 50.0000000, -8.04061356e-15},
 					{50.0000000, -50.0000000, 8.04061356e-15},
@@ -1217,7 +1232,7 @@ namespace ChaosTest
 			Materials.Emplace(0);
 			Materials.Emplace(0);
 			TUniquePtr<FTriangleMeshImplicitObject> TriangleMesh = MakeUnique<FTriangleMeshImplicitObject>(MoveTemp(TrimeshParticles), MoveTemp(Indices), MoveTemp(Materials));
-			TImplicitObjectScaled<FTriangleMeshImplicitObject> ScaledTriangleMesh = TImplicitObjectScaled<FTriangleMeshImplicitObject>(MakeSerializable(TriangleMesh), FVec3(11.5, 11.5, 11.5));
+			TImplicitObjectScaled<FTriangleMeshImplicitObject> ScaledTriangleMesh = TImplicitObjectScaled<FTriangleMeshImplicitObject>(MakeSerializable(TriangleMesh), nullptr, FVec3(11.5, 11.5, 11.5));
 
 			FQuat Rotation0(0.00488796039, 0.00569311855, -0.000786740216, 0.999971569);
 			FQuat Rotation1(0.0117356628, -0.0108017093, -0.000888462295, 0.999872327);
@@ -1234,9 +1249,10 @@ namespace ChaosTest
 			FVec3 Normal(0.0f);
 			FVec3 Position(0.0f);
 			int32 FaceIndex = -1;
-			bool bResult = ScaledTriangleMesh.LowLevelSweepGeom(ConvexBox, Transform0, Dir, Length, OutTime, Position, Normal, FaceIndex, 0.0f, true);
+			FVec3 FaceNormal(0.0);
+			bool bResult = ScaledTriangleMesh.LowLevelSweepGeom(ConvexBox, Transform0, Dir, Length, OutTime, Position, Normal, FaceIndex, FaceNormal, 0.0f, true);
 
-			bResult = ScaledTriangleMesh.LowLevelSweepGeom(ConvexBox, Transform1, Dir, Length, OutTime, Position, Normal, FaceIndex, 0.0f, true);
+			bResult = ScaledTriangleMesh.LowLevelSweepGeom(ConvexBox, Transform1, Dir, Length, OutTime, Position, Normal, FaceIndex, FaceNormal, 0.0f, true);
 			
 			// Observe that normals are in opposite direction, while rotations are very similar.
 
@@ -1257,6 +1273,12 @@ namespace ChaosTest
 				{-91.0660172, 839.028320, 118.413063}
 				});
 
+			FTriangleRegister TriangleReg({
+				MakeVectorRegisterFloat(-306.119476f, 1674.38647f, 117.138489f, 0.0f),
+				MakeVectorRegisterFloat(-491.015747f, 1526.35803f, 116.067123f, 0.0f),
+				MakeVectorRegisterFloat(-91.0660172f, 839.028320f, 118.413063f, 0.0f)
+				});
+
 
 			FVec3 ExpectedNormal = FVec3::CrossProduct(Triangle[1] - Triangle[0], Triangle[2] - Triangle[0]);
 			ExpectedNormal.Normalize();
@@ -1265,7 +1287,7 @@ namespace ChaosTest
 
 			// Wrapping in 1,1,1 scale is unnecessary, but this is technically what is happening when sweeping against scaled trimesh.
 			TUniquePtr<FCapsule> Capsule = MakeUnique<FCapsule>(FVec3(0, 0, -33), FVec3(0, 0, 33), 42);
-			TImplicitObjectScaled<FCapsule> ScaledCapsule = TImplicitObjectScaled<FCapsule>(MakeSerializable(Capsule), FVec3(1));
+			TImplicitObjectScaled<FCapsule> ScaledCapsule = TImplicitObjectScaled<FCapsule>(MakeSerializable(Capsule), nullptr, FVec3(1));
 
 
 			const FVec3 Dir(-0.102473199, 0.130887285, -0.986087084);
@@ -1281,7 +1303,7 @@ namespace ChaosTest
 			int32 FaceIndex = -1;
 
 			// This is local to trimesh, world scale.
-			bool bResult = GJKRaycast2<FReal>(Triangle, ScaledCapsule, StartTM, Dir, Length, OutTime, Position, Normal, Thickness, bComputeMTD);
+			bool bResult = GJKRaycast2<FReal>(TriangleReg, ScaledCapsule, StartTM, Dir, Length, OutTime, Position, Normal, Thickness, bComputeMTD);
 
 			// Compare results against GJKPenetration, sweep is initial overlap, so this should be the same.
 			FVec3 Normal2, ClosestA, ClosestB;

@@ -128,7 +128,7 @@ private:
 
 	/** What we are currently attached to. If valid, RelativeLocation etc. are used relative to this object */
 	UPROPERTY(ReplicatedUsing = OnRep_AttachParent)
-	USceneComponent* AttachParent;
+	TObjectPtr<USceneComponent> AttachParent;
 
 	/** Optional socket name on AttachParent that we are attached to. */
 	UPROPERTY(ReplicatedUsing = OnRep_AttachSocketName)
@@ -136,11 +136,11 @@ private:
 
 	/** List of child SceneComponents that are attached to us. */
 	UPROPERTY(ReplicatedUsing = OnRep_AttachChildren, Transient)
-	TArray<USceneComponent*> AttachChildren;
+	TArray<TObjectPtr<USceneComponent>> AttachChildren;
 
 	/** Set of attached SceneComponents that were attached by the client so we can fix up AttachChildren when it is replicated to us. */
 	UPROPERTY(Transient)
-	TArray<USceneComponent*> ClientAttachedChildren;
+	TArray<TObjectPtr<USceneComponent>> ClientAttachedChildren;
 
 	FName NetOldAttachSocketName;
 	USceneComponent* NetOldAttachParent;
@@ -208,6 +208,15 @@ private:
 	UPROPERTY(Transient, Replicated)
 	uint8 bShouldSnapRotationWhenAttached : 1;
 
+	/** Sets bShouldBeAttached, push model aware. */
+	void SetShouldBeAttached(bool bNewShouldBeAttached);
+
+	/** Sets bShouldSnapLocationWhenAttached, push model aware. */
+	void SetShouldSnapLocationWhenAttached(bool bShouldSnapLocation);
+
+	/** Sets bShouldSnapRotationWhenAttached, push model aware. */
+	void SetShouldSnapRotationWhenAttached(bool bShouldSnapRotation);
+
 	/**
 	 * Whether or not the cached PhysicsVolume this component overlaps should be updated when the component is moved.
 	 * @see GetPhysicsVolume()
@@ -229,6 +238,21 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category=Rendering)
 	uint8 bUseAttachParentBound:1;
+
+	/** If true, this component will use its current bounds transformed back into local space instead of calling CalcBounds with an identity transform. */
+	UPROPERTY()
+	uint8 bComputeFastLocalBounds : 1;
+
+	/** If true, this component will cache its bounds during cooking or in PIE and never recompute it again. This is for components that are known to be static. */
+	UPROPERTY()
+	uint8 bComputeBoundsOnceForGame : 1;
+
+	/** If true, this component has already cached its bounds during cooking or in PIE and will never recompute it again.  */
+	UPROPERTY()
+	uint8 bComputedBoundsOnceForGame : 1;
+
+	/** Get the current local bounds of the component */
+	FBoxSphereBounds GetLocalBounds() const;
 
 	/** Clears the skip update overlaps flag. This should be called any time a change to state would prevent the result of UpdateOverlaps. For example attachment, changing collision settings, etc... */
 	void ClearSkipUpdateOverlaps();
@@ -269,7 +293,7 @@ public:
 #endif
 
 	/** How often this component is allowed to move, used to make various optimizations. Only safe to set in constructor. */
-	UPROPERTY(Category = Mobility, EditAnywhere, BlueprintReadOnly)
+	UPROPERTY(Category = Mobility, EditAnywhere, BlueprintReadOnly, Replicated)
 	TEnumAsByte<EComponentMobility::Type> Mobility;
 
 	/** If detail mode is >= system detail mode, primitive won't be rendered. */
@@ -280,10 +304,15 @@ public:
 	UPROPERTY(BlueprintAssignable, Category=PhysicsVolume, meta=(DisplayName="Physics Volume Changed"))
 	FPhysicsVolumeChanged PhysicsVolumeChangedDelegate;
 
+	/** Delegate invoked when this scene component becomes the actor's root component or when it no longer is. */
+	FIsRootComponentChanged IsRootComponentChanged;
+
 #if WITH_EDITORONLY_DATA
 protected:
 	/** Editor only component used to display the sprite so as to be able to see the location of the Component  */
 	class UBillboardComponent* SpriteComponent;
+	/** Creates the editor only component used to display the sprite */
+	void CreateSpriteComponent(class UTexture2D* SpriteTexture = nullptr);
 #endif
 
 public:
@@ -292,6 +321,23 @@ public:
 
 	/** Returns the current scoped movement update, or NULL if there is none. @see FScopedMovementUpdate */
 	class FScopedMovementUpdate* GetCurrentScopedMovement() const;
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * @todo_ow: This is needed because of order of registration of Actors
+	 * 
+	 * In World Partition Levels loaded actors are Registered in an atomic fashion meaning we register all their
+	 * components and then call RerunConstructionScripts before loading the next actor. This means that a Parent can be Reconstructed and trash its components
+	 * without notifying its attached actors.
+	 * 
+	 * In Non World Partition Levels when adding actors to world we sort all actors based on hierarchy, register all actors and then RerunConstructionScripts on all actors
+	 * which allows handling of Attachments as attached actors are already registered when the parent gets reconstructed and so attachment is preserved.
+	 * 
+	 * ReplacementSceneComponent is there as a temp solution to allow finding of the replacement component of a trashed scene component. 
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> ReplacementSceneComponent;
+#endif
 
 private:
 	/** Stack of current movement scopes. */
@@ -364,7 +410,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetRelativeLocation", ScriptName="SetRelativeLocation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Relative Location", ScriptName="SetRelativeLocation"))
 	void K2_SetRelativeLocation(FVector NewLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetRelativeLocation(FVector NewLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -377,7 +423,7 @@ public:
 	 *							If true, physics velocity for this object is unchanged (so ragdoll parts are not affected by change in location).
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetRelativeRotation", ScriptName="SetRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Relative Rotation", ScriptName="SetRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_SetRelativeRotation(FRotator NewRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetRelativeRotation(FRotator NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void SetRelativeRotation(const FQuat& NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -391,20 +437,20 @@ public:
 	 *							If true, physics velocity for this object is unchanged (so ragdoll parts are not affected by change in location).
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetRelativeTransform", ScriptName="SetRelativeTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Relative Transform", ScriptName="SetRelativeTransform"))
 	void K2_SetRelativeTransform(const FTransform& NewTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetRelativeTransform(const FTransform& NewTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Returns the transform of the component relative to its parent */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FTransform GetRelativeTransform() const;
 
 	/** Reset the transform of the component relative to its parent. Sets relative location to zero, relative rotation to no rotation, and Scale to 1. */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void ResetRelativeTransform();
 
 	/** Set the non-uniform scale of the component relative to its parent */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void SetRelativeScale3D(FVector NewScale3D);
 
 	/**
@@ -418,7 +464,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddRelativeLocation", ScriptName="AddRelativeLocation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Relative Location", ScriptName="AddRelativeLocation"))
 	void K2_AddRelativeLocation(FVector DeltaLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddRelativeLocation(FVector DeltaLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -431,7 +477,7 @@ public:
 	 *							If true, physics velocity for this object is unchanged (so ragdoll parts are not affected by change in location).
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddRelativeRotation", ScriptName="AddRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Relative Rotation", ScriptName="AddRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_AddRelativeRotation(FRotator DeltaRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddRelativeRotation(FRotator DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void AddRelativeRotation(const FQuat& DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -447,7 +493,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddLocalOffset", ScriptName="AddLocalOffset", Keywords="location position"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Local Offset", ScriptName="AddLocalOffset", Keywords="location position"))
 	void K2_AddLocalOffset(FVector DeltaLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddLocalOffset(FVector DeltaLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -460,7 +506,7 @@ public:
 	 *							If true, physics velocity for this object is unchanged (so ragdoll parts are not affected by change in location).
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddLocalRotation", ScriptName="AddLocalRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Local Rotation", ScriptName="AddLocalRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_AddLocalRotation(FRotator DeltaRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddLocalRotation(FRotator DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void AddLocalRotation(const FQuat& DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -476,7 +522,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddLocalTransform", ScriptName="AddLocalTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Local Transform", ScriptName="AddLocalTransform"))
 	void K2_AddLocalTransform(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddLocalTransform(const FTransform& DeltaTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -491,7 +537,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetWorldLocation", ScriptName="SetWorldLocation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set World Location", ScriptName="SetWorldLocation"))
 	void K2_SetWorldLocation(FVector NewLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetWorldLocation(FVector NewLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -505,7 +551,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetWorldRotation", ScriptName="SetWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set World Rotation", ScriptName="SetWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_SetWorldRotation(FRotator NewRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetWorldRotation(FRotator NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void SetWorldRotation(const FQuat& NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -514,7 +560,7 @@ public:
 	 * Set the relative scale of the component to put it at the supplied scale in world space.
 	 * @param NewScale		New scale in world space for this component.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void SetWorldScale3D(FVector NewScale);
 
 	/**
@@ -528,7 +574,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetWorldTransform", ScriptName="SetWorldTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set World Transform", ScriptName="SetWorldTransform"))
 	void K2_SetWorldTransform(const FTransform& NewTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetWorldTransform(const FTransform& NewTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -543,7 +589,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddWorldOffset", ScriptName="AddWorldOffset", Keywords="location position"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add World Offset", ScriptName="AddWorldOffset", Keywords="location position"))
 	void K2_AddWorldOffset(FVector DeltaLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddWorldOffset(FVector DeltaLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -557,7 +603,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddWorldRotation", ScriptName="AddWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add World Rotation", ScriptName="AddWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_AddWorldRotation(FRotator DeltaRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddWorldRotation(FRotator DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void AddWorldRotation(const FQuat& DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -573,7 +619,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddWorldTransform", ScriptName="AddWorldTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add World Transform", ScriptName="AddWorldTransform"))
 	void K2_AddWorldTransform(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddWorldTransform(const FTransform& DeltaTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -588,36 +634,36 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddWorldTransformKeepScale", ScriptName="AddWorldTransformKeepScale"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add World Transform Keep Scale", ScriptName="AddWorldTransformKeepScale"))
 	void K2_AddWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Return location of the component, in world space */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetWorldLocation", ScriptName = "GetWorldLocation", Keywords = "position"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get World Location", ScriptName = "GetWorldLocation", Keywords = "position"), Category="Transformation")
 	FVector K2_GetComponentLocation() const;
 
 	/** Returns rotation of the component, in world space. */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetWorldRotation", ScriptName = "GetWorldRotation"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get World Rotation", ScriptName = "GetWorldRotation"), Category="Transformation")
 	FRotator K2_GetComponentRotation() const;
 	
 	/** Returns scale of the component, in world space. */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetWorldScale", ScriptName = "GetWorldScale"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get World Scale", ScriptName = "GetWorldScale"), Category="Transformation")
 	FVector K2_GetComponentScale() const;
 
 	/** Get the current component-to-world transform for this component */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetWorldTransform", ScriptName = "GetWorldTransform"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get World Transform", ScriptName = "GetWorldTransform"), Category="Transformation")
 	FTransform K2_GetComponentToWorld() const;
 
 	/** Get the forward (X) unit direction vector from this component, in world space.  */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FVector GetForwardVector() const;
 
 	/** Get the up (Z) unit direction vector from this component, in world space.  */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FVector GetUpVector() const;
 
 	/** Get the right (Y) unit direction vector from this component, in world space.  */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FVector GetRightVector() const;
 
 	/** Returns whether the specified body is currently using physics simulation */
@@ -629,14 +675,14 @@ public:
 	virtual bool IsAnySimulatingPhysics() const;
 
 	/** Get the SceneComponents that are attached to this component. */
-	const TArray<USceneComponent*>& GetAttachChildren() const;
+	const TArray<TObjectPtr<USceneComponent>>& GetAttachChildren() const;
 
 	/** Get the SceneComponent we are attached to. */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	USceneComponent* GetAttachParent() const;
 
 	/** Get the socket we are attached to. */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FName GetAttachSocketName() const;
 
 	/** Gets all attachment parent components up to and including the root component */
@@ -671,12 +717,9 @@ public:
 	/** Backwards compatibility: Used to convert old-style EAttachLocation to new-style EAttachmentRules */
 	static void ConvertAttachLocation(EAttachLocation::Type InAttachLocation, EAttachmentRule& InOutLocationRule, EAttachmentRule& InOutRotationRule, EAttachmentRule& InOutScaleRule);
 
-	UE_DEPRECATED(4.12, "This function is deprecated, please use AttachToComponent instead.")
-	bool AttachTo(USceneComponent* InParent, FName InSocketName = NAME_None, EAttachLocation::Type AttachType = EAttachLocation::KeepRelativeOffset, bool bWeldSimulatedBodies = false);
-
 	/** DEPRECATED - Use AttachToComponent() instead */
 	UE_DEPRECATED(4.17, "This function is deprecated, please use AttachToComponent() instead.")
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation", meta = (DeprecationMessage = "OVERRIDE BAD MESSAGE", DisplayName = "AttachTo (Deprecated)", AttachType = "KeepRelativeOffset"))
+	UFUNCTION(BlueprintCallable, Category = "Transformation", meta = (DeprecationMessage = "OVERRIDE BAD MESSAGE", DisplayName = "AttachTo (Deprecated)", AttachType = "KeepRelativeOffset"))
 	bool K2_AttachTo(USceneComponent* InParent, FName InSocketName = NAME_None, EAttachLocation::Type AttachType = EAttachLocation::KeepRelativeOffset, bool bWeldSimulatedBodies = true);
 
 	/**
@@ -699,17 +742,12 @@ public:
 	* @param  bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
 	* @return True if attachment is successful (or already attached to requested parent/socket), false if attachment is rejected and there is no change in AttachParent.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation", meta = (DisplayName = "AttachComponentToComponent", ScriptName = "AttachToComponent", bWeldSimulatedBodies=true))
+	UFUNCTION(BlueprintCallable, Category = "Transformation", meta = (DisplayName = "Attach Component To Component", ScriptName = "AttachToComponent", bWeldSimulatedBodies=true))
 	bool K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
-
-	/** DEPRECATED - Use AttachToComponent() instead */
-	UE_DEPRECATED(4.17, "Use AttachToComponent() instead.")
-	UFUNCTION(BlueprintCallable, meta=(DeprecatedFunction, DeprecationMessage = "Use AttachToComponent instead."), Category="Utilities|Transformation")
-	bool SnapTo(USceneComponent* InParent, FName InSocketName = NAME_None);
 
 	/** DEPRECATED - Use DetachFromComponent() instead */
 	UE_DEPRECATED(4.12, "This function is deprecated, please use DetachFromComponent() instead.")
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta = (DisplayName = "DetachFromParent (Deprecated)"))
+	UFUNCTION(BlueprintCallable, Category = "Transformation", meta = (DisplayName = "DetachFromParent (Deprecated)"))
 	virtual void DetachFromParent(bool bMaintainWorldPosition = false, bool bCallModify = true);
 
 	/** 
@@ -719,7 +757,7 @@ public:
 	 * @param ScaleRule					How to handle scales when detaching.
 	 * @param bCallModify				If true, call Modify() on the component and the current attach parent component
 	 */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "DetachFromComponent", ScriptName = "DetachFromComponent"), Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Detach From Component", ScriptName = "DetachFromComponent"), Category = "Transformation")
 	void K2_DetachFromComponent(EDetachmentRule LocationRule = EDetachmentRule::KeepRelative, EDetachmentRule RotationRule = EDetachmentRule::KeepRelative, EDetachmentRule ScaleRule = EDetachmentRule::KeepRelative, bool bCallModify = true);
 
 	/** 
@@ -732,7 +770,7 @@ public:
 	 * Gets the names of all the sockets on the component.
 	 * @return Get the names of all the sockets on the component.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone"))
 	TArray<FName> GetAllSocketNames() const;
 
 	/** 
@@ -740,7 +778,7 @@ public:
 	 * @param InSocketName Name of the socket or the bone to get the transform 
 	 * @return Socket transform in world space if socket if found. Otherwise it will return component's transform in world space.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone"))
 	virtual FTransform GetSocketTransform(FName InSocketName, ERelativeTransformSpace TransformSpace = RTS_World) const;
 
 	/** 
@@ -748,7 +786,7 @@ public:
 	 * @param InSocketName Name of the socket or the bone to get the transform 
 	 * @return Socket transform in world space if socket if found. Otherwise it will return component's transform in world space.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone"))
 	virtual FVector GetSocketLocation(FName InSocketName) const;
 
 	/** 
@@ -756,7 +794,7 @@ public:
 	 * @param InSocketName Name of the socket or the bone to get the transform 
 	 * @return Socket transform in world space if socket if found. Otherwise it will return component's transform in world space.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone"))
 	virtual FRotator GetSocketRotation(FName InSocketName) const;
 
 	/** 
@@ -764,14 +802,14 @@ public:
 	 * @param InSocketName Name of the socket or the bone to get the transform 
 	 * @return Socket transform in world space if socket if found. Otherwise it will return component's transform in world space.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone", DeprecatedFunction, DeprecationMessage="Use GetSocketRotation instead, Quat is not fully supported in blueprints."))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone", DeprecatedFunction, DeprecationMessage="Use GetSocketRotation instead, Quat is not fully supported in blueprints."))
 	virtual FQuat GetSocketQuaternion(FName InSocketName) const;
 
 	/** 
 	 * Return true if socket with the given name exists
 	 * @param InSocketName Name of the socket or the bone to get the transform 
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(Keywords="Bone"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(Keywords="Bone"))
 	virtual bool DoesSocketExist(FName InSocketName) const;
 
 	/**
@@ -788,12 +826,29 @@ public:
 	 * Get velocity of the component: either ComponentVelocity, or the velocity of the physics body if simulating physics.
 	 * @return Velocity of the component
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	virtual FVector GetComponentVelocity() const;
 
 	/** Returns true if this component is visible in the current context */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	virtual bool IsVisible() const;
+
+#if WITH_EDITOR
+	/**
+	 * Returns full material property path and UObject owner property object
+	 * Path examples:
+	 * Material property path with array element and inner struct Materials[0].InnerStruct.Material
+	 * Material property path with array element Materials[0]
+	 * Simple material property path Materials
+	 * 
+	 * @param ElementIndex		- The element to access the material of.
+	 * @param OutOwner			- Property UObject owner.
+	 * @param OutPropertyPath	- Full material property path.
+	 * @param OutProperty		- Material Property.
+	 * @return true if that was successfully resolved and component has material
+	 */
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty);
+#endif // WITH_EDITOR
 
 protected:
 	/**
@@ -874,6 +929,10 @@ public:
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 	virtual void ApplyWorldOffset(const FVector& InOffset, bool bWorldShift) override;
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
+#if WITH_EDITOR
+	virtual FBox GetStreamingBounds() const override;
+#endif // WITH_EDITOR
+
 	//~ End ActorComponent Interface
 
 	//~ Begin UObject Interface
@@ -883,8 +942,11 @@ public:
 	virtual void PreNetReceive() override;
 	virtual void PostNetReceive() override;
 	virtual void PostRepNotifies() override;
+	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITORONLY_DATA
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+
+	virtual void PostLoad() override;
 #endif
 
 #if WITH_EDITOR
@@ -1012,7 +1074,7 @@ public:
 	/** Calculate the local bounds of the component. Default behavior is calling CalcBounds with an identity transform. */
 	virtual FBoxSphereBounds CalcLocalBounds() const 
 	{ 
-		return CalcBounds(FTransform::Identity);
+		return GetLocalBounds();
 	}
 
 	/**
@@ -1122,13 +1184,13 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetRelativeLocationAndRotation", ScriptName="SetRelativeLocationAndRotation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Relative Location And Rotation", ScriptName="SetRelativeLocationAndRotation"))
 	void K2_SetRelativeLocationAndRotation(FVector NewLocation, FRotator NewRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetRelativeLocationAndRotation(FVector NewLocation, FRotator NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void SetRelativeLocationAndRotation(FVector NewLocation, const FQuat& NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Set which parts of the relative transform should be relative to parent, and which should be relative to world */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void SetAbsolute(bool bNewAbsoluteLocation = false, bool bNewAbsoluteRotation = false, bool bNewAbsoluteScale = false);
 
 	/**
@@ -1143,7 +1205,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire sweep volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetWorldLocationAndRotation", ScriptName="SetWorldLocationAndRotation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set World Location And Rotation", ScriptName="SetWorldLocationAndRotation"))
 	void K2_SetWorldLocationAndRotation(FVector NewLocation, FRotator NewRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetWorldLocationAndRotation(FVector NewLocation, FRotator NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1187,7 +1249,7 @@ public:
 	ECollisionResponse GetCollisionResponseToComponent(USceneComponent* OtherComponent) const;
 
 	/** Set how often this component is allowed to move during runtime. Causes a component re-register if the component is already registered */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	virtual void SetMobility(EComponentMobility::Type NewMobility);
 
 	/** Walks up the attachment chain from this SceneComponent and returns the SceneComponent at the top. If AttachParent is NULL, returns this. */
@@ -1214,13 +1276,10 @@ public:
 	 * Called to see if it's possible to attach another scene component as a child.
 	 * Note: This can be called on template component as well!
 	 */
-	virtual bool CanAttachAsChild(USceneComponent* ChildComponent, FName SocketName) const { return true; }
+	virtual bool CanAttachAsChild(const USceneComponent* ChildComponent, FName SocketName) const { return true; }
 
 	/** Get the extent used when placing this component in the editor, used for 'pulling back' hit. */
 	virtual FBoxSphereBounds GetPlacementExtent() const;
-
-	/** Delegate invoked when this scene component becomes the actor's root component or when it no longer is. */
-	FIsRootComponentChanged IsRootComponentChanged;
 
 private:
 	friend class AActor;
@@ -1570,7 +1629,7 @@ private:
 //////////////////////////////////////////////////////////////////////////
 // USceneComponent inlines
 
-FORCEINLINE const TArray<USceneComponent*>& USceneComponent::GetAttachChildren() const
+FORCEINLINE const TArray<TObjectPtr<USceneComponent>>& USceneComponent::GetAttachChildren() const
 {
 	return AttachChildren;
 }
@@ -1641,7 +1700,7 @@ struct ENGINE_API FSceneComponentInstanceData : public FActorComponentInstanceDa
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	UPROPERTY() 
-	TMap<USceneComponent*, FTransform> AttachedInstanceComponents;
+	TMap<TObjectPtr<USceneComponent>, FTransform> AttachedInstanceComponents;
 };
 
 

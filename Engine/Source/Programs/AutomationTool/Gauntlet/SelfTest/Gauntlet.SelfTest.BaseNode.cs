@@ -52,6 +52,12 @@ namespace Gauntlet.SelfTest
 			return InnerResult;
 		}
 
+		/// <summary>
+		/// Manually set the value of the test result
+		/// </summary>
+		public void SetTestResult(TestResult testResult)
+		{
+		}
 
 		public TestStatus GetTestStatus()
 		{
@@ -113,7 +119,11 @@ namespace Gauntlet.SelfTest
 		{
 		}
 
-		public virtual void StopTest(bool WasCancelled)
+		public virtual void SetCancellationReason(string Reason)
+		{
+		}
+
+		public virtual void StopTest(StopReason InReason)
 		{
 		}
 
