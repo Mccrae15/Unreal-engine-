@@ -36,6 +36,8 @@ USequencerToolsEditMode::~USequencerToolsEditMode()
 
 void USequencerToolsEditMode::Enter()
 {
+	Super::Enter();
+
 	FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor"));
 	
 	if (LevelEditorModule)
@@ -47,7 +49,9 @@ void USequencerToolsEditMode::Enter()
 			LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->RegisterToolType(TEXT("SequencerMotionTrail"), NewObject<UMotionTrailToolBuilder>(this));
 			LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->RegisterToolType(TEXT("SequencerPivotTool"), NewObject<USequencerPivotToolBuilder>(this));
 
-			UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext());
+			// Currently there are some issues when the gizmo context object is shared among modes, so make sure to
+			// register it in the mode-level context store so it's not picked up by other modes.
+			UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(GetInteractiveToolsContext(EToolsContextScope::EdMode));
 		}
 	}
 }
@@ -65,9 +69,11 @@ void USequencerToolsEditMode::Exit()
 			LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->UnregisterToolType(TEXT("SequencerMotionTrail"));
 			LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->UnregisterToolType(TEXT("SequencerPivotTool"));
 
-			UE::TransformGizmoUtil::DeregisterTransformGizmoContextObject(LevelEditorPtr.Pin()->GetEditorModeManager().GetInteractiveToolsContext());
+			UE::TransformGizmoUtil::DeregisterTransformGizmoContextObject(GetInteractiveToolsContext(EToolsContextScope::EdMode));
 		}
 	}
+
+	Super::Exit();
 }
 
 bool USequencerToolsEditMode::IsCompatibleWith(FEditorModeID OtherModeID) const

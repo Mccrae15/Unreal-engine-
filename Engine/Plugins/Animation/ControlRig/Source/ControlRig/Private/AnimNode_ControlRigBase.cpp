@@ -8,6 +8,18 @@
 #include "AnimationRuntime.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
 
+#include <limits>
+
+// Use this as a sentinel that the curve has _not_ been written to by the pose. If we get this
+// value back when reading the curve value in CR, then the curve value has not been touched and
+// so should not be written to. This value is close enough to zero to be indistinguishable for
+// all practical purposes. We don't use min() directly since that is a value that can happen
+// when dividing a small number with large. This one is less likely to happen though and would
+// be more deliberate. We also cannot use denorm_min(), since denormalized math is turned off
+// on PlayStation hardware. Another option, negative zero, is not usable either because some
+// -ffast-math optimizations can get rid of it.
+static constexpr float InvalidCurveValueSentinel = std::numeric_limits<float>::min() * 4.0f;
+
 #if ENABLE_ANIM_DEBUG
 TAutoConsoleVariable<int32> CVarAnimNodeControlRigDebug(TEXT("a.AnimNode.ControlRig.Debug"), 0, TEXT("Set to 1 to turn on debug drawing for AnimNode_ControlRigBase"));
 #endif
@@ -231,7 +243,8 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const uint16 ControlRigIndex = Pair.Key;
 				const uint16 SkeletonIndex = Pair.Value;
 
-				const float Value = InOutput.Curve.Get(SkeletonIndex);
+				bool bIsValid;
+				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid, InvalidCurveValueSentinel);
 				ControlRig->GetHierarchy()->SetCurveValueByIndex(ControlRigIndex, Value);
 			}
 		}
@@ -243,7 +256,9 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const uint16 SkeletonIndex = Iter.Value();
 				const FRigElementKey Key(Name, ERigElementType::Curve);
 
-				ControlRig->GetHierarchy()->SetCurveValue(Key, InOutput.Curve.Get(SkeletonIndex));
+				bool bIsValid;
+				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid, InvalidCurveValueSentinel);
+				ControlRig->GetHierarchy()->SetCurveValue(Key, Value);
 			}
 		}
 	}
@@ -364,10 +379,11 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 ControlRigIndex = Pair.Key;
 				const uint16 SkeletonIndex = Pair.Value;
 
-				const float PreviousValue = InOutput.Curve.Get(SkeletonIndex);
 				const float Value = ControlRig->GetHierarchy()->GetCurveValueByIndex(ControlRigIndex);
 
-				if(!FMath::IsNearlyEqual(PreviousValue, Value))
+				// Do an exact comparison to ensure we only catch values that started out as
+				// the sentinel value.
+				if(Value != InvalidCurveValueSentinel)
 				{
 					// this causes a side effect of marking the curve as "valid"
 					// so only apply it for curves that have really changed
@@ -383,10 +399,11 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 Index = Iter.Value();
 				const FRigElementKey Key(Name, ERigElementType::Curve);
 
-				const float PreviousValue = InOutput.Curve.Get(Index);
 				const float Value = ControlRig->GetHierarchy()->GetCurveValue(Key);
 
-				if(!FMath::IsNearlyEqual(PreviousValue, Value))
+				// Do an exact comparison to ensure we only catch values that started out as
+				// the sentinel value.
+				if(Value != InvalidCurveValueSentinel)
 				{
 					// this causes a side effect of marking the curve as "valid"
 					// so only apply it for curves that have really changed

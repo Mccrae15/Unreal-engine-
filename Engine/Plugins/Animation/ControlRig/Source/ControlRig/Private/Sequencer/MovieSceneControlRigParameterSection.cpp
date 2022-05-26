@@ -2580,6 +2580,17 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 	const FAnimationCurveData& CurveData = DataModel->GetCurveData();
 	const TArray<FBoneAnimationTrack>& BoneAnimationTracks = DataModel->GetBoneAnimationTracks();
 
+	// copy the hierarchy from the CDO into the target control rig.
+	// this ensures that the topology version matches in case of a dynamic hierarchy
+	if (!ControlRig->GetClass()->IsNative())
+	{
+		if (UControlRig* CDO = Cast<UControlRig>(ControlRig->GetClass()->GetDefaultObject()))
+		{
+			ControlRig->GetHierarchy()->CopyHierarchy(CDO->GetHierarchy());
+		}
+	}
+
+	// now set the hierarchies initial transforms based on the currently used skeletal mesh
 	ControlRig->SetBoneInitialTransformsFromSkeletalMeshComponent(SkelMeshComp, true);
 	ControlRig->RequestSetup();
 	ControlRig->Evaluate_AnyThread();
@@ -2601,6 +2612,9 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 		// rather than accessing the low level raw tracks.
 		FAnimPoseEvaluationOptions EvaluationOptions;
 		EvaluationOptions.OptionalSkeletalMesh = SkelMeshComp->SkeletalMesh;
+		EvaluationOptions.bShouldRetarget = false;
+		EvaluationOptions.EvaluationType = EAnimDataEvalType::Raw;
+		
 		FAnimPose AnimPose;
 		UAnimPoseExtensions::GetAnimPoseAtTime(AnimSequence, SequenceSecond, EvaluationOptions, AnimPose);
 

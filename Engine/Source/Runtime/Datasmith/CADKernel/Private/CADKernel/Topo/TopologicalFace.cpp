@@ -240,10 +240,6 @@ void FTopologicalFace::AddLoops(const TArray<TSharedPtr<FTopologicalLoop>>& InLo
 void FTopologicalFace::AddLoop(const TSharedPtr<FTopologicalLoop>& InLoop)
 {
 	InLoop->SetSurface(this);
-	if (Loops.Num() > 0)
-	{
-		InLoop->SetAsInnerBoundary();
-	}
 	Loops.Add(InLoop);
 }
 

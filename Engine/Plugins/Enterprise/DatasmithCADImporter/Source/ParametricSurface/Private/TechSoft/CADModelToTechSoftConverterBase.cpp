@@ -12,6 +12,12 @@
 #include "TechSoftUtils.h"
 #include "TUniqueTechSoftObj.h"
 
+// to avoid changing a public header in 5.0.1. Cleaned in 5.1
+namespace CADLibrary::TechSoftUtils
+{
+CADINTERFACES_API void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
+} 
+
 bool FCADModelToTechSoftConverterBase::RepairTopology()
 {
 #ifdef USE_TECHSOFT_SDK
@@ -23,7 +29,9 @@ bool FCADModelToTechSoftConverterBase::RepairTopology()
 
 		A3DRiBrepModel** OutNewBReps;
 		uint32 OutNewBRepCount;
-		CADLibrary::TechSoftInterface::SewBReps((A3DRiBrepModel**) RiRepresentationItems.GetData(), RiRepresentationItems.Num(), 0.01, 1., SewOptionsData.GetPtr(), &OutNewBReps, OutNewBRepCount);
+		const double SewTolerance = CADLibrary::FImportParameters::GStitchingTolerance;
+		const double FileUnit = 0.1; // CAD Models from (Wire or Rhino) imported in TechSoft are imported in mm so BodyUnit = 0.1 
+		CADLibrary::TechSoftInterface::SewBReps((A3DRiBrepModel**) RiRepresentationItems.GetData(), RiRepresentationItems.Num(), SewTolerance, FileUnit, SewOptionsData.GetPtr(), &OutNewBReps, OutNewBRepCount);
 
 		RiRepresentationItems.Empty(OutNewBRepCount);
 		for (uint32 Index = 0; Index < OutNewBRepCount; ++Index)
@@ -49,12 +57,10 @@ bool FCADModelToTechSoftConverterBase::SaveModel(const TCHAR* InFolderPath, TSha
 
 	FString JsonString;
 	{
-		// Save file unit and default color and material attributes in a json string
+		// Save body unit and default color and material attributes in a json string
 		// This will be used when the file is reloaded
 		TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
-		JsonObject->SetNumberField(JSON_ENTRY_FILE_UNIT, 1);
-		JsonObject->SetNumberField(JSON_ENTRY_COLOR_NAME, 0);
-		JsonObject->SetNumberField(JSON_ENTRY_MATERIAL_NAME, 0);
+		JsonObject->SetNumberField(JSON_ENTRY_BODY_UNIT, 0.1); // ALL BRep from Alias or Rhino are defined in mm
 
 		TSharedRef< TJsonWriter< TCHAR, TPrettyJsonPrintPolicy<TCHAR> > > JsonWriter = TJsonWriterFactory< TCHAR, TPrettyJsonPrintPolicy<TCHAR> >::Create(&JsonString);
 
@@ -76,9 +82,13 @@ bool FCADModelToTechSoftConverterBase::Tessellate(const CADLibrary::FMeshParamet
 #ifdef USE_TECHSOFT_SDK
 	for (A3DRiRepresentationItem* Representation : RiRepresentationItems)
 	{
-		CADLibrary::TechSoftUtils::FillBodyMesh(Representation, ImportParameters, 1.0, BodyMesh);
+		const double BodyUnit = 0.1; // CAD Models from (Wire or Rhino) imported in TechSoft are imported in mm so BodyUnit = 0.1 
+		CADLibrary::TechSoftUtils::FillBodyMesh(Representation, ImportParameters, BodyUnit, BodyMesh);
 	}
 #endif
+
+	TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+	CADLibrary::TechSoftUtils::RestoreMaterials(JsonObject, BodyMesh);
 
 	if (BodyMesh.Faces.Num() == 0)
 	{

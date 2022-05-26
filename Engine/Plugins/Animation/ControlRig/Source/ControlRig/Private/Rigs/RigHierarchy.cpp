@@ -2908,8 +2908,10 @@ void URigHierarchy::SetCurveValue(FRigCurveElement* InCurveElement, float InValu
 		return;
 	}
 
+	// From AnimNode_ControlRigBase.cpp
+	static constexpr float InvalidCurveValueSentinelLocal = std::numeric_limits<float>::min() * 4.0f;
 	const float PreviousValue = InCurveElement->Value;
-	if(!bForce && FMath::IsNearlyZero(PreviousValue - InValue))
+	if(!bForce && PreviousValue != InvalidCurveValueSentinelLocal && FMath::IsNearlyZero(PreviousValue - InValue))
 	{
 		return;
 	}

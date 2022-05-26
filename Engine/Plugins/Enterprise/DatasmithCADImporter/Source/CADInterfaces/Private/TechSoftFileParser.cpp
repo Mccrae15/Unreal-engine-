@@ -12,14 +12,6 @@
 #include "Serialization/JsonWriter.h"
 #include "Templates/UnrealTemplate.h"
 
-float GStitchingTolerance = 0.001f;
-FAutoConsoleVariableRef GCADTranslatorStitchingTolerance(
-	TEXT("ds.CADTranslator.StitchingTolerance"),
-	GStitchingTolerance,
-	TEXT("Welding threshold for Heal/Sew stitching methods in cm\n\
-Default value of StitchingTolerance is 0.001 cm\n"),
-	ECVF_Default);
-
 namespace CADLibrary
 {
 
@@ -352,7 +344,7 @@ void FTechSoftFileParser::SewModel()
 	CADLibrary::TUniqueTSObj<A3DSewOptionsData> SewData;
 	SewData->m_bComputePreferredOpenShellOrientation = false;
 	
-	TechSoftInterface::SewModel(ModelFile.Get(), GStitchingTolerance, SewData.GetPtr());
+	TechSoftInterface::SewModel(ModelFile.Get(), CADLibrary::FImportParameters::GStitchingTolerance, SewData.GetPtr());
 }
 
 
@@ -377,7 +369,8 @@ void FTechSoftFileParser::GenerateBodyMesh(A3DRiRepresentationItem* Representati
 	{
 		TUniqueTSObj<A3DSewOptionsData> SewData;
 		SewData->m_bComputePreferredOpenShellOrientation = false;
-		A3DStatus Status = TechSoftInterface::SewBReps(&Representation, 1, GStitchingTolerance, FileUnit, SewData.GetPtr(), &NewBReps, NewBRepCount);
+		const uint32 BRepCount = 1;
+		A3DStatus Status = TechSoftInterface::SewBReps(&Representation, BRepCount, CADLibrary::FImportParameters::GStitchingTolerance, FileUnit, SewData.GetPtr(), &NewBReps, NewBRepCount);
 		if (Status != A3DStatus::A3D_SUCCESS)
 		{
 			CADFileData.AddWarningMessages(TEXT("A body healing failed. A body could be missing."));
@@ -394,6 +387,14 @@ void FTechSoftFileParser::GenerateBodyMesh(A3DRiRepresentationItem* Representati
 	else
 	{
 		TechSoftUtils::FillBodyMesh(Representation, CADFileData.GetImportParameters(), Body.BodyUnit, BodyMesh);
+	}
+
+	if (BodyMesh.TriangleCount == 0)
+	{
+		// the mesh of the body is empty, the body is deleted.
+		// Todo (jira UETOOL-5148): add a boolean in Body to flag that the body should not be build
+		Body.ParentId = 0;
+		Body.MeshActorName = 0;
 	}
 
 	// Convert material
@@ -441,9 +442,9 @@ void FTechSoftFileParser::GenerateBodyMesh(A3DRiRepresentationItem* Representati
 		{
 			TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
 
-			// Save file unit and default color and material attributes in a json string
+			// Save body unit and default color and material attributes in a json string
 			// This will be used when the file is reloaded
-			JsonObject->SetNumberField(JSON_ENTRY_FILE_UNIT, Body.BodyUnit);
+			JsonObject->SetNumberField(JSON_ENTRY_BODY_UNIT, Body.BodyUnit);
 			JsonObject->SetNumberField(JSON_ENTRY_COLOR_NAME, DefaultColorName);
 			JsonObject->SetNumberField(JSON_ENTRY_MATERIAL_NAME, DefaultMaterialName);
 
@@ -1271,6 +1272,21 @@ FCadId FTechSoftFileParser::TraversePolyBRepModel(A3DRiPolyBrepModel* PolygonalP
 		return CADFileData.GetBodyAt(*BodyIndexPtr).ObjectId;
 	}
 
+	// if BRep model has not material or color, add part one
+	if (BRepMetaData.MaterialName == 0 && BRepMetaData.ColorName == 0)
+	{
+		if (PartMetaData.MaterialName)
+		{
+			BRepMetaData.MaterialName = PartMetaData.MaterialName;
+			BRepMetaData.MetaData.Add(TEXT("MaterialName"), FString::Printf(TEXT("%u"), PartMetaData.MaterialName));
+		}
+		if (PartMetaData.ColorName)
+		{
+			BRepMetaData.ColorName = PartMetaData.ColorName;
+			BRepMetaData.MetaData.Add(TEXT("ColorName"), FString::Printf(TEXT("%u"), PartMetaData.ColorName));
+		}
+	}
+
 	ExtractSpecificMetaData(PolygonalPtr, BRepMetaData);
 
 	FMatrix Matrix = FMatrix::Identity;
@@ -1573,13 +1589,13 @@ void FTechSoftFileParser::ExtractSpecificMetaData(const A3DAsmProductOccurrence*
 			if (CatiaV5SpecificData->m_psVersion)
 			{
 				FString Version = UTF8_TO_TCHAR(CatiaV5SpecificData->m_psVersion);
-				OutMetaData.MetaData.Emplace(L"CatiaVersion", Version);
+				OutMetaData.MetaData.Emplace(TEXT("CatiaVersion"), Version);
 			}
 
 			if (CatiaV5SpecificData->m_psPartNumber)
 			{
 				FString PartNumber = UTF8_TO_TCHAR(CatiaV5SpecificData->m_psPartNumber);
-				OutMetaData.MetaData.Emplace(L"CatiaPartNumber", PartNumber);
+				OutMetaData.MetaData.Emplace(TEXT("CatiaPartNumber"), PartNumber);
 			}
 		}
 		break;

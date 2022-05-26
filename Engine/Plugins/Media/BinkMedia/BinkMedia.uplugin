@@ -29,7 +29,9 @@
 		{
 			"Name" : "BinkMediaPlayerEditor",
 			"Type" : "Editor",
-			"TargetDenyList": [ "Server" ]
+			"TargetDenyList": [ "Server" ],
+			"PlatformDenyList": [ 
+			]
 		}
     ]
 }

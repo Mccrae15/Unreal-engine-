@@ -798,9 +798,13 @@ void CaptureSceneToScratchCubemap(FRHICommandListImmediate& RHICmdList, FSceneRe
 
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneColorSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		PassParameters->SceneColorTexture = SceneTextures.Color.Target;
-		PassParameters->SceneDepthSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		PassParameters->SceneDepthTexture = SceneTextures.Depth.Target;
+		PassParameters->SceneColorTexture = SceneTextures.Color.Resolve;
+        
+        if (!IsMobilePlatform(SceneRenderer->ShaderPlatform))
+        {
+            PassParameters->SceneDepthSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            PassParameters->SceneDepthTexture = SceneTextures.Depth.Resolve;
+        }
 
 		const int32 EffectiveSize = CubemapSize;
 		const FIntPoint SceneTextureExtent = SceneTextures.Config.Extent;

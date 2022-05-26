@@ -3,6 +3,42 @@
 #include "Units/Highlevel/Hierarchy/RigUnit_AimBone.h"
 #include "Units/RigUnitContext.h"
 
+FQuat FControlRigMathLibrary_FindQuatBetweenNormals(const FVector& A, const FVector& B)
+{
+	const FQuat::FReal Dot = FVector::DotProduct(A, B);
+	FQuat::FReal W = 1 + Dot;
+	FQuat Result;
+
+	if (W < SMALL_NUMBER)
+	{
+		// A and B point in opposite directions
+		W = 2 - W;
+		Result = FQuat(
+			-A.Y * B.Z + A.Z * B.Y,
+			-A.Z * B.X + A.X * B.Z,
+			-A.X * B.Y + A.Y * B.X,
+			W).GetNormalized();
+
+		const FVector Normal = FMath::Abs(A.X) > FMath::Abs(A.Y) ?
+			FVector(0.f, 1.f, 0.f) : FVector(1.f, 0.f, 0.f);
+		const FVector BiNormal = FVector::CrossProduct(A, Normal);
+		const FVector TauNormal = FVector::CrossProduct(A, BiNormal);
+		Result = Result * FQuat(TauNormal, PI);
+	}
+	else
+	{
+		//Axis = FVector::CrossProduct(A, B);
+		Result = FQuat(
+			A.Y * B.Z - A.Z * B.Y,
+			A.Z * B.X - A.X * B.Z,
+			A.X * B.Y - A.Y * B.X,
+			W);
+	}
+
+	Result.Normalize();
+	return Result;
+}
+
 FRigUnit_AimBoneMath_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -72,7 +108,7 @@ FRigUnit_AimBoneMath_Execute()
 			{
 				Target = FMath::Lerp<FVector>(Axis, Target, T).GetSafeNormal();
 			}
-			FQuat Rotation = FQuat::FindBetweenNormals(Axis, Target);
+			FQuat Rotation = FControlRigMathLibrary_FindQuatBetweenNormals(Axis, Target);
 			Result.SetRotation((Rotation * Result.GetRotation()).GetNormalized());
 		}
 		else
@@ -117,9 +153,10 @@ FRigUnit_AimBoneMath_Execute()
 			Target = Target - Result.GetLocation();
 		}
 
-		if (!Primary.Axis.IsNearlyZero())
+		FVector PrimaryAxis = Primary.Axis;
+		if (!PrimaryAxis.IsNearlyZero())
 		{
-			FVector PrimaryAxis = Result.TransformVectorNoScale(Primary.Axis).GetSafeNormal();
+			PrimaryAxis = Result.TransformVectorNoScale(Primary.Axis).GetSafeNormal();
 			Target = Target - FVector::DotProduct(Target, PrimaryAxis) * PrimaryAxis;
 		}
 
@@ -133,7 +170,17 @@ FRigUnit_AimBoneMath_Execute()
 			{
 				Target = FMath::Lerp<FVector>(Axis, Target, T).GetSafeNormal();
 			}
-			FQuat Rotation = FQuat::FindBetweenNormals(Axis, Target);
+			
+			FQuat Rotation;
+			if (FVector::DotProduct(Axis,Target) + 1.f < SMALL_NUMBER && !PrimaryAxis.IsNearlyZero())
+			{
+				// special case, when the axis and target and 180 degrees apart and there is a primary axis
+				 Rotation = FQuat(PrimaryAxis, PI);
+			}
+			else
+			{
+				Rotation = FControlRigMathLibrary_FindQuatBetweenNormals(Axis, Target);
+			}
 			Result.SetRotation((Rotation * Result.GetRotation()).GetNormalized());
 		}
 		else

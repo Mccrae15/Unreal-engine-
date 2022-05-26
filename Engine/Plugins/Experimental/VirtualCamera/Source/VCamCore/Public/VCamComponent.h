@@ -44,6 +44,7 @@ class VCAMCORE_API UVCamComponent : public USceneComponent
 	GENERATED_BODY()
 
 	friend class UVCamModifier;
+	friend struct FVCamPrivate;
 
 public:
 	UVCamComponent();

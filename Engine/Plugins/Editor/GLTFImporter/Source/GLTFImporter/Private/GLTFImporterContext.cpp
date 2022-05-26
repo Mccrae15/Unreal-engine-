@@ -42,12 +42,15 @@ bool FGLTFImporterContext::OpenFile(const FString& FilePath)
 	check(Asset.ValidationCheck() == GLTF::FAsset::Valid);
 
 	// check extensions supported
-	static const TArray<GLTF::EExtension> SupportedExtensions = {GLTF::EExtension::KHR_MaterialsPbrSpecularGlossiness,
-	                                                             GLTF::EExtension::KHR_MaterialsUnlit,
-																 GLTF::EExtension::KHR_MaterialsClearCoat,
-																 GLTF::EExtension::KHR_MaterialsTransmission,
-																 GLTF::EExtension::KHR_MaterialsSheen,
-																 GLTF::EExtension::KHR_MaterialsVariants};
+	static const TArray<GLTF::EExtension> SupportedExtensions = { GLTF::EExtension::KHR_MaterialsPbrSpecularGlossiness,
+																  GLTF::EExtension::KHR_MaterialsUnlit,
+																  GLTF::EExtension::KHR_LightsPunctual,
+																  GLTF::EExtension::KHR_MaterialsClearCoat,
+																  GLTF::EExtension::KHR_MaterialsTransmission,
+																  GLTF::EExtension::KHR_MaterialsSheen,
+																  GLTF::EExtension::KHR_MaterialsVariants,
+																  GLTF::EExtension::KHR_MaterialsSpecular,
+																  GLTF::EExtension::KHR_MaterialsIOR };
 
 	for (GLTF::EExtension Extension : Asset.ExtensionsUsed)
 	{

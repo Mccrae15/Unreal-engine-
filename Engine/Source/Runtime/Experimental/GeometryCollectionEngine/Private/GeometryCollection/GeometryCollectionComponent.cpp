@@ -988,14 +988,12 @@ void UGeometryCollectionComponent::SetRestState(TArray<FTransform>&& InRestTrans
 
 	if (SceneProxy)
 	{
-		if (SceneProxy->IsNaniteMesh())
-		{
-
 #if WITH_EDITOR
 			// We need to do this in case we're controlled by Sequencer in editor, which doesn't invoke PostEditChangeProperty
 			SendRenderTransform_Concurrent();
 #endif
-
+		if (SceneProxy->IsNaniteMesh())
+		{
 			FNaniteGeometryCollectionSceneProxy* GeometryCollectionSceneProxy = static_cast<FNaniteGeometryCollectionSceneProxy*>(SceneProxy);
 			ENQUEUE_RENDER_COMMAND(SendRenderDynamicData)(
 				[GeometryCollectionSceneProxy, DynamicData](FRHICommandListImmediate& RHICmdList)
@@ -1023,16 +1021,19 @@ void UGeometryCollectionComponent::InitializeComponent()
 {
 	Super::InitializeComponent();
 
-	if (bStoreVelocities || bNotifyTrailing)
+	if (DynamicCollection)
 	{
-		if (!DynamicCollection->FindAttributeTyped<FVector3f>("LinearVelocity", FTransformCollection::TransformGroup))
+		if (bStoreVelocities || bNotifyTrailing)
 		{
-			DynamicCollection->AddAttribute<FVector3f>("LinearVelocity", FTransformCollection::TransformGroup);
-		}
+			if (!DynamicCollection->FindAttributeTyped<FVector3f>("LinearVelocity", FTransformCollection::TransformGroup))
+			{
+				DynamicCollection->AddAttribute<FVector3f>("LinearVelocity", FTransformCollection::TransformGroup);
+			}
 
-		if (!DynamicCollection->FindAttributeTyped<FVector3f>("AngularVelocity", FTransformCollection::TransformGroup))
-		{
-			DynamicCollection->AddAttribute<FVector3f>("AngularVelocity", FTransformCollection::TransformGroup);
+			if (!DynamicCollection->FindAttributeTyped<FVector3f>("AngularVelocity", FTransformCollection::TransformGroup))
+			{
+				DynamicCollection->AddAttribute<FVector3f>("AngularVelocity", FTransformCollection::TransformGroup);
+			}
 		}
 	}
 
@@ -1531,7 +1532,11 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 #if WITH_EDITOR
 		// We will override visibility with the Hide array (if available).
 		TArray<bool> VisibleOverride;
-		VisibleOverride.Init(true, Visible.Num());
+		VisibleOverride.SetNumUninitialized(Visible.Num());
+		for (int32 FaceIdx = 0; FaceIdx < Visible.Num(); FaceIdx++)
+		{
+			VisibleOverride[FaceIdx] = Visible[FaceIdx];
+		}
 		bool bUsingHideArray = false;
 
 		if (Collection->HasAttribute("Hide", FGeometryCollection::TransformGroup))
@@ -1543,7 +1548,8 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 			const TManagedArray<bool>& Hide = Collection->GetAttribute<bool>("Hide", FGeometryCollection::TransformGroup);
 			for (int32 GeomIdx = 0; GeomIdx < NumGeom; ++GeomIdx)
 			{
-				if (Hide[TransformIndex[GeomIdx]])
+				int32 TransformIdx = TransformIndex[GeomIdx];
+				if (Hide[TransformIdx])
 				{
 					// (Temporarily) hide faces of this hidden geometry
 					for (int32 FaceIdxOffset = 0; FaceIdxOffset < FaceCount[GeomIdx]; ++FaceIdxOffset)
@@ -1551,16 +1557,16 @@ void UGeometryCollectionComponent::InitConstantData(FGeometryCollectionConstantD
 						VisibleOverride[FaceStart[GeomIdx]+FaceIdxOffset] = false;
 					}
 				}
-				else
+				else if (bAllHidden && Collection->IsVisible(TransformIdx))
 				{
 					bAllHidden = false;
 				}
 			}
-			if (!ensure(!bAllHidden)) // if they're all hidden, rendering would crash -- unhide them
+			if (!ensure(!bAllHidden)) // if they're all hidden, rendering would crash -- reset to default visibility instead
 			{
 				for (int32 FaceIdx = 0; FaceIdx < VisibleOverride.Num(); ++FaceIdx)
 				{
-					VisibleOverride[FaceIdx] = true;
+					VisibleOverride[FaceIdx] = Visible[FaceIdx];
 				}
 			}
 		}
@@ -2042,6 +2048,7 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 			// #BGTODO We need a dummy body setup for now to allow the body instance to generate filter information. Change body instance to operate independently.
 			DummyBodySetup = NewObject<UBodySetup>(this, UBodySetup::StaticClass());
 			BodyInstance.BodySetup = DummyBodySetup;
+			BodyInstance.OwnerComponent = this; // Required to make filter data include component/actor ID for ignored actors/components
 
 			FBodyCollisionFilterData FilterData;
 			FMaskFilter FilterMask = BodyInstance.GetMaskFilter();
@@ -2049,13 +2056,6 @@ void UGeometryCollectionComponent::OnCreatePhysicsState()
 
 			InitialSimFilter = FilterData.SimFilter;
 			InitialQueryFilter = FilterData.QuerySimpleFilter;
-
-			// since InitBody has not been called on the bodyInstance, OwnerComponent is nullptr
-			// we then need to set the owner on the query filters to allow for actor filtering 
-			if (const AActor* Owner = GetOwner())
-			{
-				InitialQueryFilter.Word0 = Owner->GetUniqueID();
-			}
 
 			// Enable for complex and simple (no dual representation currently like other meshes)
 			InitialQueryFilter.Word3 |= (EPDF_SimpleCollision | EPDF_ComplexCollision);

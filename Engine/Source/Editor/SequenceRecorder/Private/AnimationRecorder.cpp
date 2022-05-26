@@ -437,8 +437,14 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 			Controller.SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
 		}
 
+		if (bRecordTransforms == false)
+		{
+			Controller.RemoveAllBoneTracks();
+		}
+
 		Controller.NotifyPopulated();
 		Controller.CloseBracket();
+
 
 		AnimationObject->MarkPackageDirty();
 		
@@ -783,19 +789,19 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 
 				if (bRecordTransforms)
 				{
-				FTransform LocalTransform = SpacesBases[BoneIndex];
-				if ( ParentIndex != INDEX_NONE )
-				{
-					LocalTransform.SetToRelativeTransform(SpacesBases[ParentIndex]);
-				}
-				// if record local to world, we'd like to consider component to world to be in root
-				else
-				{
-					if (bRecordLocalToWorld)
+					FTransform LocalTransform = SpacesBases[BoneIndex];
+					if ( ParentIndex != INDEX_NONE )
 					{
-						LocalTransform *= ComponentToWorld;
+						LocalTransform.SetToRelativeTransform(SpacesBases[ParentIndex]);
 					}
-				}
+					// if record local to world, we'd like to consider component to world to be in root
+					else
+					{
+						if (bRecordLocalToWorld)
+						{
+							LocalTransform *= ComponentToWorld;
+						}
+					}
 
 					RawTrack.PosKeys.Add(FVector3f(LocalTransform.GetTranslation()));
 					RawTrack.RotKeys.Add(FQuat4f(LocalTransform.GetRotation()));

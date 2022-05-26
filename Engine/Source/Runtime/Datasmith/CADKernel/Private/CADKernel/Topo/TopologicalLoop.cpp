@@ -959,6 +959,7 @@ FInfoEntity& FTopologicalLoop::GetInfo(FInfoEntity& Info) const
 {
 	return FEntity::GetInfo(Info)
 		.Add(TEXT("Edges"), (TArray<TOrientedEntity<FEntity>>&) Edges)
+		.Add(TEXT("IsExternal"), bIsExternal)
 		.Add(TEXT("Hosted by"), Face);
 }
 #endif

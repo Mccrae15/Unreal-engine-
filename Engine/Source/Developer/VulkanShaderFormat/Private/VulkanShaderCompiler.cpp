@@ -52,14 +52,13 @@ inline bool ShouldStripReflection(EShaderPlatform ShaderPlatform)
 		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
 }
 
-inline bool SupportsOfflineCompiler(EShaderPlatform ShaderPlatform)
+inline bool IsAndroidShaderPlatform(EShaderPlatform ShaderPlatform)
 {
-	return ShaderPlatform == SP_VULKAN_PCES3_1
-		|| ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
+	return ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
 		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
 }
 
-inline bool ForceSubpassImageDepthFalseForPlatform(EShaderPlatform ShaderPlatform)
+inline bool SupportsOfflineCompiler(EShaderPlatform ShaderPlatform)
 {
 	return ShaderPlatform == SP_VULKAN_PCES3_1
 		|| ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
@@ -1956,6 +1955,17 @@ static bool BuildShaderOutputFromSpirv(
 		}
 	}
 
+	// For Android run an additional pass to patch spirv to be compatible across drivers
+	if(IsAndroidShaderPlatform(Input.Target.GetPlatform()))
+	{
+		const char* OptArgs[] = { "--android-driver-patch" };
+		if (!CompilerContext.OptimizeSpirv(Spirv.Data, OptArgs, UE_ARRAY_COUNT(OptArgs)))
+		{
+			UE_LOG(LogVulkanShaderCompiler, Error, TEXT("Failed to apply driver patches for Android"));
+			return false;
+		}
+	}
+
 	PatchSpirvReflectionEntries(Spirv);
 	Spirv.EntryPointName = PatchSpirvEntryPointWithCRC(Spirv, Spirv.CRC);
 
@@ -2143,7 +2153,6 @@ static bool CompileWithShaderConductor(
 	// Initialize compilation options for ShaderConductor
 	CrossCompiler::FShaderConductorOptions Options;
 	Options.bDisableScalarBlockLayout = !bIsRayTracingShader;
-	Options.bForceSubpassImageDepthFalse = ForceSubpassImageDepthFalseForPlatform(Input.Target.GetPlatform());
 
 	// Ray tracing features require Vulkan 1.2 environment.
 	if (bIsRayTracingShader || Input.Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing))

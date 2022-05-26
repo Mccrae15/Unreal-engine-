@@ -1856,7 +1856,11 @@ FBoxSphereBounds UGroomComponent::CalcBounds(const FTransform& InLocalToWorld) c
 			LocalHairBound = Buffers->GetBoundingBox();
 		}
 
-		if (RegisteredMeshComponent)
+		// If the attachment is done onto a skel. mesh:
+		// * If the attachment is simple, use the skel. mesh expanded by the groom bounds.
+		// * If the attachment is 'relative' to the skel mesh (using a bone anchor, which is provided with AttachmentName), 
+		//   we use the simple groom bound.
+		if (RegisteredMeshComponent && AttachmentName.IsEmpty())
 		{
 			const FBox LocalSkeletalBound = RegisteredMeshComponent->CalcBounds(FTransform::Identity).GetBox();
 
@@ -3104,7 +3108,7 @@ void UGroomComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 void UGroomComponent::OnAttachmentChanged()
 {
 	Super::OnAttachmentChanged();
-	if (GroomAsset && !IsBeingDestroyed() && HasBeenCreated())
+	if (GroomAsset && !IsBeingDestroyed() && HasBeenCreated() && IsValidChecked(this))
 	{
 		UMeshComponent* NewMeshComponent = Cast<UMeshComponent>(GetAttachParent());
 		const bool bHasAttachmentChanged = RegisteredMeshComponent != NewMeshComponent;

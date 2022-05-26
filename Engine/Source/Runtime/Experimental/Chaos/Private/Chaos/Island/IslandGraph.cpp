@@ -337,7 +337,7 @@ void FIslandGraph<NodeType, EdgeType, IslandType>::MergeIslands(const int32 Pare
 	{
 		ChildQueue.Dequeue(CurrentIndex);
 	
-		if (GraphIslands[CurrentIndex].IslandCounter != GraphCounter && ParentIndex != CurrentIndex)
+		if (GraphIslands.IsValidIndex(CurrentIndex) && GraphIslands[CurrentIndex].IslandCounter != GraphCounter && ParentIndex != CurrentIndex)
 		{
 			GraphIslands[CurrentIndex].IslandCounter = GraphCounter;
 			GraphIslands[CurrentIndex].ParentIsland = ParentIndex;
@@ -774,6 +774,8 @@ void FIslandGraph<NodeType, EdgeType, IslandType>::InitIslands()
 	for (auto& GraphIsland : GraphIslands)
 	{
 		GraphIsland.bIsSleeping = true;
+		GraphIsland.ChildrenIslands.Reset();
+		GraphIsland.ParentIsland = INDEX_NONE;
 	}
 }
 

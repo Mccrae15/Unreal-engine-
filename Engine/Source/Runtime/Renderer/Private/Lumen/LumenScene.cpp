@@ -368,6 +368,7 @@ void FLumenSurfaceCacheAllocator::GetStats(FStats& Stats) const
 void FLumenSceneData::UploadPageTable(FRDGBuilder& GraphBuilder)
 {
 	SCOPED_DRAW_EVENT(GraphBuilder.RHICmdList, LumenUploadPageTable);
+	SCOPED_GPU_MASK(GraphBuilder.RHICmdList, FRHIGPUMask::All());
 
 	if (GLumenSceneUploadEveryFrame != 0)
 	{
@@ -981,7 +982,10 @@ bool FLumenSceneData::UpdateAtlasSize()
 		PhysicalAtlasSize = GetDesiredPhysicalAtlasSize();
 		SurfaceCacheAllocator.Init(GetDesiredPhysicalAtlasSizeInPages());
 		UnlockedAllocationHeap.Clear();
-		LastCapturedPageHeap.Clear();
+		for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
+		{
+			LastCapturedPageHeap[GPUIndex].Clear();
+		}
 
 		PhysicalAtlasCompression = NewCompression;
 		return true;
@@ -1099,7 +1103,7 @@ void FLumenCard::GetSurfaceStats(const TSparseSpanArray<FLumenPageTableEntry>& P
 	}
 }
 
-void FLumenSceneData::MapSurfaceCachePage(const FLumenSurfaceMipMap& MipMap, int32 PageTableIndex)
+void FLumenSceneData::MapSurfaceCachePage(const FLumenSurfaceMipMap& MipMap, int32 PageTableIndex, FRHIGPUMask GPUMask)
 {
 	FLumenPageTableEntry& PageTableEntry = PageTable[PageTableIndex];
 	if (!PageTableEntry.IsMapped())
@@ -1118,7 +1122,16 @@ void FLumenSceneData::MapSurfaceCachePage(const FLumenSurfaceMipMap& MipMap, int
 			PageTableEntry.SampleCardResLevelX = MipMap.ResLevelX;
 			PageTableEntry.SampleCardResLevelY = MipMap.ResLevelY;
 
-			LastCapturedPageHeap.Add(GetSurfaceCacheUpdateFrameIndex(), PageTableIndex);
+			for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
+			{
+				LastCapturedPageHeap[GPUIndex].Add(
+#if WITH_MGPU
+					GPUMask.Contains(GPUIndex) ? GetSurfaceCacheUpdateFrameIndex() : 0,
+#else
+					GetSurfaceCacheUpdateFrameIndex(),
+#endif
+					PageTableIndex);
+			}
 
 			if (!MipMap.bLocked)
 			{
@@ -1134,7 +1147,10 @@ void FLumenSceneData::UnmapSurfaceCachePage(bool bLocked, FLumenPageTableEntry& 
 {
 	if (Page.IsMapped())
 	{
-		LastCapturedPageHeap.Remove(PageIndex);
+		for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
+		{
+			LastCapturedPageHeap[GPUIndex].Remove(PageIndex);
+		}
 
 		if (!bLocked)
 		{

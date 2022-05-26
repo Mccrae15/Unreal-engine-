@@ -21,6 +21,7 @@
 #include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "NiagaraNotificationWidgetProvider.h"
+#include "Misc/Base64.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraScriptGraphViewModel"
 
@@ -270,9 +271,12 @@ void FNiagaraScriptGraphViewModel::CopySelectedNodes()
 			}
 		}
 	}
-	
-	FEdGraphUtilities::ExportNodesToText(CachedNodes, ClipboardContent->ExportedNodes);
 
+	FString ExportedNodesText;
+	FEdGraphUtilities::ExportNodesToText(CachedNodes, ExportedNodesText);
+
+	ClipboardContent->ExportedNodes = FBase64::Encode(ExportedNodesText);
+	
 	// we then attempt to find all variables referenced by those nodes to copy the script variables in our clipboard
 	TSet<FNiagaraVariable> Variables;
 	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterReferenceMap = GetGraph()->GetParameterReferenceMap();
@@ -338,7 +342,9 @@ void FNiagaraScriptGraphViewModel::PasteNodes()
 	}
 	
 	TSet<UEdGraphNode*> PastedNodes;
-	FEdGraphUtilities::ImportNodesFromText(Graph, ClipboardContent->ExportedNodes, PastedNodes);
+	FString ExportedNodesText;
+	FBase64::Decode(ClipboardContent->ExportedNodes, ExportedNodesText);
+	FEdGraphUtilities::ImportNodesFromText(Graph, ExportedNodesText, PastedNodes);
 	
 	for (UEdGraphNode* PastedNode : PastedNodes)
 	{
@@ -451,7 +457,12 @@ bool FNiagaraScriptGraphViewModel::CanPasteNodes() const
 	}
 
 	const UNiagaraClipboardContent* ClipboardContent = FNiagaraEditorModule::Get().GetClipboard().GetClipboardContent();
-	return ClipboardContent? FEdGraphUtilities::CanImportNodesFromText(Graph, ClipboardContent->ExportedNodes) : false;
+	FString ExportedNodesText;
+	if(ClipboardContent)
+	{
+		FBase64::Decode(ClipboardContent->ExportedNodes, ExportedNodesText);
+	}
+	return ClipboardContent ? FEdGraphUtilities::CanImportNodesFromText(Graph, ExportedNodesText) : false;
 }
 
 void FNiagaraScriptGraphViewModel::DuplicateNodes()

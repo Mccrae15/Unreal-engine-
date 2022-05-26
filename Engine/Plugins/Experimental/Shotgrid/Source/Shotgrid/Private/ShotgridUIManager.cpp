@@ -115,8 +115,8 @@ struct FShotgridMenuEntryImpl
 			TEXT("Shotgrid"),
 			FUIAction(),
 			FOnGetContent::CreateRaw(this, &FShotgridMenuEntryImpl::GenerateShotgridToolbarMenu),
-			LOCTEXT("ShotgridCombo_Label", "Shotgrid"),
-			LOCTEXT("ShotgridCombo_Tooltip", "Available Shotgrid commands"),
+			LOCTEXT("ShotgridCombo_Label", "ShotGrid"),
+			LOCTEXT("ShotgridCombo_Tooltip", "Available ShotGrid commands"),
 			FSlateIcon(FShotgridStyle::GetStyleSetName(), "Shotgrid.Logo"));
 
 		Section.AddEntry(ShotgridComboEntry);
@@ -184,8 +184,8 @@ void FShotgridUIManagerImpl::Initialize()
 		FShotgridStyle::Initialize();
 
 		// Set the Shotgrid icons
-		FShotgridStyle::SetIcon("Logo", "sg_logo_80px");
-		FShotgridStyle::SetIcon("ContextLogo", "sg_context_logo");
+		FShotgridStyle::SetIcon("Logo", "W18_SG_QAT_40x40");
+		FShotgridStyle::SetIcon("ContextLogo", "W20_SG_QAT_24x24");
 
 		if (!IsRunningCommandlet())
 		{
@@ -262,7 +262,7 @@ TSharedRef<FExtender> FShotgridUIManagerImpl::OnExtendContentBrowserAssetSelecti
 			{
 				MenuBuilder.AddMenuSeparator();
 				MenuBuilder.AddSubMenu(
-					LOCTEXT("Shotgrid_ContextMenu", "Shotgrid"),
+					LOCTEXT("Shotgrid_ContextMenu", "ShotGrid"),
 					FText(),
 					FNewMenuDelegate::CreateRaw(this, &FShotgridUIManagerImpl::GenerateShotgridAssetContextMenu, SelectedAssets),
 					false,
@@ -285,7 +285,7 @@ TSharedRef<FExtender> FShotgridUIManagerImpl::OnExtendLevelEditor(const TSharedR
 			[this, SelectedActors](FMenuBuilder& MenuBuilder)
 			{
 				MenuBuilder.AddSubMenu(
-					LOCTEXT("Shotgrid_ContextMenu", "Shotgrid"),
+					LOCTEXT("Shotgrid_ContextMenu", "ShotGrid"),
 					FText(),
 					FNewMenuDelegate::CreateRaw(this, &FShotgridUIManagerImpl::GenerateShotgridActorContextMenu, SelectedActors),
 					false,

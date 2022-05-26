@@ -34,6 +34,18 @@ namespace VCamComponent
 	static const FName LevelEditorName(TEXT("LevelEditor"));
 }
 
+struct FVCamPrivate
+{
+	static bool ShouldUpdateOutputProviders(UVCamComponent* Component)
+	{
+		// We should only update output providers in 3 situations
+		// - We're not in Multi User
+		// - We have the virtual camera role
+		// - We have explicitly set that we want to run Output Providers even when not in the camera role
+		return !Component->IsMultiUserSession() || Component->IsCameraInVPRole() || !Component->bDisableOutputOnMultiUserReceiver;
+	}
+};
+
 UVCamComponent::UVCamComponent()
 {
 	// Don't run on CDO
@@ -311,7 +323,7 @@ void UVCamComponent::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 							DestroyOutputProvider(SavedOutputProviders[ChangedIndex]);
 						}
 
-						if (ChangedProvider)
+						if (ChangedProvider && FVCamPrivate::ShouldUpdateOutputProviders(this))
 						{
 							ChangedProvider->Initialize();
 						}
@@ -409,17 +421,20 @@ void UVCamComponent::Update()
 		SendCameraDataViaMultiUser();
 	}
 
-	for (UVCamOutputProviderBase* Provider : OutputProviders)
+	if (FVCamPrivate::ShouldUpdateOutputProviders(this))
 	{
-		if (Provider)
+		for (UVCamOutputProviderBase* Provider : OutputProviders)
 		{
-			// Initialize the Provider if required
-			if (!Provider->IsInitialized())
+			if (Provider)
 			{
-				Provider->Initialize();
-			}
+				// Initialize the Provider if required
+				if (!Provider->IsInitialized())
+				{
+					Provider->Initialize();
+				}
 
-			Provider->Tick(DeltaTime);
+				Provider->Tick(DeltaTime);
+			}
 		}
 	}
 }
@@ -443,7 +458,7 @@ void UVCamComponent::SetEnabled(bool bNewEnabled)
 
 	// Enable any outputs that are set to active
 	// NOTE this must be done AFTER setting the actual bEnabled variable because OutputProviderBase now checks the component enabled state
-	if (bNewEnabled)
+	if (bNewEnabled && FVCamPrivate::ShouldUpdateOutputProviders(this))
 	{
 		for (UVCamOutputProviderBase* Provider : OutputProviders)
 		{
@@ -910,7 +925,14 @@ void UVCamComponent::ResetAllOutputProviders()
 		{
 			// Initialization will also recover active state 
 			Provider->Deinitialize();
-			Provider->Initialize();
+
+			// We only Initialize a provider if they're able to be updated
+			// If they later become able to be updated then they will be
+			// Initialized inside the Update() loop
+			if (FVCamPrivate::ShouldUpdateOutputProviders(this))
+			{
+				Provider->Initialize();
+			}
 		}
 	}
 }

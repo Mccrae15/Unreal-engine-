@@ -197,6 +197,21 @@ static LONG __stdcall D3DVectoredExceptionHandler(EXCEPTION_POINTERS* InInfo)
 #endif // #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 
 
+FTransientUniformBufferAllocator::~FTransientUniformBufferAllocator()
+{
+	if (Adapter)
+	{
+		Adapter->ReleaseTransientUniformBufferAllocator(this);
+	}
+}
+
+void FTransientUniformBufferAllocator::Cleanup()
+{
+	ClearResource();
+	Adapter = nullptr;
+}
+
+
 FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 	: OwningRHI(nullptr)
 	, bDepthBoundsTestSupported(false)
@@ -992,6 +1007,10 @@ void FD3D12Adapter::InitializeDevices()
 				if (D3D12Caps9.AtomicInt64OnTypedResourceSupported && D3D12Caps11.AtomicInt64OnDescriptorHeapResourceSupported)
 				{
 					GRHISupportsDX12AtomicUInt64 = true;
+				}
+
+				if (GRHISupportsDX12AtomicUInt64)
+				{
 					UE_LOG(LogD3D12RHI, Log, TEXT("Shader Model 6.6 atomic64 is supported"));
 				}
 				else
@@ -1161,6 +1180,13 @@ void FD3D12Adapter::Cleanup()
 		FRHIResource::FlushPendingDeletes(RHICmdList);
 		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 	}
+
+	// Release allocation data of all thread local transient uniform buffer allocators
+	for (FTransientUniformBufferAllocator* Allocator : TransientUniformBufferAllocators)
+	{
+		Allocator->Cleanup();
+	}
+	TransientUniformBufferAllocators.Empty();
 
 	// Cleanup resources
 	DeferredDeletionQueue.ReleaseResources(true, true);
@@ -1385,17 +1411,25 @@ FD3D12TemporalEffect* FD3D12Adapter::GetTemporalEffect(const FName& EffectName)
 
 FD3D12FastConstantAllocator& FD3D12Adapter::GetTransientUniformBufferAllocator()
 {
-	class FTransientUniformBufferAllocator : public FD3D12FastConstantAllocator, public TThreadSingleton<FTransientUniformBufferAllocator>
-	{
-		using FD3D12FastConstantAllocator::FD3D12FastConstantAllocator;
-	};
-
 	// Multi-GPU support : is using device 0 always appropriate here?
 	return FTransientUniformBufferAllocator::Get([this]() -> FTransientUniformBufferAllocator*
 	{
-		FTransientUniformBufferAllocator* Alloc = new FTransientUniformBufferAllocator(Devices[0], FRHIGPUMask::All());
+		FTransientUniformBufferAllocator* Alloc = new FTransientUniformBufferAllocator(this, Devices[0], FRHIGPUMask::All());
+
+		// Register so the underlying resource location can be freed during adapter cleanup instead of when thread local allocation is destroyed
+		{
+			FScopeLock Lock(&TransientUniformBufferAllocatorsCS);
+			TransientUniformBufferAllocators.Add(Alloc);
+		}
+
 		return Alloc;
 	});
+}
+
+void FD3D12Adapter::ReleaseTransientUniformBufferAllocator(FTransientUniformBufferAllocator* InAllocator)
+{
+	FScopeLock Lock(&TransientUniformBufferAllocatorsCS);
+	verify(TransientUniformBufferAllocators.Remove(InAllocator) == 1);
 }
 
 void FD3D12Adapter::UpdateMemoryInfo()

@@ -664,7 +664,7 @@ void FD3D12CommandContextBase::RHIEndFrame()
 		D3D12RHI::FD3DGPUProfiler& GPUProfiler = Device->GetGPUProfiler();
 		GPUProfiler.EndFrame(ParentAdapter->GetOwningRHI());
 
-#if WITH_MGPU
+#if WITH_MGPU || PLATFORM_SUPPORTS_GPU_FRAMETIME_WITHOUT_MGPU
 		if (GPUIndex == 0)
 		{
 			// Multi-GPU support : For now, set GGPUFrameTime to GPU 0's frame time to be

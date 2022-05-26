@@ -2516,6 +2516,23 @@ void UWorld::TransferBlueprintDebugReferences(UWorld* NewWorld)
 					if (GetNetMode() != NM_Client)
 					{
 						NewTargetObject = FindObject<UObject>(NewWorld, *OldTargetObject->GetPathName(this));
+
+						// if we didn't find the object in the Persistent level, we may need to look in WorldPartition sublevels
+						if (!NewTargetObject && NewWorld->GetWorldSettings()->IsPartitionedWorld())
+						{
+							const FString OldTargetPathName = OldTargetObject->GetPathName(PersistentLevel);
+							for (TObjectPtr<ULevelStreaming> StreamingLevel : NewWorld->StreamingLevels)
+							{
+								if (StreamingLevel && StreamingLevel->GetLoadedLevel())
+								{
+									NewTargetObject = FindObject<UObject>(StreamingLevel->GetLoadedLevel(), *OldTargetPathName);
+									if (NewTargetObject)
+									{
+										break;
+									}
+								}
+							}
+						}
 					}
 				}
 
@@ -5029,34 +5046,24 @@ void UWorld::CleanupWorldInternal(bool bSessionEnded, bool bCleanupResources, UW
 			}
 		}
 
-		auto CleanupLevelResourcesAndReferences = [](ULevel* Level, bool bCleanupResources)
-		{
-			if (Level)
-			{
-				Level->CleanupLevel(bCleanupResources);
-				Level->CleanupReferences();
-			}
-		};
-
 		// Cleanup Persistent level outside of following loop because uninitialized worlds don't have a valid Levels array
 		// StreamingLevels are not initialized.
-		CleanupLevelResourcesAndReferences(PersistentLevel, bCleanupResources);
+		if (PersistentLevel)
+		{
+			PersistentLevel->CleanupLevel(bCleanupResources);
+			PersistentLevel->CleanupReferences();
+		}
 
 		if (GetNumLevels() > 1)
 		{
 			check(GetLevel(0) == PersistentLevel);
 			for (int32 LevelIndex = 1; LevelIndex < GetNumLevels(); ++LevelIndex)
 			{
-				CleanupLevelResourcesAndReferences(GetLevel(LevelIndex), bCleanupResources);
+				ULevel* Level = GetLevel(LevelIndex);
+				Level->CleanupLevel(bCleanupResources);
+				Level->CleanupReferences();
 			}
 		}
-
-		// Also cleanup levels pending a GC purge
-		for (int32 LevelIndex = 0; LevelIndex < FLevelStreamingGCHelper::LevelsPendingUnload.Num(); ++LevelIndex)
-		{
-			CleanupLevelResourcesAndReferences(FLevelStreamingGCHelper::LevelsPendingUnload[LevelIndex].Get(), bCleanupResources);
-		}
-		FLevelStreamingGCHelper::LevelsPendingUnload.Empty();
 	}
 #endif //WITH_EDITOR
 

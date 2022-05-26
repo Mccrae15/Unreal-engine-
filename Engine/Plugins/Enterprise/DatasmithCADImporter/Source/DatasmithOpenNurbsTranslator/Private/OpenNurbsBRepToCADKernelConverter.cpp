@@ -71,46 +71,37 @@ TSharedRef<CADKernel::FSurface> FOpenNurbsBRepToCADKernelConverter::AddSurface(O
 	FillPerAxisInfo(U, OpenNurbsSurface, NurbsData);
 	FillPerAxisInfo(V, OpenNurbsSurface, NurbsData);
 
-	int32 ControlVertexDimension = OpenNurbsSurface.CVSize();
-	NurbsData.HomogeneousPoles.SetNumUninitialized(NurbsData.PoleUCount * NurbsData.PoleVCount * ControlVertexDimension);
-	double* ControlPoints = NurbsData.HomogeneousPoles.GetData();
-	NurbsData.bIsRational = OpenNurbsSurface.IsRational();
-	ON::point_style PointStyle = OpenNurbsSurface.IsRational() ? ON::point_style::euclidean_rational : ON::point_style::not_rational;
-	for (int32 UIndex = 0; UIndex < NurbsData.PoleUCount; ++UIndex)
 	{
-		for (int32 VIndex = 0; VIndex < NurbsData.PoleVCount; ++VIndex, ControlPoints += ControlVertexDimension)
+		int32 ControlVertexDimension = OpenNurbsSurface.CVSize();
+		NurbsData.HomogeneousPoles.SetNumUninitialized(NurbsData.PoleUCount * NurbsData.PoleVCount * ControlVertexDimension);
+		double* ControlPoints = NurbsData.HomogeneousPoles.GetData();
+		NurbsData.bIsRational = OpenNurbsSurface.IsRational();
+		ON::point_style PointStyle = OpenNurbsSurface.IsRational() ? ON::point_style::euclidean_rational : ON::point_style::not_rational;
+		for (int32 UIndex = 0; UIndex < NurbsData.PoleUCount; ++UIndex)
 		{
-			OpenNurbsSurface.GetCV(UIndex, VIndex, PointStyle, ControlPoints);
-		}
-	}
-
-#ifdef REMOVE_NEGATIVE_WEIGHT
-	if (NurbsData.bIsRational)
-	{
-		bool bHasNegativeWeight = false;
-		for (int32 Index = 3; Index < NurbsData.HomogeneousPoles.Num(); Index += 4)
-		{
-			double Weight = ControlPoints[Index];
-			if (Weight < 0.)
+			for (int32 VIndex = 0; VIndex < NurbsData.PoleVCount; ++VIndex, ControlPoints += ControlVertexDimension)
 			{
-				bHasNegativeWeight = true;
-				break;
+				OpenNurbsSurface.GetCV(UIndex, VIndex, PointStyle, ControlPoints);
 			}
 		}
+	}
 
-		if (bHasNegativeWeight)
+	// Scale ControlPoints into mm
+	{
+		int32 Offset = NurbsData.bIsRational ? 4 : 3;
+		double* ControlPoints = NurbsData.HomogeneousPoles.GetData();
+		for (int32 Index = 0; Index < NurbsData.HomogeneousPoles.Num(); Index += Offset)
 		{
-			UInfo.IncreaseDegree();
-			VInfo.IncreaseDegree();
-			BuildHull();
+			ControlPoints[Index + 0] *= ScaleFactor;
+			ControlPoints[Index + 1] *= ScaleFactor;
+			ControlPoints[Index + 2] *= ScaleFactor;
 		}
 	}
-#endif
 
 	return CADKernel::FEntity::MakeShared<CADKernel::FNURBSSurface>(GeometricTolerance, NurbsData);
 }
 
-TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddLoop(const ON_BrepLoop& OpenNurbsLoop, TSharedRef<CADKernel::FSurface> & CarrierSurface)
+TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddLoop(const ON_BrepLoop& OpenNurbsLoop, TSharedRef<CADKernel::FSurface> & CarrierSurface, const bool bIsExternal)
 {
 	using namespace CADKernel;
 
@@ -146,7 +137,12 @@ TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddL
 		return TSharedPtr<FTopologicalLoop>();
 	}
 
-	return FTopologicalLoop::Make(Edges, Directions, GeometricTolerance);
+	TSharedPtr<CADKernel::FTopologicalLoop> Loop = FTopologicalLoop::Make(Edges, Directions, GeometricTolerance);
+	if (!bIsExternal)
+	{
+		Loop->SetAsInnerBoundary();
+	}
+	return Loop;
 }
 
 void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNurbsLoop, CADKernel::FTopologicalLoop& Loop)
@@ -176,7 +172,7 @@ void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNu
 			}
 
 			TSharedPtr<CADKernel::FTopologicalEdge>* TwinEdge = OpenNurbsTrimId2CADKernelEdge.Find(LinkedEdgeId);
-			if (TwinEdge->IsValid() && !(*TwinEdge)->IsDeleted() && !(*TwinEdge)->IsDegenerated())
+			if (TwinEdge != nullptr && TwinEdge->IsValid() && !(*TwinEdge)->IsDeleted() && !(*TwinEdge)->IsDegenerated())
 			{
 				(*Edge)->Link(**TwinEdge, SquareTolerance);
 				break;
@@ -282,15 +278,17 @@ TSharedPtr<CADKernel::FTopologicalFace> FOpenNurbsBRepToCADKernelConverter::AddF
 		return Face;
 	}
 
+	bool bIsExternal = true;
 	int32 LoopCount = OpenNurbsFace.LoopCount();
 	for (int32 LoopIndex = 0; LoopIndex < LoopCount; ++LoopIndex)
 	{
 		const ON_BrepLoop& OpenNurbsLoop = *OpenNurbsFace.Loop(LoopIndex);
-		TSharedPtr<FTopologicalLoop> Loop = AddLoop(OpenNurbsLoop, Surface);
+		TSharedPtr<FTopologicalLoop> Loop = AddLoop(OpenNurbsLoop, Surface, bIsExternal);
 		if(Loop.IsValid())
 		{
 			LinkEdgesLoop(OpenNurbsLoop, *Loop);
 			Face->AddLoop(Loop);
+			bIsExternal = false;
 		}
 	}
 

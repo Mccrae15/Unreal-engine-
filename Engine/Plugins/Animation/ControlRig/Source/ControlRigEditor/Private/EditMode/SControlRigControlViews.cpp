@@ -339,6 +339,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 
 								SNew(SSpinBox<float>)
 								// Only allow spinning if we have a single value
+								.PreventThrottling(true)
 								.Value(this, &SControlRigPoseView::OnGetPoseBlendValue)
 								.ToolTipText(LOCTEXT("BlendTooltip", "Blend between current pose and pose asset. Use Ctrl drag for under and over shoot."))
 								.MinValue(0.0f)
@@ -629,7 +630,7 @@ UControlRig* SControlRigPoseView::GetFirstControlRigInLevelSequence(UControlRig*
 {
 	if (ControlRig == nullptr)
 	{
-		ULevelSequence* LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence();
+		ULevelSequence* LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence();
 		if (LevelSequence)
 		{
 			TArray<FControlRigSequencerBindingProxy> Proxies = UControlRigSequencerEditorLibrary::GetControlRigs(LevelSequence);

@@ -847,6 +847,16 @@ namespace UnrealBuildTool
 			VersionNumberRange.Parse("14.29.30133", "14.29.30136"), // VS2019 16.11.5
 		};
 
+		/// <summary>
+		/// Tested compiler toolchanges that should not be allowed.
+		/// </summary>
+		static readonly VersionNumberRange[] BannedVisualCppVersions = new VersionNumberRange[]
+		{
+			// https://developercommunity.visualstudio.com/t/Incorrect-instantiation-of-a-virtual-fun/10020368
+			VersionNumberRange.Parse("14.32.31326", "14.32.31328"), // VS2022 17.2.0
+			VersionNumberRange.Parse("14.33.31424", "14.33.31424"), // VS2022 17.3.0 Preview 1.0
+		};
+
 		static readonly VersionNumber MinimumVisualCppVersion = new VersionNumber(14, 29, 30133);
 
 		/// <summary>
@@ -1559,6 +1569,12 @@ namespace UnrealBuildTool
 			if (Version < MinimumVisualCppVersion)
 			{
 				Error = $"UnrealBuildTool requires at minimum the MSVC {MinimumVisualCppVersion} toolchain. Please install a later toolchain from the Visual Studio installer.";
+			}
+
+			VersionNumberRange? Banned = BannedVisualCppVersions.FirstOrDefault(x => x.Contains(Version));
+			if (Banned != null)
+			{
+				Error = $"UnrealBuildTool has banned the MSVC {Banned} toolchains due to compiler issues. Please install a different toolchain from the Visual Studio installer.";
 			}
 
 			Log.TraceLog("Found Visual Studio toolchain: {0} (Family={1}, FamilyRank={2}, Version={3}, Is64Bit={4}, Preview={5}, Architecture={6}, Error={7}, Redist={8})", ToolChainDir, Family, FamilyRank, Version, Is64Bit, bPreview, WindowsArchitecture.x64.ToString(), Error != null, RedistDir);

@@ -58,6 +58,9 @@
 #include "Sequencer/MovieSceneControlRigParameterSection.h"
 #include "SRigSpacePickerWidget.h"
 #include "ControlRigSpaceChannelEditors.h"
+#include "LevelEditor.h"
+#include "InteractiveToolManager.h"
+#include "EdModeInteractiveToolsContext.h"
 
 void UControlRigEditModeDelegateHelper::OnPoseInitialized()
 {
@@ -310,6 +313,12 @@ void FControlRigEditMode::SetUpDetailPanel()
 
 void FControlRigEditMode::SetObjects_Internal()
 {
+	if (DelegateHelper.IsValid() == false)
+	{
+		DelegateHelper = TStrongObjectPtr<UControlRigEditModeDelegateHelper>(NewObject<UControlRigEditModeDelegateHelper>());
+		DelegateHelper->EditMode = this;
+	}
+
 	for (TWeakObjectPtr<UControlRig> RuntimeRigPtr : RuntimeControlRigs)
 	{
 		if (UControlRig* RuntimeControlRig = RuntimeRigPtr.Get())
@@ -406,16 +415,34 @@ void FControlRigEditMode::Enter()
 		DelegateHelper.Reset();
 	}
 
-	DelegateHelper = TStrongObjectPtr<UControlRigEditModeDelegateHelper>(NewObject<UControlRigEditModeDelegateHelper>());
-	DelegateHelper->EditMode = this;
-
 	SetObjects_Internal();
+}
+
+//todo get working with Persona
+static void ClearOutAnyActiveTools()
+{
+	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
+	{
+		TSharedPtr<ILevelEditor> LevelEditorPtr = LevelEditorModule->GetLevelEditorInstance().Pin();
+
+		if (LevelEditorPtr.IsValid())
+		{
+			FString ActiveToolName = LevelEditorPtr->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->GetActiveToolName(EToolSide::Left);
+			if (ActiveToolName == TEXT("SequencerPivotTool"))
+			{
+				LevelEditorPtr->GetEditorModeManager().GetInteractiveToolsContext()->ToolManager->DeactivateTool(EToolSide::Left, EToolShutdownType::Completed);
+			}
+		}
+	}
 }
 
 void FControlRigEditMode::Exit()
 {
+	ClearOutAnyActiveTools();
+
 	if (UControlRig* ControlRig = GetControlRig(true))
 	{
+		ControlRig->ControlSelected().Clear();
 		ControlRig->ClearControlSelection();
 	}
 

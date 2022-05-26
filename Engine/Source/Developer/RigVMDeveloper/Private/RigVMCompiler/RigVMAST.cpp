@@ -209,9 +209,12 @@ int32 FRigVMExprAST::GetMinChildIndexWithinParent(const FRigVMExprAST* InParentE
 			ChildIndex = Parent->GetMinChildIndexWithinParent(InParentExpr);
 		}
 
-		if (ChildIndex < MinIndex || MinIndex == INDEX_NONE)
+		if (ChildIndex != INDEX_NONE)
 		{
-			MinIndex = ChildIndex;
+			if (ChildIndex < MinIndex || MinIndex == INDEX_NONE)
+			{
+				MinIndex = ChildIndex;
+			}
 		}
 	}
 
@@ -3223,6 +3226,28 @@ void FRigVMParserAST::Inline(URigVMGraph* InGraph, const TArray<FRigVMASTProxy>&
 	for (const FRigVMASTProxy& NodeProxy : NodeProxies)
 	{
 		LocalPinTraversalInfo::VisitNode(NodeProxy, TraversalInfo);
+	}
+
+	// once we are done with the inlining we may need to clean up pin value overrides for pins
+	// that also have overrides on sub pins
+	TArray<FRigVMASTProxy> PinOverridesToRemove;
+	for(const TPair<FRigVMASTProxy, URigVMPin::FPinOverrideValue>& Override : PinOverrides)
+	{
+		if(URigVMPin* Pin = Override.Key.GetSubject<URigVMPin>())
+		{
+			for(URigVMPin* SubPin : Pin->GetSubPins())
+			{
+				const FRigVMASTProxy SubPinProxy = Override.Key.GetSibling(SubPin);
+				if(PinOverrides.Contains(SubPinProxy))
+				{
+					PinOverridesToRemove.Add(Override.Key);
+				}
+			}
+		}
+	}
+	for(const FRigVMASTProxy& ProxyToRemove : PinOverridesToRemove)
+	{
+		PinOverrides.Remove(ProxyToRemove);
 	}
 }
 

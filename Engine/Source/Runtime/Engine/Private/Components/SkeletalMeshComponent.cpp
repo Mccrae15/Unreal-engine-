@@ -776,6 +776,8 @@ void USkeletalMeshComponent::InitAnim(bool bForceReinit)
 
 				if (bInitializedAnimInstance)
 				{
+					// Allow blueprints to respond to the event in editor
+					FEditorScriptExecutionGuard ScriptGuard;
 					OnAnimInitialized.Broadcast();
 				}
 			}
@@ -3766,18 +3768,23 @@ void USkeletalMeshComponent::ValidateAnimation()
 	else if (AnimationMode == EAnimationMode::AnimationBlueprint)
 	{
 		IAnimClassInterface* AnimClassInterface = IAnimClassInterface::GetFromClass(AnimClass);
-		if (AnimClassInterface && SkeletalMesh && !AnimClassInterface->GetTargetSkeleton()->IsCompatible(SkeletalMesh->GetSkeleton()))
+		if (AnimClassInterface && SkeletalMesh)
 		{
-			if(SkeletalMesh->GetSkeleton())
+			if (AnimClassInterface->GetTargetSkeleton() == nullptr)
 			{
-				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible with skeleton %s, removing AnimBP from actor."), *AnimClass->GetName(), *SkeletalMesh->GetSkeleton()->GetName());
+				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible because it has no target skeleton, removing AnimBP from actor."), *AnimClass->GetName());
+				AnimClass = nullptr;
 			}
-			else
+			else if (SkeletalMesh->GetSkeleton() == nullptr)
 			{
 				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible because mesh %s has no skeleton, removing AnimBP from actor."), *AnimClass->GetName(), *SkeletalMesh->GetName());
+				AnimClass = nullptr;
 			}
-
-			AnimClass = nullptr;
+			else if (!AnimClassInterface->GetTargetSkeleton()->IsCompatible(SkeletalMesh->GetSkeleton()))
+			{
+				UE_LOG(LogAnimation, Warning, TEXT("AnimBP %s is incompatible with skeleton %s, removing AnimBP from actor."), *AnimClass->GetName(), *SkeletalMesh->GetSkeleton()->GetName());
+				AnimClass = nullptr;
+			}
 		}
 	}
 }

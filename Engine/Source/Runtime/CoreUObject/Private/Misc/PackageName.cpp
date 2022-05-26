@@ -1038,6 +1038,11 @@ bool FPackageName::IsValidTextForLongPackageName(FStringView InLongPackageName, 
 		if (OutReason) *OutReason = EErrorCode::LongPackageNames_PathWithTrailingSlash;
 		return false;
 	}
+	if (InLongPackageName.Contains(TEXT("//")))
+	{
+		if (OutReason) *OutReason = EErrorCode::PackageNameContainsInvalidCharacters;
+		return false;
+	}
 	// Check for invalid characters
 	if (DoesPackageNameContainInvalidCharacters(InLongPackageName, OutReason))
 	{

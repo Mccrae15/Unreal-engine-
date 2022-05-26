@@ -16,6 +16,8 @@ class FEditorViewportLayout;
 class LEVELEDITOR_API FLevelViewportTabContent : public FEditorViewportTabContent
 {
 public:
+	friend class SLevelViewport;
+
 	~FLevelViewportTabContent();
 
 	/** Starts the tab content object and creates the initial layout based on the layout string */
@@ -27,4 +29,12 @@ protected:
 
 	void OnLayoutStartChange(bool bSwitchingLayouts);
 	void OnLayoutChanged();
+
+private:
+	void OnUIActionSetViewportConfiguration(FName InConfigurationName);
+	FName GetViewportTypeWithinLayout(FName InConfigKey) const;
+	void OnUIActionSetViewportTypeWithinLayout(FName InConfigKey, FName InLayoutType);
+	bool IsViewportTypeWithinLayoutEqual(FName InConfigName, FName InLayoutType) const;
+	bool IsViewportConfigurationChecked(FName InLayoutType) const;
+	void BindViewportLayoutCommands(FUICommandList& InOutCommandList, FName ViewportConfigKey);
 };

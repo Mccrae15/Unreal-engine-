@@ -919,6 +919,11 @@ void UEditorLevelUtils::PrivateRemoveLevelFromWorld(ULevel* InLevel)
 		check(InLevel->bIsVisible == false);
 	}
 
+	if (FLevelCollection* LC = InLevel->GetCachedLevelCollection())
+	{
+		LC->RemoveLevel(InLevel);
+	}
+
 	InLevel->ReleaseRenderingResources();
 
 	IStreamingManager::Get().RemoveLevel(InLevel);

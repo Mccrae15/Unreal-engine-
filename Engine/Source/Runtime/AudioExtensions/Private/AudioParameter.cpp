@@ -211,6 +211,7 @@ void FAudioParameter::Merge(TArray<FAudioParameter>&& InParams, TArray<FAudioPar
 		while (!InParams.IsEmpty())
 		{
 			FAudioParameter& OutParam = OutParams[i];
+			// Break going through in params as there will be no more matches with this current out param 
 			if (InParams.Last().ParamName.FastLess(OutParam.ParamName))
 			{
 				break;
@@ -220,8 +221,7 @@ void FAudioParameter::Merge(TArray<FAudioParameter>&& InParams, TArray<FAudioPar
 			FAudioParameter NewParam = InParams.Pop(bAllowShrinking);
 			if (NewParam.ParamName == OutParam.ParamName)
 			{
-				NewParam.Merge(OutParam);
-				OutParam = MoveTemp(NewParam);
+				OutParam.Merge(NewParam);
 			}
 			else
 			{
@@ -229,4 +229,7 @@ void FAudioParameter::Merge(TArray<FAudioParameter>&& InParams, TArray<FAudioPar
 			}
 		}
 	}
+
+	// Add the rest of the in params that have no matching out param 
+	OutParams.Append(MoveTemp(InParams));
 }

@@ -15,12 +15,19 @@
 #include "Engine/StaticMesh.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/BrushComponent.h"
 #include "Components/DynamicMeshComponent.h"
 #include "UObject/UObjectGlobals.h"
 
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "USceneSnappingManager"
+
+
+
+// defined in SceneGeometrySpatialCache.cpp
+extern TAutoConsoleVariable<bool> CVarEnableModelingVolumeSnapping;
+
 
 static double SnapToIncrement(double fValue, double fIncrement, double offset = 0)
 {
@@ -330,11 +337,19 @@ static bool FindNearestVisibleObjectHit_Internal(
 		return false;
 	}
 
+	bool bEnableVolumes = CVarEnableModelingVolumeSnapping.GetValueOnAnyThread();
+
 	double NearestVisible = TNumericLimits<double>::Max();
 	for (const FHitResult& CurResult : OutHits)
 	{
 		// if we have hit Component in the SpatialCache, prefer to use that
 		if (SpatialCache && SpatialCache->HaveCacheForComponent(CurResult.GetComponent()) )
+		{
+			continue;
+		}
+
+		// filtering out any volume hits here will disable volume snapping
+		if (bEnableVolumes == false && Cast<UBrushComponent>(CurResult.GetComponent()) != nullptr)
 		{
 			continue;
 		}
@@ -358,13 +373,13 @@ bool GetComponentHitTriangle_Internal(FHitResult HitResult, VectorType* TriVerti
 		return false;
 	}
 
-	if (UPrimitiveComponent* Component = HitResult.Component.Get())
+	if (UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(HitResult.Component.Get()))
 	{
 		// physics collision data is created from StaticMesh RenderData
 		// so use HitResult.FaceIndex to extract triangle from the LOD0 mesh
 		// (note: this may be incorrect if there are multiple sections...in that case I think we have to
 		//  first find section whose accumulated index range would contain .FaceIndexX)
-		UStaticMesh* StaticMesh = Cast<UStaticMeshComponent>(Component)->GetStaticMesh();
+		UStaticMesh* StaticMesh = Component->GetStaticMesh();
 		FStaticMeshLODResources& LOD = StaticMesh->GetRenderData()->LODResources[0];
 		FIndexArrayView Indices = LOD.IndexBuffer.GetArrayView();
 		int32 TriIdx = 3 * HitResult.FaceIndex;

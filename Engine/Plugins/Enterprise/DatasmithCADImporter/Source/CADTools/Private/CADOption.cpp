@@ -27,13 +27,13 @@ Default is MaxImportThreads = 0\n\
 	ECVF_Default);
 
 bool FImportParameters::bGDisableCADKernelTessellation = true;
-#ifdef ENABLE_IN_5_0_1
+/*
 FAutoConsoleVariableRef GCADTranslatorDisableCADKernelTessellation(
 	TEXT("ds.CADTranslator.DisableCADKernelTessellation"),
 	FImportParameters::bGDisableCADKernelTessellation,
 	TEXT("Disable to use CAD import library tessellator.\n"),
 	ECVF_Default);
-#endif
+*/
 
 bool FImportParameters::bGEnableCADCache = true;
 FAutoConsoleVariableRef GCADTranslatorEnableCADCache(
@@ -65,6 +65,14 @@ FAutoConsoleVariableRef GCADTranslatorJtFileEmbeddedTessellation(
 	FImportParameters::bGPreferJtFileEmbeddedTessellation,
 	TEXT("If both (tessellation and BRep) exist in the file, import embedded tessellation instead of meshing BRep.\n"),
 	ECVF_Default);
+
+float FImportParameters::GStitchingTolerance = 0.001f;
+FAutoConsoleVariableRef GCADTranslatorStitchingTolerance(
+	TEXT("ds.CADTranslator.StitchingTolerance"),
+	FImportParameters::GStitchingTolerance,
+	TEXT("Welding threshold for Heal/Sew stitching methods in cm\n\
+Default value of StitchingTolerance is 0.001 cm\n"),
+ECVF_Default);
 
 uint32 GetTypeHash(const FImportParameters& ImportParameters)
 {

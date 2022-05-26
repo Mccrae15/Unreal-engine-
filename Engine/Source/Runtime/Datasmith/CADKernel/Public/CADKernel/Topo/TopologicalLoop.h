@@ -45,6 +45,7 @@ class CADKERNEL_API FTopologicalLoop : public FTopologicalEntity
 	friend class FTopologicalFace;
 	friend class FTopologicalFace;
 	friend class FTopologicalEdge;
+	friend class FGrid;
 
 public:
 	FSurfacicBoundary Boundary;

@@ -639,9 +639,17 @@ struct FRDGResourceDumpContext
 
 		bool bIsUnsupported = false;
 
-		if (GPixelFormats[Desc.Format].BlockSizeX != 1 ||
-			GPixelFormats[Desc.Format].BlockSizeY != 1 ||
-			GPixelFormats[Desc.Format].BlockSizeZ != 1)
+		// We support uncompressing certain BC formats, as the DumpGPU viewer doesn't support compressed formats.  Compression
+		// is used by Lumen, so it's extremely useful to preview.  Additional code below selects the uncompressed format (BC4 is
+		// scalar, so we use PF_R32_FLOAT, BC5 is dual channel, so it uses PF_G16R16F, etc).  If you add a format here, you must
+		// also update Engine\Extras\GPUDumpViewer\GPUDumpViewer.html (see "translate_subresource_desc").
+		if ((GPixelFormats[Desc.Format].BlockSizeX != 1 ||
+			 GPixelFormats[Desc.Format].BlockSizeY != 1 ||
+			 GPixelFormats[Desc.Format].BlockSizeZ != 1) &&
+			!(Desc.Format == PF_BC4 ||
+			  Desc.Format == PF_BC5 ||
+			  Desc.Format == PF_BC6H ||
+			  Desc.Format == PF_BC7))
 		{
 			bIsUnsupported = true;
 		}
@@ -678,6 +686,21 @@ struct FRDGResourceDumpContext
 			else if (Desc.Format == PF_D24)
 			{
 				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
+			}
+			else if (Desc.Format == PF_BC4)
+			{
+				SubresourceDumpDesc.PreprocessedPixelFormat = PF_R32_FLOAT;
+				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
+			}
+			else if (Desc.Format == PF_BC5)
+			{
+				SubresourceDumpDesc.PreprocessedPixelFormat = PF_G16R16F;
+				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
+			}
+			else if ((Desc.Format == PF_BC6H) || (Desc.Format == PF_BC7))
+			{
+				SubresourceDumpDesc.PreprocessedPixelFormat = PF_FloatRGBA;
 				SubresourceDumpDesc.DumpTextureType = FDumpTextureCS::ETextureType::Texture2DFloatNoMSAA;
 			}
 		}
@@ -1110,7 +1133,9 @@ struct FRDGResourceDumpContext
 		{
 			FString DumpFilePath = kResourcesDir / FString::Printf(TEXT("%s.v%016x.bin"), *UniqueResourceName, PtrToUint(bIsOutputResource ? Pass : nullptr));
 
-			if (IsUnsafeToDumpResource(ByteSize, 1.2f))
+			const bool bCopyDataForWrite = FDataDrivenShaderPlatformInfo::GetIsLanguageNintendo(GMaxRHIShaderPlatform);
+			const float MemoryAmountScale = bCopyDataForWrite ? 2.2f : 1.2f;
+			if (IsUnsafeToDumpResource(ByteSize, MemoryAmountScale))
 			{
 				UE_LOG(LogRendererCore, Warning, TEXT("Not dumping %s because of insuficient memory available for staging buffer."), *DumpFilePath);
 				return;
@@ -1123,7 +1148,7 @@ struct FRDGResourceDumpContext
 				RDG_EVENT_NAME("RDG DumpBuffer(%s -> %s)", Buffer->Name, *DumpFilePath),
 				PassParameters,
 				ERDGPassFlags::Readback,
-				[this, DumpFilePath, Buffer, ByteSize](FRHICommandListImmediate& RHICmdList)
+				[this, DumpFilePath, Buffer, ByteSize, bCopyDataForWrite](FRHICommandListImmediate& RHICmdList)
 			{
 				check(IsInRenderingThread());
 				FStagingBufferRHIRef StagingBuffer = RHICreateStagingBuffer();
@@ -1144,8 +1169,19 @@ struct FRDGResourceDumpContext
 				void* Content = RHICmdList.LockStagingBuffer(StagingBuffer, Fence.GetReference(), 0, ByteSize);
 				if (Content)
 				{
-					TArrayView<const uint8> ArrayView(reinterpret_cast<const uint8*>(Content), ByteSize);
-					DumpBinaryToFile(ArrayView, DumpFilePath);
+					if (bCopyDataForWrite)
+					{
+						TArray64<uint8> CopiedData;
+						CopiedData.SetNumUninitialized(ByteSize);
+
+						FPlatformMemory::Memcpy(&CopiedData[0], Content, ByteSize);
+						DumpBinaryToFile(CopiedData, DumpFilePath);
+					}
+					else
+					{
+						TArrayView<const uint8> ArrayView(reinterpret_cast<const uint8*>(Content), ByteSize);
+						DumpBinaryToFile(ArrayView, DumpFilePath);
+					}
 
 					RHICmdList.UnlockStagingBuffer(StagingBuffer);
 				}

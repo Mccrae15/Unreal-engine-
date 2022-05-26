@@ -51,7 +51,10 @@
 	The master class that handles tracking of the current mode.
 ------------------------------------------------------------------------------*/
 
-
+namespace EditorModeToolsInternal
+{
+	static bool bIsExitingModesDuringTick = false;
+}
 
 FEditorModeTools::FEditorModeTools()
 	: PivotShown(false)
@@ -631,12 +634,16 @@ bool FEditorModeTools::TestAllModes(TFunctionRef<bool(UEdMode*)> InCalllback, bo
 
 void FEditorModeTools::ExitAllModesPendingDeactivate()
 {
-	// Make a copy so we can modify the pending deactivate modes map
+	EditorModeToolsInternal::bIsExitingModesDuringTick = true;
+
+	// Make a copy so we can modify the pending deactivate modes map during ExitMode
 	TMap<FEditorModeID, UEdMode*> PendingDeactivateModesCopy(PendingDeactivateModes);
 	for (auto& Pair : PendingDeactivateModesCopy)
 	{
 		ExitMode(Pair.Value);
 	}
+
+	EditorModeToolsInternal::bIsExitingModesDuringTick = false;
 
 	check(PendingDeactivateModes.Num() == 0);
 }
@@ -851,8 +858,15 @@ void FEditorModeTools::ActivateMode(FEditorModeID InID, bool bToggle)
 	if (!ScriptableMode)
 	{
 		ScriptableMode = PendingDeactivateModes.FindRef(InID);
+
 		if (ScriptableMode)
 		{
+			// If we are actively exiting modes, don't re-activate the mode
+			if (EditorModeToolsInternal::bIsExitingModesDuringTick)
+			{
+				return;
+			}
+
 			bNeedsEnter = false;
 		}
 	}

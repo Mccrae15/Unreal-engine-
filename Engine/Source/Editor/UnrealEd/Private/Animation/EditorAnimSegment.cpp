@@ -64,13 +64,9 @@ bool UEditorAnimSegment::ApplyChangesToMontage()
 bool UEditorAnimSegment::PropertyChangeRequiresRebuild(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const FName PropertyName = PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : NAME_None;
-	if( PropertyName == FName(TEXT("AnimEndTime")) || PropertyName == FName(TEXT("AnimStartTime")) || PropertyName == FName(TEXT("AnimPlayRate")) || PropertyName == FName(TEXT("LoopingCount")))
-	{
-		// Changing the end or start time of the segment length can't change the order of the montage segments.
-		// Return false so that the montage editor does not fully rebuild its UI and we can keep this UEditorAnimSegment object 
-		// in the details view. (A better solution would be handling the rebuilding in a way that didn't possibly invalidate the UEditorMontageObj in the details view)
-		return false;
-	}
 
-	return true;
+	// Changing the end or start time of the segment length can't change the order of the montage segments.
+	// Return false so that the montage editor does not fully rebuild its UI and we can keep this UEditorAnimSegment object 
+	// in the details view. (A better solution would be handling the rebuilding in a way that didn't possibly invalidate the UEditorMontageObj in the details view)
+	return !(PropertyName == GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimEndTime) || PropertyName == GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimStartTime) || PropertyName == GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimPlayRate) || PropertyName == GET_MEMBER_NAME_CHECKED(FAnimSegment, LoopingCount));
 }

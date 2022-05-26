@@ -6,6 +6,7 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Views/SListView.h"
 
 namespace UE::DatasmithImporter
 {
@@ -83,6 +84,8 @@ namespace UE::DatasmithImporter
 		TWeakPtr< SWindow > Window;
 
 		TSharedPtr<FDirectLinkExternalSource> SelectedSource;
+
+		TSharedPtr<SListView<TSharedRef<struct FDirectLinkExternalSourceInfo>>> SourceListView;
 
 		TArray<TSharedRef<struct FDirectLinkExternalSourceInfo>> DirectLinkExternalSourceInfos;
 	};

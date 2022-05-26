@@ -383,6 +383,8 @@ void FStateTreeViewModel::AddChildState(UStateTreeState* ParentState)
 
 	UStateTreeState* NewState = NewObject<UStateTreeState>(TreeData, FName(), RF_Transactional);
 
+	ParentState->Modify();
+	
 	ParentState->Children.Add(NewState);
 	NewState->Parent = ParentState;
 
@@ -499,6 +501,12 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, int32
 			}
 		}
 
+		if (RelativeLocation == 0)
+		{
+			// Move into
+			TargetState->Modify();
+		}
+		
 		for (UStateTreeState* Parent : AffectedParents)
 		{
 			if (Parent)

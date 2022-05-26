@@ -23,6 +23,7 @@
 #include "HAL/PlatformFileManager.h"
 
 #include "ISourceControlModule.h"
+#include "UObject/UObjectHash.h"
 
 #if WITH_EDITOR
 	#include "Editor.h"
@@ -118,6 +119,21 @@ FConcertClientPackageManager::~FConcertClientPackageManager()
 		}
 	}
 
+	// The persistent level should always be reloaded when using external objects.
+	UWorld* CurrentWorld = ConcertSyncClientUtil::GetCurrentWorld();
+	if (CurrentWorld)
+	{
+		ULevel* PersistentLevel = CurrentWorld->PersistentLevel;
+		if (PersistentLevel && PersistentLevel->IsUsingExternalObjects())
+		{
+			const FName PackageName = PersistentLevel->GetPackage()->GetFName();
+			if (!PackagesPendingHotReload.Contains(PackageName))
+			{
+				PackagesPendingHotReload.Add(PackageName);
+			}
+		}
+	}
+
 	if (!IsEngineExitRequested())
 	{
 		// Hot reload after unregistering from most delegates to prevent events triggered by hot-reloading (such as asset deleted) to be recorded as transaction.
@@ -125,9 +141,25 @@ FConcertClientPackageManager::~FConcertClientPackageManager()
 	}
 }
 
+bool PackageContainsExternalActors(UPackage* InPackage)
+{
+	bool bContainsExternalActors = false;
+	ForEachObjectWithPackage(
+		InPackage, [&bContainsExternalActors](UObject* InObject) mutable -> bool {
+			if (InObject->IsPackageExternal()) {
+				bContainsExternalActors = true;
+				// Break from our loop.
+				return false;
+			}
+			return true;
+		});
+	return bContainsExternalActors;
+}
+
 bool FConcertClientPackageManager::ShouldIgnorePackageDirtyEvent(class UPackage* InPackage) const
 {
 	return InPackage == GetTransientPackage()
+		|| PackageContainsExternalActors(InPackage)
 		|| InPackage->HasAnyFlags(RF_Transient)
 		|| InPackage->HasAnyPackageFlags(PKG_PlayInEditor | PKG_CompiledIn) // CompiledIn packages are not considered content for MU. (ex when changing some plugin settings like /Script/DisasterRecoveryClient)
 		|| bIgnorePackageDirtyEvent
@@ -405,7 +437,11 @@ void FConcertClientPackageManager::HandlePackageRejectedEvent(const FConcertSess
 void FConcertClientPackageManager::HandlePackageDirtyStateChanged(UPackage* InPackage)
 {
 	check(!InPackage->HasAnyFlags(RF_Transient) || InPackage != GetTransientPackage());
-	if (InPackage->IsDirty() && !InPackage->HasAnyPackageFlags(PKG_CompiledIn | PKG_InMemoryOnly)) // Dirty packages are tracked for purge/reload, but 'compiled in' and 'in memory' cannot be hot purged/reloaded.
+
+	// Dirty packages are tracked for purge/reload, but 'compiled in' and
+	// 'in memory' cannot be hot purged/reloaded.
+	//
+	if (InPackage->IsDirty() && !InPackage->HasAnyPackageFlags(PKG_CompiledIn | PKG_InMemoryOnly))
 	{
 		DirtyPackages.Add(InPackage->GetFName());
 	}

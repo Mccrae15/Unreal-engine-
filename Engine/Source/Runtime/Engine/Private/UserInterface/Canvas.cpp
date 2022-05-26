@@ -842,6 +842,11 @@ void FCanvas::Flush_GameThread(bool bForce)
 	// current render target set for the canvas
 	check(RenderTarget);
 
+	if (!(AllowedModes & Allow_DeleteOnRender))
+	{
+		ensureMsgf(false, TEXT("Flush_GameThread requires Allow_DeleteOnRender flag to be set."));
+	}
+
 	// no need to set the render target if we aren't going to draw anything to it!
 	if (SortedElements.Num() == 0)
 	{
@@ -883,16 +888,11 @@ void FCanvas::Flush_GameThread(bool bForce)
 				{
 					// mark current render target as dirty since we are drawing to it
 					bRenderTargetDirty |= RenderItem->Render_GameThread(this, RenderThreadScope);
-					if( AllowedModes & Allow_DeleteOnRender )
-					{
-						RenderThreadScope.DeferredDelete(RenderItem);
-					}
+
+					RenderThreadScope.DeferredDelete(RenderItem);
 				}
 			}
-			if( AllowedModes & Allow_DeleteOnRender )
-			{
-				SortElement.RenderBatchArray.Empty();
-			}
+			SortElement.RenderBatchArray.Empty();
 		}
 	}
 	else
@@ -913,13 +913,10 @@ void FCanvas::Flush_GameThread(bool bForce)
 		}
 	}
 	
-	if( AllowedModes & Allow_DeleteOnRender )
-	{
-		// empty the array of FCanvasSortElement entries after finished with rendering
-		SortedElements.Empty();
-		SortedElementLookupMap.Empty();
-		LastElementIndex = INDEX_NONE;
-	}
+	// empty the array of FCanvasSortElement entries after finished with rendering
+	SortedElements.Empty();
+	SortedElementLookupMap.Empty();
+	LastElementIndex = INDEX_NONE;
 }
 
 void FCanvas::PushRelativeTransform(const FMatrix& Transform)

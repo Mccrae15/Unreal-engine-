@@ -1501,6 +1501,19 @@ TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParam
 		AssignmentNode->AddParameter(NewParameter, VarDefaultValue);
 	};
 
+	auto AddExistingParameterLambda = [this, AssignmentNode](FNiagaraVariable& NewParameter) {
+		// If an assignment target is already setting the associated parameter, we simply don't do anything
+		if (AssignmentNode->GetAssignmentTargets().Contains(NewParameter))
+		{
+			return;
+		}
+
+		const FString VarDefaultValue = FNiagaraConstants::GetAttributeDefaultValue(NewParameter);
+		FNiagaraParameterPanelCategory TempCategory = FNiagaraParameterPanelCategory(FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(NewParameter.GetName()));
+		FindOrAddParameter(NewParameter, TempCategory);
+		AssignmentNode->AddParameter(NewParameter, VarDefaultValue);
+	};
+
 	auto AddScriptVarLambda = [this, AssignmentNode](const UNiagaraScriptVariable* NewScriptVar) {
 		const FString VarDefaultValue = FNiagaraConstants::GetAttributeDefaultValue(NewScriptVar->Variable);
 		AddScriptVariable(NewScriptVar);
@@ -1527,6 +1540,7 @@ TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParam
 		.AvailableParameterDefinitions(SystemViewModel->GetAvailableParameterDefinitions(bSkipSubscribedLibraries))
 		.SubscribedParameterDefinitions(SystemViewModel->GetSubscribedParameterDefinitions())
 		.OnNewParameterRequested_Lambda(AddParameterLambda)
+		.OnSpecificParameterRequested_Lambda(AddExistingParameterLambda)
 		.OnAddScriptVar_Lambda(AddScriptVarLambda)
 		.OnAddParameterDefinitions(this, &FNiagaraSystemToolkitParameterPanelViewModel::AddParameterDefinitions)
 		.OnAllowMakeType_Static(&INiagaraParameterPanelViewModel::CanMakeNewParameterOfType)

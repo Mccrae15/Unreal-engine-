@@ -468,7 +468,7 @@ namespace Metasound
 				FInputVertexInterface(
 					TInputDataVertexModel<FTrigger>(GetInputTriggerName(), METASOUND_LOCTEXT("ArrayOpArrayConcatTrigger", "Trigger to set value.")),
 					TInputDataVertexModel<ArrayType>(GetInputLeftArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatInputLeft", "Input Left Array.")),
-					TInputDataVertexModel<ArrayType>(GetInputRightArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatInputRight", "Input Left Array."))
+					TInputDataVertexModel<ArrayType>(GetInputRightArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatInputRight", "Input Right Array."))
 				),
 				FOutputVertexInterface(
 					TOutputDataVertexModel<ArrayType>(GetOutputArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatOutput", "Array after concatenation."))

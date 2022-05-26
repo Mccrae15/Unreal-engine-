@@ -32,6 +32,8 @@ void FBinkMediaTextureResource::InitDynamicRHI()
 		TexCreateFlags = TexCreate_None;
 	}
 
+	const TCHAR* DebugName = TEXT("Bink");
+
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 	FString DebugNameString = TEXT("Bink:");
 	DebugNameString += Owner->GetName();
@@ -52,7 +54,7 @@ void FBinkMediaTextureResource::InitDynamicRHI()
 	);
 
 	TextureRHI = (FTextureRHIRef&)Texture2DRHI;
-	
+
 	// Don't bother updating if its not a valid video
 	if (Owner->GetSurfaceWidth() && Owner->GetSurfaceHeight()) 
 	{
@@ -73,18 +75,12 @@ void FBinkMediaTextureResource::InitDynamicRHI()
 
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	{
-		FRHIRenderPassInfo RPInfo(RenderTargetTextureRHI, ERenderTargetActions::Clear_Store);
-		TransitionRenderPassTargets(RHICmdList, RPInfo);
+		FRHIRenderPassInfo RPInfo(TextureRHI, ERenderTargetActions::Clear_Store);
+		RHICmdList.Transition(FRHITransitionInfo(TextureRHI.GetReference(), ERHIAccess::Unknown, ERHIAccess::RTV));
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearTexture"));
 		RHICmdList.EndRenderPass();
 		RHICmdList.SetViewport(0, 0, 0, w, h, 1);
-		RHICmdList.Transition(FRHITransitionInfo(TextureRHI.GetReference(), ERHIAccess::Unknown, ERHIAccess::UAVGraphics));
-
-		// Work-around for UE4 bug when playing a chunk loaded video while also streaming a movie
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
-		RHIFlushResources();
-		RHICmdList.SubmitCommandsHint();
-		FPlatformMisc::MemoryBarrier();
+		RHICmdList.Transition(FRHITransitionInfo(TextureRHI.GetReference(), ERHIAccess::RTV, ERHIAccess::UAVGraphics));
 	}
 }
 
@@ -93,31 +89,25 @@ void FBinkMediaTextureResource::ReleaseDynamicRHI()
 	ReleaseRHI();
 	RenderTargetTextureRHI.SafeRelease();
 	RemoveFromDeferredUpdateList();
-
-	// Work-around for UE4 bug when playing a chunk loaded video while also streaming a movie
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
-	RHIFlushResources();
-	RHICmdList.SubmitCommandsHint();
-	FPlatformMisc::MemoryBarrier();
 }
 
 void FBinkMediaTextureResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget) 
 {
+	check(IsInRenderingThread());
 	auto Player = Owner->MediaPlayer;
 	if (!Player || (!Player->IsPlaying() && !Player->IsPaused()) || !TextureRHI) 
 	{
 		return;
 	}
-	FRHITexture2D * tex = TextureRHI->GetTexture2D();
-	if (!tex) 
+	FTexture2DRHIRef tex = TextureRHI->GetTexture2D();
+	if (!tex.GetReference()) 
 	{
 		return;
 	}
 	uint32 width = tex->GetSizeX();
 	uint32 height = tex->GetSizeY();
 	bool is_hdr = PixelFormat != PF_B8G8R8A8;
-	Player->UpdateTexture(RHICmdList, TextureRHI, tex->GetNativeResource(), width, height, false, Owner->Tonemap, Owner->OutputNits, Owner->Alpha, Owner->DecodeSRGB, is_hdr);
+	Player->UpdateTexture(RHICmdList, tex, tex->GetNativeResource(), width, height, false, Owner->Tonemap, Owner->OutputNits, Owner->Alpha, Owner->DecodeSRGB, is_hdr);
 }
 
 void FBinkMediaTextureResource::Clear() 
@@ -134,11 +124,11 @@ void FBinkMediaTextureResource::Clear()
 	ENQUEUE_RENDER_COMMAND(BinkMediaPlayer_Draw)([ref,ref2,w,h](FRHICommandListImmediate& RHICmdList) 
 	{ 
 		FRHIRenderPassInfo RPInfo(ref2, ERenderTargetActions::Clear_Store);
-		TransitionRenderPassTargets(RHICmdList, RPInfo);
+		RHICmdList.Transition(FRHITransitionInfo(ref2.GetReference(), ERHIAccess::Unknown, ERHIAccess::RTV));
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearTexture"));
 		RHICmdList.EndRenderPass();
 		RHICmdList.SetViewport(0, 0, 0, w, h, 1);
-		RHICmdList.Transition(FRHITransitionInfo(ref2.GetReference(), ERHIAccess::Unknown, ERHIAccess::UAVGraphics));
+		RHICmdList.Transition(FRHITransitionInfo(ref2.GetReference(), ERHIAccess::RTV, ERHIAccess::UAVGraphics));
 	});
 }
 

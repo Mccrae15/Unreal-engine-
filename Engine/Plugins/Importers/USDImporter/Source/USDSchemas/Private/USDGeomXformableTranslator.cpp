@@ -18,6 +18,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "Modules/ModuleManager.h"
 #include "StaticMeshAttributes.h"
 
@@ -39,6 +40,18 @@
 	#include "pxr/usd/usdGeom/xformable.h"
 	#include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "USDIncludesEnd.h"
+
+static bool GCollapsePrimsWithoutKind = true;
+static FAutoConsoleVariableRef CVarCollapsePrimsWithoutKind(
+	TEXT( "USD.CollapsePrimsWithoutKind" ),
+	GCollapsePrimsWithoutKind,
+	TEXT( "Allow collapsing prims that have no authored 'Kind' value" ) );
+
+static int32 GMaxNumVerticesCollapsedMesh = 5000000;
+static FAutoConsoleVariableRef CVarMaxNumVerticesCollapsedMesh(
+	TEXT( "USD.MaxNumVerticesCollapsedMesh" ),
+	GMaxNumVerticesCollapsedMesh,
+	TEXT( "Maximum number of vertices that a combined Mesh can have for us to collapse it into a single StaticMesh" ) );
 
 class FUsdGeomXformableCreateAssetsTaskChain : public FBuildStaticMeshTaskChain
 {
@@ -407,10 +420,8 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 
 	if ( Model )
 	{
-		// We need KindValidationNone here or else we get inconsistent results when a prim references another prim that is a component.
-		// For example, when referencing a component prim in another file, this returns 'true' if the referencer is a root prim,
-		// but false if the referencer is within another Xform prim, for whatever reason.
-		bCollapsesChildren = EnumHasAnyFlags( Context->KindsToCollapse, UsdUtils::GetDefaultKind( Prim ) );
+		EUsdDefaultKind PrimKind = UsdUtils::GetDefaultKind( Prim );
+		bCollapsesChildren = Context->KindsToCollapse != EUsdDefaultKind::None && ( EnumHasAnyFlags( Context->KindsToCollapse, PrimKind ) || ( PrimKind == EUsdDefaultKind::None && GCollapsePrimsWithoutKind ) );
 
 		if ( !bCollapsesChildren )
 		{
@@ -484,9 +495,20 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 		}
 		else
 		{
-			const int32 MaxVertices = 500000;
-			int32 NumMaxExpectedMaterialSlots = 0;
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable( TEXT( "USD.CombineIdenticalStaticMeshMaterialSlots" ) );
+			bool bCombineMaterialSlots = CVar && CVar->GetBool();
+
+			pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
+			if ( !Context->RenderContext.IsNone() )
+			{
+				RenderContextToken = UnrealToUsd::ConvertToken( *Context->RenderContext.ToString() ).Get();
+			}
+
 			int32 NumVertices = 0;
+
+			TSet<UsdUtils::FUsdPrimMaterialSlot> CombinedSlots;
+			int32 NumMaxExpectedMaterialSlots = 0;
+
 			for ( const TUsdStore< pxr::UsdPrim >& ChildPrim : ChildGeomMeshes )
 			{
 				pxr::UsdGeomMesh ChildGeomMesh( ChildPrim.Get() );
@@ -498,7 +520,7 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 
 					NumVertices += PointsArray.size();
 
-					if ( NumVertices > MaxVertices )
+					if ( NumVertices > GMaxNumVerticesCollapsedMesh )
 					{
 						bCollapsesChildren = false;
 						break;
@@ -519,8 +541,18 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 				// Don't collapse children if the child meshes have Nanite override opinions but the combined mesh would lead to over 64 material slots.
 				if ( bChildrenWantNanite )
 				{
-					std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI( ChildPrim.Get() ).GetMaterialBindSubsets();
-					NumMaxExpectedMaterialSlots += FMath::Max<int32>( 1, GeomSubsets.size() + 1 ); // +1 because we may create an additional slot if it's not properly partitioned
+					if ( bCombineMaterialSlots )
+					{
+						const bool bProvideMaterialIndices = false;
+						UsdUtils::FUsdPrimMaterialAssignmentInfo LocalInfo = UsdUtils::GetPrimMaterialAssignments( ChildPrim.Get(), Context->Time, bProvideMaterialIndices, RenderContextToken );
+						CombinedSlots.Append( LocalInfo.Slots );
+						NumMaxExpectedMaterialSlots = CombinedSlots.Num();
+					}
+					else
+					{
+						std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI( ChildPrim.Get() ).GetMaterialBindSubsets();
+						NumMaxExpectedMaterialSlots += FMath::Max<int32>( 1, GeomSubsets.size() + 1 ); // +1 because we may create an additional slot if it's not properly partitioned
+					}
 
 					const int32 MaxNumSections = 64; // There is no define for this, but it's checked for on NaniteBuilder.cpp, FBuilderModule::Build
 					if ( NumMaxExpectedMaterialSlots > MaxNumSections )

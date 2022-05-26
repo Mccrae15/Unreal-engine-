@@ -86,8 +86,9 @@ bool FDatasmithSceneGraphBuilder::Build()
 {
 	LoadSceneGraphDescriptionFiles();
 
-	uint32 RootHash = RootFileDescription.GetDescriptorHash();
+	uint32 RootHash = GetTypeHash(RootFileDescription.GetFileName());
 	SceneGraph = CADFileToSceneGraphArchive.FindRef(RootHash);
+
 	if (!SceneGraph)
 	{
 		return false;
@@ -128,7 +129,10 @@ void FDatasmithSceneGraphBuilder::LoadSceneGraphDescriptionFiles()
 void FDatasmithSceneGraphBuilder::FillAnchorActor(const TSharedRef<IDatasmithActorElement>& ActorElement, const FString& CleanFilenameOfCADFile)
 {
 	CADLibrary::FFileDescriptor AnchorDescription(*CleanFilenameOfCADFile);
-	SceneGraph = CADFileToSceneGraphArchive.FindRef(GetTypeHash(AnchorDescription));
+
+	uint32 AnchorHash = GetTypeHash(AnchorDescription.GetFileName());
+	SceneGraph = CADFileToSceneGraphArchive.FindRef(AnchorHash);
+
 	if (!SceneGraph)
 	{
 		return;
@@ -293,8 +297,9 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 	{
 		if (!Instance.ExternalReference.GetSourcePath().IsEmpty())
 		{
-			uint32 InstanceSceneGraphHash = GetTypeHash(Instance.ExternalReference);
+			uint32 InstanceSceneGraphHash = GetTypeHash(Instance.ExternalReference.GetFileName());
 			SceneGraph = CADFileToSceneGraphArchive.FindRef(InstanceSceneGraphHash);
+
 			if (SceneGraph)
 			{
 				if (AncestorSceneGraphHash.Find(InstanceSceneGraphHash) == INDEX_NONE)

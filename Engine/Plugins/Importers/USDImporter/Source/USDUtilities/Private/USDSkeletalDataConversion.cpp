@@ -47,6 +47,7 @@
 	#include "pxr/usd/usdGeom/primvarsAPI.h"
 	#include "pxr/usd/usdGeom/subset.h"
 	#include "pxr/usd/usdGeom/tokens.h"
+	#include "pxr/usd/usdGeom/xformCache.h"
 	#include "pxr/usd/usdShade/tokens.h"
 	#include "pxr/usd/usdSkel/animation.h"
 	#include "pxr/usd/usdSkel/animMapper.h"
@@ -56,6 +57,7 @@
 	#include "pxr/usd/usdSkel/cache.h"
 	#include "pxr/usd/usdSkel/root.h"
 	#include "pxr/usd/usdSkel/skeletonQuery.h"
+	#include "pxr/usd/usdSkel/skinningQuery.h"
 	#include "pxr/usd/usdSkel/topology.h"
 	#include "pxr/usd/usdSkel/utils.h"
 #include "USDIncludesEnd.h"
@@ -309,9 +311,6 @@ namespace SkelDataConversionImpl
 			}
 		}
 
-		// This comes from geomBindTransform, which is a manually-input transform, and so can have non-uniform scales, shears, etc
-		FTransform NormalTransform = FTransform(AdditionalTransform.ToInverseMatrixWithScale().GetTransposed());
-
 		OutBlendShape.Vertices.SetNumUninitialized( NumOffsets );
 		for ( uint32 OffsetIndex = 0; OffsetIndex < NumOffsets; ++OffsetIndex )
 		{
@@ -321,11 +320,8 @@ namespace SkelDataConversionImpl
 				: FVector( 0, 0, 0 );
 
 			FMorphTargetDelta& ModifiedVertex = OutBlendShape.Vertices[ OffsetIndex ];
-
-			// Intentionally ignore translation on PositionDelta as this is really a direction vector,
-			// and geomBindTransform's translation is already applied to the mesh vertices
-			ModifiedVertex.PositionDelta = (FVector3f)AdditionalTransform.TransformVector(UEOffset);
-			ModifiedVertex.TangentZDelta = (FVector3f)NormalTransform.TransformVector(UENormal);
+			ModifiedVertex.PositionDelta = ( FVector3f ) UEOffset;
+			ModifiedVertex.TangentZDelta = ( FVector3f ) UENormal;
 			ModifiedVertex.SourceIdx = BaseIndices[ OffsetIndex ];
 		}
 
@@ -1075,18 +1071,21 @@ bool UsdToUnreal::ConvertSkeleton(const pxr::UsdSkelSkeletonQuery& SkeletonQuery
 	}
 
 	// Retrieve the bone transforms to be used as the reference pose
-	VtArray<GfMatrix4d> UsdBoneTransforms;
 	TArray<FTransform> BoneTransforms;
 
-	bool bJointTransformsComputed = SkeletonQuery.ComputeJointLocalTransforms(&UsdBoneTransforms, UsdTimeCode::Default());
-	if (bJointTransformsComputed)
+	// Note that for the FReferenceSkeleton we'll want to use the data in restTransforms, so that the skeletal mesh
+	// assumes the pose described by them when non-animated. See the gigantic comment inside ConvertSkinnedMesh.
+	VtArray<GfMatrix4d> JointLocalRestTransforms;
+	const bool bAtRest = true;
+	bool bJointTransformsComputed = SkeletonQuery.ComputeJointLocalTransforms( &JointLocalRestTransforms, UsdTimeCode::EarliestTime(), bAtRest );
+	if ( bJointTransformsComputed )
 	{
 		UsdStageWeakPtr Stage = SkeletonQuery.GetSkeleton().GetPrim().GetStage();
 		const FUsdStageInfo StageInfo(Stage);
 
-		for (uint32 Index = 0; Index < UsdBoneTransforms.size(); ++Index)
+		for (uint32 Index = 0; Index < JointLocalRestTransforms.size(); ++Index)
 		{
-			const GfMatrix4d& UsdMatrix = UsdBoneTransforms[Index];
+			const GfMatrix4d& UsdMatrix = JointLocalRestTransforms[Index];
 			FTransform BoneTransform = UsdToUnreal::ConvertMatrix( StageInfo, UsdMatrix );
 			BoneTransforms.Add(BoneTransform);
 		}
@@ -1126,17 +1125,84 @@ bool UsdToUnreal::ConvertSkeleton(const pxr::UsdSkelSkeletonQuery& SkeletonQuery
 	return true;
 }
 
-bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext )
+bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext )
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE( UsdToUnreal::ConvertSkinnedMesh );
 
 	using namespace pxr;
 
-	const UsdPrim& SkinningPrim = SkinningQuery.GetPrim();
-	UsdSkelBindingAPI SkelBindingAPI(SkinningPrim);
+	FScopedUsdAllocs UEAllocs;
+
+	// We must use a SkeletonQuery to properly convert the skinned mesh to the target pose. If we weren't provided one,
+	// we must fetch it manually
+
+	pxr::UsdPrim SkinnedPrim = UsdSkinningQuery.GetPrim();
+	if ( !SkinnedPrim )
+	{
+		return false;
+	}
+
+	bool bFoundSkelRoot = false;
+	pxr::UsdPrim ParentPrim = SkinnedPrim.GetParent();
+	while ( ParentPrim && !ParentPrim.IsPseudoRoot() )
+	{
+		if ( ParentPrim.IsA<pxr::UsdSkelRoot>() )
+		{
+			bFoundSkelRoot = true;
+			break;
+		}
+
+		ParentPrim = ParentPrim.GetParent();
+	}
+	if ( !bFoundSkelRoot )
+	{
+		return false;
+	}
+
+	pxr::UsdSkelRoot SkelRoot{ ParentPrim };
+
+	pxr::UsdSkelCache SkelCache;
+	if ( !SkelCache.Populate( SkelRoot, pxr::UsdTraverseInstanceProxies() ) )
+	{
+		return false;
+	}
+
+	std::vector< pxr::UsdSkelBinding > SkeletonBindings;
+	if ( !SkelCache.ComputeSkelBindings( SkelRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() ) )
+	{
+		return false;
+	}
+
+	pxr::UsdSkelSkeletonQuery MatchingSkelQuery;
+	for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
+	{
+		const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
+		pxr::UsdSkelSkeletonQuery SkelQuery = SkelCache.GetSkelQuery( Skeleton );
+
+		// Double-check that we're talking about the same mesh, at least. Each mesh can only be bound to one
+		// skeleton so this is probably guaranteed to be the same SkelBinding
+		for ( const pxr::UsdSkelSkinningQuery& SomeSkinningQuery : Binding.GetSkinningTargets() )
+		{
+			if ( SomeSkinningQuery.GetPrim() == SkinnedPrim )
+			{
+				MatchingSkelQuery = SkelQuery;
+				break;
+			}
+		}
+
+		// We really only ever deal with the first binding
+		break;
+	}
+	if ( !MatchingSkelQuery )
+	{
+		return false;
+	}
+
+	const UsdPrim& SkinningPrim = UsdSkinningQuery.GetPrim();
+	UsdSkelBindingAPI SkelBindingAPI( SkinningPrim );
 
 	// Ref. FFbxImporter::FillSkelMeshImporterFromFbx
-	UsdGeomMesh UsdMesh = UsdGeomMesh(SkinningPrim);
+	UsdGeomMesh UsdMesh = UsdGeomMesh( SkinningPrim );
 	if ( !UsdMesh )
 	{
 		return false;
@@ -1148,28 +1214,90 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	uint32 NumPoints = 0;
 	uint32 NumExistingPoints = SkelMeshImportData.Points.Num();
 
-	UsdAttribute PointsAttr = UsdMesh.GetPointsAttr();
-	if (PointsAttr)
+	// In USD, bindTransforms is used to place the skeleton in world space, and geomBindTransforms is used to
+	// place the mesh in world space. This can be understood as "bind time", and the relationship between the joints
+	// and triangles there will then be maintained throughout the skinning/animation process. In UE the analogue of
+	// this "bind time" happens when we just fill in FReferenceSkeleton and USkeletalMesh with data, and the
+	// relationship between triangles and joints there is maintained throughout animation.
+	//
+	// When we convert our skinned mesh and fill in our USkeletalMesh, then, we should have two goals in mind:
+	// - Our USkeletalMesh's final triangle positions must match the final FReferenceSkeleton pose in the same way
+	//   that the USD skeleton matches the Mesh prim at USD "bind time" (so we must use bindTransforms and
+	//   geomBindTransform in some way);
+	// - We want to be able to use the restTransforms pose on our FReferenceSkeleton, so that the rest pose in UE is
+	//   the same rest pose used in USD (and not just the bind pose instead).
+	//
+	// To accomplish this, we'll have our FReferenceSkeleton assume the restTransforms of the USD skeleton,
+	// and then skin the mesh data to deform it according to restTransforms too, so that they match.
+	//
+	// This means that if we're placing restTransforms on our FReferenceSkeleton, we must put our mesh data skinned
+	// by restTransforms on our USkeletalMesh. The problem is that the USD mesh raw points is specified in the "bind
+	// time" pose already (except for an additional, optional transform called geomBindTransform that we can apply).
+	// In order to move the mesh data from its source space to restTransforms pose, we must then:
+	// - Apply geomBindTransform: It is now at "bind time", directly in world space (note: don't confuse this world
+	//   space with the final concatenated prim transform after we account for parent Xforms and so on. We're only
+	//   concerned with "bind time" here, and a different Xform/skinning process will get our final mesh at world
+	//   space. i.e. Here we don't care if our parent SkelRoot has e.g. a +30 translation on the X);
+	// - Invert the skinning done by bindTransforms: This reverses the effect of the bindTransforms pose, but note
+	//   that it most importantly *deforms the mesh according to the skeleton's bindTransforms*. This is essential,
+	//   and this step is what will ensure that the triangles-joints relationship specified by bindTransforms +
+	//   geomBindTransforms is maintained. Practically, this means that the mesh will act as if all joints are on
+	//   top of each other at the origin, and the mesh will become a packed mess of triangles;
+	// - Skin the mesh by restTransforms: This puts the mesh nicely in the final rest pose we want.
+	//
+	// We'll do this by creating a set of skinning transforms (MeshToSkeletonRestPose) that concatenates the two latter
+	// steps, and by calling ComputeSkinnedPoints, which applies geomBindTransform first and then skins the mesh with
+	// those transforms.
+	//
+	// Reference: https://graphics.pixar.com/usd/release/api/_usd_skel__schema_overview.html
+	VtArray<GfMatrix4d> MeshToSkeletonRestPose;
 	{
-		VtArray<GfVec3f> UsdPoints;
-		PointsAttr.Get(&UsdPoints, UsdTimeCode::Default());
+		bool bSuccess = true;
 
-		NumPoints = UsdPoints.size();
-		SkelMeshImportData.Points.AddUninitialized(NumPoints);
-
-		for (uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
+		// Get world-space restTransforms
+		VtArray<GfMatrix4d> WorldSpaceRestTransforms;
 		{
-			const GfVec3f& Point = UsdPoints[PointIndex];
+			VtArray<GfMatrix4d> JointLocalRestTransforms;
+			const bool bAtRest = true;
+			bSuccess &= MatchingSkelQuery.ComputeJointLocalTransforms( &JointLocalRestTransforms, UsdTimeCode::EarliestTime(), bAtRest );
+			bSuccess &= UsdSkelConcatJointTransforms( MatchingSkelQuery.GetTopology(), JointLocalRestTransforms, &WorldSpaceRestTransforms );
+		}
 
-			// Convert the USD vertex to Unreal and apply the GeomBindTransform to it
-			FVector Pos = UsdToUnreal::ConvertVector(StageInfo, Point);
-			Pos = AdditionalTransform.TransformPosition(Pos);
+		// Get world-space bindTransforms
+		VtArray<GfMatrix4d> WorldSpaceBindTransforms;
+		bSuccess &= MatchingSkelQuery.GetJointWorldBindTransforms( &WorldSpaceBindTransforms );
 
-			SkelMeshImportData.Points[PointIndex + NumExistingPoints] = (FVector3f)Pos;
+		if ( !bSuccess )
+		{
+			return false;
+		}
+
+		MeshToSkeletonRestPose.resize( WorldSpaceRestTransforms.size() );
+		for ( uint32 Index = 0; Index < WorldSpaceRestTransforms.size(); ++Index )
+		{
+			MeshToSkeletonRestPose[ Index ] = WorldSpaceBindTransforms[ Index ].GetInverse() * WorldSpaceRestTransforms[ Index ];
 		}
 	}
 
-	if (NumPoints == 0)
+	UsdAttribute PointsAttr = UsdMesh.GetPointsAttr();
+	if ( PointsAttr )
+	{
+		VtArray<GfVec3f> UsdPoints;
+		PointsAttr.Get( &UsdPoints, UsdTimeCode::Default() );
+
+		UsdSkinningQuery.ComputeSkinnedPoints( MeshToSkeletonRestPose, &UsdPoints, UsdTimeCode::EarliestTime() );
+
+		NumPoints = UsdPoints.size();
+		SkelMeshImportData.Points.AddUninitialized( NumPoints );
+
+		for ( uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex )
+		{
+			const GfVec3f& Point = UsdPoints[ PointIndex ];
+			SkelMeshImportData.Points[ PointIndex + NumExistingPoints ] = ( FVector3f ) UsdToUnreal::ConvertVector( StageInfo, Point );
+		}
+	}
+
+	if ( NumPoints == 0 )
 	{
 		return false;
 	}
@@ -1179,27 +1307,31 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	// Face counts
 	VtArray<int> FaceCounts;
 	UsdAttribute FaceCountsAttribute = UsdMesh.GetFaceVertexCountsAttr();
-	if (FaceCountsAttribute)
+	if ( FaceCountsAttribute )
 	{
-		FaceCountsAttribute.Get(&FaceCounts, UsdTimeCode::Default());
+		FaceCountsAttribute.Get( &FaceCounts, UsdTimeCode::Default() );
 	}
 
 	// Face indices
 	VtArray<int> OriginalFaceIndices;
 	UsdAttribute FaceIndicesAttribute = UsdMesh.GetFaceVertexIndicesAttr();
-	if (FaceIndicesAttribute)
+	if ( FaceIndicesAttribute )
 	{
-		FaceIndicesAttribute.Get(&OriginalFaceIndices, UsdTimeCode::Default());
+		FaceIndicesAttribute.Get( &OriginalFaceIndices, UsdTimeCode::Default() );
 	}
 
-	uint32 NumVertexInstances = static_cast<uint32>(OriginalFaceIndices.size());
+	uint32 NumVertexInstances = static_cast< uint32 >( OriginalFaceIndices.size() );
 
 	// Normals
 	VtArray<GfVec3f> Normals;
 	UsdAttribute NormalsAttribute = UsdMesh.GetNormalsAttr();
-	if (NormalsAttribute)
+	if ( NormalsAttribute )
 	{
-		NormalsAttribute.Get(&Normals, UsdTimeCode::Default());
+		if ( NormalsAttribute.Get( &Normals, UsdTimeCode::Default() ) && Normals.size() > 0 )
+		{
+			// Like for points, we need to ensure these normals are in the same coordinate space of the skeleton
+			UsdSkinningQuery.ComputeSkinnedNormals( MeshToSkeletonRestPose, &Normals, UsdTimeCode::EarliestTime() );
+		}
 	}
 
 	uint32 NumExistingFaces = SkelMeshImportData.Faces.Num();
@@ -1218,13 +1350,13 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	// Note: This is a different index remapping to the one that happens for LODs, using LODMaterialMap! Here we're combining meshes of the same LOD
 	TMap<UsdUtils::FUsdPrimMaterialSlot, int32> SlotToCombinedMaterialIndex;
 	TMap<int32, int32> LocalToCombinedMaterialIndex;
-	for (int32 Index = 0; Index < MaterialAssignments.Num(); ++Index)
+	for ( int32 Index = 0; Index < MaterialAssignments.Num(); ++Index )
 	{
 		SlotToCombinedMaterialIndex.Add( MaterialAssignments[ Index ], Index );
 	}
-	for (int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex)
+	for ( int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex )
 	{
-		UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[LocalIndex];
+		UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[ LocalIndex ];
 
 		int32 CombinedMaterialIndex = INDEX_NONE;
 		if ( int32* FoundCombinedMaterialIndex = SlotToCombinedMaterialIndex.Find( LocalSlot ) )
@@ -1244,7 +1376,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	UsdGeomPrimvar ColorPrimvar = UsdMesh.GetDisplayColorPrimvar();
 	TArray<FColor> Colors;
 	EUsdInterpolationMethod DisplayColorInterp = EUsdInterpolationMethod::Constant;
-	if (ColorPrimvar)
+	if ( ColorPrimvar )
 	{
 		pxr::VtArray<pxr::GfVec3f> UsdColors;
 		if ( ColorPrimvar.ComputeFlattened( &UsdColors ) )
@@ -1363,7 +1495,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 
 	SkelMeshImportData.NumTexCoords = 0;
 
-	bool bReverseOrder = IUsdPrim::GetGeometryOrientation(UsdMesh) == EUsdGeomOrientation::LeftHanded;
+	bool bReverseOrder = IUsdPrim::GetGeometryOrientation( UsdMesh ) == EUsdGeomOrientation::LeftHanded;
 
 	struct FUVSet
 	{
@@ -1403,7 +1535,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 			{
 				UVSet.InterpolationMethod = EUsdInterpolationMethod::FaceVarying;
 			}
-			else if (  PrimvarST.GetInterpolation() == UsdGeomTokens->uniform )
+			else if ( PrimvarST.GetInterpolation() == UsdGeomTokens->uniform )
 			{
 				UVSet.InterpolationMethod = EUsdInterpolationMethod::Uniform;
 			}
@@ -1446,9 +1578,9 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	SkelMeshImportData.Wedges.Reserve( ( NumExistingFaces + NumFaces ) * 6 );
 
 	uint32 NumProcessedFaceVertexIndices = 0;
-	for (uint32 PolygonIndex = NumExistingFaces, LocalIndex = 0; PolygonIndex < NumExistingFaces + NumFaces; ++PolygonIndex, ++LocalIndex)
+	for ( uint32 PolygonIndex = NumExistingFaces, LocalIndex = 0; PolygonIndex < NumExistingFaces + NumFaces; ++PolygonIndex, ++LocalIndex )
 	{
-		const uint32 NumOriginalFaceVertices = FaceCounts[LocalIndex];
+		const uint32 NumOriginalFaceVertices = FaceCounts[ LocalIndex ];
 		const uint32 NumFinalFaceVertices = 3;
 
 		// Manage materials
@@ -1456,7 +1588,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 		if ( FaceMaterialIndices.IsValidIndex( PolygonIndex ) )
 		{
 			LocalMaterialIndex = FaceMaterialIndices[ PolygonIndex ];
-			if ( !LocalMaterialSlots.IsValidIndex(LocalMaterialIndex) )
+			if ( !LocalMaterialSlots.IsValidIndex( LocalMaterialIndex ) )
 			{
 				LocalMaterialIndex = 0;
 			}
@@ -1508,7 +1640,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 					SkelMeshWedge.Color.R = DisplayColor.R;
 					SkelMeshWedge.Color.G = DisplayColor.G;
 					SkelMeshWedge.Color.B = DisplayColor.B;
-					SkelMeshWedge.Color.A = static_cast<uint8>(FMath::Clamp(Opacities[ DisplayOpacityIndex ], 0.0f, 1.0f) * 255.0f + 0.5f);
+					SkelMeshWedge.Color.A = static_cast< uint8 >( FMath::Clamp( Opacities[ DisplayOpacityIndex ], 0.0f, 1.0f ) * 255.0f + 0.5f );
 				}
 
 				SkelMeshWedge.MatIndex = Triangle.MatIndex;
@@ -1552,7 +1684,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 					}
 
 					// Flip V for Unreal uv's which match directx
-					FVector2f FinalUVVector( UV[0], 1.f - UV[1] );
+					FVector2f FinalUVVector( UV[ 0 ], 1.f - UV[ 1 ] );
 					SkelMeshWedge.UVs[ UVLayerIndex ] = FinalUVVector;
 
 					++UVLayerIndex;
@@ -1575,14 +1707,14 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	// ComputeVaryingJointInfluences returns the joint influences for each points, expanding the influences to all points if the mesh is rigidly deformed
 	VtArray<int> JointIndices;
 	VtArray<float> JointWeights;
-	SkinningQuery.ComputeVaryingJointInfluences(NumPoints, &JointIndices, &JointWeights);
+	UsdSkinningQuery.ComputeVaryingJointInfluences( NumPoints, &JointIndices, &JointWeights );
 
 	// Recompute the joint influences if it's above the limit
-	uint32 NumInfluencesPerComponent = SkinningQuery.GetNumInfluencesPerComponent();
-	if (NumInfluencesPerComponent > MAX_INFLUENCES_PER_STREAM)
+	uint32 NumInfluencesPerComponent = UsdSkinningQuery.GetNumInfluencesPerComponent();
+	if ( NumInfluencesPerComponent > MAX_INFLUENCES_PER_STREAM )
 	{
-		UsdSkelResizeInfluences(&JointIndices, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
-		UsdSkelResizeInfluences(&JointWeights, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
+		UsdSkelResizeInfluences( &JointIndices, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM );
+		UsdSkelResizeInfluences( &JointWeights, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM );
 		NumInfluencesPerComponent = MAX_INFLUENCES_PER_STREAM;
 	}
 
@@ -1592,18 +1724,18 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	if ( JointWeights.size() > ( NumPoints - 1 ) * ( NumInfluencesPerComponent - 1 ) )
 	{
 		uint32 JointIndex = 0;
-		SkelMeshImportData.Influences.Reserve(NumPoints);
-		for (uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
+		SkelMeshImportData.Influences.Reserve( NumPoints );
+		for ( uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex )
 		{
 			// The JointIndices/JointWeights contain the influences data for NumPoints * NumInfluencesPerComponent
-			for (uint32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerComponent; ++InfluenceIndex, ++JointIndex)
+			for ( uint32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerComponent; ++InfluenceIndex, ++JointIndex )
 			{
 				// BoneWeight could be 0 if the actual number of influences were less than NumInfluencesPerComponent for a given point so just ignore it
-				float BoneWeight = JointWeights[JointIndex];
-				if (BoneWeight != 0.f)
+				float BoneWeight = JointWeights[ JointIndex ];
+				if ( BoneWeight != 0.f )
 				{
 					SkelMeshImportData.Influences.AddUninitialized();
-					SkelMeshImportData.Influences.Last().BoneIndex = JointIndices[JointIndex];
+					SkelMeshImportData.Influences.Last().BoneIndex = JointIndices[ JointIndex ];
 					SkelMeshImportData.Influences.Last().Weight = BoneWeight;
 					SkelMeshImportData.Influences.Last().VertexIndex = NumExistingPoints + PointIndex;
 				}
@@ -1613,7 +1745,7 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 	const int32 NumInfluencesAfter = SkelMeshImportData.Influences.Num();
 
 	// If we have a joint mapper this Mesh has an explicit joint ordering, so we need to map joint indices to the skeleton's bone indices
-	if ( pxr::UsdSkelAnimMapperRefPtr AnimMapper = SkinningQuery.GetJointMapper() )
+	if ( pxr::UsdSkelAnimMapperRefPtr AnimMapper = UsdSkinningQuery.GetJointMapper() )
 	{
 		VtArray<int> SkeletonBoneIndices;
 		if ( pxr::UsdSkelSkeleton BoundSkeleton = SkelBindingAPI.GetInheritedSkeleton() )
@@ -1648,7 +1780,6 @@ bool UsdToUnreal::ConvertSkinnedMesh(const pxr::UsdSkelSkinningQuery& SkinningQu
 			}
 		}
 	}
-
 
 	return true;
 }

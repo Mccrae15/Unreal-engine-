@@ -658,7 +658,23 @@ namespace AutomationScripts
 			{
 				// Making a plugin
 				DirectoryReference DLCRoot = Params.DLCFile.Directory;
-				string RelativeDLCRootPath = (Params.DLCOverrideCookedSubDir == null) ? DLCRoot.MakeRelativeTo(SC.LocalRoot) : Params.DLCOverrideCookedSubDir;
+				string DLCCookedSubDir;
+				if (Params.DLCOverrideCookedSubDir != null)
+				{
+					DLCCookedSubDir = Params.DLCOverrideCookedSubDir;
+				}
+				else if (DLCRoot.IsUnderDirectory(SC.EngineRoot))
+				{
+					DLCCookedSubDir = Path.Combine("Engine", DLCRoot.MakeRelativeTo(SC.EngineRoot));
+				}
+				else if (DLCRoot.IsUnderDirectory(SC.ProjectRoot))
+				{
+					DLCCookedSubDir = Path.Combine(SC.ShortProjectName, DLCRoot.MakeRelativeTo(SC.ProjectRoot));
+				}
+				else
+				{
+					DLCCookedSubDir = DLCRoot.MakeRelativeTo(SC.LocalRoot);
+				}
 
 				// Put all of the cooked dir into the staged dir
 				if (String.IsNullOrEmpty(Params.CookOutputDir))
@@ -676,7 +692,7 @@ namespace AutomationScripts
 
 				DirectoryReference PlatformEngineDir = DirectoryReference.Combine(SC.PlatformCookDir, "Engine");
 				DirectoryReference ProjectMetadataDir = DirectoryReference.Combine(SC.PlatformCookDir, SC.ShortProjectName, "Metadata");
-				SC.MetadataDir = DirectoryReference.Combine(SC.PlatformCookDir, RelativeDLCRootPath, "Metadata");
+				SC.MetadataDir = DirectoryReference.Combine(SC.PlatformCookDir, DLCCookedSubDir, "Metadata");
 
 				// The .uplugin file is staged differently for different DLC
 				// The .uplugin file doesn't actually exist for mobile DLC
@@ -1275,41 +1291,6 @@ namespace AutomationScripts
 				}
 			}
 
-			// Make all the filenames lowercase
-			if (SC.StageTargetPlatform.DeployLowerCaseFilenames(StagedFileType.NonUFS))
-			{
-				SC.FilesToStage.NonUFSFiles = SC.FilesToStage.NonUFSFiles.ToDictionary(x => x.Key.ToLowerInvariant(), x => x.Value);
-			}
-			// DebugNonUFS is weird, so ask per-file
-			SC.FilesToStage.NonUFSDebugFiles = SC.FilesToStage.NonUFSDebugFiles.ToDictionary(x => SC.StageTargetPlatform.DeployLowerCaseFile(x.Value, StagedFileType.DebugNonUFS) ? x.Key.ToLowerInvariant() : x.Key, x => x.Value);
-			if (!Params.UsePak(SC.StageTargetPlatform) && SC.StageTargetPlatform.DeployLowerCaseFilenames(StagedFileType.UFS))
-			{
-				SC.FilesToStage.UFSFiles = SC.FilesToStage.UFSFiles.ToDictionary(x => x.Key.ToLowerInvariant(), x => x.Value);
-			}
-
-			// Remap all the non-ufs files if not using a PAK file
-			// Shared NonUFS files are staged in their remapped location, and may be duplicated in the to-stage list.
-			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.NonUFS))
-			{
-				SC.FilesToStage.NonUFSFiles = SC.FilesToStage.NonUFSFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
-			}
-				
-			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.DebugNonUFS))
-			{
-				SC.FilesToStage.NonUFSDebugFiles = SC.FilesToStage.NonUFSDebugFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
-			}
-
-			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.UFS) && !Params.UsePak(SC.StageTargetPlatform))
-			{
-				SC.FilesToStage.UFSFiles = SC.FilesToStage.UFSFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
-			}
-
-			// Merge all the NonUFS system files back into the NonUFS list. Deployment is currently only set up to read from that.
-			foreach (KeyValuePair<StagedFileReference, FileReference> Pair in SC.FilesToStage.NonUFSSystemFiles)
-			{
-				SC.FilesToStage.NonUFSFiles[Pair.Key] = Pair.Value;
-			}
-
 			// Make sure there are no restricted folders in the output
 			HashSet<StagedFileReference> RestrictedFiles = new HashSet<StagedFileReference>();
 			foreach (string RestrictedName in SC.RestrictedFolderNames)
@@ -1353,6 +1334,41 @@ namespace AutomationScripts
 					Message.Append("\n+WhitelistDirectories=MyGame/Content/Foo");
 				}
 				throw new AutomationException(Message.ToString());
+			}
+
+			// Make all the filenames lowercase
+			if (SC.StageTargetPlatform.DeployLowerCaseFilenames(StagedFileType.NonUFS))
+			{
+				SC.FilesToStage.NonUFSFiles = SC.FilesToStage.NonUFSFiles.ToDictionary(x => x.Key.ToLowerInvariant(), x => x.Value);
+			}
+			// DebugNonUFS is weird, so ask per-file
+			SC.FilesToStage.NonUFSDebugFiles = SC.FilesToStage.NonUFSDebugFiles.ToDictionary(x => SC.StageTargetPlatform.DeployLowerCaseFile(x.Value, StagedFileType.DebugNonUFS) ? x.Key.ToLowerInvariant() : x.Key, x => x.Value);
+			if (!Params.UsePak(SC.StageTargetPlatform) && SC.StageTargetPlatform.DeployLowerCaseFilenames(StagedFileType.UFS))
+			{
+				SC.FilesToStage.UFSFiles = SC.FilesToStage.UFSFiles.ToDictionary(x => x.Key.ToLowerInvariant(), x => x.Value);
+			}
+
+			// Remap all the non-ufs files if not using a PAK file
+			// Shared NonUFS files are staged in their remapped location, and may be duplicated in the to-stage list.
+			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.NonUFS))
+			{
+				SC.FilesToStage.NonUFSFiles = SC.FilesToStage.NonUFSFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
+			}
+				
+			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.DebugNonUFS))
+			{
+				SC.FilesToStage.NonUFSDebugFiles = SC.FilesToStage.NonUFSDebugFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
+			}
+
+			if (SC.StageTargetPlatform.RemapFileType(StagedFileType.UFS) && !Params.UsePak(SC.StageTargetPlatform))
+			{
+				SC.FilesToStage.UFSFiles = SC.FilesToStage.UFSFiles.ToDictionary(x => SC.StageTargetPlatform.Remap(x.Key), x => x.Value);
+			}
+
+			// Merge all the NonUFS system files back into the NonUFS list. Deployment is currently only set up to read from that.
+			foreach (KeyValuePair<StagedFileReference, FileReference> Pair in SC.FilesToStage.NonUFSSystemFiles)
+			{
+				SC.FilesToStage.NonUFSFiles[Pair.Key] = Pair.Value;
 			}
 		}
 

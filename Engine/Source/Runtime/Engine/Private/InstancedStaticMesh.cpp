@@ -1425,8 +1425,7 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 		// Only allocate if material bound which uses this
 		if (bHasPerInstanceCustomData && InComponent->NumCustomDataFloats > 0)
 		{
-			InstanceCustomData = InComponent->PerInstanceSMCustomData;
-			check(InstanceCustomData.Num() / InComponent->NumCustomDataFloats == InComponent->GetInstanceCount()); // Sanity check on the data packing
+			InstanceCustomData.SetNumZeroed(NumRenderInstances * InComponent->NumCustomDataFloats);
 		}
 		else
 		{
@@ -4584,7 +4583,7 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 
 	ShaderBindings.Add(InstanceOffset, InstanceOffsetValue);
 	
-	if (!UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel))
+	if (!UseGPUScene(Scene ? Scene->GetShaderPlatform() : GMaxRHIShaderPlatform))
 	{
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FInstancedStaticMeshVertexFactoryUniformShaderParameters>(), InstancedVertexFactory->GetUniformBuffer());
 		if (InstancedVertexFactory->SupportsManualVertexFetch(FeatureLevel))

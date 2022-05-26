@@ -8,7 +8,7 @@
 // [[ IncludeTool: Inline ]] // Markup to tell IncludeTool that this file is state changing and cannot be optimized out.
 
 #undef PACKAGE_SCOPE
-#if ONLINESUBSYSTEMEOS_PACKAGE
+#ifdef ONLINESUBSYSTEMEOS_PACKAGE
 #define PACKAGE_SCOPE public
 #else
 #define PACKAGE_SCOPE protected

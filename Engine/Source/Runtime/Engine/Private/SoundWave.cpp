@@ -588,6 +588,8 @@ USoundWave::USoundWave(const FObjectInitializer& ObjectInitializer)
 	bProcedural = false;
 	bRequiresStopFade = false;
 
+	SoundAssetCompressionType = ESoundAssetCompressionType::BinkAudio;
+
 #if WITH_EDITOR
 	bWasStreamCachingEnabledOnLastCook = FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching();
 	bLoadedFromCookedData = false;
@@ -2303,9 +2305,6 @@ void USoundWave::FreeResources(bool bStopSoundsUsingThisResource)
 		RawPCMData = nullptr;
 	}
 
-	// Remove the compressed copy of the data
-	RemoveAudioResource();
-
 	// Stat housekeeping
 	DEC_DWORD_STAT_BY(STAT_AudioMemorySize, TrackedMemoryUsage);
 	DEC_DWORD_STAT_BY(STAT_AudioMemory, TrackedMemoryUsage);
@@ -2455,7 +2454,6 @@ void USoundWave::FinishDestroy()
 	check(GetPrecacheState() != ESoundWavePrecacheState::InProgress);
 	check(AudioDecompressor == nullptr);
 
-	CleanupCachedRunningPlatformData();
 #if WITH_EDITOR
 	if (!GExitPurge)
 	{

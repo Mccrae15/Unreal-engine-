@@ -451,16 +451,14 @@ namespace Chaos
 							ShapeWorldTransform1.SetTranslation(FConstGenericParticleHandle(SweptConstraint->GetParticle1())->P());
 
 							SweptConstraint->SetShapeWorldTransforms(ShapeWorldTransform0, ShapeWorldTransform1);
-							const bool bUpdated = Collisions::UpdateConstraintFromGeometrySwept<ECollisionUpdateType::Deepest>(*(AttachedCCDConstraint->SweptConstraint), RigidTransforms[0], RigidTransforms[1], RestDt);
-							if (bUpdated)
+							Collisions::UpdateConstraintSwept(*(AttachedCCDConstraint->SweptConstraint), RigidTransforms[0], RigidTransforms[1], RestDt);
+
+							const FReal RestDtTOI = AttachedCCDConstraint->SweptConstraint->TimeOfImpact;
+							if (RestDtTOI >= 0 && RestDtTOI < 1.f)
 							{
-								const FReal RestDtTOI = AttachedCCDConstraint->SweptConstraint->TimeOfImpact;
-								if (RestDtTOI >= 0 && RestDtTOI < 1.f)
-								{
-									AttachedCCDConstraint->SweptConstraint->TimeOfImpact = IslandTOI + (1.f - IslandTOI) * RestDtTOI;
-								}
+								AttachedCCDConstraint->SweptConstraint->TimeOfImpact = IslandTOI + (1.f - IslandTOI) * RestDtTOI;
 							}
-							// When bUpdated==true, TOI was modified. When bUpdated==false, TOI was set to be TNumericLimits<FReal>::Max(). In either case, a re-sorting on the constraints is needed.
+
 							HasResweptConstraint = true;
 						}
 					}

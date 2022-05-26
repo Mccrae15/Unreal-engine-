@@ -379,7 +379,7 @@ namespace UnrealBuildTool
 					if (PreprocessActions.Count > 0)
 					{
 						Log.TraceInformation("Updating module dependencies...");
-						ActionGraph.ExecuteActions(BuildConfiguration, PreprocessActions);
+						ActionGraph.ExecuteActions(BuildConfiguration, PreprocessActions, TargetDescriptors);
 
 						foreach (FileItem ProducedItem in PreprocessActions.SelectMany(x => x.ProducedItems))
 						{
@@ -608,7 +608,7 @@ namespace UnrealBuildTool
 
 						using (GlobalTracer.Instance.BuildSpan("ActionGraph.ExecuteActions()").StartActive())
 						{
-							ActionGraph.ExecuteActions(BuildConfiguration, MergedActionsToExecute);
+							ActionGraph.ExecuteActions(BuildConfiguration, MergedActionsToExecute, TargetDescriptors);
 						}
 					}
 

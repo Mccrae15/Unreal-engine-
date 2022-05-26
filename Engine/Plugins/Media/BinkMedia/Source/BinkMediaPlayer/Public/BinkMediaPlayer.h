@@ -6,7 +6,6 @@
 #include "Tickable.h"
 #include "Delegates/DelegateCombinations.h"
 #include "RHI.h"
-#include "binkplugin.h"
 #include "BinkMediaPlayer.generated.h"
 
 extern BINKMEDIAPLAYER_API unsigned bink_gpu_api;
@@ -461,31 +460,12 @@ public:
 	bool Open(const FString& Url);
 	void Close();
 	bool IsReady() const { return bnk != NULL; }
-	void UpdateTexture(FRHICommandListImmediate &RHICmdList, FTextureRHIRef ref, void *nativePtr, int width, int height, bool isEditor, bool tonemap, int output_nits, float alpha, bool srgb_decode, bool is_hdr);
+	void UpdateTexture(FRHICommandListImmediate &RHICmdList, FTexture2DRHIRef ref, void *nativePtr, int width, int height, bool isEditor, bool tonemap, int output_nits, float alpha, bool srgb_decode, bool is_hdr);
 
-	FIntPoint GetDimensions() const 
-	{
-		if (bnk) 
-		{
-			BINKPLUGININFO bpinfo = {};
-			BinkPluginInfo(bnk, &bpinfo);
-			return FIntPoint(bpinfo.Width, bpinfo.Height);
-		}
-		return FIntPoint(0, 0);
-	}
+	FIntPoint GetDimensions() const;
+	float GetFrameRate() const;
 
-	float GetFrameRate() const 
-	{
-		if (bnk) 
-		{
-			BINKPLUGININFO bpinfo = {};
-			BinkPluginInfo(bnk, &bpinfo);
-			return (float)(((double)bpinfo.FrameRate) / ((double)bpinfo.FrameRateDiv));
-		}
-		return 0;
-	}
-
-	BINKPLUGIN *bnk;
+	struct BINKPLUGIN *bnk;
 	bool paused;
 	bool reached_end;
 	FDelegateHandle overlayHook;

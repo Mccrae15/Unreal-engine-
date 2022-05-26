@@ -2,8 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/UnrealString.h"
+#include "Internationalization/Text.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/Object.h"
+
 #include "LevelSnapshotsEditorSettings.generated.h"
 
 UCLASS(config = Engine, defaultconfig)
@@ -12,7 +17,8 @@ class LEVELSNAPSHOTSEDITOR_API ULevelSnapshotsEditorSettings : public UObject
 	GENERATED_BODY()
 public:
 
-	static ULevelSnapshotsEditorSettings* Get();
+	static const ULevelSnapshotsEditorSettings* Get();
+	static ULevelSnapshotsEditorSettings* GetMutable();
 	
 	ULevelSnapshotsEditorSettings(const FObjectInitializer& ObjectInitializer);
 
@@ -85,5 +91,5 @@ public:
 private:
 	
 	/* If the user overrides the Name field in the creation form, the override will be saved here so it can be recalled. */
-	FString LevelSnapshotNameOverride;
+	TAttribute<FString> LevelSnapshotNameOverride;
 };

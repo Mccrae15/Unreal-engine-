@@ -268,7 +268,7 @@ bool FHoleFillOp::FillSingleTriangleHole(const FEdgeLoop& Loop, int32& NewGroupI
 			return false;
 		}
 
-		TriangleUVIsland.SetNum(NewTriangleID + 1);
+		TriangleUVIsland.SetNum(ResultMesh->MaxTriangleID());
 		TriangleUVIsland[NewTriangleID] = NewTriangleUVIsland;
 	}
 

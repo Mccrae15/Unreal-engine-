@@ -1045,13 +1045,13 @@ struct FLumenSurfaceCacheUpdatePrimitivesTask
 public:
 	FLumenSurfaceCacheUpdatePrimitivesTask(
 		const TSparseSpanArray<FLumenPrimitiveGroup>& InPrimitiveGroups,
-		FVector InViewOrigin,
+		const TArray<FVector, TInlineAllocator<2>>& InViewOrigins,
 		float InLumenSceneDetail,
 		float InMaxDistanceFromCamera,
 		int32 InFirstPrimitiveGroupIndex,
 		int32 InNumPrimitiveGroupsPerPacket)
 		: PrimitiveGroups(InPrimitiveGroups)
-		, ViewOrigin(InViewOrigin)
+		, ViewOrigins(InViewOrigins)
 		, FirstPrimitiveGroupIndex(InFirstPrimitiveGroupIndex)
 		, NumPrimitiveGroupsPerPacket(InNumPrimitiveGroupsPerPacket)
 		, LumenSceneDetail(InLumenSceneDetail)
@@ -1078,7 +1078,13 @@ public:
 
 				// Rough card min resolution test
 				float CardMaxDistanceSq = MaxDistanceFromCamera * MaxDistanceFromCamera;
-				const float DistanceSquared = ComputeSquaredDistanceFromBoxToPoint(FVector(PrimitiveGroup.WorldSpaceBoundingBox.Min), FVector(PrimitiveGroup.WorldSpaceBoundingBox.Max), ViewOrigin);
+				float DistanceSquared = FLT_MAX;
+
+				for (FVector ViewOrigin : ViewOrigins)
+				{
+					DistanceSquared = FMath::Min(DistanceSquared, ComputeSquaredDistanceFromBoxToPoint(FVector(PrimitiveGroup.WorldSpaceBoundingBox.Min), FVector(PrimitiveGroup.WorldSpaceBoundingBox.Max), ViewOrigin));
+				}
+
 				const float MaxCardExtent = PrimitiveGroup.WorldSpaceBoundingBox.GetExtent().GetMax();
 				float MaxCardResolution = (TexelDensityScale * MaxCardExtent) / FMath::Sqrt(FMath::Max(DistanceSquared, 1.0f)) + 0.01f;
 
@@ -1115,7 +1121,7 @@ public:
 	}
 
 	const TSparseSpanArray<FLumenPrimitiveGroup>& PrimitiveGroups;
-	FVector ViewOrigin;
+	TArray<FVector, TInlineAllocator<2>> ViewOrigins;
 	int32 FirstPrimitiveGroupIndex;
 	int32 NumPrimitiveGroupsPerPacket;
 	float LumenSceneDetail;
@@ -1136,14 +1142,14 @@ public:
 	FLumenSurfaceCacheUpdateMeshCardsTask(
 		const TSparseSpanArray<FLumenMeshCards>& InLumenMeshCards,
 		const TSparseSpanArray<FLumenCard>& InLumenCards,
-		FVector InViewOrigin,
+		const TArray<FVector, TInlineAllocator<2>>& InViewOrigins,
 		float InLumenSceneDetail,
 		float InMaxDistanceFromCamera,
 		int32 InFirstMeshCardsIndex,
 		int32 InNumMeshCardsPerPacket)
 		: LumenMeshCards(InLumenMeshCards)
 		, LumenCards(InLumenCards)
-		, ViewOrigin(InViewOrigin)
+		, ViewOrigins(InViewOrigins)
 		, LumenSceneDetail(InLumenSceneDetail)
 		, FirstMeshCardsIndex(InFirstMeshCardsIndex)
 		, NumMeshCardsPerPacket(InNumMeshCardsPerPacket)
@@ -1173,7 +1179,12 @@ public:
 					const FLumenCard& LumenCard = LumenCards[CardIndex];
 
 					float CardMaxDistance = MaxDistanceFromCamera;
-					const float ViewerDistance = FMath::Max(FMath::Sqrt(LumenCard.WorldOBB.ComputeSquaredDistanceToPoint((FVector3f)ViewOrigin)), 100.0f);
+					float ViewerDistance = FLT_MAX;
+
+					for (FVector ViewOrigin : ViewOrigins)
+					{
+						ViewerDistance = FMath::Min(ViewerDistance, FMath::Max(FMath::Sqrt(LumenCard.WorldOBB.ComputeSquaredDistanceToPoint((FVector3f)ViewOrigin)), 100.0f));
+					}
 
 					// Compute resolution based on its largest extent
 					float MaxExtent = FMath::Max(LumenCard.WorldOBB.Extent.X, LumenCard.WorldOBB.Extent.Y);
@@ -1227,7 +1238,7 @@ public:
 
 	const TSparseSpanArray<FLumenMeshCards>& LumenMeshCards;
 	const TSparseSpanArray<FLumenCard>& LumenCards;
-	FVector ViewOrigin;
+	TArray<FVector, TInlineAllocator<2>> ViewOrigins;
 	float LumenSceneDetail;
 	int32 FirstMeshCardsIndex;
 	int32 NumMeshCardsPerPacket;
@@ -1300,10 +1311,10 @@ bool UpdateStaticMeshes(FLumenPrimitiveGroup& PrimitiveGroup)
  */
 void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 	const FViewInfo& MainView,
-	FVector LumenSceneCameraOrigin,
 	float MaxCardUpdateDistanceFromCamera,
 	int32 MaxTileCapturesPerFrame,
 	FLumenCardRenderer& LumenCardRenderer,
+	FRHIGPUMask GPUMask,
 	const TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& SurfaceCacheRequests)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(ProcessLumenSurfaceCacheRequests);
@@ -1388,7 +1399,7 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 
 						if (!PageTableEntry.IsMapped())
 						{
-							MapSurfaceCachePage(MipMap, PageIndex);
+							MapSurfaceCachePage(MipMap, PageIndex, GPUMask);
 							check(PageTableEntry.IsMapped());
 
 							// Allocate space in temporary allocation atlas
@@ -1407,7 +1418,10 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 								PageIndex,
 								bResampleLastLighting));
 
-							LastCapturedPageHeap.Update(GetSurfaceCacheUpdateFrameIndex(), PageIndex);
+							for (uint32 GPUIndex : GPUMask)
+							{
+								LastCapturedPageHeap[GPUIndex].Update(GetSurfaceCacheUpdateFrameIndex(), PageIndex);
+							}
 							LumenCardRenderer.NumCardTexelsToCapture += PageTableEntry.PhysicalAtlasRect.Area();
 						}
 					}
@@ -1477,7 +1491,7 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 
 				if (!PageTableEntry.IsMapped())
 				{
-					MapSurfaceCachePage(MipMap, PageIndex);
+					MapSurfaceCachePage(MipMap, PageIndex, GPUMask);
 					check(PageTableEntry.IsMapped());
 
 					// Allocate space in temporary allocation atlas
@@ -1496,7 +1510,10 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 						PageIndex,
 						bResampleLastLighting));
 
-					LastCapturedPageHeap.Update(GetSurfaceCacheUpdateFrameIndex(), PageIndex);
+					for (uint32 GPUIndex : GPUMask)
+					{
+						LastCapturedPageHeap[GPUIndex].Update(GetSurfaceCacheUpdateFrameIndex(), PageIndex);
+					}
 					LumenCardRenderer.NumCardTexelsToCapture += PageTableEntry.PhysicalAtlasRect.Area();
 					DirtyCards.Add(VirtualPageIndex.CardIndex);
 				}
@@ -1504,20 +1521,25 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 		}
 	}
 
-	// Finally process card refresh to capture any material updates
+	// Finally process card refresh to capture any material updates, or render cards that need to be initialized for the first time on
+	// a given GPU in multi-GPU scenarios.  Uninitialized cards on a particular GPU will have a zero captured frame index set when the
+	// card was allocated.  A zero frame index otherwise can't occur on a card, because the constructor sets SurfaceCacheUpdateFrameIndex
+	// to 1, and IncrementSurfaceCacheUpdateFrameIndex skips over zero if it happens to wrap around.
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(SceneCardCaptureRefresh);
 
 		int32 NumTexelsLeftToRefresh = GetCardCaptureRefreshNumTexels();
 		int32 NumPagesLeftToRefesh = FMath::Min<int32>((int32)GetCardCaptureRefreshNumPages(), MaxTileCapturesPerFrame - CardPagesToRender.Num());
 
+		FBinaryHeap<uint32,uint32>& PageHeap = LastCapturedPageHeap[GPUMask.GetFirstIndex()];
+
 		bool bCanCapture = true;
-		while (LastCapturedPageHeap.Num() > 0 && bCanCapture)
+		while (PageHeap.Num() > 0 && bCanCapture)
 		{
 			bCanCapture = false;
 
-			const uint32 PageTableIndex = LastCapturedPageHeap.Top();
-			const uint32 CapturedSurfaceCacheFrameIndex = LastCapturedPageHeap.GetKey(PageTableIndex);
+			const uint32 PageTableIndex = PageHeap.Top();
+			const uint32 CapturedSurfaceCacheFrameIndex = PageHeap.GetKey(PageTableIndex);
 
 			const int32 FramesSinceLastUpdated = GetSurfaceCacheUpdateFrameIndex() - CapturedSurfaceCacheFrameIndex;
 			if (FramesSinceLastUpdated > 0)
@@ -1526,11 +1548,20 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 				const FLumenCard& Card = Cards[PageTableEntry.CardIndex];
 				const FLumenMeshCards& MeshCardsElement = MeshCards[Card.MeshCardsIndex];
 
-				// Limit number of re-captured texels and pages per frame
-				FLumenMipMapDesc MipMapDesc;
-				Card.GetMipMapDesc(PageTableEntry.ResLevel, MipMapDesc);
-				NumTexelsLeftToRefresh -= MipMapDesc.PageResolution.X * MipMapDesc.PageResolution.Y;
-				NumPagesLeftToRefesh -= 1;
+#if WITH_MGPU
+				// Limit number of re-captured texels and pages per frame, except always allow captures of uninitialized
+				// cards where the captured frame index is zero (don't count them against the throttled limits).
+				// Uninitialized cards on a particular GPU will always be at the front of the heap, due to the zero index,
+				// so even if the limits are set to zero, we'll still process them if needed (the limit comparisons below
+				// are >= 0, and will pass if nothing has been decremented from the limits yet).
+				if ((CapturedSurfaceCacheFrameIndex != 0) || (GNumExplicitGPUsForRendering == 1))
+#endif
+				{
+					FLumenMipMapDesc MipMapDesc;
+					Card.GetMipMapDesc(PageTableEntry.ResLevel, MipMapDesc);
+					NumTexelsLeftToRefresh -= MipMapDesc.PageResolution.X * MipMapDesc.PageResolution.Y;
+					NumPagesLeftToRefesh -= 1;
+				}
 
 				if (NumTexelsLeftToRefresh >= 0 && NumPagesLeftToRefesh >= 0)
 				{
@@ -1553,7 +1584,10 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 							PageTableIndex,
 							/*bResampleLastLighting*/ true));
 
-						LastCapturedPageHeap.Update(GetSurfaceCacheUpdateFrameIndex(), PageTableIndex);
+						for (uint32 GPUIndex : GPUMask)
+						{
+							LastCapturedPageHeap[GPUIndex].Update(GetSurfaceCacheUpdateFrameIndex(), PageTableIndex);
+						}
 						LumenCardRenderer.NumCardTexelsToCapture += PageTableEntry.PhysicalAtlasRect.Area();
 						bCanCapture = true;
 					}
@@ -1581,7 +1615,7 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 
 void UpdateSurfaceCachePrimitives(
 	FLumenSceneData& LumenSceneData,
-	FVector LumenSceneCameraOrigin,
+	const TArray<FVector, TInlineAllocator<2>>& LumenSceneCameraOrigins,
 	float LumenSceneDetail,
 	float MaxCardUpdateDistanceFromCamera,
 	FLumenCardRenderer& LumenCardRenderer)
@@ -1598,7 +1632,7 @@ void UpdateSurfaceCachePrimitives(
 	{
 		Tasks.Emplace(
 			LumenSceneData.PrimitiveGroups,
-			LumenSceneCameraOrigin,
+			LumenSceneCameraOrigins,
 			LumenSceneDetail,
 			MaxCardUpdateDistanceFromCamera,
 			TaskIndex * NumPrimitivesPerTask,
@@ -1666,7 +1700,7 @@ void UpdateSurfaceCachePrimitives(
 
 void UpdateSurfaceCacheMeshCards(
 	FLumenSceneData& LumenSceneData,
-	FVector LumenSceneCameraOrigin,
+	const TArray<FVector, TInlineAllocator<2>>& LumenSceneCameraOrigins,
 	float LumenSceneDetail,
 	float MaxCardUpdateDistanceFromCamera,
 	TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& SurfaceCacheRequests)
@@ -1684,7 +1718,7 @@ void UpdateSurfaceCacheMeshCards(
 		Tasks.Emplace(
 			LumenSceneData.MeshCards,
 			LumenSceneData.Cards,
-			LumenSceneCameraOrigin,
+			LumenSceneCameraOrigins,
 			LumenSceneDetail,
 			MaxCardUpdateDistanceFromCamera,
 			TaskIndex * NumMeshCardsPerTask,
@@ -1727,7 +1761,7 @@ void UpdateSurfaceCacheMeshCards(
 		}
 	}
 
-	LumenSceneData.UpdateSurfaceCacheFeedback(LumenSceneCameraOrigin, SurfaceCacheRequests);
+	LumenSceneData.UpdateSurfaceCacheFeedback(LumenSceneCameraOrigins, SurfaceCacheRequests);
 
 	if (SurfaceCacheRequests.Num() > 0)
 	{
@@ -1811,14 +1845,14 @@ void FLumenSceneData::CopyBuffersForResample(FRDGBuilder& GraphBuilder, FShaderR
 {
 	if (LastPageTableBufferForResample.NumBytes != PageTableBuffer.NumBytes)
 	{
-		LastPageTableBufferForResample.Initialize(TEXT("Lumen.LastPageBufferForResample"), PageTableBuffer.NumBytes);
+		LastPageTableBufferForResample.Initialize(TEXT("Lumen.LastPageBufferForResample"), PageTableBuffer.NumBytes, BUF_Static);
 	}
 
 	{
 		GraphBuilder.RHICmdList.Transition(FRHITransitionInfo(LastPageTableBufferForResample.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 		FMemcpyResourceParams MemcpyParams;
-		MemcpyParams.Count = PageTableBuffer.NumBytes;
+		MemcpyParams.Count = PageTableBuffer.NumBytes / sizeof(uint32);
 		MemcpyParams.SrcOffset = 0;
 		MemcpyParams.DstOffset = 0;
 		MemcpyResource(GraphBuilder.RHICmdList, LastPageTableBufferForResample, PageTableBuffer, MemcpyParams);
@@ -1828,7 +1862,7 @@ void FLumenSceneData::CopyBuffersForResample(FRDGBuilder& GraphBuilder, FShaderR
 
 	if (LastCardBufferForResample.NumBytes != CardBuffer.NumBytes)
 	{
-		LastCardBufferForResample.Initialize(TEXT("Lumen.LastCardsForResample"), NumBytesPerElement, CardBuffer.NumBytes / NumBytesPerElement);
+		LastCardBufferForResample.Initialize(TEXT("Lumen.LastCardsForResample"), NumBytesPerElement, CardBuffer.NumBytes / NumBytesPerElement, BUF_Static);
 	}
 	else
 	{
@@ -1996,8 +2030,18 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 			LumenSceneData.RemoveAllMeshCards();
 		}
 
-		const FVector LumenSceneCameraOrigin = GetLumenSceneViewOrigin(View, GetNumLumenVoxelClipmaps(View.FinalPostProcessSettings.LumenSceneViewDistance) - 1);
+		TArray<FVector, TInlineAllocator<2>> LumenSceneCameraOrigins;
+
+		LumenSceneCameraOrigins.Add(GetLumenSceneViewOrigin(View, GetNumLumenVoxelClipmaps(View.FinalPostProcessSettings.LumenSceneViewDistance) - 1));
 		const float MaxCardUpdateDistanceFromCamera = ComputeMaxCardUpdateDistanceFromCamera(View.FinalPostProcessSettings.LumenSceneViewDistance);
+
+#if WITH_MGPU
+		for (const FVector& MultiViewOrigin : MultiViewFamilyOrigins)
+		{
+			LumenSceneCameraOrigins.Add(MultiViewOrigin);
+		}
+#endif
+
 		const int32 MaxTileCapturesPerFrame = GetMaxTileCapturesPerFrame();
 
 		if (MaxTileCapturesPerFrame > 0)
@@ -2010,24 +2054,24 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 
 			UpdateSurfaceCachePrimitives(
 				LumenSceneData,
-				LumenSceneCameraOrigin,
+				LumenSceneCameraOrigins,
 				LumenSceneDetail,
 				MaxCardUpdateDistanceFromCamera,
 				LumenCardRenderer);
 
 			UpdateSurfaceCacheMeshCards(
 				LumenSceneData,
-				LumenSceneCameraOrigin,
+				LumenSceneCameraOrigins,
 				LumenSceneDetail,
 				MaxCardUpdateDistanceFromCamera,
 				SurfaceCacheRequests);
 
 			LumenSceneData.ProcessLumenSurfaceCacheRequests(
 				View,
-				LumenSceneCameraOrigin,
 				MaxCardUpdateDistanceFromCamera,
 				MaxTileCapturesPerFrame,
 				LumenCardRenderer,
+				GraphBuilder.RHICmdList.GetGPUMask(),
 				SurfaceCacheRequests);
 		}
 

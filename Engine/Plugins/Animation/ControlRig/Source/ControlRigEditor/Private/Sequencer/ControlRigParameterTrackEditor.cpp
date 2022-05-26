@@ -1983,7 +1983,34 @@ void FControlRigParameterTrackEditor::SelectRigsAndControls(UControlRig* Control
 				String.ParseIntoArray(StringArray, TEXT("."));
 				if (StringArray.Num() > 0)
 				{
-					FName ControlName(*StringArray[0]);
+					const FName ControlName(*StringArray[0]);
+
+					// skip nested controls which have the shape enabled flag turned on
+					if(const URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+					{
+						if(const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(FRigElementKey(ControlName, ERigElementType::Control)))
+						{
+							if (ControlElement->Settings.ControlType == ERigControlType::Bool ||
+								ControlElement->Settings.ControlType == ERigControlType::Float ||
+								ControlElement->Settings.ControlType == ERigControlType::Integer)
+							{
+								if(ControlElement->Settings.bShapeEnabled)
+								{
+									if(const FRigControlElement* ParentControlElement = Cast<FRigControlElement>(Hierarchy->GetFirstParent(ControlElement)))
+									{
+										if(const TSet<FName>* Controls = RigsAndControls.Find(ControlRig))
+										{
+											if(Controls->Contains(ParentControlElement->GetName()))
+											{
+												continue;
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+					
 					RigsAndControls.FindOrAdd(ControlRig).Add(ControlName);
 				}
 			}
@@ -2279,31 +2306,35 @@ void FControlRigParameterTrackEditor::HandleControlSelected(UControlRig* Subject
 	TArray<FRigControl> Controls;
 
 	URigHierarchy* Hierarchy = Subject->GetHierarchy();
-	if (bSelected)
+
+	if (URigHierarchyController* Controller = Hierarchy->GetController())
 	{
-		if (URigHierarchyController* Controller = Hierarchy->GetController())
+		Hierarchy->ForEach<FRigControlElement>([ControlElement, Controller, bSelected](FRigControlElement* OtherControlElement) -> bool
 		{
-			Hierarchy->ForEach<FRigControlElement>([ControlElement, Controller, bSelected](FRigControlElement* OtherControlElement) -> bool
+			if (OtherControlElement->Settings.ControlType == ERigControlType::Bool ||
+				OtherControlElement->Settings.ControlType == ERigControlType::Float ||
+				OtherControlElement->Settings.ControlType == ERigControlType::Integer)
+			{
+				if (OtherControlElement->Settings.bShapeEnabled || !OtherControlElement->Settings.bAnimatable)
 				{
-					if (OtherControlElement->Settings.ControlType == ERigControlType::Bool ||
-						OtherControlElement->Settings.ControlType == ERigControlType::Float ||
-						OtherControlElement->Settings.ControlType == ERigControlType::Integer)
-					{
-						for (const FRigElementParentConstraint& ParentConstraint : OtherControlElement->ParentConstraints)
-						{
-							if (ParentConstraint.ParentElement == ControlElement)
-							{
-								Controller->SelectElement(OtherControlElement->GetKey(), bSelected);
-								break;
-							}
-						}
-					}
-
 					return true;
-				});
-		}
+				}
 
+				for (const FRigElementParentConstraint& ParentConstraint : OtherControlElement->ParentConstraints)
+				{
+					if (ParentConstraint.ParentElement == ControlElement)
+					{
+						Controller->SelectElement(OtherControlElement->GetKey(), bSelected);
+						break;
+					}
+				}
+			}
+
+			return true;
+		});
 	}
+
+	
 	if (bIsDoingSelection)
 	{
 		return;
@@ -2481,8 +2512,8 @@ void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRi
 				if (ControlElement->Settings.ControlType == ERigControlType::Position)
 				{
 					bKeyX = bSetKey && EnumHasAnyFlags(ChannelsToKey, EControlRigContextChannelToKey::TranslationX);
-					bKeyY = EnumHasAnyFlags(ChannelsToKey, EControlRigContextChannelToKey::TranslationY);
-					bKeyZ = EnumHasAnyFlags(ChannelsToKey, EControlRigContextChannelToKey::TranslationZ);
+					bKeyY = bSetKey && EnumHasAnyFlags(ChannelsToKey, EControlRigContextChannelToKey::TranslationY);
+					bKeyZ = bSetKey && EnumHasAnyFlags(ChannelsToKey, EControlRigContextChannelToKey::TranslationZ);
 				}
 				else if(ControlElement->Settings.ControlType == ERigControlType::Rotator)
 				{
@@ -3455,6 +3486,9 @@ bool FControlRigParameterTrackEditor::CollapseAllLayers(TSharedPtr<ISequencer>& 
 				OwnerTrack->RemoveSectionAt(Index);
 			}
 		}
+
+		//remove all keys, except Space Channels, from the Section.
+		ParameterSection->RemoveAllKeys(false /*bIncludedSpaceKeys*/);
 
 		FRigControlModifiedContext Context;
 		Context.SetKey = EControlRigSetKey::Always;

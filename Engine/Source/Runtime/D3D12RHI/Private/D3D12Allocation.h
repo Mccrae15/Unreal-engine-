@@ -527,6 +527,7 @@ public:
 	void* Allocate(uint32 Bytes, class FD3D12ResourceLocation& OutLocation);
 #endif
 
+	void ClearResource() { UnderlyingResource.Clear(); }
 
 private:
 	FD3D12ResourceLocation UnderlyingResource;

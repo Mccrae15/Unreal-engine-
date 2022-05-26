@@ -2,10 +2,22 @@
 
 #include "GroomCache.h"
 #include "GroomAsset.h"
+#include "Misc/ScopeRWLock.h"
+
+TMap<UGroomCache*, FPackageFileVersion> GroomCacheArchiveVersion;
+FRWLock GroomCacheArchiveVersionLock;
 
 void UGroomCache::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
+
+	if (Ar.IsLoading())
+	{
+		// Unloaded GroomCache will not be removed from the map since there's no function to hook to
+		// so there will be stale entries, but they won't be streamed from since they are unloaded
+		FWriteScopeLock Lock(GroomCacheArchiveVersionLock);
+		GroomCacheArchiveVersion.Add(this, Ar.UEVer());
+	}
 
 	int32 NumChunks = Chunks.Num();
 	Ar << NumChunks;
@@ -207,6 +219,14 @@ bool UGroomCache::GetGroomDataAtFrameIndex(int32 FrameIndex, FGroomCacheAnimatio
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(UGroomCache::GetGroomDataAtFrameIndex_Serialize);
 		FMemoryReader Ar(TempBytes, true);
+		// Propagate the GroomCache archive version to the memory archive for proper serialization
+		{
+			FReadScopeLock Lock(GroomCacheArchiveVersionLock);
+			if (FPackageFileVersion* Version = GroomCacheArchiveVersion.Find(this))
+			{
+				Ar.SetUEVer(*Version);
+			}
+		}
 		AnimData.Serialize(Ar);
 	}
 

@@ -54,6 +54,7 @@
 #include "Animation/AnimationPoseData.h"
 #include "ITimeManagementModule.h"
 #include "CommonFrameRates.h"
+#include "Animation/AttributeTypes.h"
 #include "HAL/LowLevelMemTracker.h"
 
 LLM_DEFINE_TAG(SequenceData);
@@ -447,6 +448,11 @@ UAnimSequence::UAnimSequence(const FObjectInitializer& ObjectInitializer)
 		check(IsDataModelValid());
 	}
 #endif
+
+	if (IsDefaultSubobject())
+	{
+		UE::Anim::AttributeTypes::Initialize();
+	}
 }
 
 void UAnimSequence::PostInitProperties()
@@ -4265,7 +4271,7 @@ bool UAnimSequence::CreateAnimation(USkeletalMesh* Mesh)
 		{
 			const FName& BoneName = RefSkeleton.GetBoneName(BoneIndex);
 			Controller->AddBoneTrack(BoneName);
-			Controller->SetBoneTrackKeys(BoneName, { FVector3f(RefBonePose[BoneIndex].GetTranslation()) }, { FQuat4f(RefBonePose[BoneIndex].GetRotation()) }, { FVector3f(RefBonePose[BoneIndex].GetScale3D()) });
+			Controller->SetBoneTrackKeys(BoneName, { FVector3f(RefBonePose[BoneIndex].GetTranslation()), FVector3f(RefBonePose[BoneIndex].GetTranslation()) }, { FQuat4f(RefBonePose[BoneIndex].GetRotation()), FQuat4f(RefBonePose[BoneIndex].GetRotation()) }, { FVector3f(RefBonePose[BoneIndex].GetScale3D()), FVector3f(RefBonePose[BoneIndex].GetScale3D()) });
 		}
 
 		Controller->NotifyPopulated();
@@ -4302,7 +4308,7 @@ bool UAnimSequence::CreateAnimation(USkeletalMeshComponent* MeshComponent)
 		{
 			const FName& BoneName = RefSkeleton.GetBoneName(BoneIndex);
 			Controller->AddBoneTrack(BoneName);
-			Controller->SetBoneTrackKeys(BoneName, TArray<FVector>{ BoneSpaceTransforms[BoneIndex].GetTranslation() }, { BoneSpaceTransforms[BoneIndex].GetRotation() }, TArray<FVector>{ BoneSpaceTransforms[BoneIndex].GetScale3D() });
+			Controller->SetBoneTrackKeys(BoneName, TArray<FVector>{ BoneSpaceTransforms[BoneIndex].GetTranslation(), BoneSpaceTransforms[BoneIndex].GetTranslation() }, { BoneSpaceTransforms[BoneIndex].GetRotation(), BoneSpaceTransforms[BoneIndex].GetRotation() }, TArray<FVector>{ BoneSpaceTransforms[BoneIndex].GetScale3D(), BoneSpaceTransforms[BoneIndex].GetScale3D() });
 		}
 
 		Controller->NotifyPopulated();
@@ -4382,7 +4388,23 @@ void UAnimSequence::EvaluateCurveData(FBlendedCurve& OutCurve, float CurrentTime
 	check(!bForceUseRawData || CanEvaluateRawAnimationData());
 	if (CanEvaluateRawAnimationData() && bEvaluateRawData)
 	{
+#if WITH_EDITOR
+		// Evaluate float curves from the AnimationData Model
+		if (OutCurve.NumValidCurveCount > 0)
+		{
+			for (auto CurveIter = DataModel->GetFloatCurves().CreateConstIterator(); CurveIter; ++CurveIter)
+			{
+				const FFloatCurve& Curve = *CurveIter;
+				if (OutCurve.IsEnabled(Curve.Name.UID))
+				{
+					const float Value = Curve.Evaluate(CurrentTime);
+					OutCurve.Set(Curve.Name.UID, Value);
+				}
+			}
+		}
+#else
 		Super::EvaluateCurveData(OutCurve, CurrentTime, bForceUseRawData);
+#endif
 	}
 	else if(IsCurveCompressedDataValid() && CompressedData.CurveCompressionCodec)
 	{
@@ -5725,6 +5747,8 @@ void UAnimSequence::OnModelModified(const EAnimDataModelNotifyType& NotifyType, 
 		}
 	};
 
+	bool bShouldMarkPackageDirty = true;
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	switch (NotifyType)
 	{
@@ -5825,10 +5849,11 @@ void UAnimSequence::OnModelModified(const EAnimDataModelNotifyType& NotifyType, 
 		case EAnimDataModelNotifyType::CurveFlagsChanged:
 		case EAnimDataModelNotifyType::CurveScaled:
 		{
+			ClearCompressedCurveData();
+			UpdateRawDataGuid(RegenerateGUID);
+				
 			if (NotifyCollector.IsNotWithinBracket())
-			{
-				UpdateRawDataGuid(RegenerateGUID);
-				ClearCompressedCurveData();
+			{						
 				RecompressAnimationData();
 			}
 
@@ -5856,6 +5881,13 @@ void UAnimSequence::OnModelModified(const EAnimDataModelNotifyType& NotifyType, 
 		{
 			const FCurveRenamedPayload& TypedPayload = Payload.GetPayload<FCurveRenamedPayload>();
 			UpdateCompressedCurveName(TypedPayload.Identifier.InternalName.UID, TypedPayload.NewIdentifier.InternalName);
+			if (TypedPayload.Identifier.InternalName.DisplayName == TypedPayload.NewIdentifier.InternalName.DisplayName
+				&& TypedPayload.Identifier.InternalName.UID == SmartName::MaxUID && TypedPayload.NewIdentifier.InternalName.UID != SmartName::MaxUID)
+			{
+				// We are renaming a Curve with a FSmartName::Invalid UID, this means it was just loaded and we are retrieving
+				// its actual UID from its DisplayName. This should *not* mark the package dirty.
+				bShouldMarkPackageDirty = false;
+			}
 			break;
 		}
 		default:
@@ -5865,8 +5897,11 @@ void UAnimSequence::OnModelModified(const EAnimDataModelNotifyType& NotifyType, 
 		}
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	
-	MarkPackageDirty();
+
+	if (bShouldMarkPackageDirty)
+	{
+		MarkPackageDirty();
+	}
 }
 
 

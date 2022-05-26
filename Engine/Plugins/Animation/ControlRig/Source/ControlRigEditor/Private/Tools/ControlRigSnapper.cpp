@@ -101,6 +101,7 @@ int32 FControlRigSnapperSelection::NumSelected() const
 TWeakPtr<ISequencer> FControlRigSnapper::GetSequencer()
 {
 	TWeakPtr<ISequencer> WeakSequencer = nullptr;
+	//if getting sequencer from level sequence need to use the current(master), not the focused
 	ULevelSequence* LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence();
 	if (LevelSequence)
 	{

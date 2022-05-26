@@ -2527,6 +2527,13 @@ namespace WindowsMixedReality
 	{
 		EXRDeviceConnectionResult::Type Result = EXRDeviceConnectionResult::Success;
 
+		if (TCString<TCHAR>::Stricmp(GDynamicRHI->GetName(), TEXT("D3D11")) != 0)
+		{
+			UE_LOG(LogWmrHmd, Warning, TEXT("FWindowsMixedRealityHMD::ConnectToRemoteHoloLens() not connecting because the RHI is %s but only D3D11 is supported."), GDynamicRHI->GetName());
+			Result = EXRDeviceConnectionResult::MiscFailure;
+			return Result;
+		}
+
 		D3D11Device = InternalGetD3D11Device();
 
 #  if WITH_WINDOWS_MIXED_REALITY
@@ -2538,7 +2545,7 @@ namespace WindowsMixedReality
 		HMD->SetLogCallback(WindowsMixedRealityHMD::LogForInterop);
 		HMD->ConnectToRemoteHoloLens(D3D11Device.GetReference(), ip, bitrate, Port, listen);
 #  else
-		UE_LOG(LogWmrHmd, Log, TEXT("FWindowsMixedRealityHMD::ConnectToRemoteHoloLens() is doing nothing because !WITH_WINDOWS_MIXED_REALITY."));
+		UE_LOG(LogWmrHmd, Warning, TEXT("FWindowsMixedRealityHMD::ConnectToRemoteHoloLens() is doing nothing because !WITH_WINDOWS_MIXED_REALITY."));
 #  endif
 
 		TWeakPtr<SViewport> ActiveViewport;

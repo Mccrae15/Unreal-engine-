@@ -15,6 +15,7 @@
 #include "UObject/LinkerSave.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectSaveContext.h"
+#include "UObject/PropertyPortFlags.h"
 #include "Virtualization/VirtualizationSystem.h"
 
 //#if WITH_EDITORONLY_DATA
@@ -787,6 +788,12 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 		}
 		else if (Ar.IsLoading())
 		{
+			if (Ar.HasAllPortFlags(PPF_Duplicate) && BulkDataId.IsValid())
+			{
+				// When duplicating BulkDatas we need to create a new BulkDataId to respect the uniqueness contract
+				BulkDataId = CreateUniqueGuid(BulkDataId, Owner, TEXT("PPF_Duplicate serialization"));
+			}
+
 			OffsetInFile = INDEX_NONE;
 			PackagePath.Empty();
 			PackageSegment = EPackageSegment::Header;

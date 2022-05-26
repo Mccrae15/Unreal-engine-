@@ -201,9 +201,9 @@ link_cmd = [
 
 link_cmd.append('-bundle') # link ruby extension as a MacOs 'bundle' not dynamic lib
 
-link_cmd += ['-framework', 'Ruby'] # link to RUby framework (found by framework_search_paths)
+#link_cmd += ['-framework', 'Ruby'] # link to RUby framework (found by framework_search_paths)
 
-# Handle SketchUp API
+# Handle not linking against SketchUpAPI and Ruby frameworks. Undefined will be solved at runtime
 link_cmd += [
     '-undefined', 'dynamic_lookup', # We are referencing SketchUp API symbols that are defined in the SketchUp app
     # looks like the following(referencing SketchUp app) is not needed when we have the above(-undefined dynamic_lookup)

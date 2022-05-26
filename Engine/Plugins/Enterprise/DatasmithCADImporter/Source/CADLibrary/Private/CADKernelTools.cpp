@@ -53,7 +53,7 @@ namespace CADLibrary
 
 		for (FVector& Vertex : VertexArray)
 		{
-			Vertex *= Context.ImportParams.GetScaleFactor();
+			Vertex *= 0.1; // mm (CADKernel unit) to cm (UE unit)
 		}
 
 		int32 VertexCount = VertexArray.Num();
@@ -212,7 +212,11 @@ namespace CADLibrary
 					for (int32 Index = 0; Index < TriangleCount; Index++)
 					{
 						const FVertexInstanceID VertexInstanceID = MeshVertexInstanceIDs[IndexFace + Index];
-						VertexInstanceUVs.Set(VertexInstanceID, UVChannel, FVector2f(FaceMesh->UVMap[TriangleVertexIndices[IndexFace + Orientation[Index]]]));
+
+						// TODO
+						// The UV scaling should be done in CADKernel
+						const double ScaleUV = 0.001; // mm to m
+						VertexInstanceUVs.Set(VertexInstanceID, UVChannel, FVector2f(FaceMesh->UVMap[TriangleVertexIndices[IndexFace + Orientation[Index]]] * ScaleUV));
 
 						VertexInstanceColors[VertexInstanceID] = FLinearColor::White;
 						VertexInstanceTangents[VertexInstanceID] = FVector3f(ForceInitToZero);
@@ -311,6 +315,12 @@ namespace CADLibrary
 		Tessellation.NormalArray = MoveTemp(FaceMesh.Normals);
 		Tessellation.TexCoordArray = MoveTemp(FaceMesh.UVMap);
 
+		const double ScaleUV = 0.001; // mm to m
+		for (FVector2D& TextureCoordinate : Tessellation.TexCoordArray)
+		{
+			TextureCoordinate *= ScaleUV;
+		}
+
 		if (FaceMaterial.Color)
 		{
 			Tessellation.ColorName = FaceMaterial.Color;
@@ -341,6 +351,11 @@ namespace CADLibrary
 	void FCADKernelTools::GetBodyTessellation(const CADKernel::FModelMesh& ModelMesh, const CADKernel::FBody& Body, FBodyMesh& OutBodyMesh)
 	{
 		ModelMesh.GetNodeCoordinates(OutBodyMesh.VertexArray);
+
+		for (FVector& Vertex : OutBodyMesh.VertexArray)
+		{
+			Vertex *= 0.1; // mm to cm
+		}
 
 		uint32 FaceSize = Body.FaceCount();
 

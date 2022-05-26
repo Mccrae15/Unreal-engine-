@@ -229,7 +229,7 @@ bool UObject::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags
 
 	if (!(Flags & REN_ForceNoResetLoaders))
 	{
-		ResetLoaders( GetOuter() );
+		ResetLoaders(GetPackage());
 	}
 
 	FName OldName = GetFName();

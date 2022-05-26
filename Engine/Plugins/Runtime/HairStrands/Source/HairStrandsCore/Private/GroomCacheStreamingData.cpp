@@ -140,6 +140,9 @@ void FGroomCacheStreamingData::PrefetchData(UGroomComponent *Component)
 	UpdateStreamingStatus(true);
 }
 
+extern TMap<UGroomCache*, FPackageFileVersion> GroomCacheArchiveVersion;
+extern FRWLock GroomCacheArchiveVersionLock;
+
 void FGroomCacheStreamingData::UpdateStreamingStatus(bool bAsyncDeletionAllowed)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheStreamingData::UpdateStreamingStatus);
@@ -198,6 +201,14 @@ void FGroomCacheStreamingData::UpdateStreamingStatus(bool bAsyncDeletionAllowed)
 						// The bulk data buffer is then serialized into GroomCacheAnimationData
 						TArrayView<uint8> TempView(ReadBuffer, DataSize);
 						FMemoryReaderView Ar(TempView, true);
+						// Propagate the GroomCache archive version to the memory archive for proper serialization
+						{
+							FReadScopeLock Lock(GroomCacheArchiveVersionLock);
+							if (FPackageFileVersion* Version = GroomCacheArchiveVersion.Find(GroomCache))
+							{
+								Ar.SetUEVer(*Version);
+							}
+						}
 						AnimData->Serialize(Ar);
 
 						// We became the owner of ReadBuffer when GetReadResults was called so free it now

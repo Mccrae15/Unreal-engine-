@@ -24,6 +24,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #endif// WITH_EDITOR
+#include "ControlRigComponent.h"
 
 #define LOCTEXT_NAMESPACE "ControlRig"
 
@@ -1180,10 +1181,25 @@ void UControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEve
 
 #if WITH_EDITOR
 			URigHierarchy* Hierarchy = GetHierarchy();
-			Hierarchy->ReadTransformsPerInstructionPerSlice.Reset();
-			Hierarchy->WrittenTransformsPerInstructionPerSlice.Reset();
-			Hierarchy->ReadTransformsPerInstructionPerSlice.AddZeroed(VM->GetByteCode().GetNumInstructions());
-			Hierarchy->WrittenTransformsPerInstructionPerSlice.AddZeroed(VM->GetByteCode().GetNumInstructions());
+
+			bool bRecordTransformsPerInstruction = true;
+			if(const UObject* Outer = GetOuter())
+			{
+				if(Outer->IsA<UControlRigComponent>())
+				{
+					bRecordTransformsPerInstruction = false;
+				}
+			}
+
+			TGuardValue<bool> RecordTransformsPerInstructionGuard(Hierarchy->bRecordTransformsPerInstruction, bRecordTransformsPerInstruction);
+			if(Hierarchy->bRecordTransformsPerInstruction)
+			{
+				Hierarchy->ReadTransformsPerInstructionPerSlice.Reset();
+				Hierarchy->WrittenTransformsPerInstructionPerSlice.Reset();
+				Hierarchy->ReadTransformsPerInstructionPerSlice.AddZeroed(VM->GetByteCode().GetNumInstructions());
+				Hierarchy->WrittenTransformsPerInstructionPerSlice.AddZeroed(VM->GetByteCode().GetNumInstructions());
+			}
+			
 			TGuardValue<const FRigVMExecuteContext*> HierarchyContextGuard(Hierarchy->ExecuteContext, &VM->GetContext());
 #endif
 

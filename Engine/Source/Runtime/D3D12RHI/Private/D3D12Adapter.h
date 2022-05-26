@@ -121,6 +121,17 @@ struct FD3D12MemoryInfo
 	}
 };
 
+class FTransientUniformBufferAllocator : public FD3D12FastConstantAllocator, public TThreadSingleton<FTransientUniformBufferAllocator>
+{
+public:
+	FTransientUniformBufferAllocator(FD3D12Adapter* InAdapter, FD3D12Device* Parent, FRHIGPUMask VisibiltyMask) : FD3D12FastConstantAllocator(Parent, VisibiltyMask), Adapter(InAdapter) {}
+	~FTransientUniformBufferAllocator();
+
+	void Cleanup();
+private:
+	FD3D12Adapter* Adapter = nullptr;
+};
+
 enum class ED3D12GPUCrashDebuggingModes
 {
 	None				= 0x0,
@@ -380,6 +391,7 @@ public:
 	FD3D12TemporalEffect* GetTemporalEffect(const FName& EffectName);
 
 	FD3D12FastConstantAllocator& GetTransientUniformBufferAllocator();
+	void ReleaseTransientUniformBufferAllocator(FTransientUniformBufferAllocator* InAllocator);
 
 	void BlockUntilIdle();
 
@@ -565,6 +577,9 @@ protected:
 #if WITH_MGPU
 	TMap<FName, FD3D12TemporalEffect> TemporalEffectMap;
 #endif
+
+	TArray<FTransientUniformBufferAllocator*> TransientUniformBufferAllocators;
+	FCriticalSection TransientUniformBufferAllocatorsCS;
 
 	TUniquePtr<IRHITransientMemoryCache> TransientMemoryCache;
 

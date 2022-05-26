@@ -49,7 +49,7 @@ void UAnimGraphNode_RetargetPoseFromMesh::ValidateAnimNodeDuringCompilation(USke
 	{
 		if (!IsPinExposedAndLinked(GET_MEMBER_NAME_STRING_CHECKED(FAnimNode_RetargetPoseFromMesh, SourceMeshComponent)))
 		{
-			MessageLog.Warning(TEXT("@@ is missing a Source Skeletal Mesh Component reference."), this);
+			MessageLog.Error(TEXT("@@ is missing a Source Skeletal Mesh Component reference."), this);
 			return;
 		}
 	}
@@ -57,44 +57,25 @@ void UAnimGraphNode_RetargetPoseFromMesh::ValidateAnimNodeDuringCompilation(USke
 	// validate IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset)
 	{
-		MessageLog.Warning(TEXT("@@ is missing an IKRetargeter asset."), this);
+		MessageLog.Error(TEXT("@@ is missing an IKRetargeter asset."), this);
 		return;
 	}
 
 	// validate SOURCE IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset->GetSourceIKRig())
 	{
-		MessageLog.Warning(TEXT("@@ has IK Retargeter that is missing a source IK Rig asset."), this);
+		MessageLog.Error(TEXT("@@ has IK Retargeter that is missing a source IK Rig asset."), this);
 	}
 
 	// validate TARGET IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset->GetTargetIKRig())
 	{
-		MessageLog.Warning(TEXT("@@ has IK Retargeter that is missing a target IK Rig asset."), this);
+		MessageLog.Error(TEXT("@@ has IK Retargeter that is missing a target IK Rig asset."), this);
 	}
 
 	if (!(Node.IKRetargeterAsset->GetSourceIKRig() && Node.IKRetargeterAsset->GetTargetIKRig()))
 	{
 		return;
-	}
-
-	if (ForSkeleton)
-	{
-		// validate that target bone chains exist on this skeleton
-		const FReferenceSkeleton &RefSkel = ForSkeleton->GetReferenceSkeleton();
-		const TArray<FBoneChain> &TargetBoneChains = Node.IKRetargeterAsset->GetTargetIKRig()->GetRetargetChains();
-		for (const FBoneChain &Chain : TargetBoneChains)
-		{
-			if (RefSkel.FindBoneIndex(Chain.StartBone.BoneName) == INDEX_NONE)
-			{
-				MessageLog.Warning(*LOCTEXT("StartBoneNotFound", "@@ - Start Bone in target IK Rig Bone Chain not found.").ToString(), this);
-			}
-
-			if (RefSkel.FindBoneIndex(Chain.EndBone.BoneName) == INDEX_NONE)
-			{
-				MessageLog.Warning(*LOCTEXT("EndBoneNotFound", "@@ - End Bone in target IK Rig Bone Chain not found.").ToString(), this);
-			}
-		}
 	}
 }
 

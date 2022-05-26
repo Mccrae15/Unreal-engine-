@@ -867,14 +867,21 @@ void UCubeGridTool::Shutdown(EToolShutdownType ShutdownType)
 	{
 		Cast<IPrimitiveComponentBackedTarget>(Target)->SetOwnerVisibility(true);
 
-		if (bChangesMade)
+		// We check the shutdown type because even though we are not an accept/cancel tool, we
+		// get a cancel shutdown via Ctrl+Z. In this case we definitely don't want to update because
+		// an update in an undo transaction results in a crash.
+		if (bChangesMade && ShutdownType != EToolShutdownType::Cancel && Target->IsValid())
 		{
 			GetToolManager()->BeginUndoTransaction(LOCTEXT("CubeGridToolEditTransactionName", "Block Tool Edit"));
 			UE::ToolTarget::CommitDynamicMeshUpdate(Target, *CurrentMesh, true);
 			GetToolManager()->EndUndoTransaction();
 		}
+		else if (!Target->IsValid())
+		{
+			UE_LOG(LogGeometry, Error, TEXT("CubeGridTool:: Edited mesh could not be committed (it was likely forcibly deleted from under the tool)."));
+		}
 	}
-	else if (CurrentMesh->TriangleCount() > 0)
+	else if (CurrentMesh->TriangleCount() > 0 && ShutdownType != EToolShutdownType::Cancel)
 	{
 		GetToolManager()->BeginUndoTransaction(LOCTEXT("CubeGridToolCreateTransactionName", "Block Tool Create New"));
 

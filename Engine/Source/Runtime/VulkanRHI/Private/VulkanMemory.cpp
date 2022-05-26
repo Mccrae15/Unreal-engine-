@@ -1771,6 +1771,7 @@ namespace VulkanRHI
 
 	uint64 FVulkanResourceHeap::EvictOne(FVulkanDevice& Device)
 	{
+		FScopeLock ScopeLock(&GResourceLock);
 		for (int32 Index = MAX_BUCKETS - 2; Index >= 0; Index--)
 		{
 			TArray<FVulkanSubresourceAllocator*>& Pages = ActivePages[Index];
@@ -2482,30 +2483,30 @@ namespace VulkanRHI
 	{
 		SCOPED_NAMED_EVENT(FResourceHeapManager_FreeVulkanAllocationPooledBuffer, FColor::Cyan);
 		DecMetaStats(Allocation.MetaType, Allocation.Size);
-		uint32 Index = Allocation.AllocatorIndex;
-		AllBufferAllocations[Index]->Free(Allocation);
+		const uint32 Index = Allocation.AllocatorIndex;
+		GetSubresourceAllocator(Index)->Free(Allocation);
 	}
 	void FMemoryManager::FreeVulkanAllocationBuffer(FVulkanAllocation& Allocation)
 	{
 		SCOPED_NAMED_EVENT(FResourceHeapManager_FreeVulkanAllocationBuffer, FColor::Cyan);
 		DecMetaStats(Allocation.MetaType, Allocation.Size);
-		uint32 Index = Allocation.AllocatorIndex;
-		AllBufferAllocations[Index]->Free(Allocation);
+		const uint32 Index = Allocation.AllocatorIndex;
+		GetSubresourceAllocator(Index)->Free(Allocation);
 	}
 
 	void FMemoryManager::FreeVulkanAllocationImage(FVulkanAllocation& Allocation)
 	{
 		SCOPED_NAMED_EVENT(FResourceHeapManager_FreeVulkanAllocationImage, FColor::Cyan);
 		DecMetaStats(Allocation.MetaType, Allocation.Size);
-		uint32 Index = Allocation.AllocatorIndex;
-		AllBufferAllocations[Index]->Free(Allocation);
+		const uint32 Index = Allocation.AllocatorIndex;
+		GetSubresourceAllocator(Index)->Free(Allocation);
 	}
 	void FMemoryManager::FreeVulkanAllocationImageDedicated(FVulkanAllocation& Allocation)
 	{
 		SCOPED_NAMED_EVENT(FResourceHeapManager_FreeVulkanAllocationImageDedicated, FColor::Cyan);
 		DecMetaStats(Allocation.MetaType, Allocation.Size);
-		uint32 Index = Allocation.AllocatorIndex;
-		AllBufferAllocations[Index]->Free(Allocation);
+		const uint32 Index = Allocation.AllocatorIndex;
+		GetSubresourceAllocator(Index)->Free(Allocation);
 	}
 
 	void FVulkanSubresourceAllocator::SetFreePending(FVulkanAllocation& Allocation)
@@ -2606,8 +2607,8 @@ namespace VulkanRHI
 		else
 		{
 
-			uint32 Index = Allocation.AllocatorIndex;
-			AllBufferAllocations[Index]->SetFreePending(Allocation);
+			const uint32 Index = Allocation.AllocatorIndex;
+			GetSubresourceAllocator(Index)->SetFreePending(Allocation);
 			Device->GetDeferredDeletionQueue().EnqueueResourceAllocation(Allocation);
 		}
 		check(!Allocation.HasAllocation());
@@ -2910,10 +2911,11 @@ namespace VulkanRHI
 
 	void FMemoryManager::RegisterSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator)
 	{
+		FRWScopeLock ScopedLock(AllBufferAllocationsLock, SLT_Write);
 		check(SubresourceAllocator->AllocatorIndex == 0xffffffff);
 		if (AllBufferAllocationsFreeListHead != (PTRINT)-1)
 		{
-			uint32 Index = AllBufferAllocationsFreeListHead;
+			const uint32 Index = AllBufferAllocationsFreeListHead;
 			AllBufferAllocationsFreeListHead = (PTRINT)AllBufferAllocations[Index];
 			SubresourceAllocator->AllocatorIndex = Index;
 			AllBufferAllocations[Index] = SubresourceAllocator;
@@ -2925,13 +2927,15 @@ namespace VulkanRHI
 		}
 
 	}
+
 	void FMemoryManager::UnregisterSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator)
 	{
 		if (SubresourceAllocator->bIsEvicting)
 		{
 			PendingEvictBytes -= SubresourceAllocator->GetMemoryAllocation()->GetSize();
 		}
-		uint32 Index = SubresourceAllocator->AllocatorIndex;
+		FRWScopeLock ScopedLock(AllBufferAllocationsLock, SLT_Write);
+		const uint32 Index = SubresourceAllocator->AllocatorIndex;
 		check(Index != 0xffffffff);
 		AllBufferAllocations[Index] = (FVulkanSubresourceAllocator*)AllBufferAllocationsFreeListHead;
 		AllBufferAllocationsFreeListHead = Index;
@@ -3893,7 +3897,7 @@ namespace VulkanRHI
 		case EVulkanAllocationBuffer:
 		case EVulkanAllocationImage:
 		case EVulkanAllocationImageDedicated:
-			return Device->GetMemoryManager().AllBufferAllocations[AllocatorIndex];
+			return Device->GetMemoryManager().GetSubresourceAllocator(AllocatorIndex);
 		break;
 		default:
 			check(0);

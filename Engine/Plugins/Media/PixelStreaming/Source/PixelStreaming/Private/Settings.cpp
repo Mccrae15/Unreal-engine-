@@ -143,7 +143,7 @@ namespace UE::PixelStreaming::Settings
 
 	TAutoConsoleVariable<int32> CVarPixelStreamingWebRTCMaxBitrate(
 		TEXT("PixelStreaming.WebRTC.MaxBitrate"),
-		20000000,
+		100000000,
 		TEXT("Max bitrate (bps) that WebRTC will not request above. Careful not to set too high otherwise because a local (ideal network) will actually reach this. Default: 20000000"),
 		ECVF_RenderThreadSafe);
 

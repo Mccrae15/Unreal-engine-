@@ -43,14 +43,6 @@ static void FixCorruptEngineVersion(const FPackageFileVersion& ObjectVersion, FE
 	{
 		Version.Set(4, 26, 0, Version.GetChangelist(), Version.GetBranch());
 	}
-
-	// Temporarily support the loading of 5.0.1 assets in 5.0.0 as version.h was incorrectly merged for an internal project
-	if (Version.GetMajor() == 5
-		&& Version.GetMinor() == 0
-		&& Version.GetPatch() == 1)
-	{
-		Version.Set(5, 0, 0, Version.GetChangelist(), Version.GetBranch());
-	}
 }
 
 void operator<<(FStructuredArchive::FSlot Slot, FPackageFileSummary& Sum)

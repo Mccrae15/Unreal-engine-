@@ -718,7 +718,8 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 					FNiagaraSystemSimulation* SystemSim = SystemInstanceController->GetSoloSystemSimulation().Get();
 					if (SystemSim)
 					{
-						float TickDelta = Asset->HasFixedTickDelta() ? Asset->GetFixedTickDeltaTime() : SeekDelta;
+						const bool bFixedTickDelta = Asset->HasFixedTickDelta();
+						const float TickDelta = bFixedTickDelta ? Asset->GetFixedTickDeltaTime() : SeekDelta;
 						if (bLockDesiredAgeDeltaTimeToSeekDelta || AgeDiff > TickDelta)
 						{
 							// If we're locking the delta time to the seek delta, or we need to seek more than a frame, tick the simulation by the seek delta.
@@ -747,7 +748,10 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 						else
 						{
 							// Otherwise just tick by the age difference.
-							SystemInstanceController->ManualTick(AgeDiff, nullptr);
+							if (!bFixedTickDelta || AgeDiff >= TickDelta)
+							{
+								SystemInstanceController->ManualTick(AgeDiff, nullptr);
+							}
 						}
 					}
 				}
@@ -1342,7 +1346,13 @@ void UNiagaraComponent::PostSystemTick_GameThread()
 #if WITH_EDITOR
 	if (SystemInstanceController->HandleNeedsUIResync())
 	{
-		OnSynchronizedWithAssetParametersDelegate.Broadcast();
+		for (UNiagaraDataInterface* OverrideDataInterface : OverrideParameters.GetDataInterfaces())
+		{
+			if (OverrideDataInterface != nullptr)
+			{
+				OverrideDataInterface->RefreshErrors();
+			}
+		}
 	}
 #endif
 

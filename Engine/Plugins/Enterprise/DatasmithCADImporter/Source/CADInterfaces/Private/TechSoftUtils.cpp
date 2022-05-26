@@ -23,10 +23,12 @@ namespace CADLibrary
 
 namespace TechSoftUtils
 {
+// to avoid changing a public header in 5.0.1. Cleaned in 5.1
+CADINTERFACES_API void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
 
 #ifdef USE_TECHSOFT_SDK
 TSharedPtr<FJsonObject> GetJsonObject(A3DAsmProductOccurrence* ProductOcccurence);
-void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
+
 void SaveModelFileToPrcFile(void* ModelFile, const FString& Filename);
 A3DUns32 CreateRGBColor(FColor& Color);
 void SetRootOccurenceAttributes(A3DEntity* Entity);
@@ -42,6 +44,14 @@ bool GetBodyFromPcrFile(const FString& Filename, const FImportParameters& Import
 	if (!ModelFile.IsValid())
 	{
 		return false;
+	}
+
+	if(ImportParameters.GetStitchingTechnique() != CADLibrary::EStitchingTechnique::StitchingNone)
+	{
+		CADLibrary::TUniqueTSObj<A3DSewOptionsData> SewData;
+		SewData->m_bComputePreferredOpenShellOrientation = false;
+
+		TechSoftInterface::SewModel(ModelFile.Get(), CADLibrary::FImportParameters::GStitchingTolerance, SewData.GetPtr());
 	}
 
 	TUniqueTSObj<A3DAsmModelFileData> ModelFileData(ModelFile.Get());
@@ -66,7 +76,7 @@ bool GetBodyFromPcrFile(const FString& Filename, const FImportParameters& Import
 	if (JsonObject.IsValid())
 	{
 		double BodyUnit = 1.0;
-		JsonObject->TryGetNumberField(JSON_ENTRY_FILE_UNIT, BodyUnit);
+		JsonObject->TryGetNumberField(JSON_ENTRY_BODY_UNIT, BodyUnit);
 
 		for (A3DUns32 Index = 0; Index < PartDefinitionData->m_uiRepItemsSize; ++Index)
 		{
@@ -141,7 +151,7 @@ FUniqueTechSoftModelFile SaveBodiesToPrcFile(void** Bodies, uint32 BodyCount, co
 #endif
 }
 
-bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, double FileUnit, FBodyMesh& BodyMesh)
+bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, double BodyUnit, FBodyMesh& BodyMesh)
 {
 #if defined USE_TECHSOFT_SDK && !defined CADKERNEL_DEV
 	A3DRiRepresentationItem* RepresentationItemPtr = (A3DRiRepresentationItem*)BodyPtr;
@@ -150,9 +160,8 @@ bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, doub
 	A3DEntityGetType(RepresentationItemPtr, &Type);
 	if (Type == kA3DTypeRiPolyBrepModel)
 	{
-		TUniqueTSObj<A3DRiRepresentationItemData> RepresentationItemData(RepresentationItemPtr);
-		TechSoftInterfaceUtils::FTechSoftTessellationExtractor Extractor(RepresentationItemData->m_pTessBase);
-		return Extractor.FillBodyMesh(BodyMesh, FileUnit);
+		TechSoftInterfaceUtils::FTechSoftTessellationExtractor Extractor(RepresentationItemPtr, BodyUnit);
+		return Extractor.FillBodyMesh(BodyMesh);
 	}
 
 	// TUniqueTechSoftObj does not work in this case
@@ -160,7 +169,12 @@ bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, doub
 
 	TessellationParameters->m_eTessellationLevelOfDetail = kA3DTessLODUserDefined; // Enum to specify predefined values for some following members.
 	TessellationParameters->m_bUseHeightInsteadOfRatio = A3D_TRUE;
-	TessellationParameters->m_dMaxChordHeight = ImportParameters.GetChordTolerance() * 10.; // cm to mm
+	TessellationParameters->m_dMaxChordHeight = ImportParameters.GetChordTolerance(); // cm to mm
+	if (!FMath::IsNearlyZero(BodyUnit))
+	{
+		TessellationParameters->m_dMaxChordHeight /= BodyUnit;
+	}
+
 	TessellationParameters->m_dAngleToleranceDeg = ImportParameters.GetMaxNormalAngle();
 	TessellationParameters->m_dMaximalTriangleEdgeLength = 0; //ImportParameters.MaxEdgeLength;
 
@@ -186,8 +200,9 @@ bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, doub
 		}
 	}
 
-	TechSoftInterfaceUtils::FTechSoftTessellationExtractor Extractor(RepresentationItemData->m_pTessBase);
-	return Extractor.FillBodyMesh(BodyMesh, FileUnit);
+	TechSoftInterfaceUtils::FTechSoftTessellationExtractor Extractor(RepresentationItemPtr, BodyUnit);
+	return Extractor.FillBodyMesh(BodyMesh);
+
 #else
 	return false;
 #endif
@@ -374,7 +389,7 @@ int32 SetEntityGraphicsColor(A3DEntity* InEntity, FColor Color)
 	StyleData->m_bVPicture = false;
 	StyleData->m_dWidth = 0.1; // default
 	A3DUns8 Alpha = Color.A;
-	if (Alpha > 0)
+	if (Alpha < 255)
 	{
 		StyleData->m_bIsTransparencyDefined = true;
 		StyleData->m_ucTransparency = 255 - Alpha;
@@ -382,7 +397,7 @@ int32 SetEntityGraphicsColor(A3DEntity* InEntity, FColor Color)
 	else
 	{
 		StyleData->m_bIsTransparencyDefined = false;
-		StyleData->m_ucTransparency = 255;
+		StyleData->m_ucTransparency = 0;
 	}
 
 	StyleData->m_bSpecialCulling = false;

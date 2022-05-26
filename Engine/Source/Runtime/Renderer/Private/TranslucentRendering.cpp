@@ -1362,7 +1362,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucencyInner(
 
 			FIntRect ScaledViewRect = GetScaledRect(View.ViewRect, SeparateTranslucencyDimensions.Scale);
 
-			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, InstancedStereoWidth);
+			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, View.InstancedStereoWidth);
 			const bool bCompositeBackToSceneColor = IsMainTranslucencyPass(TranslucencyPass) || EnumHasAnyFlags(TranslucencyView, ETranslucencyView::UnderWater);
 			const bool bLumenGIEnabled = GetViewPipelineState(View).DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
 
@@ -1552,7 +1552,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 				continue;
 			}
 
-			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, InstancedStereoWidth);
+			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, View.InstancedStereoWidth);
 			AddDownsampleDepthPass(
 				GraphBuilder, View,
 				FScreenPassTexture(SceneTextures.Depth.Resolve, View.ViewRect),
@@ -1613,7 +1613,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 			SharedDepthTexture.Target != SceneTextures.Depth.Target);
 		if (bUpscaleResponsiveAA)
 		{
-			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, InstancedStereoWidth);
+			const FScreenPassTextureViewport SeparateTranslucencyViewport = SeparateTranslucencyDimensions.GetInstancedStereoViewport(View, View.InstancedStereoWidth);
 			AddUpsampleResponsiveAAPass(
 				GraphBuilder,
 				View,

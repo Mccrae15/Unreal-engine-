@@ -40,12 +40,12 @@ public:
 	{
 	}
 
-	virtual bool AddBRep(AlDagNode& DagNode, EAliasObjectReference ObjectReference) override;
+	virtual bool AddBRep(AlDagNode& DagNode, const FColor& Color, EAliasObjectReference ObjectReference) override;
 
 protected:
 	TSharedPtr<CADKernel::FTopologicalEdge> AddEdge(const AlTrimCurve& TrimCurve, TSharedPtr<CADKernel::FSurface>& CarrierSurface);
 
-	TSharedPtr<CADKernel::FTopologicalLoop> AddLoop(const AlTrimBoundary& TrimBoundary, TSharedPtr<CADKernel::FSurface>& CarrierSurface);
+	TSharedPtr<CADKernel::FTopologicalLoop> AddLoop(const AlTrimBoundary& TrimBoundary, TSharedPtr<CADKernel::FSurface>& CarrierSurface, const bool bIsExternal);
 	
 	/**
 	 * Build face's links with its neighbor have to be done after the loop is finalize.

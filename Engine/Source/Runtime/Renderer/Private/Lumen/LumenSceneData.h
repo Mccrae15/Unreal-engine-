@@ -516,7 +516,7 @@ public:
 
 	const FLumenPageTableEntry& GetPageTableEntry(int32 PageTableIndex) const { return PageTable[PageTableIndex]; }
 	FLumenPageTableEntry& GetPageTableEntry(int32 PageTableIndex) { return PageTable[PageTableIndex]; }
-	void MapSurfaceCachePage(const FLumenSurfaceMipMap& MipMap, int32 PageTableIndex);
+	void MapSurfaceCachePage(const FLumenSurfaceMipMap& MipMap, int32 PageTableIndex, FRHIGPUMask GPUMask);
 	int32 GetNumCardPages() const { return PageTable.Num(); }
 	FIntPoint GetPhysicalAtlasSize() const { return PhysicalAtlasSize; }
 	FIntPoint GetRadiosityAtlasSize() const;
@@ -526,14 +526,14 @@ public:
 	uint32 GetCardCaptureRefreshNumPages() const;
 	ESurfaceCacheCompression GetPhysicalAtlasCompression() const { return PhysicalAtlasCompression; }
 
-	void UpdateSurfaceCacheFeedback(FVector LumenSceneCameraOrigin, TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& MeshCardsUpdate);
+	void UpdateSurfaceCacheFeedback(const TArray<FVector, TInlineAllocator<2>>& LumenSceneCameraOrigins, TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& MeshCardsUpdate);
 
 	void ProcessLumenSurfaceCacheRequests(
 		const FViewInfo& MainView,
-		FVector LumenSceneCameraOrigin,
 		float MaxCardUpdateDistanceFromCamera,
 		int32 MaxTileCapturesPerFrame,
 		FLumenCardRenderer& LumenCardRenderer,
+		FRHIGPUMask GPUMask,
 		const TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& SurfaceCacheRequests);
 
 	FShaderResourceViewRHIRef GetPageTableBufferSRV() const { return PageTableBuffer.SRV;  };
@@ -568,7 +568,9 @@ private:
 	// FeedbackFrameIndex, PageTableIndex
 	FBinaryHeap<uint32, uint32> UnlockedAllocationHeap;
 
-	// List of pages ordered by last captured frame used to periodically recapture pages
+	// List of pages ordered by last captured frame used to periodically recapture pages, or for multi-GPU scenarios,
+	// to track that a page is uninitialized on a particular GPU, and needs to be captured for the first time (indicated
+	// by a CapturedSurfaceCacheFrameIndex value of zero).
 	// CapturedSurfaceCacheFrameIndex, PageTableIndex
-	FBinaryHeap<uint32, uint32> LastCapturedPageHeap;
+	FBinaryHeap<uint32, uint32> LastCapturedPageHeap[MAX_NUM_GPUS];
 };

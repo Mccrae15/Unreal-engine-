@@ -48,6 +48,10 @@
 
 #include "Config/DisplayClusterConfigManager.h"
 
+// Unpublished Renderer function to provide an array of view family origins, used to make Lumen LOD calculations multi-view-family aware.
+// Temporary fix for Virtual Production project using Lumen UE 5.0 -- in 5.1, scene rendering will be natively multi-view-family aware.
+void RENDERER_API SetMultiViewFamilyOrigins(const TArray<FVector>& ViewOrigins);
+
 
 // Debug feature to synchronize and force all external resources to be transferred cross GPU at the end of graph execution.
 // May be useful for testing cross GPU synchronization logic.
@@ -414,6 +418,9 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 	const bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
 	bool bIsFirstViewInMultipleViewFamily = true;
 
+	// Gather all view families first
+	TArray<FSceneViewFamilyContext*> ViewFamilies;
+
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& DCRenderTarget : RenderFrame.RenderTargets)
 	{
 		// Special flag, allow clear RTT surface only for first family
@@ -422,15 +429,14 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		for (FDisplayClusterRenderFrame::FFrameViewFamily& DCViewFamily : DCRenderTarget.ViewFamilies)
 		{
 			// Create the view family for rendering the world scene to the viewport's render target
-			FSceneViewFamilyContext ViewFamily(RenderFrame.ViewportManager->CreateViewFamilyConstructionValues(
+			ViewFamilies.Add(new FSceneViewFamilyContext(RenderFrame.ViewportManager->CreateViewFamilyConstructionValues(
 				DCRenderTarget,
 				MyWorld->Scene,
 				EngineShowFlags,
 				bAdditionalViewFamily
-			));
-
-			// Disable clean op for all next families on this render target
-			bAdditionalViewFamily = true;
+			)));
+			FSceneViewFamilyContext& ViewFamily = *ViewFamilies.Last();
+			bool bIsFamilyVisible = false;
 
 			// Configure family
 			RenderFrame.ViewportManager->ConfigureViewFamily(DCRenderTarget, DCViewFamily, ViewFamily);
@@ -749,32 +755,73 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					ViewFamily.bIsFirstViewInMultipleViewFamily = bIsFirstViewInMultipleViewFamily;
 					bIsFirstViewInMultipleViewFamily = false;
 
-					GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
-
-					if (GNumExplicitGPUsForRendering > 1)
-					{
-						const FRHIGPUMask SubmitGPUMask = ViewFamily.Views.Num() == 1 ? ViewFamily.Views[0]->GPUMask : FRHIGPUMask::All();
-						ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_SubmitCommandList)(
-							[SubmitGPUMask](FRHICommandListImmediate& RHICmdList)
-						{
-							SCOPED_GPU_MASK(RHICmdList, SubmitGPUMask);
-							RHICmdList.SubmitCommandsHint();
-						});
-					}
-				}
-				else
-				{
-					GetRendererModule().PerFrameCleanupIfSkipRenderer();
-
-					// Make sure RHI resources get flushed if we're not using a renderer
-					ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_FlushRHIResources)(
-						[](FRHICommandListImmediate& RHICmdList)
-					{
-						RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
-					});
+					// If we reach here, the view family should be rendered
+					bIsFamilyVisible = true;
 				}
 			}
+
+			if (bIsFamilyVisible)
+			{
+				// Disable clean op for all next families on this render target
+				bAdditionalViewFamily = true;
+			}
+			else
+			{
+				// Family didn't end up visible, remove last view family from the array
+				delete ViewFamilies.Pop();
+			}
 		}
+	}
+
+	// We gathered all the view families, now render them
+	if (!ViewFamilies.IsEmpty())
+	{
+		TArray<FVector> ViewFamilyOrigins;
+		for (const FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
+		{
+			for (const FSceneView* ViewInfo : ViewFamilyContext->Views)
+			{
+				// Call AddUnique, since it's common for multiple Display Cluster views to use the same origin
+				ViewFamilyOrigins.AddUnique(ViewInfo->ViewMatrices.GetViewOrigin());
+			}
+		}
+
+		for (FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
+		{
+			FSceneViewFamily& ViewFamily = *ViewFamilyContext;
+
+			// To be called immediately before BeginRenderingViewFamily, which consumes the array of view family origins and resets the array
+			SetMultiViewFamilyOrigins(ViewFamilyOrigins);
+
+			GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
+
+			if (GNumExplicitGPUsForRendering > 1)
+			{
+				const FRHIGPUMask SubmitGPUMask = ViewFamily.Views.Num() == 1 ? ViewFamily.Views[0]->GPUMask : FRHIGPUMask::All();
+				ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_SubmitCommandList)(
+					[SubmitGPUMask](FRHICommandListImmediate& RHICmdList)
+					{
+						SCOPED_GPU_MASK(RHICmdList, SubmitGPUMask);
+						RHICmdList.SubmitCommandsHint();
+					});
+			}
+
+			delete ViewFamilyContext;
+		}
+
+		ViewFamilies.Empty();
+	}
+	else
+	{
+		// Or if none to render, do logic for when rendering is skipped
+		GetRendererModule().PerFrameCleanupIfSkipRenderer();
+
+		// Make sure RHI resources get flushed if we're not using a renderer
+		ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_FlushRHIResources)(
+			[](FRHICommandListImmediate& RHICmdList)
+		{
+			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+		});
 	}
 
 	// Handle special viewports game-thread logic at frame end

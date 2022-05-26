@@ -2876,6 +2876,11 @@ void FControlRigEditor::HandleControlRigExecutedEvent(UControlRig* InControlRig,
 						const FRigElementKey Key = WrapperObject->GetContent<FRigBaseElement>().GetKey();
 
 						FRigBaseElement* Element = Hierarchy->Find(Key);
+						if(Element == nullptr)
+						{
+							ClearDetailObject();
+							break;
+						}
 
 						if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Element))
 						{
