@@ -2927,7 +2927,7 @@ void UNiagaraComponent::PostLoadNormalizeOverrideNames()
 
 void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset)
 {
-	if (Asset == InAsset)
+	if (Asset == InAsset || !IsValid(Asset))
 	{
 		return;
 	}
