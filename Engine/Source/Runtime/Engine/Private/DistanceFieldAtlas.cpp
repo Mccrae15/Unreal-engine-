@@ -1275,12 +1275,13 @@ void FDistanceFieldAsyncQueue::ProcessAsyncTasks()
 				// Assign the new volume data
 				Task->StaticMesh->RenderData->LODResources[0].DistanceFieldData = Task->GeneratedVolumeData;
 			}
+			if(OldVolumeData)
+			{
+				OldVolumeData->VolumeTexture.Release();
 
-			OldVolumeData->VolumeTexture.Release();
-
-			// Rendering thread may still be referencing the old one, use the deferred cleanup interface to delete it next frame when it is safe
-			BeginCleanup(OldVolumeData);
-
+				// Rendering thread may still be referencing the old one, use the deferred cleanup interface to delete it next frame when it is safe
+				BeginCleanup(OldVolumeData);
+			}
 			{
 				TArray<uint8> DerivedData;
 				// Save built distance field volume to DDC
