@@ -169,6 +169,21 @@ namespace Metasound
 		{
 			check(InputValues.Num() > 0)
 			CurrentIndex = 0;
+			
+			// Do the initial trigger input to determine the init index
+			for (uint32 i = 0; i < NumInputs; ++i)
+			{
+				InputTriggers[i]->ExecuteBlock(
+					[&](int32 StartFrame, int32 EndFrame)
+					{
+					},
+					[this, i](int32 StartFrame, int32 EndFrame)
+					{
+						CurrentIndex = i;
+					}
+				);
+			}
+			
 			*OutputValue = *InputValues[CurrentIndex];
 		}
 
@@ -217,7 +232,9 @@ namespace Metasound
 						OutputTrigger->TriggerFrame(StartFrame);
 					}
 				);
-			}			
+			}
+
+			*OutputValue = *InputValues[CurrentIndex];
 		}
 
 	private:

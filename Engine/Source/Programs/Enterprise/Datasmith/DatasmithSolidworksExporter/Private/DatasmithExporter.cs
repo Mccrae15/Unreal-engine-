@@ -389,7 +389,7 @@ namespace DatasmithSolidworks
 
 			// Request existing VariantSet, or create a new one
 			FDatasmithFacadeLevelVariantSets LevelVariantSets = null;
-			
+
 			if (DatasmithScene.GetLevelVariantSetsCount() == 0)
 			{
 				LevelVariantSets = new FDatasmithFacadeLevelVariantSets("LevelVariantSets");
@@ -614,7 +614,7 @@ namespace DatasmithSolidworks
 			{
 				FAnimation.FChannel Chan = NodePair.Value;
 				Component2 Component = Chan.Target;
-				FDatasmithFacadeTransformAnimation Anim = new FDatasmithFacadeTransformAnimation(Component.Name2);
+				FDatasmithFacadeTransformAnimation Anim = new FDatasmithFacadeTransformAnimation(SanitizeName(Component.Name2));
 
 				foreach (var Keyframe in Chan.Keyframes)
 				{

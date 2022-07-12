@@ -277,7 +277,9 @@ void FImportProgressiveSurfaces::SpawnMaterialPreviewActor(FString AssetID, floa
 
 void FImportProgressiveSurfaces::HandleHighInstanceLoad(FAssetData HighInstanceData, FString AssetID, FUAssetMeta AssetMetaData)
 {
+
 	AssetUtils::ConvertToVT(AssetMetaData);
+
 
 	if (FMaterialUtils::ShouldOverrideMaterial(AssetMetaData.assetType))
 	{

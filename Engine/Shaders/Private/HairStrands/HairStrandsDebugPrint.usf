@@ -9,7 +9,7 @@
 #include "../PositionReconstructionCommon.ush"
 #include "HairStrandsVisibilityCommon.ush"
 #include "HairStrandsAABBCommon.ush" 
-
+ 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 

@@ -11,9 +11,6 @@ function webRtcPlayer(parOptions) {
     //**********************
     this.cfg = typeof parOptions.peerConnectionOptions !== 'undefined' ? parOptions.peerConnectionOptions : {};
     this.cfg.sdpSemantics = 'unified-plan';
-    // this.cfg.rtcAudioJitterBufferMaxPackets = 10;
-    // this.cfg.rtcAudioJitterBufferFastAccelerate = true;
-    // this.cfg.rtcAudioJitterBufferMinDelayMs = 0;
 
     // If this is true in Chrome 89+ SDP is sent that is incompatible with UE Pixel Streaming 4.26 and below.
     // However 4.27 Pixel Streaming does not need this set to false as it supports `offerExtmapAllowMixed`.
@@ -54,10 +51,15 @@ function webRtcPlayer(parOptions) {
     this.startVideoMuted = typeof parOptions.startVideoMuted !== 'undefined' ? parOptions.startVideoMuted : false;
     this.autoPlayAudio = typeof parOptions.autoPlayAudio !== 'undefined' ? parOptions.autoPlayAudio : true;
 
+    // To force mono playback of WebRTC audio
+    this.forceMonoAudio = urlParams.has('ForceMonoAudio');
+    if(this.forceMonoAudio){
+        console.log("Will attempt to force mono audio by munging the sdp in the browser.")
+    }
+
     // To enable mic in browser use SSL/localhost and have ?useMic in the query string.
     this.useMic = urlParams.has('useMic');
-    if(!this.useMic)
-    {
+    if(!this.useMic){
         console.log("Microphone access is not enabled. Pass ?useMic in the url to enable it.");
     }
 
@@ -127,7 +129,7 @@ function webRtcPlayer(parOptions) {
 
         video.id = "streamingVideo";
         video.playsInline = true;
-        video.disablepictureinpicture = true;
+        video.disablePictureInPicture = true;
         video.muted = self.startVideoMuted;;
         
         video.addEventListener('loadedmetadata', function(e){
@@ -160,7 +162,15 @@ function webRtcPlayer(parOptions) {
         return video;
     }
 
+    this.createWebRtcAudio = function() {
+        var audio = document.createElement('audio');
+        audio.id = 'streamingAudio';
+
+        return audio;
+    }
+
     this.video = this.createWebRtcVideo();
+    this.audio = this.createWebRtcAudio();
     this.availableVideoStreams = new Map();
 
     onsignalingstatechange = function(state) {
@@ -214,25 +224,7 @@ function webRtcPlayer(parOptions) {
         // video element has some other media stream that is not associated with this audio track
         else if(self.video.srcObject && self.video.srcObject !== audioMediaStream)
         {
-            // create a new audio element
-            let audioElem = document.createElement("Audio");
-            audioElem.srcObject = audioMediaStream;
-
-            // there is no way to autoplay audio (even muted), so we defer audio until first click
-            if(!self.autoPlayAudio) {
-
-                let clickToPlayAudio = function() {
-                    audioElem.play();
-                    self.video.removeEventListener("click", clickToPlayAudio);
-                };
-
-                self.video.addEventListener("click", clickToPlayAudio);
-            }
-            // we assume the user has clicked somewhere on the page and autoplaying audio will work
-            else {
-                audioElem.play();
-            }
-            console.log('Created new audio element to play seperate audio stream.');
+           self.audio.srcObject = audioMediaStream;
         }
 
     }
@@ -310,12 +302,24 @@ function webRtcPlayer(parOptions) {
 
     mungeSDPOffer = function (offer) {
 
-        // turn off video-timing sdp sent from browser
-        //offer.sdp = offer.sdp.replace("http://www.webrtc.org/experiments/rtp-hdrext/playout-delay", "");
+        let audioSDP = '';
 
-        // this indicate we support stereo (Chrome needs this)
-        offer.sdp = offer.sdp.replace('useinbandfec=1', 'useinbandfec=1;stereo=1;sprop-maxcapturerate=48000');
+        // set max bitrate to highest bitrate Opus supports
+        audioSDP += 'maxaveragebitrate=510000;';
 
+        if(self.useMic){
+            // set the max capture rate to 48khz (so we can send high quality audio from mic)
+            audioSDP += 'sprop-maxcapturerate=48000;';
+        }
+
+        // Force mono or stereo based on whether ?forceMono was passed or not
+        audioSDP += self.forceMonoAudio ? 'sprop-stereo=0;stereo=0;' : 'sprop-stereo=1;stereo=1;';
+
+        // enable in-band forward error correction for opus audio
+        audioSDP += 'useinbandfec=1';
+
+        // We use the line 'useinbandfec=1' (which Opus uses) to set our Opus specific audio parameters.
+        offer.sdp = offer.sdp.replace('useinbandfec=1', audioSDP);
     }
     
     setupPeerConnection = function (pc) {
@@ -547,7 +551,10 @@ function webRtcPlayer(parOptions) {
             {
                 setupTransceiversAsync(self.pcClient).finally(function(){
                 self.pcClient.createAnswer()
-                .then(answer => self.pcClient.setLocalDescription(answer))
+                .then(answer => {
+                    mungeSDPOffer(answer);
+                    return self.pcClient.setLocalDescription(answer);
+                })
                 .then(() => {
                     if (self.onWebRtcAnswer) {
                         self.onWebRtcAnswer(self.pcClient.currentLocalDescription);

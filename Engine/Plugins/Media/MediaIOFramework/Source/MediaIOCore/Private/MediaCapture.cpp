@@ -98,6 +98,9 @@ namespace MediaCaptureDetails
 
 	void ShowSlateNotification();
 
+	/** Returns bytes per pixel based on pixel format */
+	int32 GetBytesPerPixel(EPixelFormat InPixelFormat);
+
 	static const FName LevelEditorName(TEXT("LevelEditor"));
 }
 
@@ -1072,7 +1075,8 @@ void UMediaCapture::Capture_RenderThread(FRHICommandListImmediate& RHICmdList,
 
 				// The Width/Height of the surface may be different then the DesiredOutputSize : Some underlying implementations enforce a specific stride, therefore
 				// there may be padding at the end of each row.
-				InMediaCapture->OnFrameCaptured_RenderingThread(ReadyFrame->CaptureBaseData, ReadyFrame->UserData, ColorDataBuffer, InMediaCapture->DesiredOutputSize.X, InMediaCapture->DesiredOutputSize.Y, Width * 4);
+				const int32 BytesPerPixel = MediaCaptureDetails::GetBytesPerPixel(ReadyFrame->ReadbackTexture->GetFormat());
+				InMediaCapture->OnFrameCaptured_RenderingThread(ReadyFrame->CaptureBaseData, ReadyFrame->UserData, ColorDataBuffer, InMediaCapture->DesiredOutputSize.X, InMediaCapture->DesiredOutputSize.Y, Width * BytesPerPixel);
 			}
 			ReadyFrame->bResolvedTargetRequested = false;
 
@@ -1286,6 +1290,75 @@ namespace MediaCaptureDetails
 			}
 		}
 #endif // WITH_EDITOR
+	}
+
+	int32 GetBytesPerPixel(EPixelFormat InPixelFormat)
+	{
+		//We can capture viewports and render targets. Possible pixel format is limited by that
+		switch (InPixelFormat)
+		{
+			
+			case PF_A8:
+			case PF_R8_UINT:
+			case PF_R8_SINT:
+			case PF_G8:
+			{
+				return 1;
+			}
+			case PF_R16_UINT:
+			case PF_R16_SINT:
+			case PF_R5G6B5_UNORM:
+			case PF_R8G8:
+			case PF_R16F:
+			case PF_R16F_FILTER:
+			case PF_V8U8:
+			case PF_R8G8_UINT:
+			case PF_B5G5R5A1_UNORM:
+			{
+				return 2;
+			}
+			case PF_R32_UINT:
+			case PF_R32_SINT:
+			case PF_R8G8B8A8:
+			case PF_A8R8G8B8:
+			case PF_FloatR11G11B10:
+			case PF_A2B10G10R10:
+			case PF_G16R16:
+			case PF_G16R16F:
+			case PF_G16R16F_FILTER:
+			case PF_R32_FLOAT:
+			case PF_R16G16_UINT:
+			case PF_R8G8B8A8_UINT:
+			case PF_R8G8B8A8_SNORM:
+			case PF_B8G8R8A8:
+			case PF_G16R16_SNORM:
+			case PF_FloatRGB: //Equivalent to R11G11B10
+			{
+				return 4;
+			}
+			case PF_R16G16B16A16_UINT:
+			case PF_R16G16B16A16_SINT:
+			case PF_A16B16G16R16:
+			case PF_G32R32F:
+			case PF_R16G16B16A16_UNORM:
+			case PF_R16G16B16A16_SNORM:
+			case PF_R32G32_UINT:
+			case PF_R64_UINT:
+			case PF_FloatRGBA: //Equivalent to R16G16B16A16
+			{
+				return 8;
+			}
+			case PF_A32B32G32R32F:
+			case PF_R32G32B32A32_UINT:
+			{
+				return 16;
+			}
+			default:
+			{
+				ensureMsgf(false, TEXT("MediaCapture - Pixel format (%d) not handled. Invalid bytes per pixel returned."), InPixelFormat);
+				return 0;
+			}
+		}
 	}
 }
 

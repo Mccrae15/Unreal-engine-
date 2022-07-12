@@ -116,6 +116,42 @@ namespace GLTF
 			else
 				check(false);
 		}
+
+		template<typename ItemType>
+		void GetItem(const FValidAccessor& Accessor, uint32 Index, ItemType& OutValue)
+		{
+		}
+
+		template<>
+		void GetItem(const FValidAccessor& Accessor, uint32 Index, FVector2f& OutValue)
+		{
+			OutValue = FVector2f(Accessor.GetVec2(Index));
+		}
+
+		template<>
+		void GetItem(const FValidAccessor& Accessor, uint32 Index, FVector3f& OutValue)
+		{
+			OutValue = FVector3f(Accessor.GetVec3(Index));
+		}
+
+		template<>
+		void GetItem(const FValidAccessor& Accessor, uint32 Index, FVector4f& OutValue)
+		{
+			OutValue = FVector4f(Accessor.GetVec4(Index));
+		}
+
+		// Copy data items that don't need conversion/expansion(i.e. Vec3 to Vec3, uint8 to uint8(not uint16)
+		// but including normalized from fixed-point types
+		template<typename ItemType>
+		void CopyWithoutConversion(const FValidAccessor& Accessor, ItemType* Buffer)
+		{
+			for (uint32 Index = 0; Index < Accessor.Count; ++Index)
+			{
+				// Using existing api to avoid changing public header for hotfix release
+				// Proper fix would use memcpy when buffer stride is trivial and other optimizations, requiring private fields access(and change of public headers as a consequence)
+				GetItem(Accessor, Index, Buffer[Index]);
+			}
+		}
 	}
 
 	FAccessor::FAccessor(uint32 InCount, EType InType, EComponentType InCompType, bool InNormalized)
@@ -485,19 +521,8 @@ namespace GLTF
 	{
 		if (Type == EType::Vec2)  // strict format match, unlike GPU shader fetch
 		{
-			const void* Src = DataAt(0);
-
-			if (ComponentType == EComponentType::F32)
-			{
-				// copy float vec2 directly from buffer
-				memcpy(Buffer, Src, Count * sizeof(FVector2f));
-				return;
-			}
-			else if (Normalized)
-			{
-				CopyNormalized<FVector2f, 2>(Buffer, Src, ComponentType, Count);
-				return;
-			}
+			CopyWithoutConversion(*this, Buffer);
+			return;
 		}
 		check(false);
 	}
@@ -506,19 +531,8 @@ namespace GLTF
 	{
 		if (Type == EType::Vec3)  // strict format match, unlike GPU shader fetch
 		{
-			const void* Src = DataAt(0);
-
-			if (ComponentType == EComponentType::F32)
-			{
-				// copy float vec3 directly from buffer
-				memcpy(Buffer, Src, Count * sizeof(FVector3f));
-				return;
-			}
-			else if (Normalized)
-			{
-				CopyNormalized<FVector3f, 3>(Buffer, Src, ComponentType, Count);
-				return;
-			}
+			CopyWithoutConversion(*this, Buffer);
+			return;
 		}
 		check(false);
 	}
@@ -527,19 +541,8 @@ namespace GLTF
 	{
 		if (Type == EType::Vec4)  // strict format match, unlike GPU shader fetch
 		{
-			const void* Src = DataAt(0);
-
-			if (ComponentType == EComponentType::F32)
-			{
-				// copy float vec4 directly from buffer
-				memcpy(Buffer, Src, Count * sizeof(FVector4f));
-				return;
-			}
-			else if (Normalized)
-			{
-				CopyNormalized<FVector4f, 4>(Buffer, Src, ComponentType, Count);
-				return;
-			}
+			CopyWithoutConversion(*this, Buffer);
+			return;
 		}
 		check(false);
 	}

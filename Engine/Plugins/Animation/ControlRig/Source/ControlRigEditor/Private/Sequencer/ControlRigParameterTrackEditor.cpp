@@ -3437,6 +3437,7 @@ bool FControlRigParameterTrackEditor::CollapseAllLayers(TSharedPtr<ISequencer>& 
 		FFrameNumber EndFrame = Range.GetUpperBoundValue();
 		const FFrameRate& FrameRate = SequencerPtr->GetFocusedDisplayRate();
 		const FFrameRate& TickResolution = SequencerPtr->GetFocusedTickResolution();
+		FMovieSceneSequenceTransform RootToLocalTransform = SequencerPtr->GetFocusedMovieSceneSequenceTransform();
 
 		FFrameNumber FrameRateInFrameNumber = TickResolution.AsFrameNumber(FrameRate.AsInterval());
 		TArray<FFrameNumber> Frames;
@@ -3467,6 +3468,7 @@ bool FControlRigParameterTrackEditor::CollapseAllLayers(TSharedPtr<ISequencer>& 
 		{
 			const FFrameNumber& FrameNumber = Frames[Index];
 			FFrameTime GlobalTime(FrameNumber);
+			GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
 
 			FMovieSceneContext Context = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), SequencerPtr->GetPlaybackStatus()).SetHasJumped(true);
 

@@ -49,6 +49,15 @@ FCriteriaGrid::FCriteriaGrid(FTopologicalFace& InSurface)
 	, CoordinateGrid(InSurface.GetCrossingPointCoordinates())
 {
 	Face.Presample();
+
+	const FCoordinateGrid& FaceGrid = Face.GetCrossingPointCoordinates();
+	constexpr int32 MaxGrid = 1000000;
+	if (FaceGrid[EIso::IsoU].Num() * FaceGrid[EIso::IsoV].Num() > MaxGrid)
+	{
+		Face.SetDeleted();
+		return;
+	}
+
 	Face.InitDeltaUs();
 	Init();
 #ifdef DISPLAY_CRITERIA_GRID

@@ -48,7 +48,8 @@ void FImportUAssetNormal::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 	{
 		CopyUassetFilesPlants(AssetPaths, DestinationFolder, AssetMetaData.assetTier);
 	}
-	else {
+	else
+	{
 		CopyUassetFiles(AssetPaths, DestinationFolder);
 	}
 
@@ -68,7 +69,8 @@ void FImportUAssetNormal::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 	{
 		AssetPath = AssetMetaData.meshList[0].path;
 	}
-	else {
+	else
+	{ 
 		AssetPath = AssetMetaData.materialInstances[0].instancePath;
 	}
 	if (AssetPath != TEXT(""))

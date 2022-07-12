@@ -1109,6 +1109,7 @@ void FGrid::GetMeshOfLoop(const FTopologicalLoop& Loop)
 		FaceLoops2D[EGridSpace::Default2D].Pop();
 		FaceLoops3D.Pop();
 		NormalsOfFaceLoops.Pop();
+		NodeIdsOfFaceLoops.Pop();
 	}
 }
 

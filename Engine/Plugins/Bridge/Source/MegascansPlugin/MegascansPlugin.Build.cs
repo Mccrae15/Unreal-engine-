@@ -35,7 +35,8 @@ namespace UnrealBuildTool.Rules
 					"MeshBuilder",
 					"TargetPlatform",
 					"EditorScriptingUtilities",
-					"Projects"
+					"Projects",
+					"ApplicationCore"
 				}
 			);
 		}

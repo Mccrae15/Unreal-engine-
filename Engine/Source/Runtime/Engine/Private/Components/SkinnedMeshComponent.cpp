@@ -1207,7 +1207,7 @@ FBoxSphereBounds USkinnedMeshComponent::CalcMeshBound(const FVector3f& RootOffse
 	// Use MasterPoseComponent's PhysicsAsset if told to
 	else if (MasterPoseComponentInst && bCanUsePhysicsAsset && bUseBoundsFromMasterPoseComponent)
 	{
-		NewBounds = MasterPoseComponentInst->Bounds;
+		NewBounds = MasterPoseComponentInst->CalcBounds(LocalToWorld);
 	}
 #if WITH_EDITOR
 	// For AnimSet Viewer, use 'bounds preview' physics asset if present.

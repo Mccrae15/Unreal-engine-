@@ -699,7 +699,7 @@ void FProcessorDependencySolver::Solve(FNode& RootNode, TConstArrayView<const FN
 	if (PriorityNodes.Num())
 	{
 		IndicesRemaining.Reserve(RootNode.SubNodes.Num());
-		for (const FName PriorityNodeName : PriorityNodes)
+		for (const FName& PriorityNodeName : PriorityNodes)
 		{
 			// @todo complex names
 			const int32* PriorityNodeIndex = RootNode.Indices.Find(PriorityNodeName);

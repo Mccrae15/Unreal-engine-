@@ -388,7 +388,7 @@ void UMassEntitySubsystem::BatchDestroyEntities(TConstArrayView<FMassEntityHandl
 	EntityFreeIndexList.Reserve(EntityFreeIndexList.Num() + InEntities.Num());
 
 	// @todo optimize, we can make savings by implementing Archetype->RemoveEntities()
-	for (const FMassEntityHandle Entity : InEntities)
+	for (const FMassEntityHandle& Entity : InEntities)
 	{
 		if (Entities.IsValidIndex(Entity.Index) == false)
 		{

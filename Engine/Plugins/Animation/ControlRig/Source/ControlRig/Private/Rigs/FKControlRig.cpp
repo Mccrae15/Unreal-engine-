@@ -67,7 +67,6 @@ void UFKControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InE
 						const FTransform OffsetTransform = GetHierarchy()->GetControlOffsetTransform(Control, ERigTransformType::InitialLocal);
 						FTransform Transform = LocalTransform * OffsetTransform;
 						Transform.NormalizeRotation();
-						Transform.SetScale3D(FVector::OneVector);
 						GetHierarchy()->SetTransform(BoneElement, Transform, ERigTransformType::CurrentLocal, true, false);
 						break;
 					}
@@ -76,7 +75,6 @@ void UFKControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InE
 						const FTransform PreviousTransform = GetHierarchy()->GetTransform(BoneElement, ERigTransformType::CurrentLocal);
 						FTransform Transform = LocalTransform * PreviousTransform;
 						Transform.NormalizeRotation();
-						Transform.SetScale3D(FVector::OneVector);
 						GetHierarchy()->SetTransform(BoneElement, Transform, ERigTransformType::CurrentLocal, true, false);
 						break;
 					}
@@ -141,7 +139,6 @@ void UFKControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InE
 			
 			FTransform Transform = Current.GetRelativeTransform(Offset);
 			Transform.NormalizeRotation();
-			Transform.SetScale3D(FVector::OneVector);
 
 			SetControlValue(ControlName, FRigControlValue::Make(FEulerTransform(Transform)), bNotify, Context, bSetupUndo);
 
@@ -285,7 +282,6 @@ void UFKControlRig::CreateRigElements(const FReferenceSkeleton& InReferenceSkele
 			Settings.DisplayName = BoneName;
 
 			OffsetTransform.NormalizeRotation();
-			OffsetTransform.SetScale3D(FVector::OneVector);
 			
 			Controller->AddControl(ControlName, ParentKey, Settings, FRigControlValue::Make(FEulerTransform::Identity), OffsetTransform, FTransform::Identity, false);
 

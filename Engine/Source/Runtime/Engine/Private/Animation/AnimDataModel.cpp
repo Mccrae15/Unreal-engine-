@@ -13,6 +13,31 @@
 void UAnimDataModel::PostLoad()
 {
 	UObject::PostLoad();
+
+	const bool bHasBoneTracks = BoneAnimationTracks.Num() > 0;
+	if (bHasBoneTracks)
+	{
+		// Number of keys was used directly rather than Max(Value,2), as a single _frame_ animation should always have two _keys_ 
+		const int32 ActualNumKeys = BoneAnimationTracks[0].InternalTrackData.PosKeys.Num();
+		if (ActualNumKeys == 1 && NumberOfKeys == 2)
+		{
+			auto AddKey = [this](auto& Keys)
+			{
+				const auto KeyZero = Keys[0];
+				Keys.Add(KeyZero);
+				ensure(Keys.Num() == NumberOfKeys);
+			};
+				
+			for (FBoneAnimationTrack& BoneTrack : BoneAnimationTracks)
+			{
+				AddKey(BoneTrack.InternalTrackData.PosKeys);
+				AddKey(BoneTrack.InternalTrackData.RotKeys);
+				AddKey(BoneTrack.InternalTrackData.ScaleKeys);
+			}
+
+			Notify(EAnimDataModelNotifyType::TrackChanged);
+		}
+	}
 }
 
 void UAnimDataModel::PostDuplicate(bool bDuplicateForPIE)

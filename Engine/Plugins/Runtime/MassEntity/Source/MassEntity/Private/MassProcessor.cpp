@@ -505,7 +505,7 @@ int32 UMassCompositeProcessor::Populate(TArray<FProcessorDependencySolver::FOrde
 			check(Element.Processor->GetExecutionOrder().ExecuteInGroup == GroupName || Element.Processor->GetExecutionOrder().ExecuteInGroup.IsNone());
 
 			Element.Processor->DependencyIndices.Reset();
-			for (const FName DependencyName : Element.Dependencies)
+			for (const FName& DependencyName : Element.Dependencies)
 			{
 				Element.Processor->DependencyIndices.Add(NameToIndexMap.FindChecked(DependencyName));
 			}
@@ -525,7 +525,7 @@ int32 UMassCompositeProcessor::Populate(TArray<FProcessorDependencySolver::FOrde
 			}
 
 			GroupProcessor->DependencyIndices.Reset();
-			for (const FName DependencyName : Element.Dependencies)
+			for (const FName& DependencyName : Element.Dependencies)
 			{
 				const int32 DependencyIndex = NameToIndexMap.FindChecked(DependencyName);
 				GroupProcessor->DependencyIndices.Add(DependencyIndex);

@@ -3,7 +3,9 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "GameFramework/MovementComponent.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 
 #include "Framework/Threading.h"
 
@@ -113,6 +115,20 @@ void UPhysicsSettings::PostEditChangeProperty(struct FPropertyChangedEvent& Prop
 	if(MemberName == GET_MEMBER_NAME_CHECKED(UPhysicsSettings, ChaosSettings))
 	{
 		ChaosSettings.OnSettingsUpdated();
+	}
+
+	if(PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UPhysicsSettingsCore, DefaultShapeComplexity))
+	{
+		for(TObjectIterator<UBodySetup> It; It; ++It)
+		{
+			UBodySetup* Setup = *It;
+			check(Setup);
+
+			if(Setup->bCreatedPhysicsMeshes)
+			{
+				Setup->InvalidatePhysicsData();
+			}
+		}
 	}
 }
 

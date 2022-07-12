@@ -58,11 +58,13 @@ public:
 		XrViewState ViewState{XR_TYPE_VIEW_STATE};
 		TArray<XrView> Views;
 		TArray<XrSpaceLocation> DeviceLocations;
-		XrSpace TrackingSpace;
+		XrSpace TrackingSpace = XR_NULL_HANDLE;
 		float WorldToMetersScale = 100.0f;
 
 		TArray<XrViewConfigurationView> ViewConfigs;
 		TArray<class IOpenXRExtensionPlugin*> PluginViews;
+
+		bool bXrFrameStateUpdated = false;
 	};
 
 	struct FPipelinedLayerState

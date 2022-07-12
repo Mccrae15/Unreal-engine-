@@ -1110,6 +1110,18 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 	}
 	else
 	{
+		// 5.0.3 hotfix - all of this code is reworked in main for 5.1
+		{
+			// Validate the sample data size is granular the pcm frame size. We know its 16 bit from above check.
+			int32 PcmFrameSize = sizeof(int16) * (*WaveInfo.pChannels);
+			int32 PcmGranCheck = WaveInfo.SampleDataSize % PcmFrameSize;
+			if (PcmGranCheck)
+			{
+				UE_LOG(LogAudioDerivedData, Warning, TEXT("Input wav is malformed: sample data is not a whole number of pcm frames. Truncated file? (%s)"), *SoundWave->GetFullName());
+				WaveInfo.SampleDataSize -= PcmGranCheck;
+			}			
+		}
+
 		Input.AddUninitialized(WaveInfo.SampleDataSize);
 		FMemory::Memcpy(Input.GetData(), WaveInfo.SampleDataStart, WaveInfo.SampleDataSize);
 	}
@@ -1250,6 +1262,18 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 		if (WaveInfoInner.ReadWaveHeader(RawWaveData, SoundWave->ChannelSizes[i], SoundWave->ChannelOffsets[i])
 			&& *WaveInfoInner.pChannels == 1)
 		{
+			// 5.0.3 hotfix - all of this code is reworked in main for 5.1
+			{
+				// Validate the sample data size is granular the pcm frame size. We know its 16 bit from above check.
+				int32 PcmFrameSize = sizeof(int16) * (*WaveInfoInner.pChannels);
+				int32 PcmGranCheck = WaveInfoInner.SampleDataSize % PcmFrameSize;
+				if (PcmGranCheck)
+				{
+					UE_LOG(LogAudioDerivedData, Warning, TEXT("Input wav (%d) is malformed: sample data is not a whole number of pcm frames. Truncated file? (%s)"), i, *SoundWave->GetFullName());
+					WaveInfoInner.SampleDataSize -= PcmGranCheck;
+				}
+			}
+
 			if (SampleDataSize == 0)
 			{
 				// keep wave info/size of first channel data we find
@@ -1301,6 +1325,18 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 			if( WaveInfoInner.ReadWaveHeader( RawWaveData, SoundWave->ChannelSizes[ i ], SoundWave->ChannelOffsets[ i ] )
 				&& *WaveInfoInner.pChannels == 1 )
 			{
+				// 5.0.3 hotfix - all of this code is reworked in main for 5.1
+				{
+					// Validate the sample data size is granular the pcm frame size. We know its 16 bit from above check.
+					int32 PcmFrameSize = sizeof(int16) * (*WaveInfoInner.pChannels);
+					int32 PcmGranCheck = WaveInfoInner.SampleDataSize % PcmFrameSize;
+					if (PcmGranCheck)
+					{
+						// logged above.
+						WaveInfoInner.SampleDataSize -= PcmGranCheck;
+					}
+				}
+
 				ChannelCount++;
 				TArray<uint8>& Input = *new (SourceBuffers) TArray<uint8>;
 				Input.AddUninitialized(WaveInfoInner.SampleDataSize);

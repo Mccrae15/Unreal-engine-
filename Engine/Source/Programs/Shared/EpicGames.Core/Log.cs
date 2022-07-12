@@ -866,7 +866,7 @@ namespace EpicGames.Core
 			ColorConsoleOutput = true;
 			IncludeStartingTimestamp = true;
 
-			string? EnvVar = Environment.GetEnvironmentVariable("UE_STDOUT_JSON");
+			string? EnvVar = Environment.GetEnvironmentVariable("UE_STDOUT_JSON_PREVIEW");
 			if(EnvVar != null && int.TryParse(EnvVar, out int Value) && Value != 0)
 			{
 				WriteJsonToStdOut = true;

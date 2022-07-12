@@ -15,9 +15,15 @@ function connect(server) {
   console.log("Connecting to Signalling Server at %s", server);
   signalServer = new WebSocket(server);
   signalServer.addEventListener("open", _ => { console.log(`Connected`); });
-  signalServer.addEventListener("close", result => { console.log(`Closed: ${result.code} ${result.reason}`); });
   signalServer.addEventListener("error", result => { console.log(`Error: ${result.message}`); });
   signalServer.addEventListener("message", result => onMessage(JSON.parse(result.data)));
+  signalServer.addEventListener("close", result => { 
+    console.log(`Disconnected from signalling server: ${result.code} ${result.reason}`);
+    console.log("Attempting reconnect to signalling server...");
+    setTimeout(()=> { 
+      connect(server);
+    }, 2000); 
+  });
 }
 
 async function onMessage(msg) {

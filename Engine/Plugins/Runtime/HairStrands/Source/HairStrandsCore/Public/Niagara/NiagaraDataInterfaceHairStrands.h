@@ -115,6 +115,7 @@ struct FNDIHairStrandsData
 		
 		GlobalInterpolation = false;
 		bSkinningTransfer = false;
+		HairGroupInstSource = nullptr;
 		HairGroupInstance = nullptr;
 
 		TickCount = 0;
@@ -183,6 +184,7 @@ struct FNDIHairStrandsData
 			GlobalInterpolation = OtherDatas->GlobalInterpolation;
 			bSkinningTransfer = OtherDatas->bSkinningTransfer;
 			BindingType = OtherDatas->BindingType;
+			HairGroupInstSource = OtherDatas->HairGroupInstSource;
 			HairGroupInstance = OtherDatas->HairGroupInstance;
 
 			TickCount = OtherDatas->TickCount;
@@ -279,6 +281,9 @@ struct FNDIHairStrandsData
 
 	/** Hair group instance */
 	FHairGroupInstance* HairGroupInstance;
+
+	/** Source component of the hair group instance */
+	TWeakObjectPtr<class UGroomComponent> HairGroupInstSource;
 
 	/** Binding type between the groom asset and the attached skeletal mesh */
 	EHairBindingType BindingType;

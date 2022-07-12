@@ -131,25 +131,25 @@ void FLongDelayAPF::ProcessAudioBlock(const float* InSamples, const float* InDel
 	// Calculate new delay line samples. "w[n] = x[n] + gw[n - d]"
 	int32 NumToSIMD = InNum - (InNum % AUDIO_NUM_FLOATS_PER_VECTOR_REGISTER);
 
-	VectorRegister VG = MakeVectorRegister(G, G, G, G);
-	VectorRegister VNG = MakeVectorRegister(-G, -G, -G, -G);
-	VectorRegister VFMIN = MakeVectorRegister(FLT_MIN, FLT_MIN, FLT_MIN, FLT_MIN);
-	VectorRegister VNFMIN = MakeVectorRegister(-FLT_MIN, -FLT_MIN, -FLT_MIN, -FLT_MIN);
+	VectorRegister4Float VG = MakeVectorRegisterFloat(G, G, G, G);
+	VectorRegister4Float VNG = MakeVectorRegisterFloat(-G, -G, -G, -G);
+	VectorRegister4Float VFMIN = MakeVectorRegisterFloat(FLT_MIN, FLT_MIN, FLT_MIN, FLT_MIN);
+	VectorRegister4Float VNFMIN = MakeVectorRegisterFloat(-FLT_MIN, -FLT_MIN, -FLT_MIN, -FLT_MIN);
 
 	for (int32 i = 0; i < InNum; i += 4)
 	{
-		VectorRegister VInDelay = VectorLoadAligned(&InDelaySamples[i]);
-		VectorRegister VInSamples = VectorLoadAligned(&InSamples[i]);
+		VectorRegister4Float VInDelay = VectorLoadAligned(&InDelaySamples[i]);
+		VectorRegister4Float VInSamples = VectorLoadAligned(&InSamples[i]);
 		// w[n] = x[n] + G * w[n - D]
-		VectorRegister VOutDelay = VectorMultiplyAdd(VInDelay, VG, VInSamples);
+		VectorRegister4Float VOutDelay = VectorMultiplyAdd(VInDelay, VG, VInSamples);
 		
 		// Underflow clamp
-		VectorRegister Mask = VectorBitwiseAnd(VectorCompareGT(VOutDelay, VNFMIN), VectorCompareLT(VOutDelay, VFMIN));
+		VectorRegister4Float Mask = VectorBitwiseAnd(VectorCompareGT(VOutDelay, VNFMIN), VectorCompareLT(VOutDelay, VFMIN));
 		VOutDelay = VectorSelect(Mask, GlobalVectorConstants::FloatZero, VOutDelay);
 		VectorStoreAligned(VOutDelay, &OutDelaySamples[i]);
 
 		// y[n] = -G * w[n] + w[n - D]
-		VectorRegister VOut = VectorMultiplyAdd(VOutDelay, VNG, VInDelay);
+		VectorRegister4Float VOut = VectorMultiplyAdd(VOutDelay, VNG, VInDelay);
 		VectorStoreAligned(VOut, &OutSamples[i]);
 	}
 

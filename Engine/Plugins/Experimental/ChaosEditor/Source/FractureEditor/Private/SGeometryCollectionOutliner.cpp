@@ -386,8 +386,8 @@ void SGeometryCollectionOutliner::SetInitialDynamicState(int32 InDynamicState)
 
 TSharedRef<ITableRow> FGeometryCollectionTreeItemComponent::MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable)
 {
-	FString ActorName = Component->GetOwner()->GetActorLabel();
-	FString ComponentName = Component->GetClass()->GetFName().ToString();
+	FString ActorName = Component.IsValid()? Component->GetOwner()->GetActorLabel(): FString();
+	FString ComponentName = Component.IsValid()? Component->GetClass()->GetFName().ToString() : FString();
 
 	return SNew(STableRow<FGeometryCollectionTreeItemPtr>, InOwnerTable)
 		.Content()
@@ -543,36 +543,38 @@ void FGeometryCollectionTreeItemComponent::SetHistogramSelection(TArray<int32>& 
 
 bool FGeometryCollectionTreeItemComponent::FilterBoneIndex(int32 BoneIndex) const
 {
-	const FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
-	const TManagedArray<int32>& SimTypes = Collection->SimulationType;
-	bool bHasChildren = Collection->Children[BoneIndex].Num() > 0;
-
-	if (SimTypes[BoneIndex] != FGeometryCollection::ESimulationTypes::FST_Clustered)
+	if (Component.IsValid())
 	{
-		// We only display cluster nodes deeper than the view level.
-		UFractureSettings* FractureSettings = GetMutableDefault<UFractureSettings>();
+		const FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
+		const TManagedArray<int32>& SimTypes = Collection->SimulationType;
+		bool bHasChildren = Collection->Children[BoneIndex].Num() > 0;
 
-		if (FractureSettings->FractureLevel >= 0)
+		if (SimTypes[BoneIndex] != FGeometryCollection::ESimulationTypes::FST_Clustered)
 		{
-			const TManagedArray<int32>& Level = Collection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
-			int32 BoneLevel = Level[BoneIndex];
-			// bone is not at the right level itself and doesn't have child(ren) at the right level
-			if (BoneLevel != FractureSettings->FractureLevel && (!bHasChildren || BoneLevel + 1 != FractureSettings->FractureLevel))
+			// We only display cluster nodes deeper than the view level.
+			UFractureSettings* FractureSettings = GetMutableDefault<UFractureSettings>();
+
+			if (FractureSettings->FractureLevel >= 0)
 			{
-				return false;
+				const TManagedArray<int32>& Level = Collection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
+				int32 BoneLevel = Level[BoneIndex];
+				// bone is not at the right level itself and doesn't have child(ren) at the right level
+				if (BoneLevel != FractureSettings->FractureLevel && (!bHasChildren || BoneLevel + 1 != FractureSettings->FractureLevel))
+				{
+					return false;
+				}
+			}
+
+			// If anything is selected int the Histogram, we filter by that selection.
+			if (HistogramSelection.Num() > 0)
+			{
+				if (!HistogramSelection.Contains(BoneIndex))
+				{
+					return false;
+				}
 			}
 		}
-
-		// If anything is selected int the Histogram, we filter by that selection.
-		if (HistogramSelection.Num() > 0)
-		{
-			if (!HistogramSelection.Contains(BoneIndex))
-			{
-				return false;
-			}
-		}		
 	}
-
 	return true;	
 }
 
@@ -587,56 +589,48 @@ TSharedRef<ITableRow> FGeometryCollectionTreeItemBone::MakeTreeRowWidget(const T
 
 	// Set color according to simulation type
 
-	FSlateColor TextColor(FLinearColor::Red); // default color indicates something wrong
+	FSlateColor TextColor(FLinearColor(0.1f, 0.1f, 0.1f));
 	int32 InitialDynamicState = INDEX_NONE;
 
-	const UGeometryCollection* RestCollection = ParentComponentItem->GetComponent()->GetRestCollection();
-	if (RestCollection && IsValidChecked(RestCollection))
+	UGeometryCollectionComponent* Component = ParentComponentItem->GetComponent();
+	if (Component)
 	{
-		TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = RestCollection->GetGeometryCollection();
-		const TManagedArray<int32>& SimulationType = GeometryCollectionPtr->SimulationType;
-		if (ensure(GetBoneIndex() >= 0 && GetBoneIndex() < SimulationType.Num()))
+		const UGeometryCollection* RestCollection = ParentComponentItem->GetComponent()->GetRestCollection();
+		if (RestCollection && IsValidChecked(RestCollection))
 		{
-			switch (SimulationType[GetBoneIndex()])
+			TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = RestCollection->GetGeometryCollection();
+			const TManagedArray<int32>& SimulationType = GeometryCollectionPtr->SimulationType;
+			if (ensure(GetBoneIndex() >= 0 && GetBoneIndex() < SimulationType.Num()))
 			{
-			case FGeometryCollection::ESimulationTypes::FST_None:
-				TextColor = FLinearColor::Green;
-				break;
-
-			case FGeometryCollection::ESimulationTypes::FST_Rigid:
-				if (GeometryCollectionPtr->IsVisible(GetBoneIndex()))
+				switch (SimulationType[GetBoneIndex()])
 				{
-					TextColor = FSlateColor::UseForeground();
-				}
-				else
-				{
-					TextColor = FLinearColor{ 0.1f, 0.1f, 0.1f, 1.f };
-				}
-				break;
+				case FGeometryCollection::ESimulationTypes::FST_None:
+					TextColor = FLinearColor::Green;
+					break;
 
-			case FGeometryCollection::ESimulationTypes::FST_Clustered:
-				TextColor = FSlateColor(FColor::Cyan);
-				break;
+				case FGeometryCollection::ESimulationTypes::FST_Rigid:
+					if (GeometryCollectionPtr->IsVisible(GetBoneIndex()))
+					{
+						TextColor = FSlateColor::UseForeground();
+					}
+					else
+					{
+						TextColor = FLinearColor{ 0.1f, 0.1f, 0.1f, 1.f };
+					}
+					break;
 
-			default:
-				ensureMsgf(false, TEXT("Invalid Geometry Collection simulation type encountered."));
-				break;
+				case FGeometryCollection::ESimulationTypes::FST_Clustered:
+					TextColor = FSlateColor(FColor::Cyan);
+					break;
+
+				default:
+					ensureMsgf(false, TEXT("Invalid Geometry Collection simulation type encountered."));
+					break;
+				}
+
+				InitialDynamicState = GeometryCollectionPtr->InitialDynamicState[GetBoneIndex()];
 			}
-
-			InitialDynamicState = GeometryCollectionPtr->InitialDynamicState[GetBoneIndex()];
 		}
-		else
-		{
-			// UI contains invalid bone indices; likely not correctly updated after an undo or redo?
-			TextColor = FLinearColor(0.1f, 0.1f, 0.1f);
-			InitialDynamicState = INDEX_NONE;
-		}
-	}
-	else
-	{
-		// Deleted rest collection
-		TextColor = FLinearColor(0.1f, 0.1f, 0.1f);
-		InitialDynamicState = INDEX_NONE;
 	}
 	
 	return SNew(STableRow<FGeometryCollectionTreeItemPtr>, InOwnerTable)

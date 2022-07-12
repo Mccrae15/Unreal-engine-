@@ -55,12 +55,17 @@ FScopedPreAnimatedCaptureSource::~FScopedPreAnimatedCaptureSource()
 	GetCaptureSourcePtr() = PrevCaptureSource;
 }
 
-FScopedPreAnimatedCaptureSource*& FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr()
+FScopedPreAnimatedCaptureSource*& HACK_GetCaptureSourcePtr()
 {
 	// Implemented as a static thread-local for now since there are some tests that run without a linker,
 	// so we can't put this on UMovieSceneEntitySystemLinker::PreAnimatedState where it should probably belong
 	static thread_local FScopedPreAnimatedCaptureSource* GCaptureSource = nullptr;
 	return GCaptureSource;
+}
+
+FScopedPreAnimatedCaptureSource*& FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr()
+{
+	return HACK_GetCaptureSourcePtr();
 }
 
 UE::MovieScene::FInstanceHandle FScopedPreAnimatedCaptureSource::GetRootInstanceHandle(UMovieSceneEntitySystemLinker* Linker) const

@@ -49,6 +49,10 @@
 
 #include "Tools/BlendMaterials.h"
 
+#include "Utilities/VersionInfoHandler.h"
+
+#include "JsonObjectConverter.h"
+
 
 TSharedPtr<FJsonObject> DeserializeJson(const FString& JsonStringData)
 {
@@ -333,13 +337,10 @@ EAssetImportType JsonUtils::GetImportType(TSharedPtr<FJsonObject> ImportJsonObje
 		return (ExportType == TEXT("megascans_uasset")) ? EAssetImportType::MEGASCANS_UASSET : (ExportType == TEXT("megascans_source")) ? EAssetImportType::MEGASCANS_SOURCE : (ExportType == TEXT("dhi")) ? EAssetImportType::DHI_CHARACTER : (ExportType == TEXT("template")) ? EAssetImportType::TEMPLATE : EAssetImportType::NONE;
 
 	}
-	else {
-		
+	else
+	{	
 		return EAssetImportType::NONE;
 	}
-	
-
-	
 }
 
 TSharedPtr<FUAssetData> JsonUtils::ParseUassetJson(TSharedPtr<FJsonObject> ImportJsonObject)
@@ -412,18 +413,23 @@ void AssetUtils::RegisterAsset(const FString& PackagePath)
 
 void AssetUtils::ConvertToVT(FUAssetMeta AssetMetaData)
 {
+	if (IsVTEnabled())
+	{
+		FMaterialBlend::Get()->ConvertToVirtualTextures(AssetMetaData);
+	}
+}
+
+
+bool AssetUtils::IsVTEnabled()
+{
 
 	static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures")); check(CVarVirtualTexturesEnabled);
 	const bool bVirtualTextureEnabled = CVarVirtualTexturesEnabled->GetValueOnAnyThread() != 0;
-	if (bVirtualTextureEnabled) {
-		FMaterialBlend::Get()->ConvertToVirtualTextures(AssetMetaData);
-	}
-
+	return bVirtualTextureEnabled;
 }
 
 void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirectory, const int8& AssetTier)
 {
-
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*DestinationDirectory);
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -436,8 +442,6 @@ void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirec
 		PlatformFile.CreateDirectoryTree(*FoliageDestination);
 	}
 
-
-
 	for (FString FileToCopy : FilesToCopy)
 	{
 		FString DestinationFile = TEXT("");
@@ -446,16 +450,59 @@ void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirec
 		{
 			DestinationFile = FPaths::Combine(FoliageDestination, FPaths::GetCleanFilename(FileToCopy));
 		}
-		else {
-
+		else
+		{
 			DestinationFile = FPaths::Combine(DestinationDirectory, FPaths::GetCleanFilename(FileToCopy));
 		}
 		PlatformFile.CopyFile(*DestinationFile, *FileToCopy);
 	}
 
-
-
 	TArray<FString> SyncPaths;
 	SyncPaths.Add(TEXT("/Game/Megascans"));
 	AssetRegistryModule.Get().ScanPathsSynchronous(SyncPaths, true);
+}
+
+void UpdateMHVersionInfo(TMap<FString, TArray<FString>> AssetsStatus, TMap<FString, float> SourceAssetsVersionInfo)
+{
+	const FString ProjectAssetsVersionPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectContentDir(), TEXT("MetaHumans"), TEXT("MHAssetVersions.txt")));
+
+	FString VersionInfoString;
+	FFileHelper::LoadFileToString(VersionInfoString, *ProjectAssetsVersionPath);
+	FVersionData VersionData;
+
+	FJsonObjectConverter::JsonObjectStringToUStruct<FVersionData>(VersionInfoString, &VersionData);
+
+	for (FAssetInfo& AssetInfo : VersionData.assets)
+	{
+		if (AssetsStatus["Update"].Contains(AssetInfo.path))
+		{
+			AssetInfo.version = FString::SanitizeFloat(SourceAssetsVersionInfo[AssetInfo.path]);
+		}
+		
+	}
+
+
+	for (FString AssetToAdd : AssetsStatus["Add"])
+	{
+		FAssetInfo NewAssetInfo;
+		NewAssetInfo.path = AssetToAdd;
+		if (SourceAssetsVersionInfo.Contains(AssetToAdd))
+		{			
+			NewAssetInfo.version = FString::SanitizeFloat(SourceAssetsVersionInfo[AssetToAdd]);			
+		}
+		else
+		{
+			NewAssetInfo.version = TEXT("0.0");
+		}
+		VersionData.assets.Add(NewAssetInfo);
+	}
+
+
+	FString OutputData;
+	FJsonObjectConverter::UStructToJsonObjectString(VersionData, OutputData);
+
+
+	FFileHelper::SaveStringToFile(OutputData, *ProjectAssetsVersionPath);
+
+
 }

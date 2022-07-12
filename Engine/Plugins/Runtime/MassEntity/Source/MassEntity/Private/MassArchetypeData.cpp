@@ -277,7 +277,7 @@ void FMassArchetypeData::BatchDestroyEntityChunks(FMassArchetypeSubChunks::FCons
 			return A.ChunkIndex < B.ChunkIndex || (A.ChunkIndex == B.ChunkIndex && A.SubchunkStart > B.SubchunkStart);
 		});
 
-	for (const FMassArchetypeSubChunks::FSubChunkInfo SubchunkInfo : Subchunks)
+	for (const FMassArchetypeSubChunks::FSubChunkInfo& SubchunkInfo : Subchunks)
 	{ 
 		FMassArchetypeChunk& Chunk = Chunks[SubchunkInfo.ChunkIndex];
 

@@ -443,7 +443,7 @@ bool FOpenXRHMD::GetCurrentPose(int32 DeviceId, FQuat& CurrentOrientation, FVect
 
 bool FOpenXRHMD::GetPoseForTime(int32 DeviceId, FTimespan Timespan, bool& OutTimeWasUsed, FQuat& Orientation, FVector& Position, bool& bProvidedLinearVelocity, FVector& LinearVelocity, bool& bProvidedAngularVelocity, FVector& AngularVelocityRadPerSec, bool& bProvidedLinearAcceleration, FVector& LinearAcceleration, float InWorldToMetersScale)
 {
-	FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
+	const FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
 
 	FReadScopeLock DeviceLock(DeviceMutex);
 	if (!DeviceSpaces.IsValidIndex(DeviceId))
@@ -1070,8 +1070,8 @@ void FOpenXRHMD::UpdateDeviceLocations(bool bUpdateOpenXRExtensionPlugins)
 
 	FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
 
-	// Only update the device locations if the frame state has been predicted
-	if (PipelineState.FrameState.predictedDisplayTime > 0)
+	// Only update the device locations if the frame state has been predicted, which is dependent on WaitFrame success
+	if (PipelineState.bXrFrameStateUpdated)
 	{
 		FReadScopeLock Lock(DeviceMutex);
 		PipelineState.DeviceLocations.SetNum(DeviceSpaces.Num());
@@ -1153,7 +1153,7 @@ void FOpenXRHMD::EnumerateViews(FPipelinedFrameState& PipelineState)
 		PipelineState.PluginViews.Add(nullptr);
 		PipelineState.ViewConfigs.Add(View);
 	}
-	XR_ENSURE(xrEnumerateViewConfigurationViews(Instance, System, SelectedViewConfigurationType, ViewConfigCount, &ViewConfigCount, PipelinedFrameStateGame.ViewConfigs.GetData()));
+	XR_ENSURE(xrEnumerateViewConfigurationViews(Instance, System, SelectedViewConfigurationType, ViewConfigCount, &ViewConfigCount, PipelineState.ViewConfigs.GetData()));
 
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 	{
@@ -1169,6 +1169,8 @@ void FOpenXRHMD::EnumerateViews(FPipelinedFrameState& PipelineState)
 	if (Session)
 	{
 		LocateViews(PipelineState, true);
+
+		check(PipelineState.bXrFrameStateUpdated);
 
 		FReadScopeLock DeviceLock(DeviceMutex);
 		for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
@@ -1577,6 +1579,7 @@ XrPath FOpenXRHMD::GetTrackedDevicePath(const int32 DeviceId)
 XrTime FOpenXRHMD::GetDisplayTime() const
 {
 	const FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
+	check(PipelineState.bXrFrameStateUpdated);
 	return PipelineState.FrameState.predictedDisplayTime;
 }
 
@@ -1780,9 +1783,6 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 	ensure(IsInRenderingThread());
 	FReadScopeLock DeviceLock(DeviceMutex);
 
-	UE_CLOG(PipelinedFrameStateRendering.FrameState.predictedDisplayTime >= PipelinedFrameStateGame.FrameState.predictedDisplayTime,
-		LogHMD, VeryVerbose, TEXT("Predicted display time went backwards from %lld to %lld"), PipelinedFrameStateRendering.FrameState.predictedDisplayTime, PipelinedFrameStateGame.FrameState.predictedDisplayTime);
-
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 	{
 		Module->OnBeginRendering_RenderThread(Session);
@@ -1791,7 +1791,6 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 	const float WorldToMeters = GetWorldToMetersScale();
 	const FTransform InvTrackingToWorld = GetTrackingToWorldTransform().Inverse();
 
-	PipelinedFrameStateRendering = PipelinedFrameStateGame;
 
 	for (int32 ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
 	{
@@ -1919,7 +1918,8 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 	}
 #endif
 
-	if (bIsRunning)
+	// Guard prediction-dependent calls from being invoked (LocateViews, BeginFrame, etc)
+	if (bIsRunning && PipelinedFrameStateRendering.bXrFrameStateUpdated)
 	{
 		// Locate the views we will actually be rendering for.
 		// This is required to support late-updating the field-of-view.
@@ -1947,7 +1947,7 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 
 void FOpenXRHMD::LocateViews(FPipelinedFrameState& PipelineState, bool ResizeViewsArray)
 {
-	check(PipelineState.FrameState.predictedDisplayTime);
+	check(PipelineState.bXrFrameStateUpdated);
 	FReadScopeLock DeviceLock(DeviceMutex);
 
 	uint32_t ViewCount = 0;
@@ -2010,15 +2010,32 @@ void FOpenXRHMD::OnBeginRendering_GameThread()
 	// can wait for the next frame in the next tick. Without this signal it's possible that two ticks
 	// happen before the next frame is actually rendered.
 	bShouldWait = true;
+
+	ENQUEUE_RENDER_COMMAND(TransferFrameStateToRenderingThread)(
+		[this, GameFrameState = PipelinedFrameStateGame](FRHICommandListImmediate& RHICmdList) mutable
+		{
+			UE_CLOG(PipelinedFrameStateRendering.FrameState.predictedDisplayTime >= GameFrameState.FrameState.predictedDisplayTime,
+				LogHMD, VeryVerbose, TEXT("Predicted display time went backwards from %lld to %lld"), PipelinedFrameStateRendering.FrameState.predictedDisplayTime, GameFrameState.FrameState.predictedDisplayTime);
+
+			PipelinedFrameStateRendering = GameFrameState;
+		});
 }
 
 void FOpenXRHMD::OnBeginSimulation_GameThread()
 {
 	FReadScopeLock Lock(SessionHandleMutex);
 
-	if (!bIsReady || !bIsRunning || !bShouldWait)
+	if (!bShouldWait)
 	{
-		// @todo: Sleep here?
+		return;
+	}
+
+	FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
+	PipelineState.bXrFrameStateUpdated = false;
+	PipelineState.FrameState = { XR_TYPE_FRAME_STATE };
+
+	if (!bIsReady || !bIsRunning)
+	{
 		return;
 	}
 
@@ -2040,7 +2057,8 @@ void FOpenXRHMD::OnBeginSimulation_GameThread()
 	// The pipeline state on the game thread can only be safely modified after xrWaitFrame which will be unblocked by
 	// the runtime when xrBeginFrame is called. The rendering thread will clone the game pipeline state before calling
 	// xrBeginFrame so the game pipeline state can safely be modified after xrWaitFrame returns.
-	FPipelinedFrameState& PipelineState = GetPipelinedFrameStateForThread();
+
+	PipelineState.bXrFrameStateUpdated = true;
 	PipelineState.FrameState = FrameState;
 	PipelineState.TrackingSpace = GetTrackingSpace();
 	PipelineState.WorldToMetersScale = WorldToMetersScale;

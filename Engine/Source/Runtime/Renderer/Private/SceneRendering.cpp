@@ -2142,6 +2142,7 @@ void FViewInfo::DestroyAllSnapshots(FParallelMeshDrawCommandPass::EWaitThread Wa
 	for (FViewInfo* Snapshot : ViewInfoSnapshots)
 	{
 		Snapshot->ViewUniformBuffer.SafeRelease();
+		Snapshot->InstancedViewUniformBuffer.SafeRelease();
 		Snapshot->CachedViewUniformShaderParameters.Reset();
 
 		for (int32 Index = 0; Index < Snapshot->ParallelMeshDrawCommandPasses.Num(); ++Index)

@@ -513,6 +513,7 @@ void FScene::AddSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy,
 			{
 				FPlatformAtomics::InterlockedIncrement(&Scene->NumUncachedStaticLightingInteractions);
 			}
+			Scene->InvalidatePathTracedOutput();
 		} );
 }
 
@@ -540,6 +541,7 @@ void FScene::RemoveSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereScenePro
 			{
 				Scene->SkyAtmosphere = nullptr;
 			}
+			Scene->InvalidatePathTracedOutput();
 		} );
 }
 

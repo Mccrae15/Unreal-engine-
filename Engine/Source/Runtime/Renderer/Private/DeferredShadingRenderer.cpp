@@ -167,6 +167,15 @@ static FAutoConsoleVariableRef CRayTracingExcludeTranslucent(
 	TEXT(" 1: Translucent objects excluded from the ray tracing scene"),
 	ECVF_RenderThreadSafe);
 
+static int32 GRayTracingExcludeSky = 1;
+static FAutoConsoleVariableRef CRayTracingExcludeSky(
+	TEXT("r.RayTracing.ExcludeSky"),
+	GRayTracingExcludeSky,
+	TEXT("A toggle that controls inclusion of sky geometry in the ray tracing scene (excluding sky can make ray tracing faster).\n")
+	TEXT(" 0: Sky objects included in the ray tracing scene\n")
+	TEXT(" 1: Sky objects excluded from the ray tracing scene (default)"),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<int32> CVarRayTracingAsyncBuild(
 	TEXT("r.RayTracing.AsyncBuild"),
 	0,
@@ -1266,7 +1275,7 @@ bool FDeferredShadingSceneRenderer::GatherRayTracingWorldInstancesForView(FRDGBu
 
 				if ((GRayTracingExcludeDecals && RelevantPrimitive.bAnySegmentsDecal)
 					|| (GRayTracingExcludeTranslucent && RelevantPrimitive.bAllSegmentsTranslucent)
-					|| RelevantPrimitive.bIsSky)
+					|| (GRayTracingExcludeSky && RelevantPrimitive.bIsSky))
 				{
 					continue;
 				}
@@ -1920,7 +1929,19 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	GPU_MESSAGE_SCOPE(GraphBuilder);
 
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		FViewInfo& View = Views[ViewIndex];
+		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+
+		ShaderPrint::BeginView(GraphBuilder, View);
+		ShaderDrawDebug::BeginView(GraphBuilder, View);
+		ShadingEnergyConservation::Init(GraphBuilder, View);
+	}
+	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder, true);
+
 #if RHI_RAYTRACING
+	// Now that we have updated all the PrimitiveSceneInfos, update the RayTracing mesh commands cache if needed
 	{
 		ERayTracingMeshCommandsMode CurrentMode = ViewFamily.EngineShowFlags.PathTracing ? ERayTracingMeshCommandsMode::PATH_TRACING : ERayTracingMeshCommandsMode::RAY_TRACING;
 		bool bNaniteCoarseMeshStreamingModeChanged = false;
@@ -1947,16 +1968,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	}
 #endif
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-	{
-		FViewInfo& View = Views[ViewIndex];
-		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
-
-		ShaderPrint::BeginView(GraphBuilder, View);
-		ShaderDrawDebug::BeginView(GraphBuilder, View);
-		ShadingEnergyConservation::Init(GraphBuilder, View);
-	}
-	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder, true);
 
 	FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(Scene->GPUScene, GPUSceneDynamicContext, Scene);
 

@@ -1,14 +1,12 @@
 #!/bin/bash
 # Copyright Epic Games, Inc. All Rights Reserved.
+BASH_LOCATION=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-# Suppress printing of directory stack
-pushd () {
-    command pushd "$@" > /dev/null
-}
-popd () {
-    command popd "$@" > /dev/null
-}
+pushd "${BASH_LOCATION}" > /dev/null
 
+source common_utils.sh
+
+use_args $@
 # Azure specific fix to allow installing NodeJS from NodeSource
 if test -f "/etc/apt/sources.list.d/azure-cli.list"; then
     sudo touch /etc/apt/sources.list.d/nodesource.list
@@ -18,111 +16,127 @@ if test -f "/etc/apt/sources.list.d/azure-cli.list"; then
     sudo chmod 644 /etc/apt/sources.list.d/azure-cli.list
 fi
 
-declare -A Packages
-num_rows=6
-num_cols=6
-
-# Versions are from current working release versions
-# No version for turnserver at the moment, see below why:
-#  https://github.com/coturn/coturn/issues/680
-#  https://github.com/coturn/coturn/issues/843
-#
-# Structure for installation preparation; please note | in "how to install" -> installer will split the command
-#       Need install Package name   Version   min/any      how to get version  how to install
-Packages[1,1]="y"
-Packages[1,2]="TURN server"
-Packages[1,3]=""
-Packages[1,4]="any"
-Packages[1,5]="turnserver"
-Packages[1,6]="sudo apt-get install -y coturn"
-Packages[2,1]="y"
-Packages[2,2]="node"
-Packages[2,3]="v17.4.0"
-Packages[2,4]="min"
-Packages[2,5]="node --version"
-Packages[2,6]="curl -fsSL https://deb.nodesource.com/setup_17.x | sudo -E bash - && sudo apt-get install -y nodejs"
-Packages[3,1]="y"
-Packages[3,2]="npm"
-Packages[3,3]="8.1.2"
-Packages[3,4]="min"
-Packages[3,5]="npm --version"
-Packages[3,6]="sudo npm install -g npm | sudo npm cache clean -f | sudo npm install -g npm@latest"
-Packages[4,1]="y"
-Packages[4,2]="JSON jq"
-Packages[4,3]="1.6"
-Packages[4,4]="min"
-Packages[4,5]="jq --version"
-Packages[4,6]="sudo apt-get install -y jq"
-Packages[5,1]="y"
-Packages[5,2]="vulkan-utils"
-Packages[5,3]="1.2.131"
-Packages[5,4]="min"
-Packages[5,5]="sudo apt show vulkan-utils 2>/dev/null | grep Version"
-Packages[5,6]="sudo apt-get install -y vulkan-utils"
-Packages[6,1]="y"
-Packages[6,2]="pulseaudio"
-Packages[6,3]="13.99"
-Packages[6,4]="min"
-Packages[6,5]="pulseaudio --version"
-Packages[6,6]="sudo apt-get install -y pulseaudio"
-
-# Install npm packages at the correct place
-pushd ../..
-
-# Install npm packages
-npm install
-
-# Check what to install
-for ((i=1;i<=num_cols;i++)) do
- printf "Checking for %-12s ..." "${Packages[$i,2]}"
- if [ "${Packages[$i,4]}" = "any" ]; then
-  printf " any version ...                "
-  IsInstalled=$(command -v "${Packages[$i,5]}")
-  if [ -z "$IsInstalled" ]; then
-	printf " not found                           marked for installation\n"
-  else
-	printf " found                               no install needed        %s\n" "${IsInstalled}"
-	Packages[$i,1]="n"
-  fi
- elif [ "${Packages[$i,4]}" = "min" ]; then
-  printf " minimum version: %-15s" "${Packages[$i,3]}"
-  Wanted=$(echo "${Packages[$i,3]}" | sed -E 's/[^0-9.]//g')
-  Installed=$(eval "${Packages[$i,5]}" 2>/dev/null)
-  if [ -z "${Installed}" ]; then
-   printf "not found an installed version\n"
-  else
-   printf "found version: %-20s" "${Installed}"
-   Current=$(echo "${Installed}" | sed -E 's/[^0-9.]//g')
-   if [ "${Current}" == "${Wanted}" ]; then
-    Packages[$i,1]="n"
-    printf " no install needed\n"
-   else
-    Newer=$(printf "%s\n%s" "${Wanted}" "${Current}" | sort -r | head -n 1)
-    if [ "${Current}" != "${Newer}" ]; then
-     printf " old, marked for installation\n"
-    else
-	 printf " new, no installation\n"
-	 Packages[$i,1]="n"
+function check_version() { #current_version #min_version
+	#check if same string
+	if [ -z "$2" ] || [ "$1" = "$2" ]; then
+		return 0
 	fi
-   fi
-  fi 
- else
-  printf "Code error, please check Packages setup for %s %s\n" "${Packages[$i,2]}"
-  exit
- fi
-done
 
-# Do the installation
-for ((i=1;i<=num_cols;i++)) do
- if [ "${Packages[$i,1]}" != "n" ]; then
-  if [[ "${Packages[$i,6]}" == :* ]]; then
-   printf "Will not install %s because %s\n" "${Packages[$i,2]}" "${Packages[$i,6]}"
-  else
-   printf "Executing command: %s\n" "${Packages[$i,6]}"
-   eval "${Packages[$i,6]}"
+	local i current minimum
+
+	IFS="." read -r -a current <<< $1
+	IFS="." read -r -a minimum <<< $2
+
+	# fill empty fields in current with zeros
+	for ((i=${#current[@]}; i<${#minimum[@]}; i++))
+	do
+		current[i]=0
+	done
+
+	for ((i=0; i<${#current[@]}; i++))
+	do		
+		if [[ -z ${minimum[i]} ]]; then
+			# fill empty fields in minimum with zeros
+			minimum[i]=0
   fi
- fi
-done
 
-# Reverse ../.. location
-popd
+		if ((10#${current[i]} > 10#${minimum[i]})); then
+			return 1
+	fi
+
+		if ((10#${current[i]} < 10#${minimum[i]})); then
+			return 2
+   fi
+	done
+
+	# if got this far string is the same once we added missing 0
+	return 0
+}
+
+function check_and_install() { #dep_name #get_version_string #version_min #install_command
+	local is_installed=0
+
+	log_msg "Checking for required $1 install"
+
+	local current=$(echo $2 | sed -E 's/[^0-9.]//g')
+	local minimum=$(echo $3 | sed -E 's/[^0-9.]//g')
+
+	if [ $# -ne 4 ]; then
+		log_msg "check_and_install expects 4 args (dep_name get_version_string version_min install_command) got $#"
+		return -1
+  fi 
+	
+	if [ ! -z $current ]; then
+		log_msg "Current version: $current checking >= $minimum"
+		check_version "$current" "$minimum"
+		if [ "$?" -lt 2 ]; then
+			log_msg "$1 is installed."
+			return 0
+ else
+			log_msg "Required install of $1 not found installing"
+		fi
+ fi
+
+	if [ $is_installed -ne 1 ]; then
+		echo "$1 installation not found installing..."
+
+		start_process $4
+
+		if [ $? -ge 1 ]; then
+			echo "Installation of $1 failed try running `export VERBOSE=1` then run this script again for more details"
+			exit 1
+  fi
+
+ fi
+}
+
+echo "Checking Pixel Streaming Server dependencies."
+
+# navigate to SignallingWebServer root
+pushd ../.. > /dev/null
+
+
+#command #dep_name #get_version_string #version_min #install command
+coturn_version=$(if command -v turnserver &> /dev/null; then echo 1; else echo 0; fi)
+if [ $coturn_version -eq 0 ]; then
+    if ! command -v apt-get &> /dev/null; then
+        echo "Setup for the scripts is designed for use with distros that use the apt-get package manager" \
+             "if you are seeing this message you will have to update \"${BASH_LOCATION}/setup.sh\" with\n" \
+             "a package manger and the equivalent packages for your distribution. Please follow the\n" \
+            "instructions found at https://pkgs.org/search/?q=coturn to install Coturn for your specific distribution"
+        exit 1
+    else
+		if [ `id -u` -eq 0 ]; then
+	        check_and_install "coturn" "$coturn_version" "1" "apt-get install -y coturn"
+		else
+			check_and_install "coturn" "$coturn_version" "1" "sudo apt-get install -y coturn"
+		fi
+    fi
+fi
+
+#TODO remove this dep as they are technically unrelated to the script
+# IFS="~" read -r -a vulkan_tools_version <<< $(dpkg -s vulkan-tools 2>/dev/null | grep Version | sed -E 's/[^0-9.]//g')
+# vulkan_tools_version=$(get_version $(if [ ! -z "$vulkan_tools_version" ]; then echo $vulkan_tools_version; else echo "0"; fi))
+# check_and_install "vulkan-tools" "$vulkan_tools_version" "1.2.131" "sudo apt-get install -y vulkan-tools"
+
+#TODO remove this dep as they are technically unrelated to the script
+# pulseaudio_version=$(get_version pulseaudio --version)
+# check_and_install "pulseaudio" "$pulseaudio_version" "13.99" "sudo apt-get install -y pulseaudio"
+
+node_version=""
+if [[ -f "${BASH_LOCATION}/node/bin/node" ]]; then
+	node_version=$("${BASH_LOCATION}/node/bin/node" --version)
+fi
+check_and_install "node" "$node_version" "v16.4.2" "curl https://nodejs.org/dist/v16.14.2/node-v16.14.2-linux-x64.tar.gz --output node.tar.xz 
+													&& tar -xf node.tar.xz 
+													&& rm node.tar.xz 
+													&& mv node-v*-linux-x64 \"${BASH_LOCATION}/node\""
+
+PATH="${BASH_LOCATION}/node/bin:$PATH"
+"${BASH_LOCATION}/node/lib/node_modules/npm/bin/npm-cli.js" install
+
+popd > /dev/null # SignallingWebServer
+
+popd > /dev/null # BASH_SOURCE
+
+echo "All Pixel Streaming Server dependencies up to date."

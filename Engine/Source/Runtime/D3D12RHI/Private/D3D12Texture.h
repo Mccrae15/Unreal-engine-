@@ -179,6 +179,10 @@ public:
 		return (RenderTargetViews.Num() > 0);
 	}
 
+#if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
+	bool GetRequiresTypelessResourceDiscardWorkaround() const { return bRequiresTypelessResourceDiscardWorkaround; }
+#endif // #if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
+
 	void AliasResources(FD3D12TextureBase* Texture)
 	{
 		// Alias the location, will perform an addref underneath
@@ -202,6 +206,10 @@ public:
 
 	FD3D12CLSyncPoint ReadBackSyncPoint;
 
+#if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
+	void SetRequiresTypelessResourceDiscardWorkaround(bool bInRequired) { bRequiresTypelessResourceDiscardWorkaround = bInRequired; }
+#endif // #if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
+
 protected:
 
 	/** Amount of memory allocated by this texture, in bytes. */
@@ -223,6 +231,10 @@ protected:
 	int32 RTVArraySize{};
 
 	bool bCreatedRTVsPerSlice{ false };
+
+#if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
+	bool bRequiresTypelessResourceDiscardWorkaround = false;
+#endif // #if PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
 };
 
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS

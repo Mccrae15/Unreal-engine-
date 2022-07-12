@@ -1467,8 +1467,7 @@ public class IOSPlatform : Platform
 		if (bXCArchive && !RuntimePlatform.IsWindows)
 		{
 			// Always put the archive in the current user's Library/Developer/Xcode/Archives path if not on the build machine
-			WindowsIdentity id = WindowsIdentity.GetCurrent();
-			string ArchivePath = "/Users/" + id.Name + "/Library/Developer/Xcode/Archives";
+			string ArchivePath = "/Users/" + Environment.UserName + "/Library/Developer/Xcode/Archives";
 			if (IsBuildMachine)
 			{
 				ArchivePath = Params.ArchiveDirectoryParam;

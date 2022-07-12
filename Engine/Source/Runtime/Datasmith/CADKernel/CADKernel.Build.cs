@@ -8,6 +8,7 @@ namespace UnrealBuildTool.Rules
 		public CADKernel(ReadOnlyTargetRules Target)
 			: base(Target)
 		{
+			bUseUnity = false;
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{

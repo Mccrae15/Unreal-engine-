@@ -2189,7 +2189,7 @@ void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, FScene* Scene, con
 			SeparateTranslucencyInputs.SceneColor = SceneColor;
 			SeparateTranslucencyInputs.SceneDepth = SceneDepth;
 
-			AddMobileSeparateTranslucencyPass(GraphBuilder, View, SeparateTranslucencyInputs);
+			AddMobileSeparateTranslucencyPass(GraphBuilder, Scene, View, SeparateTranslucencyInputs);
 		}
 
 		AddPostProcessMaterialPass(BL_BeforeTonemapping, false);

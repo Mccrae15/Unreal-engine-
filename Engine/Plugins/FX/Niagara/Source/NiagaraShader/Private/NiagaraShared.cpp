@@ -678,6 +678,17 @@ void FNiagaraShaderScript::FinishCompilation()
 void FNiagaraShaderScript::SetDataInterfaceParamInfo(const TArray< FNiagaraDataInterfaceGPUParamInfo >& InDIParamInfo)
 {
 	DIParamInfo = InDIParamInfo;
+
+	INiagaraShaderModule* ShaderModule = INiagaraShaderModule::Get();
+	for (const FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : DIParamInfo)
+	{
+		UNiagaraDataInterfaceBase* CDODataInterface = ShaderModule->RequestDefaultDataInterface(*DataInterfaceParamInfo.DIClassName);
+		if (CDODataInterface == nullptr)
+		{
+			Invalidate();
+			return;
+		}
+	}
 }
 
 FNiagaraShaderRef FNiagaraShaderScript::GetShader(int32 PermutationId) const

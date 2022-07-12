@@ -20,6 +20,8 @@ DECLARE_CYCLE_STAT(TEXT("Post Evaluation Phase"),       MovieSceneEval_PostEvalu
 TRACE_DECLARE_INT_COUNTER(MovieSceneEntitySystemFlushes, TEXT("MovieScene/ECSFlushes"));
 TRACE_DECLARE_INT_COUNTER(MovieSceneEntitySystemEvaluations, TEXT("MovieScene/ECSEvaluations"));
 
+extern FScopedPreAnimatedCaptureSource*& HACK_GetCaptureSourcePtr();
+
 FMovieSceneEntitySystemRunner::FMovieSceneEntitySystemRunner()
 	: CompletionTask(nullptr)
 	, GameThread(ENamedThreads::GameThread_Local)
@@ -199,6 +201,10 @@ void FMovieSceneEntitySystemRunner::DoFlushUpdateQueueOnce()
 	// the other side of the dissected update range around the event), we need to set the pointer back
 	// again.
 	TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, GetEntityManager());
+
+	// Also reset the capture source scope so that each group of sequences tied to a given linker starts
+	// with a clean slate.
+	TGuardValue<FScopedPreAnimatedCaptureSource*> CaptureSourceGuard(HACK_GetCaptureSourcePtr(), nullptr);
 
 	// Entry point to the whole ECS loop... this will either unroll in the current thread's call stack
 	// if there's not much to do, or it will start queuing up tasks on the task graph.

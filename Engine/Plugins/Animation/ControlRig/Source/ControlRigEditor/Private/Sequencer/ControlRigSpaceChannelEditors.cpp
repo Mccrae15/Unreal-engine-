@@ -425,12 +425,14 @@ FKeyHandle FControlRigSpaceChannelHelpers::SequencerKeyControlRigSpaceChannel(UC
 		FRigControlModifiedContext Context;
 		Context.SetKey = EControlRigSetKey::Always;
 		FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+		FMovieSceneSequenceTransform RootToLocalTransform = Sequencer->GetFocusedMovieSceneSequenceTransform();
 
 		// set previous key if we're going to switch space
 		if (bSetPreviousKey)
 		{
-			const FFrameTime GlobalTime(Time -1);
-
+			FFrameTime GlobalTime(Time -1);
+			GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
+			
 			FMovieSceneContext SceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Sequencer->GetPlaybackStatus()).SetHasJumped(true);
 			Sequencer->GetEvaluationTemplate().Evaluate(SceneContext, *Sequencer);
 
@@ -453,8 +455,9 @@ FKeyHandle FControlRigSpaceChannelHelpers::SequencerKeyControlRigSpaceChannel(UC
 		int32 FramesIndex = 0;
 		for (const FFrameNumber& Frame : Frames)
 		{
-			const FFrameTime GlobalTime(Frame);
-			
+			FFrameTime GlobalTime(Frame);
+			GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
+
 			FMovieSceneContext SceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Sequencer->GetPlaybackStatus()).SetHasJumped(true);
 			Sequencer->GetEvaluationTemplate().Evaluate(SceneContext, *Sequencer);
 
@@ -651,10 +654,14 @@ void  FControlRigSpaceChannelHelpers::SequencerSpaceChannelKeyDeleted(UControlRi
 		FRigControlModifiedContext Context;
 		Context.SetKey = EControlRigSetKey::Always;
 		FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+		FMovieSceneSequenceTransform RootToLocalTransform = Sequencer->GetFocusedMovieSceneSequenceTransform();
+
 		for (const FFrameNumber& Frame : Frames)
 		{
 			//evaluate sequencer
-			const FFrameTime GlobalTime(Frame);
+			FFrameTime GlobalTime(Frame);
+			GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
+
 			FMovieSceneContext SceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Sequencer->GetPlaybackStatus()).SetHasJumped(true);
 			Sequencer->GetEvaluationTemplate().Evaluate(SceneContext, *Sequencer);
 			//make sure to set rig hierarchy correct since key is not deleted yet
@@ -917,13 +924,17 @@ void FControlRigSpaceChannelHelpers::SequencerBakeControlInSpace(UControlRig* Co
 			RigHierarchy->SwitchToParent(ControlKey, Settings.TargetSpace, false, true, Dependencies, nullptr);
 			ControlRig->Evaluate_AnyThread();
 
+			FMovieSceneSequenceTransform RootToLocalTransform = Sequencer->GetFocusedMovieSceneSequenceTransform();
+
 			for (int32 Index = 0; Index < Frames.Num(); ++Index)
 			{
 				const FTransform GlobalTransform = ControlWorldTransforms[Index];
 				const FFrameNumber Frame = Frames[Index];
 
 				//evaluate sequencer
-				const FFrameTime GlobalTime(Frame);
+				FFrameTime GlobalTime(Frame);
+				GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
+
 				FMovieSceneContext SceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Sequencer->GetPlaybackStatus()).SetHasJumped(true);
 				Sequencer->GetEvaluationTemplate().Evaluate(SceneContext, *Sequencer);
 
@@ -951,7 +962,9 @@ void FControlRigSpaceChannelHelpers::SequencerBakeControlInSpace(UControlRig* Co
 				}
 
 				//evaluate sequencer
-				const FFrameTime GlobalTime(EndFrame);
+				FFrameTime GlobalTime(EndFrame);
+				GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
+
 				FMovieSceneContext SceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Sequencer->GetPlaybackStatus()).SetHasJumped(true);
 				Sequencer->GetEvaluationTemplate().Evaluate(SceneContext, *Sequencer);
 		
@@ -1512,10 +1525,11 @@ void FControlRigSpaceChannelHelpers::SetTangentsAtThisTime(	UControlRig* Control
 	for (int32 Index = 0; Index < NumChannels; ++Index, ++ChannelIndex)
 	{
 		TMovieSceneChannelData<FMovieSceneFloatValue> ChannelInterface = FloatChannels[ChannelIndex]->GetData();
+		TArrayView<FMovieSceneFloatValue> Values = ChannelInterface.GetValues();
 		const int32 KeyIndex = ChannelInterface.FindKey(Time);
 		if (KeyIndex != INDEX_NONE)
 		{
-			FMovieSceneFloatValue Value = ChannelInterface.GetValues()[KeyIndex];
+			FMovieSceneFloatValue& Value = Values[KeyIndex];
 			Value.Tangent.ArriveTangent = InTangents[Index].ArriveTangent;
 			Value.Tangent.LeaveTangent = InTangents[Index].LeaveTangent;
 			Value.TangentMode = RCTM_Break;	

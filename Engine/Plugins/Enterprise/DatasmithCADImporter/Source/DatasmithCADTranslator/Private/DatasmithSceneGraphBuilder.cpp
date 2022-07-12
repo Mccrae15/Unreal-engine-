@@ -86,7 +86,7 @@ bool FDatasmithSceneGraphBuilder::Build()
 {
 	LoadSceneGraphDescriptionFiles();
 
-	uint32 RootHash = GetTypeHash(RootFileDescription.GetFileName());
+	uint32 RootHash = RootFileDescription.GetDescriptorHash();
 	SceneGraph = CADFileToSceneGraphArchive.FindRef(RootHash);
 
 	if (!SceneGraph)
@@ -130,7 +130,7 @@ void FDatasmithSceneGraphBuilder::FillAnchorActor(const TSharedRef<IDatasmithAct
 {
 	CADLibrary::FFileDescriptor AnchorDescription(*CleanFilenameOfCADFile);
 
-	uint32 AnchorHash = GetTypeHash(AnchorDescription.GetFileName());
+	uint32 AnchorHash = AnchorDescription.GetDescriptorHash();
 	SceneGraph = CADFileToSceneGraphArchive.FindRef(AnchorHash);
 
 	if (!SceneGraph)
@@ -297,7 +297,7 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 	{
 		if (!Instance.ExternalReference.GetSourcePath().IsEmpty())
 		{
-			uint32 InstanceSceneGraphHash = GetTypeHash(Instance.ExternalReference.GetFileName());
+			uint32 InstanceSceneGraphHash = Instance.ExternalReference.GetDescriptorHash();
 			SceneGraph = CADFileToSceneGraphArchive.FindRef(InstanceSceneGraphHash);
 
 			if (SceneGraph)
@@ -638,6 +638,8 @@ void FDatasmithSceneBaseGraphBuilder::AddMetaData(TSharedPtr< IDatasmithActorEle
 	auto GetUnwantedAttributes = []() -> TSet<FString>
 	{
 		TSet<FString> UnwantedAttributes;
+
+		UnwantedAttributes.Add(TEXT("SDKName"));
 
 		// CoreTech
 		UnwantedAttributes.Add(TEXT("CTName"));

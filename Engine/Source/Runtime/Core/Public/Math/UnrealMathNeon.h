@@ -207,6 +207,11 @@ struct alignas(alignof(VectorRegister4Double)) AlignedDouble4
 };
 
 typedef AlignedDouble4 AlignedRegister4;
+// Aliases
+typedef VectorRegister4Int VectorRegister4i;
+typedef VectorRegister4Float VectorRegister4f;
+typedef VectorRegister4Double VectorRegister4d;
+typedef VectorRegister2Double VectorRegister2d;
 
 /**
  * Returns a bitwise equivalent vector based on 4 uint32s.

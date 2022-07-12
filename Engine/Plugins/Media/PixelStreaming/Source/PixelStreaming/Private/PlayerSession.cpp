@@ -149,7 +149,6 @@ void UE::PixelStreaming::FPlayerSession::OnAnswer(FString Sdp)
 	UE::PixelStreaming::FSetSessionDescriptionObserver* SetRemoteDescriptionObserver = UE::PixelStreaming::FSetSessionDescriptionObserver::Create(
 		[this]() // on success
 		{
-			AddSinkToAudioTrack();
 		},
 		[](const FString& Error) // on failure
 		{

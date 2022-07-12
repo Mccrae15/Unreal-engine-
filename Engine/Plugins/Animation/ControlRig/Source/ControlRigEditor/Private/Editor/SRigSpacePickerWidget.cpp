@@ -250,6 +250,13 @@ FReply SRigSpacePickerWidget::OpenDialog(bool bModal)
 	];
 	
 	Window->SetWidgetToFocusOnActivate(AsShared());
+	if (!Window->GetOnWindowDeactivatedEvent().IsBoundToObject(this))
+	{
+		Window->GetOnWindowDeactivatedEvent().AddLambda([this]()
+		{
+			SetControls(nullptr, {});
+		});
+	}
 	
 	DialogWindow = Window;
 
@@ -281,6 +288,7 @@ void SRigSpacePickerWidget::CloseDialog()
 	
 	if ( DialogWindow.IsValid() )
 	{
+		DialogWindow.Pin()->GetOnWindowDeactivatedEvent().RemoveAll(this);
 		DialogWindow.Pin()->RequestDestroyWindow();
 		DialogWindow.Reset();
 	}

@@ -330,7 +330,7 @@ $ bIncludeLocalizationFiles : True if we should include localization files in th
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -382,7 +382,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -404,7 +404,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -426,7 +426,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -448,7 +448,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -470,7 +470,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -492,7 +492,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -514,7 +514,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -536,7 +536,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -564,7 +564,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -586,7 +586,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -620,7 +620,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 
@@ -642,7 +642,7 @@ $ bIncludeConfigFiles : True if we should include config (.ini) files in the gen
 
 $ bIncludeTemplateFiles : True if we should include template files in the generated project.
 
-$ IncludeEnginePrograms : True if we should include program projects in the generated solution.
+$ bIncludeEnginePrograms : True if we should include program projects in the generated solution.
 
 $ bIncludeDotNetPrograms : True if we should include csharp program projects in the generated solution. Pass "-DotNet" to enable this.
 

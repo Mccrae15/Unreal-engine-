@@ -348,7 +348,9 @@ void FSlateRHIRenderer::CreateViewport(const TSharedRef<SWindow> Window)
 
 		// SDR format holds the requested format in non HDR mode
 		NewInfo->SDRPixelFormat = NewInfo->PixelFormat;
-		if (IsHDREnabled())
+		bool HDREnabled = IsHDREnabled();
+		NewInfo->bSceneHDREnabled = HDREnabled;
+		if (HDREnabled)
 		{
 			NewInfo->PixelFormat = GRHIHDRDisplayOutputFormat;
 		}
@@ -386,10 +388,15 @@ void FSlateRHIRenderer::ConditionalResizeViewport(FViewportInfo* ViewInfo, uint3
 		((ViewInfo->PixelFormat == GRHIHDRDisplayOutputFormat) != bHDREnabled)	// HDR toggled
 #if PLATFORM_WINDOWS
 		|| ((IsRHIDeviceNVIDIA() || IsRHIDeviceAMD()) &&						// Vendor-specific mastering data updates
-		((bHDREnabled && ViewInfo->HDRColorGamut != HDRColorGamut)			// Color gamut changed
+		((bHDREnabled && ViewInfo->HDRColorGamut != HDRColorGamut)				// Color gamut changed
 			|| (bHDREnabled && ViewInfo->HDROutputDevice != HDROutputDevice)))	// Output device changed
 #endif
 		);
+
+	if (ViewInfo && (ViewInfo->bSceneHDREnabled != bHDREnabled))
+	{
+		bHDRStale = true;
+	}
 
 	if (IsInGameThread() && !IsInSlateThread() && ViewInfo && (bHDRStale || ViewInfo->Height != Height || ViewInfo->Width != Width || ViewInfo->bFullscreen != bFullscreen || !IsValidRef(ViewInfo->ViewportRHI)))
 	{
@@ -431,6 +438,7 @@ void FSlateRHIRenderer::ConditionalResizeViewport(FViewportInfo* ViewInfo, uint3
 		ViewInfo->PixelFormat = bHDREnabled ? GRHIHDRDisplayOutputFormat : ViewInfo->SDRPixelFormat;
 		ViewInfo->HDRColorGamut = HDRColorGamut;
 		ViewInfo->HDROutputDevice = HDROutputDevice;
+		ViewInfo->bSceneHDREnabled = bHDREnabled;
 
 		PreResizeBackBufferDelegate.Broadcast(&ViewInfo->ViewportRHI);
 		if (IsValidRef(ViewInfo->ViewportRHI))
@@ -1489,6 +1497,9 @@ void FSlateRHIRenderer::BeginFrame() const
 	   [](FRHICommandListImmediate& RHICmdList)
 	   {
 		   RHICmdList.BeginFrame();
+
+		   // Suspend stat gathering when running modal dialog 'fake' frame loops
+		   GPU_STATS_SUSPENDFRAME();
 	   }
 	);
 }

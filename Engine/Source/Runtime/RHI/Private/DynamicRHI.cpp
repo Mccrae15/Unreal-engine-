@@ -82,14 +82,13 @@ void InitNullRHI()
 #if PLATFORM_WINDOWS || PLATFORM_UNIX
 static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 {
-	int32 CVarValue = CVarWarnOfBadDrivers.GetValueOnGameThread();
-
-	if(!GIsRHIInitialized || !CVarValue || (GRHIVendorId == 0) || FApp::IsUnattended())
+	if (!GIsRHIInitialized || (GRHIVendorId == 0))
 	{
-		UE_LOG(LogRHI, Log, TEXT("Skipping Driver Check: RHI%s initialized, WarnOfBadDrivers=%d, VendorId=0x%x, is%s unattended"), 
-			GIsRHIInitialized ? TEXT("") : TEXT(" NOT"), CVarValue, GRHIVendorId, FApp::IsUnattended() ? TEXT("") : TEXT(" NOT"));
+		UE_LOG(LogRHI, Log, TEXT("Skipping Driver Check: RHI%s initialized, VendorId=0x%x"), GIsRHIInitialized ? TEXT("") : TEXT(" NOT"), GRHIVendorId);
 		return;
 	}
+
+	int32 WarnMode = CVarWarnOfBadDrivers.GetValueOnGameThread();
 
 	FGPUDriverInfo DriverInfo;
 
@@ -104,7 +103,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// for testing
-	if(CVarValue == 2)
+	if(WarnMode == 2)
 	{
 		DriverInfo.SetNVIDIA();
 		DriverInfo.DeviceDescription = TEXT("Test NVIDIA (bad)");
@@ -112,7 +111,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 		DriverInfo.InternalDriverVersion = TEXT("9.18.134.643");
 		DriverInfo.DriverDate = TEXT("01-01-1900");
 	}
-	else if(CVarValue == 3)
+	else if(WarnMode == 3)
 	{
 		DriverInfo.SetAMD();
 		DriverInfo.DeviceDescription = TEXT("Test AMD (bad)");
@@ -120,7 +119,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 		DriverInfo.InternalDriverVersion = TEXT("13.152.1.1000");
 		DriverInfo.DriverDate = TEXT("09-10-13");
 	}
-	else if(CVarValue == 4)
+	else if(WarnMode == 4)
 	{
 		DriverInfo.SetAMD();
 		DriverInfo.DeviceDescription = TEXT("Test AMD (good)");
@@ -128,7 +127,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 		DriverInfo.InternalDriverVersion = TEXT("15.30.1025.1001");
 		DriverInfo.DriverDate = TEXT("01-01-16");
 	}
-	else if(CVarValue == 5)
+	else if(WarnMode == 5)
 	{
 		DriverInfo.SetIntel();
 		DriverInfo.DeviceDescription = TEXT("Test Intel (good)");
@@ -150,65 +149,71 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 		GRHIAdapterDriverOnDenyList = DenyListEntry.IsValid();
 		FGenericCrashContext::SetEngineData(TEXT("RHI.DriverBlacklisted"), DenyListEntry.IsValid() ? TEXT("true") : TEXT("false"));
 
-		if (DenyListEntry.IsValid())
+		if (GRHIAdapterDriverOnDenyList)
 		{
-			bool bLatestDenied = DetectedGPUHardware.IsLatestDenied();
+			if (!FApp::IsUnattended() && WarnMode != 0)
+			{
+				bool bLatestDenied = DetectedGPUHardware.IsLatestDenied();
 
-			// Note: we don't localize the vendor's name.
-			FString VendorString = DriverInfo.ProviderName;
-			FText HyperlinkText;
-			if (DriverInfo.IsNVIDIA())
-			{
-				VendorString = TEXT("NVIDIA");
-				HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkNVIDIA", "https://www.nvidia.com/en-us/geforce/drivers/");
-			}
-			else if (DriverInfo.IsAMD())
-			{
-				VendorString = TEXT("AMD");
-				HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkAMD", "https://www.amd.com/en/support");
-			}
-			else if (DriverInfo.IsIntel())
-			{
-				VendorString = TEXT("Intel");
-				HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkIntel", "https://downloadcenter.intel.com/product/80939/Graphics");
-			}
-
-			// format message box UI
-			FFormatNamedArguments Args;
-			Args.Add(TEXT("AdapterName"), FText::FromString(DriverInfo.DeviceDescription));
-			Args.Add(TEXT("Vendor"), FText::FromString(VendorString));
-			Args.Add(TEXT("RHI"), FText::FromString(DenyListEntry.RHIName));
-			Args.Add(TEXT("Hyperlink"), HyperlinkText);
-			Args.Add(TEXT("RecommendedVer"), FText::FromString(DetectedGPUHardware.GetSuggestedDriverVersion(DriverInfo.RHIName)));
-			Args.Add(TEXT("InstalledVer"), FText::FromString(DriverInfo.UserDriverVersion));
-
-			// this message can be suppressed with r.WarnOfBadDrivers=0
-			FText LocalizedMsg;
-			if (bLatestDenied)
-			{
-				if (!DenyListEntry.RHIName.IsEmpty())
+				// Note: we don't localize the vendor's name.
+				FString VendorString = DriverInfo.ProviderName;
+				FText HyperlinkText;
+				if (DriverInfo.IsNVIDIA())
 				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "LatestVideoCardDriverRHIIssueReport", "The latest version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install the recommended driver version or switch to a different rendering API.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					VendorString = TEXT("NVIDIA");
+					HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkNVIDIA", "https://www.nvidia.com/en-us/geforce/drivers/");
+				}
+				else if (DriverInfo.IsAMD())
+				{
+					VendorString = TEXT("AMD");
+					HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkAMD", "https://www.amd.com/en/support");
+				}
+				else if (DriverInfo.IsIntel())
+				{
+					VendorString = TEXT("Intel");
+					HyperlinkText = NSLOCTEXT("MessageDialog", "DriverDownloadLinkIntel", "https://downloadcenter.intel.com/product/80939/Graphics");
+				}
+
+				// format message box UI
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("AdapterName"), FText::FromString(DriverInfo.DeviceDescription));
+				Args.Add(TEXT("Vendor"), FText::FromString(VendorString));
+				Args.Add(TEXT("RHI"), FText::FromString(DenyListEntry.RHIName));
+				Args.Add(TEXT("Hyperlink"), HyperlinkText);
+				Args.Add(TEXT("RecommendedVer"), FText::FromString(DetectedGPUHardware.GetSuggestedDriverVersion(DriverInfo.RHIName)));
+				Args.Add(TEXT("InstalledVer"), FText::FromString(DriverInfo.UserDriverVersion));
+
+				FText LocalizedMsg;
+				if (bLatestDenied)
+				{
+					if (!DenyListEntry.RHIName.IsEmpty())
+					{
+						LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "LatestVideoCardDriverRHIIssueReport", "The latest version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install the recommended driver version or switch to a different rendering API.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					}
+					else
+					{
+						LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "LatestVideoCardDriverIssueReport", "The latest version of the {Vendor} graphics driver has known issues.\nPlease install the recommended driver version.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					}
 				}
 				else
 				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "LatestVideoCardDriverIssueReport", "The latest version of the {Vendor} graphics driver has known issues.\nPlease install the recommended driver version.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					if (!DenyListEntry.RHIName.IsEmpty())
+					{
+						LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverRHIIssueReport", "The installed version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install either the latest or the recommended driver version or switch to a different rendering API.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					}
+					else
+					{
+						LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverIssueReport", "The installed version of the {Vendor} graphics driver has known issues.\nPlease install either the latest or the recommended driver version.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
+					}
 				}
+
+				FText Title = NSLOCTEXT("MessageDialog", "TitleVideoCardDriverIssue", "WARNING: Known issues with graphics driver");
+				FMessageDialog::Open(EAppMsgType::Ok, LocalizedMsg, &Title);
 			}
 			else
 			{
-				if (!DenyListEntry.RHIName.IsEmpty())
-				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverRHIIssueReport", "The installed version of the {Vendor} graphics driver has known issues in {RHI}.\nPlease install either the latest or the recommended driver version or switch to a different rendering API.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
-				}
-				else
-				{
-					LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "VideoCardDriverIssueReport", "The installed version of the {Vendor} graphics driver has known issues.\nPlease install either the latest or the recommended driver version.\n\n{Hyperlink}\n\n{AdapterName}\nInstalled: {InstalledVer}\nRecommended: {RecommendedVer}"), Args);
-				}
+				UE_LOG(LogRHI, Warning, TEXT("Running with bad GPU drivers but warning dialog will not be shown: IsUnattended=%d, r.WarnOfBadDrivers=%d"), FApp::IsUnattended(), WarnMode);
 			}
-
-			FText Title = NSLOCTEXT("MessageDialog", "TitleVideoCardDriverIssue", "WARNING: Known issues with graphics driver");
-			FMessageDialog::Open(EAppMsgType::Ok, LocalizedMsg, &Title);
 		}
 	}
 }

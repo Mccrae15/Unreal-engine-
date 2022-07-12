@@ -11,7 +11,7 @@ ULensDistortionComponent::ULensDistortionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = true;
-	PrimaryComponentTick.TickGroup = ETickingGroup::TG_LastDemotable;
+	PrimaryComponentTick.TickGroup = ETickingGroup::TG_DuringPhysics;
 	bTickInEditor = true;
 
 	if (!HasAnyFlags(RF_ArchetypeObject | RF_ClassDefaultObject))
