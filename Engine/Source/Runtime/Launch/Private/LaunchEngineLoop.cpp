@@ -2845,6 +2845,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SCOPED_BOOT_TIMING("RHIInit");
 		// Initialize the RHI.
 		RHIInit(bHasEditorToken);
+		FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms();
 	}
 
 	{
