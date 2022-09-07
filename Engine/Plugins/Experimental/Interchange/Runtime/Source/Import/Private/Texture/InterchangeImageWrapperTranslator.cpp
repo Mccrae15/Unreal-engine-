@@ -65,12 +65,12 @@ static FAutoConsoleVariableRef CCvarInterchangeEnableTGAImport(
 	ECVF_Default);
 
 UInterchangeImageWrapperTranslator::UInterchangeImageWrapperTranslator()
-	: bFillPNGZeroAlpha(true)
 {
-	if (GConfig)
+	if (IsTemplate() && GConfig)
 	{
 		ensure(IsInGameThread()); // Reading config values isn't threadsafe
-		GConfig->GetBool(TEXT("TextureImporter"), TEXT("FillPNGZeroAlpha"), bFillPNGZeroAlpha, GEditorIni);
+		bFillPNGZeroAlpha = true;
+		GConfig->GetBool(TEXT("TextureImporter"), TEXT("FillPNGZeroAlpha"), bFillPNGZeroAlpha.GetValue(), GEditorIni);
 	}
 }
 
@@ -79,35 +79,35 @@ TArray<FString> UInterchangeImageWrapperTranslator::GetSupportedFormats() const
 	TArray<FString> Formats;
 	Formats.Reserve(7);
 
-	if (GInterchangeEnablePNGImport)
+	if (GInterchangeEnablePNGImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("png;Portable Network Graphic"));
 	}
 
-	if (GInterchangeEnableBMPImport)
+	if (GInterchangeEnableBMPImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("bmp;Bitmap image"));
 	}
 
-	if (GInterchangeEnableEXRImport)
+	if (GInterchangeEnableEXRImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("exr;OpenEXR image"));
 	}
 
-	if (GInterchangeEnableHDRImport)
+	if (GInterchangeEnableHDRImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("hdr;High Dynamic Range image"));
 	}
 
 #if WITH_LIBTIFF
-	if (GInterchangeEnableTIFFImport)
+	if (GInterchangeEnableTIFFImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("tif;Tag Image File Format"));
 		Formats.Emplace(TEXT("tiff;Tag Image File Format"));
 	}
 #endif
 
-	if (GInterchangeEnableTGAImport)
+	if (GInterchangeEnableTGAImport || GIsAutomationTesting)
 	{
 		Formats.Emplace(TEXT("tga;Targa image"));
 	}
@@ -202,7 +202,7 @@ TOptional<UE::Interchange::FImportImage> UInterchangeImageWrapperTranslator::Get
 
 			if (ImageFormat == EImageFormat::PNG)
 			{
-				if (bFillPNGZeroAlpha)
+				if (GetDefault<UInterchangeImageWrapperTranslator>()->bFillPNGZeroAlpha.GetValue())
 				{
 					// Replace the pixels with 0.0 alpha with a color value from the nearest neighboring color which has a non-zero alpha
 					UE::TextureUtilitiesCommon::FillZeroAlphaPNGData(PayloadData.SizeX, PayloadData.SizeY, PayloadData.Format, reinterpret_cast<uint8*>(PayloadData.RawData.GetData()));
