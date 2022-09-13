@@ -583,6 +583,9 @@ void TGPUSkinVertexFactory<BoneInfluenceType>::GetPSOPrecacheVertexFetchElements
 	// Attribute ID
 	Elements.Add(FVertexElement(BaseStreamIndex++, 0, VET_UInt, 16, 0, true));
 
+	// Morph blend data
+	Elements.Add(FVertexElement(Elements.Num(), 0, VET_Float3, 9, 0, false));
+	Elements.Add(FVertexElement(Elements.Num(), 0, VET_Float3, 10, 0, false));
 }
 
 /**
