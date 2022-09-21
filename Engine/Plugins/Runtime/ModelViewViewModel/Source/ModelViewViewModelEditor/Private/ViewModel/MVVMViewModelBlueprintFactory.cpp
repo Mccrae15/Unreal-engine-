@@ -83,7 +83,7 @@ bool UMVVMViewModelBlueprintFactory::ConfigureProperties()
 
 bool UMVVMViewModelBlueprintFactory::ShouldShowInNewMenu() const
 {
-	return true;
+	return false; //Temporarily disabled until the editor is ready.
 }
 
 UObject* UMVVMViewModelBlueprintFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn, FName CallingContext)

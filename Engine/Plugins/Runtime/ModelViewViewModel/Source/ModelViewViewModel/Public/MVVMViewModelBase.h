@@ -34,7 +34,7 @@
 
 
 /** Base class for MVVM viewmodel. */
-UCLASS(Blueprintable, Abstract, DisplayName="MVVM ViewModel")
+UCLASS(NotBlueprintable, Abstract, DisplayName="MVVM ViewModel")
 class MODELVIEWVIEWMODEL_API UMVVMViewModelBase : public UObject, public INotifyFieldValueChanged
 {
 	GENERATED_BODY()
