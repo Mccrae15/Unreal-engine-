@@ -40,7 +40,11 @@ void UCommonBoundActionButton::NativeOnClicked()
 void UCommonBoundActionButton::NativeOnCurrentTextStyleChanged()
 {
 	Super::NativeOnCurrentTextStyleChanged();
-	Text_ActionName->SetStyle(GetCurrentTextStyleClass());
+
+	if (Text_ActionName)
+	{
+		Text_ActionName->SetStyle(GetCurrentTextStyleClass());
+	}
 }
 
 void UCommonBoundActionButton::UpdateInputActionWidget()
@@ -67,8 +71,11 @@ void UCommonBoundActionButton::UpdateInputActionWidget()
 			}
 		}
 
-		Text_ActionName->SetText(ActionDisplayName);
-
+		if (Text_ActionName)
+		{
+			Text_ActionName->SetText(ActionDisplayName);
+		}
+		
 		OnUpdateInputAction();
 	}
 }
