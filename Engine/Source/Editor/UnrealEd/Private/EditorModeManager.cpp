@@ -74,6 +74,7 @@ FEditorModeTools::FEditorModeTools()
 
 	InteractiveToolsContext = NewObject<UModeManagerInteractiveToolsContext>(GetTransientPackage(), UModeManagerInteractiveToolsContext::StaticClass(), NAME_None, RF_Transient);
 	InteractiveToolsContext->InitializeContextWithEditorModeManager(this);
+	InteractiveToolsContext->Activate();
 
 	// Load the last used settings
 	LoadConfig();
@@ -109,6 +110,7 @@ FEditorModeTools::~FEditorModeTools()
 	// which would mean that this instances will be garbage
 	if (UObjectInitialized())
 	{
+		InteractiveToolsContext->Deactivate();
 		InteractiveToolsContext->ShutdownContext();
 		InteractiveToolsContext = nullptr;
 	}

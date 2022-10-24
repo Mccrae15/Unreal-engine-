@@ -295,11 +295,14 @@ void UEditorInteractiveToolsContext::Initialize(IToolsContextQueriesAPI* Queries
 
 void UEditorInteractiveToolsContext::Shutdown()
 {
+	bIsActive = false;
+
 	// auto-accept any in-progress tools
 	DeactivateAllActiveTools(EToolShutdownType::Accept);
 
 	UInteractiveToolsContext::Shutdown();
 }
+
 
 void UEditorInteractiveToolsContext::InitializeContextWithEditorModeManager(FEditorModeTools* InEditorModeManager, UInputRouter* UseInputRouter)
 {
@@ -391,7 +394,7 @@ void UEditorInteractiveToolsContext::PostInvalidation()
 
 UWorld* UEditorInteractiveToolsContext::GetWorld() const
 {
-	if (EditorModeManager)
+	if (bIsActive && EditorModeManager)
 	{
 		return EditorModeManager->GetWorld();
 	}
@@ -725,6 +728,15 @@ void UEditorInteractiveToolsContext::EndTool(EToolShutdownType ShutdownType)
 	PostInvalidation();
 }
 
+void UEditorInteractiveToolsContext::Activate()
+{
+	bIsActive = true;
+}
+
+void UEditorInteractiveToolsContext::Deactivate()
+{
+	bIsActive = false;
+}
 
 
 void UEditorInteractiveToolsContext::DeactivateActiveTool(EToolSide WhichSide, EToolShutdownType ShutdownType)
@@ -1171,6 +1183,7 @@ bool UModeManagerInteractiveToolsContext::OnChildEdModeActivated(UEdModeInteract
 	}
 
 	EdModeToolsContexts.Add(ChildToolsContext);
+	ChildToolsContext->Activate();
 	return true;
 }
 
@@ -1182,6 +1195,7 @@ bool UModeManagerInteractiveToolsContext::OnChildEdModeDeactivated(UEdModeIntera
 		if (EdModeToolsContexts[k] == ChildToolsContext)
 		{
 			ChildToolsContext->DeactivateAllActiveTools(EToolShutdownType::Cancel);
+			ChildToolsContext->Deactivate();
 			EdModeToolsContexts.RemoveAt(k);
 			return true;
 		}
