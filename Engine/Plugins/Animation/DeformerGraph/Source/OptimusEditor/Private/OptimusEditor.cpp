@@ -446,9 +446,7 @@ void FOptimusEditor::CopySelectedNodes() const
 {
 	FOptimusEditorClipboard& Clipboard = FOptimusEditorModule::Get().GetClipboard();
 
-	const TArray<UOptimusNode*> ModelNodes = GetSelectedModelNodes();
-	UOptimusClipboardContent* Content = UOptimusClipboardContent::Create(EditorGraph->GetModelGraph(), ModelNodes);
-	Clipboard.SetClipboardContent(Content);
+	Clipboard.SetClipboardFromNodes(GetSelectedModelNodes());
 }
 
 
@@ -464,8 +462,7 @@ void FOptimusEditor::CutSelectedNodes() const
 
 	UOptimusNodeGraph* ModelGraph = EditorGraph->GetModelGraph();
 	const TArray<UOptimusNode*> ModelNodes = GetSelectedModelNodes();
-	UOptimusClipboardContent* Content = UOptimusClipboardContent::Create(ModelGraph, ModelNodes);
-	Clipboard.SetClipboardContent(Content);
+	Clipboard.SetClipboardFromNodes(ModelNodes);
 
 	ModelGraph->RemoveNodes(ModelNodes, TEXT("Cut"));
 }
@@ -480,13 +477,11 @@ bool FOptimusEditor::CanCutNodes() const
 void FOptimusEditor::PasteNodes() const
 {
 	const FOptimusEditorClipboard& Clipboard = FOptimusEditorModule::Get().GetClipboard();
-	const UOptimusClipboardContent* Content = Clipboard.GetClipboardContent();
-	if (!Content)
+	const UOptimusNodeGraph* TransientGraph = Clipboard.GetGraphFromClipboardContent(DeformerObject->GetPackage());
+	if (!TransientGraph)
 	{
 		return;
 	}
-
-	const UOptimusNodeGraph* TransientGraph = Content->GetGraphFromClipboardContent();
 
 	UOptimusNodeGraph* ModelGraph = EditorGraph->GetModelGraph();
 	ModelGraph->DuplicateNodes(
