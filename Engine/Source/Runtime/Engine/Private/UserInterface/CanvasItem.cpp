@@ -1074,8 +1074,6 @@ void FCanvasTextItem::DrawStringInternal_OfflineCache(FCanvas* InCanvas, const F
 			}
 			LastTexture = Tex->GetResource();
 
-			const float X		= CurrentPos.X + DrawPos.X;
-			const float Y		= CurrentPos.Y + DrawPos.Y + Char.VerticalOffset * Scale.Y;
 			float SizeX			= Char.USize * Scale.X;
 			const float SizeY	= Char.VSize * Scale.Y;
 			const float U		= Char.StartU * InvTextureSize.X;
@@ -1085,8 +1083,11 @@ void FCanvasTextItem::DrawStringInternal_OfflineCache(FCanvas* InCanvas, const F
 
 			const auto AddTriangles = [&](const FVector2f& Offset, const FLinearColor& InColor)
 			{
-				const float Left = (X + Offset.X) * Depth;
-				const float Top = (Y + Offset.Y) * Depth;
+				const float X = CurrentPos.X + (DrawPos.X + Offset.X);
+				const float Y = CurrentPos.Y + (DrawPos.Y + Offset.Y) + Char.VerticalOffset * Scale.Y;
+
+				const float Left = X * Depth;
+				const float Top = Y * Depth;
 				const float Right = (X + SizeX) * Depth;
 				const float Bottom = (Y + SizeY) * Depth;
 
@@ -1266,11 +1267,7 @@ void FCanvasTextItem::DrawStringInternal_RuntimeCache(FCanvas* InCanvas, const F
 			if (!bIsWhitespace)
 			{
 				const float InvBitmapRenderScale = 1.0f / Entry.BitmapRenderScale;
-
-				const float X = DrawPos.X + LineX + (Entry.HorizontalOffset * Scale.X);
-				// Note PosX,PosY is the upper left corner of the bounding box representing the string.  This computes the Y position of the baseline where text will sit
-
-				const float Y = DrawPos.Y + PosY - (Entry.VerticalOffset * Scale.Y) + (((Entry.GlobalDescender * Scale.Y) + ScaledMaxHeight) * InvBitmapRenderScale);
+				
 				const float U = Entry.StartU * InvTextureSizeX;
 				const float V = Entry.StartV * InvTextureSizeY;
 				const float SizeX = Entry.USize * Scale.X * Entry.BitmapRenderScale;
@@ -1280,8 +1277,12 @@ void FCanvasTextItem::DrawStringInternal_RuntimeCache(FCanvas* InCanvas, const F
 
 				const auto AddTriangles = [&](const FVector2f& Offset, const FLinearColor& InColor)
 				{
-					const float Left = (X + Offset.X) * Depth;
-					const float Top = (Y + Offset.Y) * Depth;
+					// Note PosX,PosY is the upper left corner of the bounding box representing the string.  This computes the Y position of the baseline where text will sit
+					const float X = (DrawPos.X + Offset.X) + LineX + (Entry.HorizontalOffset * Scale.X);
+					const float Y = (DrawPos.Y + Offset.Y) + PosY - (Entry.VerticalOffset * Scale.Y) + (((Entry.GlobalDescender * Scale.Y) + ScaledMaxHeight) * InvBitmapRenderScale);
+
+					const float Left = X * Depth;
+					const float Top = Y * Depth;
 					const float Right = (X + SizeX) * Depth;
 					const float Bottom = (Y + SizeY) * Depth;
 
@@ -1430,10 +1431,6 @@ void FCanvasShapedTextItem::DrawStringInternal(FCanvas* InCanvas, const FVector2
 				const float BitmapRenderScale = GlyphToRender.GetBitmapRenderScale();
 				const float InvBitmapRenderScale = 1.0f / BitmapRenderScale;
 
-				const float X = DrawPos.X + LineX + (GlyphAtlasData.HorizontalOffset * Scale.X) + (GlyphToRender.XOffset * Scale.X);
-				// Note PosX,PosY is the upper left corner of the bounding box representing the string.  This computes the Y position of the baseline where text will sit
-
-				const float Y = DrawPos.Y + PosY - (GlyphAtlasData.VerticalOffset * Scale.Y) + (GlyphToRender.YOffset * Scale.Y) + ((ScaledBaseline + ScaledMaxHeight) * InvBitmapRenderScale);
 				const float U = GlyphAtlasData.StartU * InvTextureSizeX;
 				const float V = GlyphAtlasData.StartV * InvTextureSizeY;
 				const float SizeX = GlyphAtlasData.USize * Scale.X * BitmapRenderScale;
@@ -1443,8 +1440,12 @@ void FCanvasShapedTextItem::DrawStringInternal(FCanvas* InCanvas, const FVector2
 
 				const auto AddTriangles = [&](const FVector2f& Offset, const FLinearColor& InColor)
 				{
-					const float Left = (X + Offset.X) * Depth;
-					const float Top = (Y + Offset.Y) * Depth;
+					// Note PosX,PosY is the upper left corner of the bounding box representing the string.  This computes the Y position of the baseline where text will sit
+					const float X = (DrawPos.X + Offset.X) + LineX + (GlyphAtlasData.HorizontalOffset * Scale.X) + (GlyphToRender.XOffset * Scale.X);
+					const float Y = (DrawPos.Y + Offset.Y) + PosY - (GlyphAtlasData.VerticalOffset * Scale.Y) + (GlyphToRender.YOffset * Scale.Y) + ((ScaledBaseline + ScaledMaxHeight) * InvBitmapRenderScale);
+
+					const float Left = X * Depth;
+					const float Top = Y * Depth;
 					const float Right = (X + SizeX) * Depth;
 					const float Bottom = (Y + SizeY) * Depth;
 
