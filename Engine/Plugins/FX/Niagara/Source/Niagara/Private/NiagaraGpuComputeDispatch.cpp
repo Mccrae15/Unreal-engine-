@@ -1707,6 +1707,28 @@ void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bA
 		GPUInstanceCounterManager.ResizeBuffers(GraphBuilder.RHICmdList, 0);
 		FinishDispatches();
 	}
+
+#if WITH_MGPU
+	// If we have any simulations ticking we need to add the counter buffer to the list of buffers to transfer
+	// This must be done during graph building rather than when we transfer as the GPU mask will be all nodes
+	auto HasAnyWork =
+		[&]() -> bool
+		{
+			for (const FNiagaraGpuDispatchList& DispatchList : DispatchListPerStage)
+			{
+				if (DispatchList.HasWork())
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+	if (GPUInstanceCounterManager.HasEntriesPendingFree() || HasAnyWork())
+	{
+		MultiGPUResourceModified(GraphBuilder, GPUInstanceCounterManager.GetInstanceCountBuffer().Buffer, true, true);
+	}
+#endif
 }
 
 void FNiagaraGpuComputeDispatch::PostInitViews(FRDGBuilder& GraphBuilder, TArrayView<const class FViewInfo> Views, bool bAllowGPUParticleUpdate)
@@ -2451,7 +2473,6 @@ void FNiagaraGpuComputeDispatch::TransferMultiGPUBufers(FRHICommandList& RHICmdL
 	// Transfer buffers for AFR rendering
 	if (AFRBuffers.Num())
 	{
-		AddAFRBuffer(GPUInstanceCounterManager.GetInstanceCountBuffer().Buffer);
 		RHICmdList.BroadcastTemporalEffect(FNiagaraGpuComputeDispatchLocal::TemporalEffectBuffersName, AFRBuffers);
 		AFRBuffers.Reset();
 	}
@@ -2464,7 +2485,6 @@ void FNiagaraGpuComputeDispatch::TransferMultiGPUBufers(FRHICommandList& RHICmdL
 	// Transfer buffers for cross GPU rendering
 	if (CrossGPUTransferBuffers.Num())
 	{
-		AddCrossGPUTransfer(RHICmdList, GPUInstanceCounterManager.GetInstanceCountBuffer().Buffer);
 		RHICmdList.TransferResources(CrossGPUTransferBuffers);
 		CrossGPUTransferBuffers.Reset();
 	}
