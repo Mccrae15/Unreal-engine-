@@ -132,14 +132,12 @@ void UInterchangeGenericMaterialPipeline::PreDialogCleanup(const FName PipelineS
 
 bool UInterchangeGenericMaterialPipeline::IsSettingsAreValid(TOptional<FText>& OutInvalidReason) const
 {
-	using namespace UE::Interchange;
-
 	if (TexturePipeline && !TexturePipeline->IsSettingsAreValid(OutInvalidReason))
 	{
 		return false;
 	}
 
-	return InterchangeGenericMaterialPipeline::Private::AreRequiredPackagesLoaded() &&  Super::IsSettingsAreValid(OutInvalidReason);
+	return Super::IsSettingsAreValid(OutInvalidReason);
 }
 
 void UInterchangeGenericMaterialPipeline::AdjustSettingsForContext(EInterchangePipelineContext ImportType, TObjectPtr<UObject> ReimportAsset)
@@ -169,6 +167,13 @@ void UInterchangeGenericMaterialPipeline::AdjustSettingsForContext(EInterchangeP
 		{
 			HidePropertiesOfCategory(OuterMostPipeline, this, HideCategoryName);
 		}
+	}
+
+	using namespace UE::Interchange;
+
+	if (!InterchangeGenericMaterialPipeline::Private::AreRequiredPackagesLoaded())
+	{
+		UE_LOG(LogInterchangePipeline, Warning, TEXT("UInterchangeGenericMaterialPipeline: Some required packages are missing. Material import might be wrong"));
 	}
 }
 
