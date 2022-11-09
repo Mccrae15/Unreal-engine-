@@ -3076,8 +3076,7 @@ bool FWindowsPlatformMisc::NeedsNonoptionalCPUFeaturesCheck()
 
 bool FWindowsPlatformMisc::HasTimedPauseCPUFeature()
 {
-	// Check for waitpkg is bit 5
-	return (FCPUIDQueriedData::GetCPUExtendedFeatures2() & (1 << 5)) != 0;
+	return false;
 }
 
 int32 FWindowsPlatformMisc::GetCacheLineSize()
