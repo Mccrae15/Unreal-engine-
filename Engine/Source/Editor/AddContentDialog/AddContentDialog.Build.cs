@@ -21,7 +21,6 @@ public class AddContentDialog : ModuleRules
 				"SlateCore",
 				"InputCore",
 				"Json",
-				"EditorStyle",
 				"DirectoryWatcher",
 				"DesktopPlatform",
 				"PakFile",
@@ -31,14 +30,6 @@ public class AddContentDialog : ModuleRules
 				"CoreUObject",				
 				"WidgetCarousel",
 				"ToolWidgets",
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/AddContentDialog/Private",
-				"Editor/AddContentDialog/Private/ViewModels",
-				"Editor/AddContentDialog/Private/ContentSourceProviders/FeaturePack",
 			}
 		);
 	}

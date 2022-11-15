@@ -763,10 +763,10 @@ namespace Generator
 				check(Inputs[0].GetConnectionType() == EConnectionType::Expression);
 				check(Inputs[1].GetConnectionType() == EConnectionType::Expression);
 				check(Inputs[1].IsExpressionA<UMaterialExpressionConstant>());
-				check(FunctionName == TEXT("operator[](<0>[],int)"));
+				check(FunctionName == TEXT("operator[](<0>[],int)") || FunctionName == TEXT("operator[](%3C0%3E[],int)"));
 
 				const int32 Index = (int32)Cast<UMaterialExpressionConstant>(Inputs[1].GetExpressionUnused())->R;
-				CurrentMaterial->Expressions.Remove(Inputs[1].GetExpressionUnused());
+				CurrentMaterial->GetExpressionCollection().RemoveExpression(Inputs[1].GetExpressionUnused());
 
 				return {NewMaterialExpressionComponentMask(CurrentMaterial, Inputs[0], 1 << Index)};
 			}
@@ -1069,6 +1069,7 @@ namespace Generator
 			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_STATE_TRANSFORM_POINT:
 			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_STATE_TRANSFORM_VECTOR:
 			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_TEX_LOOKUP_COLOR:
+			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_TEX_LOOKUP_FLOAT2:
 			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_TEX_LOOKUP_FLOAT3:
 			case mi::neuraylib::IFunction_definition::DS_INTRINSIC_TEX_LOOKUP_FLOAT4:
 			{
@@ -1205,12 +1206,12 @@ namespace Generator
 			if (UMaterialExpressionConstant* Index = Cast<UMaterialExpressionConstant>(InputExpression))
 			{
 				CoordinateIndex = Index->R;
-				CurrentMaterial->Expressions.Remove(Index);
+				CurrentMaterial->GetExpressionCollection().RemoveExpression(Index);
 			}
 			else if (UMaterialExpressionScalarParameter* ScalarExpression = Cast<UMaterialExpressionScalarParameter>(InputExpression))
 			{
 				CoordinateIndex = ScalarExpression->DefaultValue;
-				CurrentMaterial->Expressions.Remove(ScalarExpression);
+				CurrentMaterial->GetExpressionCollection().RemoveExpression(ScalarExpression);
 			}
 			else
 			{

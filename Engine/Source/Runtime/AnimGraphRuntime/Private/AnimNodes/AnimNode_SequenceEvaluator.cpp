@@ -4,6 +4,8 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SequenceEvaluator)
+
 float FAnimNode_SequenceEvaluatorBase::GetCurrentAssetTime() const
 {
 	return GetExplicitTime();
@@ -70,6 +72,7 @@ void FAnimNode_SequenceEvaluatorBase::UpdateAssetPlayer(const FAnimationUpdateCo
 		else
 		{
 			InternalTimeAccumulator = CurrentExplicitTime;
+			CreateTickRecordForNode(Context, CurrentSequence, GetShouldLoop(), 0);
 		}
 	}
 
@@ -163,6 +166,21 @@ bool FAnimNode_SequenceEvaluator::SetExplicitTime(float InTime)
 	if (float* ExplicitTimePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(float, ExplicitTime))
 	{
 		*ExplicitTimePtr = InTime;
+		return true;
+	}
+
+	return false;
+}
+
+bool FAnimNode_SequenceEvaluator::SetShouldLoop(bool bInShouldLoop)
+{
+#if WITH_EDITORONLY_DATA
+	bShouldLoop = bInShouldLoop;
+#endif
+
+	if (bool* bShouldLoopPtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(bool, bShouldLoop))
+	{
+		*bShouldLoopPtr = bInShouldLoop;
 		return true;
 	}
 

@@ -5,6 +5,8 @@
 #include "NiagaraTypes.h"
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraParameterSectionTemplate)
+
 struct FComponentData
 {
 	TWeakObjectPtr<UNiagaraComponent> Component;
@@ -113,7 +115,10 @@ void FMovieSceneNiagaraParameterSectionTemplate::Initialize(const FMovieSceneEva
 			const uint8* ParameterData = NiagaraComponent->GetOverrideParameters().GetParameterData(Parameter);
 			if (ParameterData == nullptr)
 			{
-				ParameterData = NiagaraComponent->GetAsset()->GetExposedParameters().GetParameterData(Parameter);
+				if (UNiagaraSystem* NiagaraSystem = NiagaraComponent->GetAsset())
+				{
+					ParameterData = NiagaraSystem->GetExposedParameters().GetParameterData(Parameter);
+				}
 			}
 
 			TArray<uint8> CurrentValueData;

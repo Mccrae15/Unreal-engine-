@@ -158,15 +158,17 @@ class SIOSWebBrowserWidget : public SLeafWidget
 							FTextureRHIRef VideoTexture = [NativeWebBrowser GetVideoTexture];
 							if (VideoTexture == nullptr)
 							{
-								FRHIResourceCreateInfo CreateInfo(TEXT("SIOSWebBrowserWidget_VideoTexture"));
-								FIntPoint Size = Params.Size;
-								VideoTexture = RHICreateTextureExternal2D(Size.X, Size.Y, PF_R8G8B8A8, 1, 1, TexCreate_None, CreateInfo);
+								const FRHITextureCreateDesc Desc =
+									FRHITextureCreateDesc::Create2D(TEXT("SIOSWebBrowserWidget_VideoTexture"), Params.Size, PF_R8G8B8A8)
+									.SetFlags(ETextureCreateFlags::External);
+
+								VideoTexture = RHICreateTexture(Desc);
 								[NativeWebBrowser SetVideoTexture : VideoTexture];
 								//UE_LOG(LogIOS, Log, TEXT("NativeWebBrowser SetVideoTexture:VideoTexture!"));
 
 								if (VideoTexture == nullptr)
 								{
-									UE_LOG(LogIOS, Warning, TEXT("CreateTextureExternal2D failed!"));
+									UE_LOG(LogIOS, Warning, TEXT("RHICreateTexture failed!"));
 									return;
 								}
 
@@ -483,6 +485,7 @@ supportsMetal : (bool)InSupportsMetal supportsMetalMRT : (bool)InSupportsMetalMR
 			[self.WebView setOpaque : YES];
 		}
 
+		[theConfiguration release];
 		[self setDefaultVisibility];
 	});
 #endif
@@ -496,10 +499,35 @@ supportsMetal : (bool)InSupportsMetal supportsMetalMRT : (bool)InSupportsMetalMR
 	{
 		[self.WebViewContainer removeFromSuperview];
 		[self.WebView removeFromSuperview];
+		
+		[WebView release];
+		[WebViewContainer release];
+
 		WebView = nil;
 		WebViewContainer = nil;
 	});
 #endif
+}
+
+-(void)dealloc;
+{
+#if !PLATFORM_TVOS
+	if (WebView != nil)
+	{
+		WebView.navigationDelegate = nil;
+		[WebView release];
+		WebView = nil;
+	};
+
+	[WebViewContainer release];
+	WebViewContainer = nil;
+#endif
+	[NextContent release];
+	NextContent = nil;
+	[NextURL release];
+	NextURL = nil;
+
+	[super dealloc];
 }
 
 -(void)updateframe:(CGRect)InFrame;
@@ -588,7 +616,7 @@ supportsMetal : (bool)InSupportsMetal supportsMetalMRT : (bool)InSupportsMetalMR
 	dispatch_async(dispatch_get_main_queue(), ^
 	{
 		self.NextContent = InString;
-	self.NextURL = InURL;
+		self.NextURL = InURL;
 	});
 }
 
@@ -828,7 +856,7 @@ FWebBrowserWindow::FWebBrowserWindow(FString InUrl, TOptional<FString> InContent
 
 FWebBrowserWindow::~FWebBrowserWindow()
 {
-	CloseBrowser(true);
+	CloseBrowser(true, false);
 }
 
 void FWebBrowserWindow::LoadURL(FString NewURL)
@@ -955,6 +983,12 @@ FReply FWebBrowserWindow::OnMouseWheel(const FGeometry& MyGeometry, const FPoint
 	return FReply::Unhandled();
 }
 
+FReply FWebBrowserWindow::OnTouchGesture(const FGeometry& MyGeometry, const FPointerEvent& GestureEvent, bool bIsPopup)
+{
+	return FReply::Unhandled();
+}
+
+
 void FWebBrowserWindow::OnFocus(bool SetFocus, bool bIsPopup)
 {
 }
@@ -1070,7 +1104,7 @@ void FWebBrowserWindow::ExecuteJavascript(const FString& Script)
 	BrowserWidget->ExecuteJavascript(Script);
 }
 
-void FWebBrowserWindow::CloseBrowser(bool bForce)
+void FWebBrowserWindow::CloseBrowser(bool bForce, bool bBlockTillClosed /* ignored */)
 {
 	BrowserWidget->Close();
 }

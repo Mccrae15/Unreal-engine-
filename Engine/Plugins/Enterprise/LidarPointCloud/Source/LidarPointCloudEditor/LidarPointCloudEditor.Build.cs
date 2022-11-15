@@ -17,7 +17,6 @@ namespace UnrealBuildTool.Rules
                 "SlateCore",
 				"EditorFramework",
                 "UnrealEd",
-                "EditorStyle",
                 "KismetWidgets",
                 "PropertyEditor",
                 "ApplicationCore",
@@ -31,7 +30,11 @@ namespace UnrealBuildTool.Rules
                 "Engine",
                 "RenderCore",
                 "RHI",
-                "AdvancedPreviewScene"
+                "AdvancedPreviewScene",
+                "EditorInteractiveToolsFramework",
+                "InteractiveToolsFramework",
+                "StatusBar",
+                "MeshDescription",
                 }
             );
         }

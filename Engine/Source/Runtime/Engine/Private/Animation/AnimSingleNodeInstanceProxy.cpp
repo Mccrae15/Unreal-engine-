@@ -13,6 +13,8 @@
 #include "Animation/AnimSyncScope.h"
 #include "Animation/MirrorDataTable.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimSingleNodeInstanceProxy)
+
 FAnimSingleNodeInstanceProxy::~FAnimSingleNodeInstanceProxy()
 {
 }
@@ -200,7 +202,8 @@ void FAnimSingleNodeInstanceProxy::InternalBlendSpaceEvaluatePose(class UBlendSp
 		FAnimationPoseData AdditiveAnimationPoseData = { AdditivePose, AdditiveCurve, AdditiveAttributes };
 		BlendSpace->GetAnimationPose(BlendSampleDataCache, ExtractionContext, AdditiveAnimationPoseData);
 
-		enum EAdditiveAnimationType AdditiveType = BlendSpace->bRotationBlendInMeshSpace? AAT_RotationOffsetMeshSpace : AAT_LocalSpaceBase;
+		enum EAdditiveAnimationType AdditiveType = 
+			BlendSpace->bContainsRotationOffsetMeshSpaceSamples ? AAT_RotationOffsetMeshSpace : AAT_LocalSpaceBase;
 		FAnimationRuntime::AccumulateAdditivePose(AnimationPoseData, AdditiveAnimationPoseData, 1.f, AdditiveType);
 	}
 	else
@@ -688,3 +691,4 @@ void FAnimNode_SingleNode::Update_AnyThread(const FAnimationUpdateContext& Conte
 	}
 #endif
 }
+

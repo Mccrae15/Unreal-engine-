@@ -9,15 +9,21 @@ using System.Xml;
 using System.IO;
 using Ionic.Zip;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
 	class UEDeployMac : UEBuildDeploy
 	{
+		public UEDeployMac(ILogger InLogger) 
+			: base(InLogger)
+		{
+		}
+
 		public override bool PrepTargetForDeployment(TargetReceipt Receipt)
 		{
-			Log.TraceInformation("Deploying now!");
-			return true;
+			Logger.LogInformation("Deploying now!");
+			return base.PrepTargetForDeployment(Receipt);
 		}
 
 		public static bool GeneratePList(string ProjectDirectory, bool bIsUnrealGame, string GameName, string ProjectName, string InEngineDir, string ExeName)

@@ -10,7 +10,7 @@
 
 #include "AdvancedPreviewScene.h"
 #include "Components/StaticMeshComponent.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorViewportClient.h"
 #include "Layout/Visibility.h"
 #include "Math/Box.h"
@@ -48,7 +48,7 @@ public:
 
 #ifdef VIEWPORT_EXPERIMENTAL
 	FPrototypeOrientedBox MeshProperties;
-	bool bShoudlBeInstanced;
+	bool bShouldBeInstanced;
 #endif
 
 protected:
@@ -67,7 +67,7 @@ public:
 			TEXT("DataprepEditorViewport"), // Context name for fast lookup
 			NSLOCTEXT( "DataprepEditorViewportCommands", "DataprepEditorViewportText", "Dataprep Editor Viewport"), // Localized context name for displaying
 			NAME_None, // Parent
-			FEditorStyle::GetStyleSetName() // Icon Style Set
+			FAppStyle::GetAppStyleSetName() // Icon Style Set
 			)
 	{
 	}
@@ -132,7 +132,7 @@ public:
 	~FDataprepEditorViewportClient() {}
 
 	// FEditorViewportClient interface
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
 	virtual void ProcessClick(class FSceneView& View, class HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY) override;
 	virtual void DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas ) override;
 	// End of FEditorViewportClient interface

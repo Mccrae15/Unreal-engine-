@@ -7,6 +7,12 @@
 #include "Animation/AnimTrace.h"
 #include "Animation/AnimPoseSearchProvider.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SequencePlayer)
+
+#if WITH_EDITORONLY_DATA
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "AnimNode_SequencePlayer"
 
 /////////////////////////////////////////////////////
@@ -170,18 +176,8 @@ float FAnimNode_SequencePlayerBase::GetEffectiveStartPosition(const FAnimationBa
 
 bool FAnimNode_SequencePlayer::SetSequence(UAnimSequenceBase* InSequence)
 {
-#if WITH_EDITORONLY_DATA
 	Sequence = InSequence;
-	GET_MUTABLE_ANIM_NODE_DATA(TObjectPtr<UAnimSequenceBase>, Sequence) = InSequence;
-#endif
-	
-	if(TObjectPtr<UAnimSequenceBase>* SequencePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(TObjectPtr<UAnimSequenceBase>, Sequence))
-	{
-		*SequencePtr = InSequence;
-		return true;
-	}
-
-	return false;
+	return true;
 }
 
 bool FAnimNode_SequencePlayer::SetLoopAnimation(bool bInLoopAnimation)
@@ -201,7 +197,7 @@ bool FAnimNode_SequencePlayer::SetLoopAnimation(bool bInLoopAnimation)
 
 UAnimSequenceBase* FAnimNode_SequencePlayer::GetSequence() const
 {
-	return GET_ANIM_NODE_DATA(TObjectPtr<UAnimSequenceBase>, Sequence);
+	return Sequence;
 }
 
 float FAnimNode_SequencePlayer::GetPlayRateBasis() const
@@ -338,3 +334,4 @@ bool FAnimNode_SequencePlayer::SetPlayRate(float InPlayRate)
 }
 
 #undef LOCTEXT_NAMESPACE
+

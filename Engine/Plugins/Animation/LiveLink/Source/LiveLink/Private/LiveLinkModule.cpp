@@ -8,7 +8,9 @@
 #include "LiveLinkSettings.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
+#include "Styling/SlateStyleRegistry.h"
 
+LLM_DEFINE_TAG(LiveLink);
 #define LOCTEXT_NAMESPACE "LiveLinkModule"
 
 FLiveLinkClient* FLiveLinkModule::LiveLinkClient_AnyThread = nullptr;
@@ -17,13 +19,16 @@ FLiveLinkModule::FLiveLinkModule()
 	: LiveLinkClient()
 	, LiveLinkMotionController(LiveLinkClient)
 	, HeartbeatEmitter(MakeUnique<FLiveLinkHeartbeatEmitter>())
+#if WITH_LIVELINK_DISCOVERY_MANAGER_THREAD
 	, DiscoveryManager(MakeUnique<FLiveLinkMessageBusDiscoveryManager>())
+#endif
 	, LiveLinkDebugCommand(MakeUnique<FLiveLinkDebugCommand>(LiveLinkClient))
 {
 }
 
 void FLiveLinkModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(LiveLink);
 	FLiveLinkLogInstance::CreateInstance();
 	CreateStyle();
 
@@ -37,15 +42,19 @@ void FLiveLinkModule::StartupModule()
 
 void FLiveLinkModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(LiveLink);
 	FCoreDelegates::OnFEngineLoopInitComplete.RemoveAll(this);
 
 	HeartbeatEmitter->Exit();
+#if WITH_LIVELINK_DISCOVERY_MANAGER_THREAD
 	DiscoveryManager->Stop();
+#endif
 	LiveLinkMotionController.UnregisterController();
 
 	IModularFeatures::Get().UnregisterModularFeature(FLiveLinkClient::ModularFeatureName, &LiveLinkClient);
 	FPlatformAtomics::InterlockedExchangePtr((void**)&LiveLinkClient_AnyThread, nullptr);
 
+	FSlateStyleRegistry::UnRegisterSlateStyle(*StyleSet.Get());
 	FLiveLinkLogInstance::DestroyInstance();
 }
 
@@ -53,6 +62,7 @@ void FLiveLinkModule::CreateStyle()
 {
 	static FName LiveLinkStyle(TEXT("LiveLinkCoreStyle"));
 	StyleSet = MakeShared<FSlateStyleSet>(LiveLinkStyle);
+	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
 
 	FString ContentDir = IPluginManager::Get().FindPlugin(TEXT("LiveLink"))->GetContentDir();
 

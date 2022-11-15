@@ -283,8 +283,8 @@ class FPropertyNode : public TSharedFromThis<FPropertyNode>
 {
 public:
 
-	FPropertyNode(void);
-	virtual ~FPropertyNode(void);
+	FPropertyNode();
+	virtual ~FPropertyNode();
 
 	/**
 	 * Init Tree Node internally (used only derived classes to pass through variables that are common to all nodes
@@ -397,8 +397,8 @@ public:
 	/**
 	 * Returns the parent node in the hierarchy
 	 */
-	FPropertyNode*			GetParentNode() { return ParentNodeWeakPtr.IsValid() ? ParentNodeWeakPtr.Pin().Get() : nullptr; }
-	const FPropertyNode*	GetParentNode() const { return ParentNodeWeakPtr.IsValid() ? ParentNodeWeakPtr.Pin().Get() : nullptr; }
+	FPropertyNode*			GetParentNode() { return ParentNodeWeakPtr.Pin().Get(); }
+	const FPropertyNode*	GetParentNode() const { return ParentNodeWeakPtr.Pin().Get(); }
 	TSharedPtr<FPropertyNode> GetParentNodeSharedPtr() { return ParentNodeWeakPtr.Pin(); }
 	/**
 	 * Returns the Property this Node represents
@@ -452,6 +452,11 @@ public:
 
 	/** @return whether this window's property is constant (can't be edited by the user) */
 	bool IsEditConst() const;
+
+	/**
+	 * Returns whether this window's property should not be serialized (determined by the CPF_SkipSerialization flag).
+	 */
+	bool ShouldSkipSerialization() const;
 
 	/**
 	 * Gets the full name of this node
@@ -641,10 +646,14 @@ public:
 
 	/** Broadcasts when a property value changes */
 	DECLARE_EVENT(FPropertyNode, FPropertyValueChangedEvent);
+	/** Broadcasts when a property value changes, but additionally includes the property changed event.*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FPropertyValueChangedWithData, const FPropertyChangedEvent&)
 	FPropertyValueChangedEvent& OnPropertyValueChanged() { return PropertyValueChangedEvent; }
-
+	FPropertyValueChangedWithData& OnPropertyValueChangedWithData() { return PropertyValueChangedDelegate; }
+	
 	/** Broadcasts when a child of this property changes */
 	FPropertyValueChangedEvent& OnChildPropertyValueChanged() { return ChildPropertyValueChangedEvent; }
+	FPropertyValueChangedWithData& OnChildPropertyValueChangedWithData() { return ChildPropertyValueChangedDelegate; }
 
 	/** Broadcasts when a property value changes */
 	DECLARE_EVENT(FPropertyNode, FPropertyValuePreChangeEvent);
@@ -949,11 +958,15 @@ public:
 	 */
 	void SetExpandedChildPropertyNodes(const TSet<FString>& InNodesToExpand);
 
-protected:
+	/**
+	 * Helper to fetch a PropertyPath 
+	 */
+	const FString& GetPropertyPath() const { return PropertyPath; }
 
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange );
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances );
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, TSet<UObject*>&& InAffectedArchetypeInstances );
+protected:
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange ) const;
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances ) const;
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, TSet<UObject*>&& InAffectedArchetypeInstances ) const;
 
 	void NotifyPreChangeInternal(TSharedRef<FEditPropertyChain> PropertyChain, FProperty* PropertyAboutToChange, FNotifyHook* InNotifyHook);
 
@@ -1010,6 +1023,12 @@ protected:
 	 */
 	void BroadcastPropertyChangedDelegates();
 
+	/**
+	 * Helper function for derived members to be able to 
+	 * broadcast property changed notifications including property changed event data
+	 */
+	void BroadcastPropertyChangedDelegates(const FPropertyChangedEvent& Event);
+
 
 	/**
 	* Helper function for derived members to be able to
@@ -1045,8 +1064,6 @@ protected:
 	 * The node that is the parent of this node or nullptr for the root
 	 */
 	TWeakPtr<FPropertyNode> ParentNodeWeakPtr;
-	//@todo consolidate with ParentNodeWeakPtr, ParentNode is legacy
-	FPropertyNode* ParentNode;
 
 	/**	The property node, if any, that serves as the key value for this node */
 	TSharedPtr<FPropertyNode> PropertyKeyNode;
@@ -1071,9 +1088,13 @@ protected:
 
 	/** Called when this node's property value has changed (called during NotifyPostChange) */
 	FPropertyValueChangedEvent PropertyValueChangedEvent;
-
+	/** Called when this node's property value has changed with the property changed event data as payload (called during NotifyPostChange) */
+	FPropertyValueChangedWithData PropertyValueChangedDelegate;
+	
 	/** Called when a child's property value has changed */
 	FPropertyValueChangedEvent ChildPropertyValueChangedEvent;
+	/** Called when a child's property value has changed with the property changed event data as payload */
+	FPropertyValueChangedWithData ChildPropertyValueChangedDelegate;
 
 	/** Called when the property is reset to default */
 	FPropertyResetToDefaultEvent PropertyResetToDefaultEvent;

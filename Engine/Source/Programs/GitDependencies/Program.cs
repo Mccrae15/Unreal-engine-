@@ -10,9 +10,11 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace GitDependencies
@@ -91,8 +93,8 @@ namespace GitDependencies
 			List<string> ArgsList = new List<string>(Args);
 			NormalizeArguments(ArgsList);
 
-			// Find the default arguments from the UE4_GITDEPS_ARGS environment variable. These arguments do not cause an error if duplicated or redundant, but can still override defaults.
-			List<string> DefaultArgsList = SplitArguments(System.Environment.GetEnvironmentVariable("UE4_GITDEPS_ARGS"));
+			// Find the default arguments from the UE_GITDEPS_ARGS environment variable. These arguments do not cause an error if duplicated or redundant, but can still override defaults.
+			List<string> DefaultArgsList = SplitArguments(GetLegacyEnvironmentVariable("UE_GITDEPS_ARGS", "UE4_GITDEPS_ARGS"));
 			NormalizeArguments(DefaultArgsList);
 
 			// Parse the parameters
@@ -102,7 +104,7 @@ namespace GitDependencies
 			bool bHelp = ParseSwitch(ArgsList, "-help");
 			float CacheSizeMultiplier = ParseFloatParameter(ArgsList, DefaultArgsList, "-cache-size-multiplier=", 2.0f);
 			int CacheDays = ParseIntParameter(ArgsList, DefaultArgsList, "-cache-days=", 7);
-			string RootPath = ParseParameter(ArgsList, "-root=", Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "../../..")));
+			string RootPath = ParseParameter(ArgsList, "-root=", Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "../../../../..")));
 
 			// Parse the cache path. A specific path can be set using -catch=<PATH> or the UE4_GITDEPS environment variable, otherwise we look for a parent .git directory
 			// and use a sub-folder of that. Users which download the source through a zip file (and won't have a .git directory) are unlikely to benefit from caching, as
@@ -110,7 +112,7 @@ namespace GitDependencies
 			string CachePath = null;
 			if (!ParseSwitch(ArgsList, "-no-cache"))
 			{
-				string CachePathParam = ParseParameter(ArgsList, DefaultArgsList, "-cache=", System.Environment.GetEnvironmentVariable("UE4_GITDEPS"));
+				string CachePathParam = ParseParameter(ArgsList, DefaultArgsList, "-cache=", GetLegacyEnvironmentVariable("UE_GITDEPS", "UE4_GITDEPS"));
 				if (String.IsNullOrEmpty(CachePathParam))
 				{
 					string CheckPath = Path.GetFullPath(RootPath);
@@ -120,6 +122,10 @@ namespace GitDependencies
 						if (Directory.Exists(GitPath))
 						{
 							CachePath = Path.Combine(GitPath, "ue4-gitdeps");
+							if (!Directory.Exists(CachePath))
+							{
+								CachePath = Path.Combine(GitPath, "ue-gitdeps");
+							}
 							break;
 						}
 						CheckPath = Path.GetDirectoryName(CheckPath);
@@ -211,7 +217,7 @@ namespace GitDependencies
 				Log.WriteLine("   Proxy server: {0}", (Proxy == null)? "none" : Proxy.ToString());
 				Log.WriteLine("   Download cache: {0}", (CachePath == null)? "disabled" : CachePath);
 				Log.WriteLine();
-				Log.WriteLine("Default arguments can be set through the UE4_GITDEPS_ARGS environment variable.");
+				Log.WriteLine("Default arguments can be set through the UE_GITDEPS_ARGS environment variable.");
 				return 0;
 			}
 
@@ -224,6 +230,16 @@ namespace GitDependencies
 				return 1;
 			}
 			return 0;
+		}
+
+		static string GetLegacyEnvironmentVariable(string Name, string LegacyName)
+		{
+			string Value = Environment.GetEnvironmentVariable(Name);
+			if (string.IsNullOrEmpty(Value))
+			{
+				Value = Environment.GetEnvironmentVariable(LegacyName);
+			}
+			return Value;
 		}
 
 		static void NormalizeArguments(List<string> ArgsList)
@@ -382,7 +398,15 @@ namespace GitDependencies
 			}
 
 			// Figure out the path to the working manifest
-			string WorkingManifestPath = Path.Combine(RootPath, ".ue4dependencies");
+			string WorkingManifestPath = Path.Combine(RootPath, ".uedependencies");
+			if (!File.Exists(WorkingManifestPath))
+			{
+				string LegacyManifestPath = Path.Combine(RootPath, ".ue4dependencies");
+				if (File.Exists(LegacyManifestPath) || File.Exists(LegacyManifestPath + TempManifestExtension))
+				{
+					WorkingManifestPath = LegacyManifestPath;
+				}
+			}
 
 			// Recover from any interrupted transaction to the working manifest, by moving the temporary file into place.
 			string TempWorkingManifestPath = WorkingManifestPath + TempManifestExtension;
@@ -429,36 +453,49 @@ namespace GitDependencies
 			}
 
 			// Find all the existing files in the working directory from previous runs. Use the working manifest to cache hashes for them based on timestamp, but recalculate them as needed.
+			List<WorkingFile> ReadOnlyFiles = new List<WorkingFile>();
 			Dictionary<string, WorkingFile> CurrentFileLookup = new Dictionary<string, WorkingFile>();
 			foreach(WorkingFile CurrentFile in CurrentManifest.Files)
 			{
 				// Update the hash for this file
 				string CurrentFilePath = Path.Combine(RootPath, CurrentFile.Name);
-				if(File.Exists(CurrentFilePath))
+				FileInfo CurrentFileInfo = new FileInfo(CurrentFilePath);
+				if(CurrentFileInfo.Exists)
 				{
-					long LastWriteTime = File.GetLastWriteTimeUtc(CurrentFilePath).Ticks;
+					long LastWriteTime = CurrentFileInfo.LastWriteTimeUtc.Ticks;
 					if(LastWriteTime != CurrentFile.Timestamp)
 					{
 						CurrentFile.Hash = ComputeHashForFile(CurrentFilePath);
 						CurrentFile.Timestamp = LastWriteTime;
 					}
 					CurrentFileLookup.Add(CurrentFile.Name, CurrentFile);
+
+					if (CurrentFileInfo.IsReadOnly)
+					{
+						ReadOnlyFiles.Add(CurrentFile);
+					}
 				}
 			}
 
 			// Also add all the untracked files which already exist, but weren't downloaded by this program
 			foreach (DependencyFile TargetFile in TargetFiles.Values) 
 			{
-				if(!CurrentFileLookup.ContainsKey(TargetFile.Name))
+				if (!CurrentFileLookup.ContainsKey(TargetFile.Name))
 				{
 					string CurrentFilePath = Path.Combine(RootPath, TargetFile.Name);
-					if(File.Exists(CurrentFilePath))
+					FileInfo CurrentFileInfo = new FileInfo(CurrentFilePath);
+					if (CurrentFileInfo.Exists)
 					{
 						WorkingFile CurrentFile = new WorkingFile();
 						CurrentFile.Name = TargetFile.Name;
 						CurrentFile.Hash = ComputeHashForFile(CurrentFilePath);
-						CurrentFile.Timestamp = File.GetLastWriteTimeUtc(CurrentFilePath).Ticks;
+						CurrentFile.Timestamp = CurrentFileInfo.LastWriteTimeUtc.Ticks;
 						CurrentFileLookup.Add(CurrentFile.Name, CurrentFile);
+
+						if (CurrentFileInfo.IsReadOnly)
+						{
+							ReadOnlyFiles.Add(CurrentFile);
+						}
 					}
 				}
 			}
@@ -478,7 +515,7 @@ namespace GitDependencies
 
 			// Create a new working manifest for the working directory, moving over files that we already have. Add any missing dependencies into the download queue.
 			WorkingManifest NewWorkingManifest = new WorkingManifest();
-			foreach(DependencyFile TargetFile in FilteredTargetFiles)
+			foreach (DependencyFile TargetFile in FilteredTargetFiles)
 			{
 				WorkingFile NewFile;
 				if(CurrentFileLookup.TryGetValue(TargetFile.Name, out NewFile) && NewFile.Hash == TargetFile.Hash)
@@ -488,6 +525,7 @@ namespace GitDependencies
 
 					// Move the existing file to the new working set
 					CurrentFileLookup.Remove(NewFile.Name);
+					ReadOnlyFiles.Remove(NewFile);
 				}
 				else
 				{
@@ -538,38 +576,49 @@ namespace GitDependencies
 				}
 			}
 
-			// Warn if there were any files that have been tampered with, and allow the user to choose whether to overwrite them
+			// Warn if there were any files that have been tampered with or are read only, and allow the user to choose whether to overwrite them
 			bool bOverwriteTamperedFiles = true;
-			if(TamperedFiles.Count > 0 && Overwrite != OverwriteMode.Force)
+			if (Overwrite != OverwriteMode.Force)
 			{
-				// List the files that have changed
-				Log.WriteError("The following file(s) have been modified:");
-				foreach(WorkingFile TamperedFile in TamperedFiles)
+				bool PromptForOverwrite = false;
+				if (TamperedFiles.Any())
 				{
-					Log.WriteError("  {0}", TamperedFile.Name);
+					PromptForOverwrite = true;
+					// List the files that have changed
+					Log.WriteError("The following file(s) have been modified:");
+					foreach (WorkingFile TamperedFile in TamperedFiles)
+					{
+						bool readOnly = ReadOnlyFiles.Any(x => string.Equals(x.Name, TamperedFile.Name));
+						Log.WriteError("  {0}{1}", TamperedFile.Name, readOnly ? " (read only)" : "");
+					}
 				}
 
 				// Figure out whether to overwrite the files
-				if(Overwrite == OverwriteMode.Unchanged)
+				if (PromptForOverwrite)
 				{
-					Log.WriteError("Re-run with the --force parameter to overwrite them.");
-					bOverwriteTamperedFiles = false;
-				}
-				else
-				{
-					Log.WriteStatus("Would you like to overwrite your changes (y/n)? ");
-					ConsoleKeyInfo KeyInfo = Console.ReadKey(false);
-					bOverwriteTamperedFiles = (KeyInfo.KeyChar == 'y' || KeyInfo.KeyChar == 'Y');
-					Log.FlushStatus();
+					if (Overwrite == OverwriteMode.Unchanged)
+					{
+						Log.WriteError("Re-run with the --force parameter to overwrite them.");
+						bOverwriteTamperedFiles = false;
+					}
+					else
+					{
+						Log.WriteStatus("Would you like to overwrite your changes (y/n)? ");
+						ConsoleKeyInfo KeyInfo = Console.ReadKey(false);
+						bOverwriteTamperedFiles = (KeyInfo.KeyChar == 'y' || KeyInfo.KeyChar == 'Y');
+						Log.FlushStatus();
+					}
 				}
 			}
 
 			// Overwrite any tampered files, or remove them from the download list
-			if(bOverwriteTamperedFiles)
+			if (bOverwriteTamperedFiles)
 			{
 				foreach(WorkingFile TamperedFile in TamperedFiles)
 				{
-					if(!SafeDeleteFile(Path.Combine(RootPath, TamperedFile.Name)))
+					string FilePath = Path.Combine(RootPath, TamperedFile.Name);
+					File.SetAttributes(FilePath, File.GetAttributes(FilePath) & ~FileAttributes.ReadOnly);
+					if (!SafeDeleteFile(Path.Combine(RootPath, TamperedFile.Name)))
 					{
 						return false;
 					}
@@ -577,12 +626,12 @@ namespace GitDependencies
 			}
 			else
 			{
-				foreach(WorkingFile TamperedFile in TamperedFiles)
+				foreach(WorkingFile FileToIgnore in TamperedFiles.Concat(ReadOnlyFiles))
 				{
 					DependencyFile TargetFile;
-					if(TargetFiles.TryGetValue(TamperedFile.Name, out TargetFile))
+					if(TargetFiles.TryGetValue(FileToIgnore.Name, out TargetFile))
 					{
-						TargetFiles.Remove(TamperedFile.Name);
+						TargetFiles.Remove(FileToIgnore.Name);
 						FilesToDownload.Remove(TargetFile);
 					}
 				}
@@ -731,50 +780,135 @@ namespace GitDependencies
 			}
 		}
 
+		/// <summary>
+		/// Gets the file mode on Mac
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <returns></returns>
+		public static int GetFileMode_Mac(string FileName)
+		{
+			stat64_t stat = new stat64_t();
+			int Result = stat64(FileName, stat);
+			return (Result >= 0) ? stat.st_mode : -1;
+		}
+
+		/// <summary>
+		/// Sets the file mode on Mac
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <param name="Mode"></param>
+		public static int SetFileMode_Mac(string FileName, ushort Mode)
+		{
+			return chmod(FileName, Mode);
+		}
+
+		/// <summary>
+		/// Gets the file mode on Linux
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <returns></returns>
+		public static int GetFileMode_Linux(string FileName)
+		{
+			stat64_linux_t stat = new stat64_linux_t();
+			int Result = stat64_linux(1, FileName, stat);
+			return (Result >= 0) ? (int)stat.st_mode : -1;
+		}
+
+		/// <summary>
+		/// Sets the file mode on Linux
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <param name="Mode"></param>
+		public static int SetFileMode_Linux(string FileName, ushort Mode)
+		{
+			return chmod_linux(FileName, Mode);
+		}
+
+		#region Mac Native File Methods
+#pragma warning disable CS0649
+		struct timespec_t
+		{
+			public ulong tv_sec;
+			public ulong tv_nsec;
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		class stat64_t
+		{
+			public uint st_dev;
+			public ushort st_mode;
+			public ushort st_nlink;
+			public ulong st_ino;
+			public uint st_uid;
+			public uint st_gid;
+			public uint st_rdev;
+			public timespec_t st_atimespec;
+			public timespec_t st_mtimespec;
+			public timespec_t st_ctimespec;
+			public timespec_t st_birthtimespec;
+			public ulong st_size;
+			public ulong st_blocks;
+			public uint st_blksize;
+			public uint st_flags;
+			public uint st_gen;
+			public uint st_lspare;
+			public ulong st_qspare1;
+			public ulong st_qspare2;
+		}
+
+		[DllImport("libSystem.dylib")]
+		static extern int stat64(string pathname, stat64_t stat);
+
+		[DllImport("libSystem.dylib")]
+		static extern int chmod(string path, ushort mode);
+
+#pragma warning restore CS0649
+		#endregion
+
+		#region Linux Native File Methods
+#pragma warning disable CS0649
+
+		[StructLayout(LayoutKind.Sequential)]
+		class stat64_linux_t
+		{
+			public ulong st_dev;
+			public ulong st_ino;
+			public ulong st_nlink;
+			public uint st_mode;
+			public uint st_uid;
+			public uint st_gid;
+			public int pad0;
+			public ulong st_rdev;
+			public long st_size;
+			public long st_blksize;
+			public long st_blocks;
+			public timespec_t st_atime;
+			public timespec_t st_mtime;
+			public timespec_t st_ctime;
+			public long glibc_reserved0;
+			public long glibc_reserved1;
+			public long glibc_reserved2;
+		};
+
+		/* stat tends to get compiled to another symbol and libc doesnt directly have that entry point */
+		[DllImport("libc", EntryPoint = "__xstat64")]
+		static extern int stat64_linux(int ver, string pathname, stat64_linux_t stat);
+
+		[DllImport("libc", EntryPoint = "chmod")]
+		static extern int chmod_linux(string path, ushort mode);
+
+#pragma warning restore CS0649
+		#endregion
+
 		static bool SetExecutablePermissions(string RootDir, IEnumerable<DependencyFile> Files)
 		{
-			// Try to load the Mono Posix assembly. If it doesn't exist, we're on Windows.
-			Assembly MonoPosix;
-			try
-			{
-				MonoPosix = Assembly.Load("Mono.Posix, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756");
-			}
-			catch(FileNotFoundException)
+			// This only apply for *NIX and Mac
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
 				return true;
 			}
 
-			// Dynamically find all the types and methods for Syscall.stat and Syscall.chmod
-			Type SyscallType = MonoPosix.GetType("Mono.Unix.Native.Syscall");
-			if(SyscallType == null)
-			{
-				Log.WriteError("Couldn't find Syscall type");
-				return false;
-			}
-			MethodInfo StatMethod = SyscallType.GetMethod ("stat");
-			if(StatMethod == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Syscall.stat method");
-				return false;
-			}
-			MethodInfo ChmodMethod = SyscallType.GetMethod("chmod");
-			if(ChmodMethod == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Syscall.chmod method");
-				return false;
-			}
-			Type StatType = MonoPosix.GetType("Mono.Unix.Native.Stat");
-			if(StatType == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Stat type");
-				return false;
-			}
-			FieldInfo StatModeField = StatType.GetField("st_mode");
-			if(StatModeField == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Stat.st_mode field");
-				return false;
-			}
+			bool IsLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
 
 			// Update all the executable permissions
 			const uint ExecutableBits = (1 << 0) | (1 << 3) | (1 << 6);
@@ -783,18 +917,24 @@ namespace GitDependencies
 				if(File.IsExecutable)
 				{
 					string FileName = Path.Combine(RootDir, File.Name);
-
-					// Call Syscall.stat(Filename, out Stat)
-					object[] StatArgs = new object[]{ FileName, null };
-					int StatResult = (int)StatMethod.Invoke(null, StatArgs);
-					if(StatResult != 0)
+					int StatResult = -1;
+					if (IsLinux)
 					{
-						Log.WriteError("Stat() call for {0} failed with error {1}", File.Name, StatResult);
+						StatResult = GetFileMode_Linux(FileName);
+					}
+					else
+					{
+						StatResult = GetFileMode_Mac(FileName);
+					}
+
+					if (StatResult == -1)
+					{
+						Log.WriteError("Stat() call for {0} failed", File.Name);
 						return false;
 					}
 
 					// Get the current permissions
-					uint CurrentPermissions = (uint)StatModeField.GetValue(StatArgs[1]);
+					uint CurrentPermissions = (uint)StatResult;
 
 					// The desired permissions should be executable for every read group
 					uint NewPermissions = CurrentPermissions | ((CurrentPermissions >> 2) & ExecutableBits);
@@ -802,8 +942,17 @@ namespace GitDependencies
 					// Update them if they don't match
 					if (CurrentPermissions != NewPermissions)
 					{
-						int ChmodResult = (int)ChmodMethod.Invoke(null, new object[]{ FileName, NewPermissions });
-						if(ChmodResult != 0)
+						int ChmodResult = -1;
+						if (IsLinux)
+						{
+							ChmodResult = SetFileMode_Linux(FileName, (ushort)NewPermissions);
+						}
+						else
+						{
+							ChmodResult = SetFileMode_Mac(FileName, (ushort)NewPermissions);
+						}
+
+						if (ChmodResult != 0)
 						{
 							Log.WriteError("Chmod() call for {0} failed with error {1}", File.Name, ChmodResult);
 							return false;
@@ -1305,7 +1454,11 @@ namespace GitDependencies
 				XmlSerializer Serializer = new XmlSerializer(typeof(T));
 				using(StreamWriter Writer = new StreamWriter(FileName))
 				{
-					Serializer.Serialize(Writer, XmlObject);
+					XmlWriterSettings WriterSettings = new() { Indent = true };
+					using(XmlWriter XMLWriter = XmlWriter.Create(Writer, WriterSettings))
+					{
+						Serializer.Serialize(XMLWriter, XmlObject);
+					}
 				}
 				return true;
 			}

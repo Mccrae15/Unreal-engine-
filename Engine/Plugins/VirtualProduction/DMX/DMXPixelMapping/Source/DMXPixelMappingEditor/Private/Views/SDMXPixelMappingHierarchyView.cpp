@@ -105,7 +105,7 @@ void SDMXPixelMappingHierarchyView::Construct(const FArguments& InArgs, const TS
 	ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -113,7 +113,7 @@ void SDMXPixelMappingHierarchyView::Construct(const FArguments& InArgs, const TS
 				[
 					SAssignNew(TreeViewArea, SBorder)
 					.Padding(0)
-					.BorderImage(FEditorStyle::GetBrush("NoBrush"))
+					.BorderImage(FAppStyle::GetBrush("NoBrush"))
 				]
 			]
 		];
@@ -637,19 +637,23 @@ void SDMXPixelMappingHierarchyView::BeginDelete()
 
 	if (TSharedPtr<FDMXPixelMappingToolkit> ToolkitPtr = Toolkit.Pin())
 	{
-		TSet<FDMXPixelMappingComponentReference> SelectedComponents;
-
 		for (FDMXPixelMappingHierarchyItemWidgetModelPtr SelectedItem : SelectedItems)
 		{
 			UDMXPixelMappingBaseComponent* SelectedComponent = SelectedItem->GetReference().GetComponent();
 			if (SelectedComponent)
 			{
+				constexpr bool bModifyChildrenRecursively = true;
+				SelectedComponent->ForEachChild([](UDMXPixelMappingBaseComponent* ChildComponent)
+					{
+						ChildComponent->Modify();
+					}, bModifyChildrenRecursively);
+
 				UDMXPixelMappingBaseComponent* ParentComponent = SelectedComponent->GetParent();
 				if (ParentComponent)
 				{
 					ParentComponent->Modify();
 					SelectedComponent->Modify();
-					
+
 					ParentComponent->RemoveChild(SelectedComponent);
 				}
 			}

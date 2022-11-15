@@ -1335,8 +1335,13 @@ void FAnimBlueprintCompilerContext::SpawnNewClass(const FString& NewClassName)
 	});
 }
 
-void FAnimBlueprintCompilerContext::OnPostCDOCompiled()
+void FAnimBlueprintCompilerContext::OnPostCDOCompiled(const UObject::FPostCDOCompiledContext& Context)
 {
+	if (Context.bIsSkeletonOnly)
+	{
+		return;
+	}
+
 	UAnimBlueprintGeneratedClass* NewAnimBlueprintClass = GetNewAnimBlueprintClass();
 	NewAnimBlueprintClass->OnPostLoadDefaults(NewAnimBlueprintClass->ClassDefaultObject);
 }
@@ -1437,7 +1442,7 @@ void FAnimBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 	for (FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
 	{
-		if (InterfaceDesc.Interface->IsChildOf<UAnimLayerInterface>())
+		if (InterfaceDesc.Interface != nullptr && InterfaceDesc.Interface->IsChildOf<UAnimLayerInterface>())
 		{
 			for (UEdGraph* Graph : InterfaceDesc.Graphs)
 			{

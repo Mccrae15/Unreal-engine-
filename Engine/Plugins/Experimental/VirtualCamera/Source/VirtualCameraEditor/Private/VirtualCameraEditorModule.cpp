@@ -10,6 +10,11 @@
 #include "ActorFactories/ActorFactoryBlueprint.h"
 #include "IVPUtilitiesEditorModule.h"
 #include "SimpleVirtualCamera.h"
+#include "VirtualCameraActor.h"
+#include "LevelEditor.h"
+#include "LevelEditorOutlinerSettings.h"
+#include "Filters/CustomClassFilterData.h"
+
 
 
 #define LOCTEXT_NAMESPACE "FVirtualCameraEditorModule"
@@ -21,6 +26,7 @@ public:
 	{
 		RegisterSettings();
 		RegisterPlacementModeItems();
+		RegisterOutlinerFilters();
 	}
 
 	virtual void ShutdownModule() override
@@ -55,29 +61,11 @@ public:
 		{
 			if (const FPlacementCategoryInfo* Info = IVPUtilitiesEditorModule::Get().GetVirtualProductionPlacementCategoryInfo())
 			{
-				FAssetData SimpleVirtualCameraAssetData(
-					TEXT("/VirtualCamera/VCamCore/Blueprints/SimpleVirtualCamera"),
-					TEXT("/VirtualCamera/VCamCore/Blueprints"),
-					TEXT("SimpleVirtualCamera"),
-					TEXT("Blueprint")
-				);
-
-				// register the simple virtual camera
-				IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
-					*UActorFactoryBlueprint::StaticClass(),
-					SimpleVirtualCameraAssetData,
-					FName("ClassThumbnail.CameraActor"),
-					FName("ClassIcon.CameraActor"),
-					TOptional<FLinearColor>(),
-					TOptional<int32>(),
-					NSLOCTEXT("PlacementMode", "Simple Virtual Camera", "Simple Virtual Camera")
-					));
-
 				FAssetData VirtualCamera2ActorAssetData(
-					TEXT("/VirtualCamera/V2/VirtualCamera2Actor"),
-					TEXT("/VirtualCamera/V2"),
-					TEXT("VirtualCamera2Actor"),
-					TEXT("Blueprint")
+					TEXT("/VirtualCamera/VCamActor"),
+					TEXT("/VirtualCamera"),
+					TEXT("VCamActor"),
+					FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("Blueprint"))
 				);
 
 				// register the full-fat camera
@@ -88,9 +76,20 @@ public:
 					FName("ClassIcon.CameraActor"),
 					TOptional<FLinearColor>(),
 					TOptional<int32>(),
-					NSLOCTEXT("PlacementMode", "VirtualCamera2 Actor", "VirtualCamera2 Actor")
+					NSLOCTEXT("PlacementMode", "VCam Actor", "VCam Actor")
 				));
 			}
+		}
+	}
+
+	void RegisterOutlinerFilters()
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+		
+		if(TSharedPtr<FFilterCategory> VPFilterCategory = LevelEditorModule.GetOutlinerFilterCategory(FLevelEditorOutlinerBuiltInCategories::VirtualProduction()))
+		{
+			TSharedRef<FCustomClassFilterData> CineCameraActorClassData = MakeShared<FCustomClassFilterData>(ACineCameraActor::StaticClass(), VPFilterCategory, FLinearColor::White);
+			LevelEditorModule.AddCustomClassFilterToOutliner(CineCameraActorClassData);
 		}
 	}
 };

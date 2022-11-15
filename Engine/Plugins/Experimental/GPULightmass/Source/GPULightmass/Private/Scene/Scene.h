@@ -58,6 +58,8 @@ private:
 
 struct FCachedRayTracingSceneData
 {
+	~FCachedRayTracingSceneData();
+	
 	TArray<TArray<FVisibleRayTracingMeshCommand>> VisibleRayTracingMeshCommandsPerLOD;
 	TChunkedArray<FRayTracingMeshCommand> MeshCommandStorage;
 
@@ -80,8 +82,6 @@ struct FCachedRayTracingSceneData
 
 	TArray<TArray<FRayTracingGeometryInstance>> RayTracingGeometryInstancesPerLOD;
 	TArray<TUniquePtr<FMatrix>> OwnedRayTracingInstanceTransforms;
-
-	TUniformBufferRef<FViewUniformShaderParameters> CachedViewUniformBuffer;
 
 	void SetupViewUniformBufferFromSceneRenderState(class FSceneRenderState& Scene);
 	void SetupFromSceneRenderState(class FSceneRenderState& Scene);
@@ -117,9 +117,14 @@ public:
 	TUniquePtr<FVolumetricLightmapRenderer> VolumetricLightmapRenderer;
 	TUniquePtr<FIrradianceCache> IrradianceCache;
 
+	FBox CombinedImportanceVolume;
+	TArray<FBox> ImportanceVolumes;
+	
+	ERHIFeatureLevel::Type FeatureLevel;
+
 	int32 GetPrimitiveIdForGPUScene(const FGeometryInstanceRenderStateRef& GeometryInstanceRef) const;
 
-	bool SetupRayTracingScene(int32 LODIndex = 0);
+	bool SetupRayTracingScene(int32 LODIndex = INDEX_NONE);
 	void DestroyRayTracingScene();
 
 	void CalculateDistributionPrefixSumForAllLightmaps();
@@ -174,8 +179,11 @@ public:
 	bool HasLight(LightComponentType* Light);
 
 	void GatherImportanceVolumes();
+	void OnSkyAtmosphereModified();
+	void ConditionalTriggerSkyLightRecapture();
 	
 	void BackgroundTick();
+	void AddRelevantStaticLightGUIDs(FQuantizedLightmapData* QuantizedLightmapData, const FBoxSphereBounds& WorldBounds);
 	void ApplyFinishedLightmapsToWorld();
 	void RemoveAllComponents();
 
@@ -190,6 +198,8 @@ public:
 	FLightScene LightScene;
 
 	FSceneRenderState RenderState;
+
+	ERHIFeatureLevel::Type FeatureLevel;
 
 	bool bNeedsVoxelization = true;
 

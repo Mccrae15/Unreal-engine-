@@ -62,11 +62,11 @@ namespace DatasmithRevitExporter
 		{
 			UIDocument UIDoc = InCommandData.Application.ActiveUIDocument;
 			Document Doc = UIDoc.Document;
-			View3D ActiveView = Doc.ActiveView as View3D;
+			View3D ActiveView = FDocument.ActiveDocument?.ActiveDirectLinkInstance?.SyncView;
 
 			if (ActiveView == null)
 			{
-				string Message = "You must be in a 3D view to export.";
+				string Message = "You must select a 3D view to sync.";
 				MessageBox.Show(Message, DIALOG_CAPTION, MessageBoxButtons.OK, MessageBoxIcon.Warning);
 				return Result.Cancelled;
 			}
@@ -78,14 +78,15 @@ namespace DatasmithRevitExporter
 				return Result.Cancelled;
 			}
 
-			Debug.Assert(FDirectLink.Get() != null);
+			Debug.Assert(FDocument.ActiveDocument?.ActiveDirectLinkInstance != null);
 
 			FDatasmithRevitExportContext ExportContext = new FDatasmithRevitExportContext(
 				InCommandData.Application.Application,
 				Doc,
+				FDocument.ActiveDocument.Settings,
 				null,
 				new DatasmithRevitExportOptions(Doc),
-				FDirectLink.Get());
+				FDocument.ActiveDocument.ActiveDirectLinkInstance);
 
 			// Export the active 3D View to the given Unreal Datasmith file.
 			using (CustomExporter Exporter = new CustomExporter(Doc, ExportContext))
@@ -126,7 +127,6 @@ namespace DatasmithRevitExporter
 		}
 	}
 
-#if false // AutoSync is temporary disabled
 	[Transaction(TransactionMode.Manual)]
 	public class DatasmithAutoSyncRevitCommand : DatasmithRevitCommand
 	{
@@ -139,7 +139,6 @@ namespace DatasmithRevitExporter
 			return Result.Succeeded;
 		}
 	}
-#endif
 
 	// Add-in external command Export to Unreal Datasmith. 
 	[Transaction(TransactionMode.Manual)]
@@ -180,7 +179,7 @@ namespace DatasmithRevitExporter
 
 			if (ExportActiveViewOnly)
 			{
-				View3D ActiveView = Doc.ActiveView as View3D;
+				View3D ActiveView = FDocument.ActiveDocument?.ActiveDirectLinkInstance?.SyncView;
 
 				if (ActiveView == null)
 				{
@@ -290,6 +289,7 @@ namespace DatasmithRevitExporter
 			FDatasmithRevitExportContext ExportContext = new FDatasmithRevitExportContext(
 				InCommandData.Application.Application,
 				Doc,
+				FDocument.ActiveDocument.Settings,
 				FilePaths,
 				ExportOptions,
 				null);
@@ -401,9 +401,17 @@ namespace DatasmithRevitExporter
 	[Transaction(TransactionMode.Manual)]
 	public class DatasmithManageConnectionsRevitCommand : IExternalCommand
 	{
+		private static bool ConnectionWindowCenterSet = false;
 		public Result Execute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements) 
 		{
 			IDirectLinkUI DirectLinkUI = IDatasmithExporterUIModule.Get()?.GetDirectLinkExporterUI();
+			if (!ConnectionWindowCenterSet)
+			{
+				int CenterX = (InCommandData.Application.MainWindowExtents.Left + InCommandData.Application.MainWindowExtents.Right) / 2;
+				int CenterY = (InCommandData.Application.MainWindowExtents.Top + InCommandData.Application.MainWindowExtents.Bottom) / 2;
+				DirectLinkUI?.SetStreamWindowCenter(CenterX, CenterY);
+				ConnectionWindowCenterSet = true;
+			}
 			DirectLinkUI?.OpenDirectLinkStreamWindow();
 			return Result.Succeeded;
 		}
@@ -414,7 +422,7 @@ namespace DatasmithRevitExporter
 	{
 		public Result Execute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements)
 		{
-			DatasmithRevitApplication.ShowExportMessages();
+			DatasmithRevitApplication.ShowExportMessages(InCommandData);
 			return Result.Succeeded;
 		}
 	}
@@ -424,7 +432,7 @@ namespace DatasmithRevitExporter
 	{
 		public Result Execute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements)
 		{
-			DatasmithRevitSettingsDialog ExportOptions = new DatasmithRevitSettingsDialog(InCommandData.Application.ActiveUIDocument.Document);
+			DatasmithRevitSettingsDialog ExportOptions = new DatasmithRevitSettingsDialog(InCommandData.Application.ActiveUIDocument.Document, FDocument.ActiveDocument?.Settings);
 			ExportOptions.ShowDialog();
 			return Result.Succeeded;
 		}

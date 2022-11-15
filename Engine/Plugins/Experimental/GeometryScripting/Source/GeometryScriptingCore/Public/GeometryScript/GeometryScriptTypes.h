@@ -44,6 +44,15 @@ enum class EGeometryScriptLODType : uint8
 };
 
 
+UENUM(BlueprintType)
+enum class EGeometryScriptAxis : uint8
+{
+	X = 0,
+	Y = 1,
+	Z = 2
+};
+
+
 USTRUCT(BlueprintType)
 struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptMeshReadLOD
 {
@@ -239,6 +248,24 @@ public:
 };
 
 
+USTRUCT(BlueprintType, meta = (DisplayName = "Scalar List"))
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptScalarList
+{
+	GENERATED_BODY()
+public:
+	TSharedPtr<TArray<double>> List;
+
+	void Reset()
+	{
+		if (List.IsValid() == false)
+		{
+			List = MakeShared<TArray<double>>();
+		}
+		List->Reset();
+	}
+};
+
+
 
 USTRUCT(BlueprintType, meta = (DisplayName = "Vector List"))
 struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptVectorList
@@ -296,6 +323,25 @@ public:
 };
 
 
+USTRUCT(BlueprintType, meta = (DisplayName = "PolyPath"))
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPolyPath
+{
+	GENERATED_BODY()
+public:
+	TSharedPtr<TArray<FVector>> Path;
+
+	UPROPERTY(EditAnywhere, Category = "Options")
+	bool bClosedLoop = false;
+
+	void Reset()
+	{
+		if (!Path.IsValid())
+		{
+			Path = MakeShared<TArray<FVector>>();
+		}
+		Path->Reset();
+	}
+};
 
 
 //
@@ -379,7 +425,18 @@ namespace UE
 namespace Geometry
 {
 	GEOMETRYSCRIPTINGCORE_API FGeometryScriptDebugMessage MakeScriptError(EGeometryScriptErrorType ErrorTypeIn, const FText& MessageIn);
+	GEOMETRYSCRIPTINGCORE_API FGeometryScriptDebugMessage MakeScriptWarning(EGeometryScriptErrorType WarningTypeIn, const FText& MessageIn);
+
 
 	GEOMETRYSCRIPTINGCORE_API void AppendError(UGeometryScriptDebug* Debug, EGeometryScriptErrorType ErrorTypeIn, const FText& MessageIn);
+	GEOMETRYSCRIPTINGCORE_API void AppendWarning(UGeometryScriptDebug* Debug, EGeometryScriptErrorType WarningTypeIn, const FText& MessageIn);
+
+	/**
+	 * These variants of AppendError/Warning are for direct write to a debug message array.
+	 * This may be useful in cases where a function is async and needs to accumulate
+	 * debug messages for later collation on a game thread.
+	 */
+	GEOMETRYSCRIPTINGCORE_API void AppendError(TArray<FGeometryScriptDebugMessage>* DebugMessages, EGeometryScriptErrorType ErrorTypeIn, const FText& MessageIn);
+	GEOMETRYSCRIPTINGCORE_API void AppendWarning(TArray<FGeometryScriptDebugMessage>* DebugMessages, EGeometryScriptErrorType WarningTypeIn, const FText& MessageIn);
 }
 }

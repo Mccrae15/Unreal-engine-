@@ -9,8 +9,11 @@
 #include "Framework/Application/SlateUser.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #include "Components/WidgetComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WidgetInteractionComponent)
 
 
 #define LOCTEXT_NAMESPACE "WidgetInteraction"
@@ -445,21 +448,39 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 	FWidgetPath WidgetPathUnderFinger = LastWidgetPath.ToWidgetPath();
 
 	ensure(PointerIndex >= 0);
+
 	FPointerEvent PointerEvent;
+
+	// Find the primary input device for this Slate User
+	FInputDeviceId InputDeviceId = INPUTDEVICEID_NONE;
+	if (TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(VirtualUser->GetUserIndex()))
+	{
+		FPlatformUserId PlatUser = SlateUser->GetPlatformUserId();
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(PlatUser);
+	}
+
+	// Just in case there was no input device assigned to this virtual user, get the default platform
+	// input device
+	if (!InputDeviceId.IsValid())
+	{
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	}
+	
 	if (Key.IsTouch())
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
 			1.0f,
 			false);
+		
 	}
 	else
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
@@ -534,7 +555,7 @@ bool UWidgetInteractionComponent::PressKey(FKey Key, bool bRepeat)
 	uint32 KeyCode, CharCode;
 	GetKeyAndCharCodes(Key, bHasKeyCode, KeyCode, bHasCharCode, CharCode);
 
-	FKeyEvent KeyEvent(Key, ModifierKeys, VirtualUser->GetUserIndex(), bRepeat, KeyCode, CharCode);
+	FKeyEvent KeyEvent(Key, ModifierKeys, VirtualUser->GetUserIndex(), bRepeat, CharCode, KeyCode);
 	bool bDownResult = FSlateApplication::Get().ProcessKeyDownEvent(KeyEvent);
 
 	bool bKeyCharResult = false;
@@ -558,7 +579,7 @@ bool UWidgetInteractionComponent::ReleaseKey(FKey Key)
 	uint32 KeyCode, CharCode;
 	GetKeyAndCharCodes(Key, bHasKeyCode, KeyCode, bHasCharCode, CharCode);
 
-	FKeyEvent KeyEvent(Key, ModifierKeys, VirtualUser->GetUserIndex(), false, KeyCode, CharCode);
+	FKeyEvent KeyEvent(Key, ModifierKeys, VirtualUser->GetUserIndex(), false, CharCode, KeyCode);
 	return FSlateApplication::Get().ProcessKeyUpEvent(KeyEvent);
 }
 
@@ -683,3 +704,4 @@ FVector2D UWidgetInteractionComponent::Get2DHitLocation() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

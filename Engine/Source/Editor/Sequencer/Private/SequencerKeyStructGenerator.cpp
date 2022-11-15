@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerKeyStructGenerator.h"
-#include "Channels/MovieSceneChannelData.h"
-#include "UObject/CoreObjectVersion.h"
+
+#include "Misc/AssertionMacros.h"
+#include "UObject/Field.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealNames.h"
 
 UMovieSceneKeyStructType::UMovieSceneKeyStructType(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -100,7 +103,7 @@ void FSequencerKeyStructGenerator::FinalizeNewKeyStruct(UMovieSceneKeyStructType
 	InStruct->Bind();
 	InStruct->StaticLink(true);
 
-	UMovieSceneKeyStructType::DeferCppStructOps(InStruct->GetFName(), new UScriptStruct::TCppStructOps<FGeneratedMovieSceneKeyStruct>);
+	UMovieSceneKeyStructType::DeferCppStructOps(InStruct->GetStructPathName(), new UScriptStruct::TCppStructOps<FGeneratedMovieSceneKeyStruct>);
 
 	check(InStruct->IsComplete());
 }

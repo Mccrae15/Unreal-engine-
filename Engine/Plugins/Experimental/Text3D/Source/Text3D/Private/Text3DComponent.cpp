@@ -95,6 +95,8 @@ UText3DComponent::UText3DComponent()
 
 	bPendingBuild = false;
 	bFreezeBuild = false;
+
+	TextScale = FVector::ZeroVector;
 }
 
 void UText3DComponent::OnRegister()
@@ -563,6 +565,7 @@ void UText3DComponent::Rebuild(const bool bCleanCache)
 		BuildTextMesh(bCleanCache);
 	}
 }
+
 void UText3DComponent::CalculateTextWidth()
 {
 	for (FShapedGlyphLine& ShapedLine : ShapedText->Lines)
@@ -571,12 +574,12 @@ void UText3DComponent::CalculateTextWidth()
 	}
 }
 
-float UText3DComponent::GetTextHeight()
+float UText3DComponent::GetTextHeight() const
 {
 	return ShapedText->Lines.Num() * ShapedText->LineHeight + (ShapedText->Lines.Num() - 1) * LineSpacing;
 }
 
-FVector UText3DComponent::GetTextScale()
+void UText3DComponent::CalculateTextScale()
 {
 	FVector Scale(1.0f, 1.0f, 1.0f);
 
@@ -610,7 +613,17 @@ FVector UText3DComponent::GetTextScale()
 		Scale.X = Scale.Y;
 	}
 
-	return Scale;
+	TextScale = Scale;
+}
+
+FVector UText3DComponent::GetTextScale()
+{
+	if (TextScale == FVector::ZeroVector)
+	{
+		CalculateTextScale();
+	}
+
+	return TextScale;
 }
 
 FVector UText3DComponent::GetLineLocation(int32 LineIndex)
@@ -656,6 +669,7 @@ FVector UText3DComponent::GetLineLocation(int32 LineIndex)
 void UText3DComponent::UpdateTransforms()
 {
 	CalculateTextWidth();
+	CalculateTextScale();
 	const FVector Scale = GetTextScale();
 	TextRoot->SetRelativeScale3D(Scale);
 
@@ -734,13 +748,16 @@ void UText3DComponent::BuildTextMesh(const bool bCleanCache)
 	bIsBuilding = true;
 
 	TWeakObjectPtr<UText3DComponent> WeakThis(this);
-	
+
 	// Execution guarded by the above flag
 	AsyncTask(ENamedThreads::GameThread, [WeakThis, bCleanCache]()
 	{
 		if (UText3DComponent* StrongThis = WeakThis.Get())
 		{
-			StrongThis->BuildTextMeshInternal(bCleanCache);
+			if(!UE::IsSavingPackage(StrongThis))
+			{
+				StrongThis->BuildTextMeshInternal(bCleanCache);	
+			}
 		}
 	});
 }
@@ -784,9 +801,10 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 	FTextShaper::Get()->ShapeBidirectionalText(Face, Text.ToString(), ShapedText->Lines);
 	
 	CalculateTextWidth();
+	CalculateTextScale();
 	TextRoot->SetRelativeScale3D(GetTextScale());
 
-	// Pre-allocate, avoid new'ing! 
+	// Pre-allocate, avoid new'ing!
 	AllocateGlyphs(Algo::TransformAccumulate(ShapedText->Lines, [&](const FShapedGlyphLine& ShapedLine)
 	{
 		return Algo::CountIf(ShapedLine.GlyphsToRender, [&](const FShapedGlyphEntry& ShapedGlyph)
@@ -822,16 +840,32 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 				continue;
 			}
 
-			UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[GlyphId];
-			StaticMeshComponent->SetStaticMesh(CachedMesh);
-			StaticMeshComponent->SetVisibility(GetVisibleFlag());
-			StaticMeshComponent->SetHiddenInGame(bHiddenInGame);
-			StaticMeshComponent->SetCastShadow(bCastShadow);
+			if(CharacterMeshes.IsValidIndex(GlyphId))
+			{
+				UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[GlyphId];
+				StaticMeshComponent->SetStaticMesh(CachedMesh);			
+				StaticMeshComponent->SetVisibility(GetVisibleFlag());
+				StaticMeshComponent->SetHiddenInGame(bHiddenInGame);
+				StaticMeshComponent->SetCastShadow(bCastShadow);
+			}
+			else
+			{
+				// @note: This shouldn't occur, but it does under unknown circumstances (UE-164789) so it should be handled 
+				UE_LOG(LogText3D, Error, TEXT("CharacterMesh not found at index %d"), GlyphId);
+			}
 
-			FTransform Transform;
-			Transform.SetLocation(GlyphLocation);
-			USceneComponent* CharacterKerningComponent = CharacterKernings[GlyphId];
-			CharacterKerningComponent->SetRelativeTransform(Transform);
+			if(CharacterKernings.IsValidIndex(GlyphId))
+			{
+				FTransform Transform;
+				Transform.SetLocation(GlyphLocation);
+				USceneComponent* CharacterKerningComponent = CharacterKernings[GlyphId];
+				CharacterKerningComponent->SetRelativeTransform(Transform);
+			}
+			else
+			{
+				// @note: This shouldn't occur, but it does under unknown circumstances (UE-164789) so it should be handled
+				UE_LOG(LogText3D, Error, TEXT("CharacterKerning not found at index %d"), GlyphId);
+			}
 		}
 	}
 	

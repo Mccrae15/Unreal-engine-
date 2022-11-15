@@ -522,7 +522,7 @@ void SDataprepEditorViewport::UpdateScene()
 				{
 					if(UCustomStaticMeshComponent* PreviewMeshComponent = Cast<UCustomStaticMeshComponent>(PreviewMeshComponentPtr.Get()))
 					{
-						PreviewMeshComponent->bShoudlBeInstanced = ShouldBeInstanced.Contains(PreviewMeshComponent->GetStaticMesh());
+						PreviewMeshComponent->bShouldBeInstanced = ShouldBeInstanced.Contains(PreviewMeshComponent->GetStaticMesh());
 						PreviewMeshComponent->MeshProperties = MeshPropertiesMap[PreviewMeshComponent->GetStaticMesh()];
 					}
 				}
@@ -585,10 +585,10 @@ void SDataprepEditorViewport::PopulateViewportOverlays(TSharedRef<SOverlay> Over
 	SEditorViewport::PopulateViewportOverlays(Overlay);
 
 	FPSText = SNew(STextBlock)
-		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+		.TextStyle(FAppStyle::Get(), "TextBlock.ShadowedText");
 
 	DrawCallsText = SNew(STextBlock)
-		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+		.TextStyle(FAppStyle::Get(), "TextBlock.ShadowedText");
 
 	Overlay->AddSlot()
 	.VAlign(VAlign_Top)
@@ -700,7 +700,7 @@ void SDataprepEditorViewport::UpdateOverlayText()
 		[
 			SNew(STextBlock)
 			.Text(TextItem.Text)
-			.TextStyle(FEditorStyle::Get(), TextItem.Style)
+			.TextStyle(FAppStyle::Get(), TextItem.Style)
 		];
 	}
 }
@@ -888,7 +888,7 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!XRayMaterial.IsValid())
 	{
-		XRayMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("xray_master") );
+		XRayMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("xray_material") );
 		check( XRayMaterial.IsValid() );
 
 		DataprepCorePrivateUtils::CompileMaterial(XRayMaterial.Get());
@@ -1007,8 +1007,8 @@ void SDataprepEditorViewport::SelectActors(const TArray< AActor* >& SelectedActo
 
 	for(const AActor* SelectedActor : SelectedActors)
 	{
-		TArray< UStaticMeshComponent* > Components;
-		SelectedActor->GetComponents< UStaticMeshComponent >( Components );
+		TArray<UStaticMeshComponent*> Components;
+		SelectedActor->GetComponents( Components );
 		for( UStaticMeshComponent* SelectedComponent : Components )
 		{
 			// If a mesh is displayable, it should have at least one material
@@ -1038,8 +1038,8 @@ void SDataprepEditorViewport::SelectActors(const TArray< AActor* >& SelectedActo
 
 void SDataprepEditorViewport::SetActorVisibility(AActor* SceneActor, bool bInVisibility)
 {
-	TArray< UStaticMeshComponent* > SceneComponents;
-	SceneActor->GetComponents< UStaticMeshComponent >(SceneComponents);
+	TArray<UStaticMeshComponent*> SceneComponents;
+	SceneActor->GetComponents(SceneComponents);
 	for (UStaticMeshComponent* SceneComponent : SceneComponents)
 	{
 		UStaticMeshComponent** PreviewComponent = MeshComponentsMapping.Find(SceneComponent);
@@ -1282,7 +1282,7 @@ void SDataprepEditorViewport::LoadDefaultSettings()
 	FPreviewSceneProfile& DataprepViewportSettingProfile = 	DefaultSettings->Profiles[AssetViewerProfileIndex];
 
 	// Read default settings, tessellation and import, for Datasmith file producer
-	const FString DataprepEditorIni = FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DataprepEditor") );
+	const FString DataprepEditorIni = FConfigCacheIni::NormalizeConfigIniPath(FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DataprepEditor")));
 
 	const TCHAR* ViewportSectionName = TEXT("ViewportSettings");
 	if(GConfig->DoesSectionExist( ViewportSectionName, DataprepEditorIni ))
@@ -1352,13 +1352,13 @@ FDataprepEditorViewportClient::FDataprepEditorViewportClient(const TSharedRef<SE
 	AdvancedPreviewScene->SetProfileIndex( SDataprepEditorViewport::AssetViewerProfileIndex );
 }
 
-bool FDataprepEditorViewportClient::InputKey(FViewport * InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool FDataprepEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
 	bool bHandled = false;
 	
 	// #ueent_todo: Put code for specific handling
 
-	return bHandled ? true : FEditorViewportClient::InputKey(InViewport, ControllerId, Key, Event, AmountDepressed, bGamepad );
+	return bHandled ? true : FEditorViewportClient::InputKey(EventArgs);
 }
 
 void FDataprepEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY)
@@ -1450,7 +1450,7 @@ void FDataprepEditorViewportClient::Draw(const FSceneView* View, FPrimitiveDrawI
 
 				for(int32 Index = 0; Index < 24; Index += 2)
 				{
-					PDI->DrawLine( Positions[Indices[Index + 0]], Positions[Indices[Index + 1]], MeshComponent->bShoudlBeInstanced ? FColor( 255, 0, 0 ) : FColor( 255, 255, 0 ), SDPG_World );
+					PDI->DrawLine( Positions[Indices[Index + 0]], Positions[Indices[Index + 1]], MeshComponent->bShouldBeInstanced ? FColor( 255, 0, 0 ) : FColor( 255, 255, 0 ), SDPG_World );
 				}
 
 				FVector TransformedCenter = Transform.TransformPosition(Box.Center);
@@ -1776,7 +1776,7 @@ namespace DataprepEditor3DPreviewUtils
 		}
 
 		TArray<UStaticMeshComponent*> StaticMeshComponents;
-		InActor->GetComponents<UStaticMeshComponent>( StaticMeshComponents );
+		InActor->GetComponents( StaticMeshComponents );
 		for(UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
 		{
 			MeshComponents.Add( StaticMeshComponent );
