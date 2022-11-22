@@ -685,14 +685,14 @@ void FNiagaraShaderScript::FinishCompilation()
 
 void FNiagaraShaderScript::BuildScriptParametersMetadata(const FNiagaraShaderScriptParametersMetadata& InScriptParametersMetadata)
 {
-	ScriptParametersMetadata = MakeShared<FNiagaraShaderScriptParametersMetadata>();
-	ScriptParametersMetadata->DataInterfaceParamInfo = InScriptParametersMetadata.DataInterfaceParamInfo;
+	TSharedRef<FNiagaraShaderScriptParametersMetadata> NewMetadata = MakeShared<FNiagaraShaderScriptParametersMetadata>();
+	NewMetadata->DataInterfaceParamInfo = InScriptParametersMetadata.DataInterfaceParamInfo;
 
 	FShaderParametersMetadataBuilder ShaderMetadataBuilder(TShaderParameterStructTypeInfo<FNiagaraShader::FParameters>::GetStructMetadata());
 
 	// Build meta data for each data interface
 	INiagaraShaderModule* ShaderModule = INiagaraShaderModule::Get();
-	for (FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : ScriptParametersMetadata->DataInterfaceParamInfo)
+	for (FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : NewMetadata->DataInterfaceParamInfo)
 	{
 		UNiagaraDataInterfaceBase* CDODataInterface = ShaderModule->RequestDefaultDataInterface(*DataInterfaceParamInfo.DIClassName);
 		if (CDODataInterface == nullptr)
@@ -704,13 +704,23 @@ void FNiagaraShaderScript::BuildScriptParametersMetadata(const FNiagaraShaderScr
 		if (CDODataInterface->UseLegacyShaderBindings() == false)
 		{
 			const uint32 NextMemberOffset = ShaderMetadataBuilder.GetNextMemberOffset();
-			FNiagaraShaderParametersBuilder ShaderParametersBuilder(DataInterfaceParamInfo, ScriptParametersMetadata->LooseMetadataNames, ScriptParametersMetadata->StructIncludeInfos, ShaderMetadataBuilder);
+			FNiagaraShaderParametersBuilder ShaderParametersBuilder(DataInterfaceParamInfo, NewMetadata->LooseMetadataNames, NewMetadata->StructIncludeInfos, ShaderMetadataBuilder);
 			CDODataInterface->BuildShaderParameters(ShaderParametersBuilder);
 			DataInterfaceParamInfo.ShaderParametersOffset = NextMemberOffset;
 		}
 	}
 
-	ScriptParametersMetadata->ShaderParametersMetadata = MakeShareable<FShaderParametersMetadata>(ShaderMetadataBuilder.Build(FShaderParametersMetadata::EUseCase::ShaderParameterStruct, TEXT("FNiagaraShaderScript")));
+	NewMetadata->ShaderParametersMetadata = MakeShareable<FShaderParametersMetadata>(ShaderMetadataBuilder.Build(FShaderParametersMetadata::EUseCase::ShaderParameterStruct, TEXT("FNiagaraShaderScript")));
+
+	// There are paths in the editor / uncooked game where we will rebuild metadata while the system is running.
+	// We don't pause the systems in those instances and nothing will actually change in the generated metadata,
+	// therefore we can enqueue the release to the render thread.
+	// Note: If we ever have different shaders at different quality levels we will need to replicate to RT
+	if (ScriptParametersMetadata->ShaderParametersMetadata.IsValid())
+	{
+		ENQUEUE_RENDER_COMMAND(ReleaseShaderMetadata)([MetaDataToRelease_RT = ScriptParametersMetadata](FRHICommandListImmediate&) {});
+	}
+	ScriptParametersMetadata = NewMetadata;
 }
 
 FNiagaraShaderRef FNiagaraShaderScript::GetShader(int32 PermutationId) const
