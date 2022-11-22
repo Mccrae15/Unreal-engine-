@@ -225,7 +225,7 @@ void MovieSceneToolHelpers::SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSe
 	}
 }
 
-bool MovieSceneToolHelpers::ParseShotName(const FString& ShotName, FString& ShotPrefix, uint32& ShotNumber, uint32& TakeNumber, uint32& ShotNumberDigits, uint32& TakeNumberDigits)
+bool MovieSceneToolHelpers::ParseShotName(const FString& InShotName, FString& ShotPrefix, uint32& ShotNumber, uint32& TakeNumber, uint32& ShotNumberDigits, uint32& TakeNumberDigits)
 {
 	// Parse a shot name
 	// 
@@ -239,6 +239,16 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& ShotName, FString& Shot
 	//  ShotNumber = 20
 	//  TakeNumber = 2
 	//
+
+	// If the shot prefix is known and is already at the beginning of the shot name, remove it and parse the rest
+	//
+	// sq050_sh0010_01
+	//  ShotPrefix = sq050_sh, ie. parse(0010_01)
+	//  ShotNumber = 10
+	//  TakeNumber = 1
+	FString ShotName = InShotName;
+	ShotName.RemoveFromStart(ShotPrefix);
+
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
 	uint32 FirstShotNumberIndex = INDEX_NONE;
@@ -298,7 +308,11 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& ShotName, FString& Shot
 
 	if (FirstShotNumberIndex != INDEX_NONE)
 	{
-		ShotPrefix = ShotName.Left(FirstShotNumberIndex);
+		if (FirstShotNumberIndex != 0)
+		{
+			ShotPrefix = ShotName.Left(FirstShotNumberIndex);
+		}
+
 		ShotNumber = FCString::Atoi(*ShotName.Mid(FirstShotNumberIndex, LastShotNumberIndex-FirstShotNumberIndex+1));
 	}
 
@@ -319,10 +333,14 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& ShotName, FString& Shot
 		int32 LastSlashPos = ShotName.Find(ProjectSettings->TakeSeparator, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 		if (LastSlashPos != INDEX_NONE)
 		{
-			ShotPrefix = ShotName.Left(LastSlashPos);
+			if (LastSlashPos != 0)
+			{
+				ShotPrefix = ShotName.Left(LastSlashPos);
+			}
+			
 			ShotNumber = INDEX_NONE; // Nullify the shot number since we only have a shot prefix
 			TakeNumber = FCString::Atoi(*ShotName.RightChop(LastSlashPos+1));
-			TakeNumberDigits = LastSlashPos+1;
+			TakeNumberDigits = ShotName.Len() - (LastSlashPos+1);
 			return true;
 		}
 	}
