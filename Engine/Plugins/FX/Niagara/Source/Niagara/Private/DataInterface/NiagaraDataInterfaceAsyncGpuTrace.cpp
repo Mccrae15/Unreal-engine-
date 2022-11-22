@@ -386,6 +386,7 @@ void UNiagaraDataInterfaceAsyncGpuTrace::GetParameterDefinitionHLSL(const FNiaga
 	FString TemplateFile;
 	LoadShaderSourceFile(NDIAsyncGpuTraceLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	OutHLSL.AppendChar('\n');
 }
 
 void UNiagaraDataInterfaceAsyncGpuTrace::GetCommonHLSL(FString& OutHlsl)
