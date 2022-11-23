@@ -6,6 +6,7 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/Selection.h"
 #if WITH_EDITOR
 #include "Editor.h"
