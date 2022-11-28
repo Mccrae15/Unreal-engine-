@@ -468,7 +468,7 @@ void FDisplayClusterLightCardEditor::AddLightCardsToActor(const TArray<ADisplayC
 	}
 }
 
-bool FDisplayClusterLightCardEditor::CanAddLightCard() const
+bool FDisplayClusterLightCardEditor::CanAddNewActor() const
 {
 	return ActiveRootActor.IsValid() && ActiveRootActor->GetWorld() != nullptr;
 }
@@ -1090,15 +1090,19 @@ TSharedRef<SWidget> FDisplayClusterLightCardEditor::GeneratePlaceActorsMenu()
 			FText Label = Class->GetDisplayNameText();
 			FSlateIcon StageActorIcon = FSlateIconFinder::FindIconForClass(Class);
 			MenuBuilder.AddMenuEntry(Label, LOCTEXT("AddStageActorHeader", "Add a stage actor to the scene"), StageActorIcon,
-				FUIAction(FExecuteAction::CreateRaw(this, &FDisplayClusterLightCardEditor::AddNewDynamic, Class)));
+				FUIAction(FExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::AddNewDynamic, Class),
+					FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor)));
 		}
-		
-		MenuBuilder.AddSubMenu(LOCTEXT("AllTemplatesLabel", "All Templates"),
-		LOCTEXT("AllTemplatesTooltip", "Select a template"),
-		FNewMenuDelegate::CreateSP(this, &FDisplayClusterLightCardEditor::GenerateTemplateSubMenu),
-		false,
-		FSlateIcon(FDisplayClusterLightCardEditorStyle::Get().GetStyleSetName(), TEXT("DisplayClusterLightCardEditor.Template")),
-		true);
+
+		if (CanAddNewActor())
+		{
+			MenuBuilder.AddSubMenu(LOCTEXT("AllTemplatesLabel", "All Templates"),
+			LOCTEXT("AllTemplatesTooltip", "Select a template"),
+			FNewMenuDelegate::CreateSP(this, &FDisplayClusterLightCardEditor::GenerateTemplateSubMenu),
+			false,
+			FSlateIcon(FDisplayClusterLightCardEditorStyle::Get().GetStyleSetName(), TEXT("DisplayClusterLightCardEditor.Template")),
+			true);
+		}
 	}
 	MenuBuilder.EndSection();
 	MenuBuilder.BeginSection("Favorites", LOCTEXT("FavoritesMenuHeader", "Favorites"));
@@ -1156,6 +1160,7 @@ TSharedRef<SWidget> FDisplayClusterLightCardEditor::GeneratePlaceActorsMenu()
 					SpawnActor(TemplateWeakPtr.Get());
 				}
 			});
+			EntryParams.DirectActions.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor);
 			
 			MenuBuilder.AddMenuEntry(EntryParams);
 		}
@@ -1224,6 +1229,7 @@ TSharedRef<SWidget> FDisplayClusterLightCardEditor::GeneratePlaceActorsMenu()
 					}
 				}
 			});
+			EntryParams.DirectActions.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor);
 			
 			MenuBuilder.AddMenuEntry(EntryParams);
 		}
@@ -1477,17 +1483,17 @@ void FDisplayClusterLightCardEditor::BindCommands()
 	CommandList->MapAction(
 		FDisplayClusterLightCardEditorCommands::Get().AddNewLightCard,
 		FExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::AddNewLightCard),
-		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddLightCard));
+		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor));
 
 	CommandList->MapAction(
 		FDisplayClusterLightCardEditorCommands::Get().AddNewFlag,
 		FExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::AddNewFlag),
-		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddLightCard));
+		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor));
 	
 	CommandList->MapAction(
 		FDisplayClusterLightCardEditorCommands::Get().AddExistingLightCard,
 		FExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::AddExistingLightCard),
-		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddLightCard));
+		FCanExecuteAction::CreateSP(this, &FDisplayClusterLightCardEditor::CanAddNewActor));
 
 	CommandList->MapAction(
 		FDisplayClusterLightCardEditorCommands::Get().RemoveLightCard,
