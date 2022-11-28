@@ -56,7 +56,7 @@ FVREditorModeManager::~FVREditorModeManager()
 		}
 	}
 
-	if (CurrentVREditorMode)
+	if (IsValid(CurrentVREditorMode))
 	{
 		CurrentVREditorMode->OnVRModeEntryComplete().RemoveAll(this);
 		CurrentVREditorMode = nullptr;
@@ -110,7 +110,8 @@ bool FVREditorModeManager::IsTickable() const
 void FVREditorModeManager::EnableVREditor( const bool bEnable, const bool bForceWithoutHMD )
 {
 	// Don't do anything when the current VR Editor is already in the requested state
-	if( bEnable != IsVREditorActive() )
+	const bool bIsEnabled = IsValid(CurrentVREditorMode);
+	if (bEnable != bIsEnabled)
 	{
 		if( bEnable && ( IsVREditorAvailable() || bForceWithoutHMD ))
 		{
@@ -282,7 +283,6 @@ void FVREditorModeManager::CloseVREditor( const bool bShouldDisableStereo )
 		}
 
 		CurrentVREditorMode = nullptr;
-
 	}
 }
 
