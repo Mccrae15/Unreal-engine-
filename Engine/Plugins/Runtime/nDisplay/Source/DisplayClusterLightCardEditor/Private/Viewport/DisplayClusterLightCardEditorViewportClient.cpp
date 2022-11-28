@@ -477,6 +477,15 @@ void FDisplayClusterLightCardEditorViewportClient::Draw(const FSceneView* View, 
 			{
 				continue;
 			}
+
+			if (const IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(BillboardComponent->GetOwner()))
+			{
+				if ((bIsUVProjection && !StageActor->IsUVActor()) || (!bIsUVProjection && StageActor->IsUVActor()))
+				{
+					continue;
+				}
+			}
+			
 			FSpriteProxy SpriteProxy = FSpriteProxy::FromBillboard(BillboardComponent.Get());
 		
 			FVector ProjectedLocation = ProjectWorldPosition(SpriteProxy.WorldPosition, BillboardViewMatrices);
@@ -1154,7 +1163,7 @@ void FDisplayClusterLightCardEditorViewportClient::UpdateProxyTransforms(const F
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FDisplayClusterLightCardEditorViewportClient::UpdateProxyTransforms"), STAT_UpdateProxyTransforms, STATGROUP_NDisplayLightCardEditor);
 	
-	if (InActorProxy.LevelInstance.IsValid() && InActorProxy.Proxy.IsValid())
+	if (RootActorLevelInstance.IsValid() && InActorProxy.LevelInstance.IsValid() && InActorProxy.Proxy.IsValid())
 	{
 		const FTransform RALevelTransformNoScale(RootActorLevelInstance->GetActorRotation(), RootActorLevelInstance->GetActorLocation(), FVector::OneVector);
 		const FTransform LCLevelRelativeToRALevel = InActorProxy.LevelInstance.AsActorChecked()->GetTransform().GetRelativeTransform(RALevelTransformNoScale);
@@ -1207,6 +1216,14 @@ void FDisplayClusterLightCardEditorViewportClient::ProcessClick(FSceneView& View
 
 	if (HitProxy)
 	{
+		const HHitProxy* HitProxyTest = Viewport->GetHitProxy(HitX, HitY);
+		if (!ensure(HitProxyTest == HitProxy))
+		{
+			// Speculative work around for invalid hit proxy. The HitProxy passed to ProcessClick may have been deleted,
+			// but since we're dealing with a raw ptr we can't check that. This is so we can possibly hit it and debug.
+			return;
+		}
+		
 		if (HitProxy->IsA(HActor::StaticGetType()))
 		{
 			HActor* ActorHitProxy = static_cast<HActor*>(HitProxy);
@@ -1214,17 +1231,16 @@ void FDisplayClusterLightCardEditorViewportClient::ProcessClick(FSceneView& View
 			{
 				if (ActorHitProxy->PrimComponent && ActorHitProxy->PrimComponent->IsA<UStaticMeshComponent>())
 				{
-					ADisplayClusterLightCardActor* TracedLightCard = TraceScreenForLightCard(View, HitX, HitY);
-					SelectActor(TracedLightCard, bMultiSelect);
+					AActor* TracedActor = TraceScreenForActor(View, HitX, HitY);
+					SelectActor(TracedActor, bMultiSelect);
 				}
 			}
-			else if (UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(ActorHitProxy->Actor) && ActorProxies.Contains(ActorHitProxy->Actor))
+			else if (ActorProxies.Contains(ActorHitProxy->Actor) && UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(ActorHitProxy->Actor))
 			{
 				SelectActor(ActorHitProxy->Actor, bMultiSelect);
 			}
 			else if (!bMultiSelect)
 			{
-
 				// Unless a right click is being performed, clear the selection if no geometry was clicked
 				if (!bIsRightClickSelection)
 				{
@@ -1338,8 +1354,7 @@ EMouseCursor::Type FDisplayClusterLightCardEditorViewportClient::GetCursor(FView
 							.SetRealtimeUpdate(IsRealtime()));
 						FSceneView* View = CalcSceneView(&ViewFamily);
 
-						ADisplayClusterLightCardActor* TracedLightCard = TraceScreenForLightCard(*View, X, Y);
-						if (TracedLightCard)
+						if (const AActor* TracedActor = TraceScreenForActor(*View, X, Y))
 						{
 							MouseCursor = EMouseCursor::Crosshairs;
 						}
@@ -1494,7 +1509,16 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 		return;
 	}
 
-	if (!StageActor)
+	if (StageActor && ActorsRefreshing.Contains(StageActor))
+	{
+		return;
+	}
+
+	if (StageActor)
+	{
+		ActorsRefreshing.Add(StageActor);
+	}
+	else
 	{
 		ProxyTypesRefreshing.Add(ProxyType);
 	}
@@ -1542,6 +1566,7 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 
 			if (StageActor)
 			{
+				ActorsRefreshing.Remove(StageActor);
 				DestroyProxy(StageActor);
 			}
 			else
@@ -2560,7 +2585,7 @@ double FDisplayClusterLightCardEditorViewportClient::GetActorSpinDelta(FViewport
 	return FMath::RadiansToDegrees(Theta - LastTheta);
 }
 
-ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::TraceScreenForLightCard(const FSceneView& View, int32 HitX, int32 HitY)
+AActor* FDisplayClusterLightCardEditorViewportClient::TraceScreenForActor(const FSceneView& View, int32 HitX, int32 HitY)
 {
 	UWorld* PreviewWorld = PreviewScene->GetWorld();
 	check(PreviewWorld);
@@ -2574,7 +2599,18 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(LightCardTrace), true);
 
-	bool bHitLightCard = false;
+	const bool bInUVMode = ProjectionMode == EDisplayClusterMeshProjectionType::UV;
+	auto IsValidActor = [&](AActor* InActor)
+	{
+		bool bValidForUV = true;
+		if (const IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(InActor))
+		{
+			// Ignore actors not supporting the current UV mode
+			bValidForUV = (bInUVMode && StageActor->IsUVActor()) || (!bInUVMode && !StageActor->IsUVActor());
+		}
+		return bValidForUV && UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(InActor) && ActorProxies.Contains(InActor);
+	};
+	
 	FHitResult ScreenHitResult;
 	if (PreviewWorld->LineTraceSingleByObjectType(ScreenHitResult, CursorRayStart, CursorRayEnd, FCollisionObjectQueryParams(FCollisionObjectQueryParams::InitType::AllObjects), TraceParams))
 	{
@@ -2607,11 +2643,11 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 						{
 							for (FHitResult& HitResult : HitResults)
 							{
-								if (ADisplayClusterLightCardActor* LightCardActor = Cast<ADisplayClusterLightCardActor>(HitResult.GetActor()))
+								if (AActor* HitStageActor = HitResult.GetActor())
 								{
-									if (ActorProxies.Contains(LightCardActor))
+									if (IsValidActor(HitStageActor))
 									{
-										return LightCardActor;
+										return HitStageActor;
 									}
 								}
 							}
@@ -2619,9 +2655,9 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 					}
 				}
 			}
-			else if (UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(HitActor) && ActorProxies.Contains(HitActor))
+			else if (IsValidActor(HitActor))
 			{
-				return Cast<ADisplayClusterLightCardActor>(HitActor);
+				return HitActor;
 			}
 		}
 	}
