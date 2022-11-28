@@ -97,24 +97,24 @@ FRigUnit_TestFloatState_Execute()
 		const TParam<FSpringDamperState> State = DataInterfaceContext.GetState<FSpringDamperState>(DataInterfaceExecuteContext.GetInterface(), 0);
 		const float DeltaTime = DataInterfaceContext.GetDeltaTime();
 
-		FKernel::Run(DataInterfaceContext,
-			[DeltaTime, &Result](FSpringDamperState& InOutState,
-						float InTargetValue,
-						float InTargetValueRate,
-						float InSmoothingTime,
-						float InDampingRatio)
-				{
-					FMath::SpringDamperSmoothing(
-						InOutState.Value,
-						InOutState.ValueRate,
-						InTargetValue,
-						InTargetValueRate,
-						DeltaTime,
-						InSmoothingTime,
-						InDampingRatio);
+		//FKernel::Run(DataInterfaceContext,
+		//	[DeltaTime, &Result](FSpringDamperState& InOutState,
+		//				float InTargetValue,
+		//				float InTargetValueRate,
+		//				float InSmoothingTime,
+		//				float InDampingRatio)
+		//		{
+		//			FMath::SpringDamperSmoothing(
+		//				InOutState.Value,
+		//				InOutState.ValueRate,
+		//				InTargetValue,
+		//				InTargetValueRate,
+		//				DeltaTime,
+		//				InSmoothingTime,
+		//				InDampingRatio);
 
-					Result = InOutState.Value;
-				},
-				State, TargetValue, TargetValueRate, SmoothingTime, DampingRatio);
+		//			Result = InOutState.Value;
+		//		},
+		//		State, TargetValue, TargetValueRate, SmoothingTime, DampingRatio);
 	}
 }
