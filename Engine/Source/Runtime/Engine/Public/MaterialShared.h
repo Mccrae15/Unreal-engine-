@@ -1220,7 +1220,8 @@ public:
 
 	uint32 GetMaxNumInstructionsForShader(FShaderType* ShaderType) const { return GetContent()->GetMaxNumInstructionsForShader(*this, ShaderType); }
 
-	void SubmitCompileJobs(uint32 CompilingShaderMapId,
+	/** Submits compile jobs for this shadermap, returns number of jobs submitted. */
+	int32 SubmitCompileJobs(uint32 CompilingShaderMapId,
 		const FMaterial* Material,
 		const TRefCountPtr<FSharedShaderCompilerEnvironment>& MaterialEnvironment,
 		EShaderCompileJobPriority Priority) const;
