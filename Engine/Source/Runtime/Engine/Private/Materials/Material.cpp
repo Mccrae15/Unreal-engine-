@@ -40,6 +40,7 @@
 #include "Materials/MaterialExpressionTransform.h"
 #include "Materials/MaterialExpressionExecBegin.h"
 #include "Materials/MaterialExpressionExecEnd.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
@@ -5702,6 +5703,7 @@ bool UMaterial::RecursiveGetExpressionChain(
 	UMaterialExpressionMakeMaterialAttributes* MakeMaterialAttributesExp;
 	UMaterialExpressionSetMaterialAttributes* SetMaterialAttributesExp;
 	UMaterialExpressionShaderStageSwitch* ShaderStageSwitchExp;
+	UMaterialExpressionNamedRerouteUsage* RerouteUsageExp;
 
 	const bool bMobileOnly = InFeatureLevel <= ERHIFeatureLevel::ES3_1;
 
@@ -5845,6 +5847,14 @@ bool UMaterial::RecursiveGetExpressionChain(
 					InputsFrequency.Add(InShaderFrequency);
 				}
 			}
+		}
+	}
+	else if ((RerouteUsageExp = Cast<UMaterialExpressionNamedRerouteUsage>(InExpression)) != nullptr)
+	{
+		// continue searching from the reroute declaration
+		if (RerouteUsageExp->Declaration != nullptr)
+		{
+			RecursiveGetExpressionChain(RerouteUsageExp->Declaration, InOutProcessedInputs, OutExpressions, InStaticParameterSet, InFeatureLevel, InQuality, InShadingPath, InShaderFrequency, InProperty);
 		}
 	}
 	else
