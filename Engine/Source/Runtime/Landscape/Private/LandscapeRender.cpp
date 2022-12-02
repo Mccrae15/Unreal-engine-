@@ -44,6 +44,8 @@ LandscapeRender.cpp: New terrain rendering
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "StaticMeshResources.h"
 #include "NaniteSceneProxy.h"
+#include "Rendering/Texture2DResource.h"
+
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, "LandscapeParameters");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, "LandscapeFixedGrid");
@@ -3631,7 +3633,7 @@ float FLandscapeComponentSceneProxy::ComputeLODBias() const
 	{
 		if (const FTexture2DResource* TextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
 		{
-			ComputedLODBias = HeightmapTexture->GetNumMips() - HeightmapTexture->GetNumResidentMips();
+			ComputedLODBias = TextureResource->GetCurrentFirstMip();
 		}
 	}
 
