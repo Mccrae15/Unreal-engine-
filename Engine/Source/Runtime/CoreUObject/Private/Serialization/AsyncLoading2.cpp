@@ -4479,10 +4479,14 @@ void FAsyncPackage2::StartLoading(FIoBatch& IoBatch)
 						TEXT("Failed reading optional chunk for package: %s"), *Result.Status().ToString());
 					bLoadHasFailed = true;
 				}
-				FAsyncLoadingThread2* LocalAsyncLoadingThread = &AsyncLoadingThread;
-				GetPackageNode(EEventLoadNode2::Package_ProcessSummary).ReleaseBarrier();
-				int32 LocalPendingIoRequestsCounter = LocalAsyncLoadingThread->PendingIoRequestsCounter.DecrementExchange() - 1;
+				int32 LocalPendingIoRequestsCounter = AsyncLoadingThread.PendingIoRequestsCounter.DecrementExchange() - 1;
 				TRACE_COUNTER_SET(AsyncLoadingPendingIoRequests, LocalPendingIoRequestsCounter);
+				FAsyncLoadingThread2& LocalAsyncLoadingThread = AsyncLoadingThread;
+				GetPackageNode(EEventLoadNode2::Package_ProcessSummary).ReleaseBarrier();
+				if (LocalPendingIoRequestsCounter == 0)
+				{
+					LocalAsyncLoadingThread.AltZenaphore.NotifyOne();
+				}
 			});
 	}
 #endif
@@ -4506,10 +4510,14 @@ void FAsyncPackage2::StartLoading(FIoBatch& IoBatch)
 					TEXT("Failed reading chunk for package: %s"), *Result.Status().ToString());
 				bLoadHasFailed = true;
 			}
-			FAsyncLoadingThread2* LocalAsyncLoadingThread = &AsyncLoadingThread;
-			GetPackageNode(EEventLoadNode2::Package_ProcessSummary).ReleaseBarrier();
-			int32 LocalPendingIoRequestsCounter = LocalAsyncLoadingThread->PendingIoRequestsCounter.DecrementExchange() - 1;
+			int32 LocalPendingIoRequestsCounter = AsyncLoadingThread.PendingIoRequestsCounter.DecrementExchange() - 1;
 			TRACE_COUNTER_SET(AsyncLoadingPendingIoRequests, LocalPendingIoRequestsCounter);
+			FAsyncLoadingThread2& LocalAsyncLoadingThread = AsyncLoadingThread;
+			GetPackageNode(EEventLoadNode2::Package_ProcessSummary).ReleaseBarrier();
+			if (LocalPendingIoRequestsCounter == 0)
+			{
+				LocalAsyncLoadingThread.AltZenaphore.NotifyOne();
+			}
 		});
 
 	if (!Data.ShaderMapHashes.IsEmpty())
@@ -4524,10 +4532,14 @@ void FAsyncPackage2::StartLoading(FIoBatch& IoBatch)
 				[this, GraphEvent](TIoStatusOr<FIoBuffer> Result)
 				{
 					GraphEvent->DispatchSubsequents();
-					FAsyncLoadingThread2* LocalAsyncLoadingThread = &AsyncLoadingThread;
-					GetPackageNode(Package_ExportsSerialized).ReleaseBarrier();
-					int32 LocalPendingIoRequestsCounter = LocalAsyncLoadingThread->PendingIoRequestsCounter.DecrementExchange() - 1;
+					int32 LocalPendingIoRequestsCounter = AsyncLoadingThread.PendingIoRequestsCounter.DecrementExchange() - 1;
 					TRACE_COUNTER_SET(AsyncLoadingPendingIoRequests, LocalPendingIoRequestsCounter);
+					FAsyncLoadingThread2& LocalAsyncLoadingThread = AsyncLoadingThread;
+					GetPackageNode(Package_ExportsSerialized).ReleaseBarrier();
+					if (LocalPendingIoRequestsCounter == 0)
+					{
+						LocalAsyncLoadingThread.AltZenaphore.NotifyOne();
+					}
 				});
 		};
 		FCoreDelegates::PreloadPackageShaderMaps.ExecuteIfBound(Data.ShaderMapHashes, ReadShaderMapFunc);
