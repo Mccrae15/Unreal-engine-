@@ -101,6 +101,20 @@ void UVCamComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 		}
 	}
 
+	for (FModifierStackEntry& ModifierEntry : ModifierStack)
+	{
+		TObjectPtr<UVCamModifier>& Modifier = ModifierEntry.GeneratedModifier;
+		if (Modifier && !Modifier->DoesRequireInitialization())
+		{
+			Modifier->Deinitialize();
+		}
+	}
+	
+	// Hotfix 5.1.1. Remove if you find this on any other version and instead remove ~FModifierStackEntry!
+	// Fix for 5.1 only (in 5.2 just remove the destructor)... ~FModifierStackEntry can cause a crash set to nullptr so it is skipped
+	ModifierStack.Empty();
+	SavedModifierStack.Empty();
+
 	UnregisterInputComponent();
 
 #if WITH_EDITOR
@@ -385,6 +399,7 @@ void UVCamComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 		else if (PropertyName == NAME_ModifierStack)
 		{
 			ValidateModifierStack();
+			SavedModifierStack.Reset();
 		}
 		else if (PropertyName == NAME_TargetViewport)
 		{
