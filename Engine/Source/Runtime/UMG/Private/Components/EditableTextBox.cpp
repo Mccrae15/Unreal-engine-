@@ -174,7 +174,7 @@ FText UEditableTextBox::GetText() const
 void UEditableTextBox::SetText(FText InText)
 {
 	// We detect if the Text is internal pointing to the same thing if so, nothing to do.
-	if (Text.IdenticalTo(InText))
+	if (GetText().IdenticalTo(InText))
 	{
 		return;
 	}
