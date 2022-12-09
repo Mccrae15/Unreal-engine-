@@ -3640,7 +3640,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 		if (bShouldRenderVelocities)
 		{
-			const bool bRecreateSceneTextures = !SceneTextures.Velocity;
+			const bool bRecreateSceneTextures = !HasBeenProduced(SceneTextures.Velocity);
 
 			GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLM_TranslucentVelocity));
 			RenderVelocities(GraphBuilder, SceneTextures, EVelocityPass::Translucent, false);
