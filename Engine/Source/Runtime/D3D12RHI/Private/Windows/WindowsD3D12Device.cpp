@@ -448,11 +448,11 @@ inline ERHIFeatureLevel::Type FindMaxRHIFeatureLevel(IDXGIAdapter* Adapter, ID3D
 
 		if (D3D12Caps1.WaveOps && bHighEnoughBindingTier)
 		{
-			if (D3D12Caps9.AtomicInt64OnTypedResourceSupported || CheckDeviceForEmulatedAtomic64Support(Adapter, Device))
-		{
-			MaxRHIFeatureLevel = ERHIFeatureLevel::SM6;
+			if (CheckDeviceForEmulatedAtomic64Support(Adapter, Device) || D3D12Caps9.AtomicInt64OnTypedResourceSupported)
+			{
+				MaxRHIFeatureLevel = ERHIFeatureLevel::SM6;
+			}
 		}
-	}
 	}
 
 	if (MaxRHIFeatureLevel == ERHIFeatureLevel::Num && InMaxFeatureLevel >= D3D_FEATURE_LEVEL_11_0)
@@ -1318,9 +1318,6 @@ void FD3D12DynamicRHI::Init()
 		if (IntelExtensionContext)
 		{
 			bHasVendorSupportForAtomic64 = (INTCExtensionInfo.RequestedExtensionVersion.HWFeatureLevel > 0);
-
-			GRHISupportsAtomicUInt64 = EnableIntelAtomic64Support(IntelExtensionContext, INTCExtensionInfo);
-			GRHISupportsDX12AtomicUInt64 = GRHISupportsAtomicUInt64;
 		}
 
 		if (GRHISupportsMeshShadersTier0 || GRHISupportsMeshShadersTier1)
