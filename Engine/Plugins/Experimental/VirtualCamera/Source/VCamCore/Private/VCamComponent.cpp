@@ -39,15 +39,31 @@
 
 DEFINE_LOG_CATEGORY(LogVCamComponent);
 
-namespace VCamComponent
+namespace UE::VCamCore::VCamComponent::Private
 {
 	static const FName LevelEditorName(TEXT("LevelEditor"));
+
+	static bool IsArchetype(const UVCamComponent& Component)
+	{
+		// Flags explained:
+		// 1. The Blueprint editor has two objects:
+		//	1.1 The "real" one which saves the property data - this one is RF_ArchetypeObject
+		//	1.2 The preview one (which I assume is displayed in the viewport) - this one is RF_Transient.
+		// 2. When you drag-create an actor, level editor creates a RF_Transient template actor. After you release the mouse, a real one is created (not RF_Transient).
+		const bool bHasDefaultFlags = Component.HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_Transient);
+		// The above flags do not always cover the Blueprint editor world
+		const bool bIsInBlueprintEditor = !Component.GetWorld() || Component.GetWorld()->WorldType == EWorldType::EditorPreview;
+	
+		return bHasDefaultFlags || bIsInBlueprintEditor;
+	}
 }
 
 UVCamComponent::UVCamComponent()
 {
-	// Don't run on CDO
-	if (!HasAnyFlags(RF_ClassDefaultObject) && !GIsCookerLoadingPackage)
+	using namespace UE::VCamCore::VCamComponent::Private;
+	
+	// For temporary objects, the InputComponent should not be created and neither should we subscribe to global callbacks
+	if (!IsArchetype(*this) && !GIsCookerLoadingPackage)
 	{
 		// Hook into the Live Link Client for our Tick
 		IModularFeatures& ModularFeatures = IModularFeatures::Get();
@@ -64,7 +80,7 @@ UVCamComponent::UVCamComponent()
 
 #if WITH_EDITOR
 		// Add the necessary event listeners so we can start/end properly
-		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(LevelEditorName))
 		{
 			LevelEditorModule->OnMapChanged().AddUObject(this, &UVCamComponent::OnMapChanged);
 		}
@@ -119,7 +135,7 @@ void UVCamComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 
 #if WITH_EDITOR
 	// Remove all event listeners
-	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(UE::VCamCore::VCamComponent::Private::LevelEditorName))
 	{
 		LevelEditorModule->OnMapChanged().RemoveAll(this);
 	}
@@ -336,13 +352,11 @@ void UVCamComponent::PreEditChange(FProperty* PropertyThatWillChange)
 void UVCamComponent::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
 {
 	FProperty* MemberProperty = PropertyAboutToChange.GetActiveMemberNode()->GetValue();
-
 	// Copy the property that is going to be changed so we can use it in PostEditChange if needed (for ArrayClear, ArrayRemove, etc.)
 	if (MemberProperty)
 	{
 		static FName NAME_OutputProviders = GET_MEMBER_NAME_CHECKED(UVCamComponent, OutputProviders);
 		static FName NAME_ModifierStack = GET_MEMBER_NAME_CHECKED(UVCamComponent, ModifierStack);
-		static FName NAME_GeneratedModifier = GET_MEMBER_NAME_CHECKED(FModifierStackEntry, GeneratedModifier);
 		static FName NAME_Enabled = GET_MEMBER_NAME_CHECKED(UVCamComponent, bEnabled);
 
 		const FName MemberPropertyName = MemberProperty->GetFName();
@@ -356,7 +370,9 @@ void UVCamComponent::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
 		{
 			SavedModifierStack = ModifierStack;
 		}
-		else if (MemberPropertyName == NAME_Enabled)
+		else if (MemberPropertyName == NAME_Enabled
+			// No enabling archetypes
+			&& !UE::VCamCore::VCamComponent::Private::IsArchetype(*this))
 		{
 			// Changing the enabled state needs to be done here instead of PostEditChange
 			// So we need to grab the value from the FProperty directly before using it
@@ -374,7 +390,10 @@ void UVCamComponent::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
 void UVCamComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FProperty* Property = PropertyChangedEvent.MemberProperty;
-	if (Property && PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	// No enabling archetypes
+	if (!UE::VCamCore::VCamComponent::Private::IsArchetype(*this)
+		&& Property
+		&& PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		static FName NAME_LockViewportToCamera = GET_MEMBER_NAME_CHECKED(UVCamComponent, bLockViewportToCamera);
 		static FName NAME_Enabled = GET_MEMBER_NAME_CHECKED(UVCamComponent, bEnabled);
@@ -1571,7 +1590,7 @@ TSharedPtr<SLevelViewport> UVCamComponent::GetTargetLevelViewport() const
 
 	if (TargetViewport == EVCamTargetViewportID::CurrentlySelected)
 	{
-		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(UE::VCamCore::VCamComponent::Private::LevelEditorName))
 		{
 			OutLevelViewport = LevelEditorModule->GetFirstActiveLevelViewport();
 		}
