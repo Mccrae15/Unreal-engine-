@@ -413,6 +413,15 @@ class DeviceUnreal(Device):
                 'between network messages before considering the connection '
                 'to Switchboard lost and closing it with a timeout error.')
         ),
+        'slate_allow_throttling': BoolSetting(
+            attr_name='slate_allow_throttling',
+            nice_name='Allow Slate Throttling',
+            value=False,
+            tool_tip=(
+                'Sets the Slate.bAllowThrottling cvar. When unchecked, the Editor viewports do not freeze/throttle \n'
+                'during certain operations. Not thottling is typically desired when using the Editor in \n'
+                'a virtual production stage.\n')
+        )
     }
 
     unreal_started_signal = QtCore.Signal()
@@ -1452,6 +1461,10 @@ class DeviceUnreal(Device):
                 dp_cvars.append('r.AllowMultiGPUInEditor=1')
         except ValueError:
             LOGGER.warning(f"Invalid Number of GPUs '{max_gpu_count}'")
+
+        # Slate.bAllowThrottling. Makes ICVFX panel and Vcam more responsive to Editor interactive changes.
+        slate_allow_throttling = DeviceUnreal.csettings["slate_allow_throttling"].get_value()
+        dp_cvars.append(f'Slate.bAllowThrottling={int(slate_allow_throttling)}')
 
         # Add user set dp cvars, overriding any of the forced ones.
         user_dp_cvars = DeviceUnreal.csettings["dp_cvars"].get_value(self.name)
