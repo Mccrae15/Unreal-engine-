@@ -282,7 +282,7 @@ bool FPerforceSourceControlState::IsCurrent() const
 
 bool FPerforceSourceControlState::IsSourceControlled() const
 {
-	return !IsUnknown() && State != EPerforceState::NotInDepot && State != EPerforceState::NotUnderClientRoot;
+	return State != EPerforceState::NotInDepot && State != EPerforceState::NotUnderClientRoot;
 }
 
 bool FPerforceSourceControlState::IsAdded() const
