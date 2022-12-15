@@ -450,26 +450,11 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 	ensure(PointerIndex >= 0);
 
 	FPointerEvent PointerEvent;
-
-	// Find the primary input device for this Slate User
-	FInputDeviceId InputDeviceId = INPUTDEVICEID_NONE;
-	if (TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(VirtualUser->GetUserIndex()))
-	{
-		FPlatformUserId PlatUser = SlateUser->GetPlatformUserId();
-		InputDeviceId = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(PlatUser);
-	}
-
-	// Just in case there was no input device assigned to this virtual user, get the default platform
-	// input device
-	if (!InputDeviceId.IsValid())
-	{
-		InputDeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
-	}
 	
 	if (Key.IsTouch())
 	{
 		PointerEvent = FPointerEvent(
-			InputDeviceId,
+			VirtualUser->GetUserIndex(),
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
@@ -480,7 +465,7 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 	else
 	{
 		PointerEvent = FPointerEvent(
-			InputDeviceId,
+			VirtualUser->GetUserIndex(),
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
