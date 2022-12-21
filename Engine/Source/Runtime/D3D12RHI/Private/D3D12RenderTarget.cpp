@@ -551,7 +551,32 @@ void FD3D12CommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI,
 		UpdateResidency(SourceTexture->GetResource());
 		UpdateResidency(DestTexture->GetResource());
 	}
+	else if (SourceDesc.IsTextureArray() && DestDesc.IsTextureArray())
+	{
+		if (SourceTexture != DestTexture)
+		{
+			DXGI_FORMAT SrcFmt = (DXGI_FORMAT)GPixelFormats[SourceTexture->GetFormat()].PlatformFormat;
+			DXGI_FORMAT DstFmt = (DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat;
 
+			DXGI_FORMAT Fmt = ConvertTypelessToUnorm((DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat);
+
+			// Determine whether a MSAA resolve is needed, or just a copy.
+			if (SourceTextureRHI->IsMultisampled() && !DestTextureRHI->IsMultisampled() && SourceTexture->GetSizeZ() == DestTexture->GetSizeZ())
+			{
+				// resolve all slices of the texture array
+				for (int32 ArrayIndex = 0; ArrayIndex < (int32)DestTexture->GetSizeZ(); ArrayIndex++)
+				{
+					GraphicsCommandList()->ResolveSubresource(
+						DestTexture->GetResource()->GetResource(),
+						ArrayIndex,
+						SourceTexture->GetResource()->GetResource(),
+						ArrayIndex,
+						Fmt
+					);
+				}
+			}
+		}
+	}
 	else if (SourceDesc.IsTexture3D() && DestDesc.IsTexture3D())
 	{
 		// bit of a hack.  no one resolves slice by slice and 0 is the default value.  assume for the moment they are resolving the whole texture.

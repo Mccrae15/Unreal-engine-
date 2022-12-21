@@ -591,6 +591,52 @@ private:
 	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT FragmentDensityMap2Features;
 };
 
+// ***** VK_QCOM_fragment_density_map_offset
+class FVulkanQCOMFragmentDensityMapOffsetExtension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanQCOMFragmentDensityMapOffsetExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_QCOM_FRAGMENT_DENSITY_MAP_OFFSET_EXTENSION_NAME, VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET)
+	{
+	}
+
+	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final 
+	{
+		ZeroVulkanStruct(FragmentDensityMapOffsetProperties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_OFFSET_PROPERTIES_QCOM);
+		AddToPNext(PhysicalDeviceProperties2, FragmentDensityMapOffsetProperties);
+	}
+
+	virtual void PostPhysicalDeviceProperties() override final
+	{
+		GRHIVariableRateShadingImageOffsetGranularity.X = FragmentDensityMapOffsetProperties.fragmentDensityOffsetGranularity.width;
+		GRHIVariableRateShadingImageOffsetGranularity.Y = FragmentDensityMapOffsetProperties.fragmentDensityOffsetGranularity.height;
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(FragmentDensityMapOffsetFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_OFFSET_FEATURES_QCOM);
+		AddToPNext(PhysicalDeviceFeatures2, FragmentDensityMapOffsetFeatures);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		ExtensionFlags.HasQcomFragmentDensityMapOffset = FragmentDensityMapOffsetFeatures.fragmentDensityMapOffset;
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (FragmentDensityMapOffsetFeatures.fragmentDensityMapOffset == VK_TRUE)
+		{
+			AddToPNext(DeviceCreateInfo, FragmentDensityMapOffsetFeatures);
+		}
+	}
+
+private:
+	VkPhysicalDeviceFragmentDensityMapOffsetPropertiesQCOM FragmentDensityMapOffsetProperties;
+	VkPhysicalDeviceFragmentDensityMapOffsetFeaturesQCOM FragmentDensityMapOffsetFeatures;
+};
+
 
 
 // ***** VK_KHR_get_memory_requirements2
@@ -1022,6 +1068,7 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_CUSTOM_EXTENSION(FVulkanKHRFragmentShadingRateExtension); // must be kept BEFORE DensityMap!
 	ADD_CUSTOM_EXTENSION(FVulkanEXTFragmentDensityMapExtension);  // must be kept AFTER ShadingRate!
 	ADD_CUSTOM_EXTENSION(FVulkanEXTFragmentDensityMap2Extension);
+	ADD_CUSTOM_EXTENSION(FVulkanQCOMFragmentDensityMapOffsetExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRMultiviewExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRGetMemoryRequirements2Extension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTDescriptorIndexingExtension);

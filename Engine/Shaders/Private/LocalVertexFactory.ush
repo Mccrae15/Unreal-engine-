@@ -1149,14 +1149,27 @@ float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryInte
 // @return previous translated world position
 float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
+// When VF_USE_PRIMITIVE_SCENE_DATA == 2, GetSceneDataIntermediates() in SceneData.ush doesn't populate PrevLocalToWorld in the instance data, so we need to use the primitive data instead
+#if (VF_USE_PRIMITIVE_SCENE_DATA == 2)
+	FLWCMatrix PreviousLocalToWorld = GetPrimitiveData(Intermediates).PreviousLocalToWorld;
+#else
 	FLWCMatrix PreviousLocalToWorld = GetInstanceData(Intermediates).PrevLocalToWorld;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA
+
+// AppSpaceWarp
+#if defined(IS_VELOCITY_SHADER) && SUPPORT_VR_FRAME_EXTRAPOLATION
+	FLWCMatrix CurrentLocalToWorld = GetPrimitiveData(Intermediates).LocalToWorld;
+	if (!IsSmoothRotation(PreviousLocalToWorld.M._11_21_31, PreviousLocalToWorld.M._12_22_32, CurrentLocalToWorld.M._11_21_31, CurrentLocalToWorld.M._12_22_32))
+		PreviousLocalToWorld = CurrentLocalToWorld;
+#endif
+
 
 	float4 PrevLocalPosition;
 #if SUPPORT_GPUSKIN_PASSTHROUGH
 	if (IsGPUSkinPassThrough())
 	{
-		uint Offset = Input.VertexId * 3;
-		float3 PreviousPos;
+	uint Offset = Input.VertexId * 3;
+	float3 PreviousPos;
 		PreviousPos.x = LocalVFLooseParameters.GPUSkinPassThroughPreviousPositionBuffer[Offset + 0];
 		PreviousPos.y = LocalVFLooseParameters.GPUSkinPassThroughPreviousPositionBuffer[Offset + 1];
 		PreviousPos.z = LocalVFLooseParameters.GPUSkinPassThroughPreviousPositionBuffer[Offset + 2];

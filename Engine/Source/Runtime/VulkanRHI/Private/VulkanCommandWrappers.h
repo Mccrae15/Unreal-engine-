@@ -158,6 +158,7 @@ struct FWrapLayer
 	static void CmdBeginRenderPass(VkResult Result, VkCommandBuffer CommandBuffer, const VkRenderPassBeginInfo* RenderPassBegin, VkSubpassContents Contents) VULKAN_LAYER_BODY
 #if VULKAN_SUPPORTS_RENDERPASS2
 	static void CmdBeginRenderPass2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkRenderPassBeginInfo* RenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo) VULKAN_LAYER_BODY
+	static void CmdEndRenderPass2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkSubpassEndInfo* pSubpassEndInfo) VULKAN_LAYER_BODY
 #endif
 	static void CmdNextSubpass(VkResult Result, VkCommandBuffer CommandBuffer, VkSubpassContents Contents) VULKAN_LAYER_BODY
 	static void CmdEndRenderPass(VkResult Result, VkCommandBuffer CommandBuffer) VULKAN_LAYER_BODY
@@ -884,6 +885,13 @@ namespace VulkanRHI
 		VkResult Result = VULKANAPINAMESPACE::vkCreateRenderPass2KHR(Device, CreateInfo, Allocator, RenderPass);
 		FWrapLayer::CreateRenderPass2KHR(Result, Device, CreateInfo, RenderPass);
 		return Result;
+	}
+
+	static FORCEINLINE_DEBUGGABLE void vkCmdEndRenderPass2KHR(VkCommandBuffer CommandBuffer, const VkSubpassEndInfo* pSubpassEndInfo)
+	{
+		FWrapLayer::CmdEndRenderPass2KHR(VK_RESULT_MAX_ENUM, CommandBuffer, pSubpassEndInfo);
+		VULKANAPINAMESPACE::vkCmdEndRenderPass2KHR(CommandBuffer, pSubpassEndInfo);
+		FWrapLayer::CmdEndRenderPass2KHR(VK_SUCCESS, CommandBuffer, pSubpassEndInfo);
 	}
 #endif
 

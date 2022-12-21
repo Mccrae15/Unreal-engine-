@@ -620,12 +620,33 @@ uint32 FShaderMapContent::GetMaxNumInstructionsForShader(const FShaderMapBase& I
 			if (PipelineShaderType &&
 				(PipelineShaderType == ShaderType))
 			{
-				MaxNumInstructions = FMath::Max(MaxNumInstructions, PipelineShader->GetNumInstructions());
-			}
+			MaxNumInstructions = FMath::Max(MaxNumInstructions, PipelineShader->GetNumInstructions());
 		}
+	}
 	}
 
 	return MaxNumInstructions;
+}
+
+FString FShaderMapContent::GetShaderStats(const FShaderMapBase& InShaderMap, FShaderType* ShaderType) const
+{
+	FString ShaderStats;
+	FShader* Shader = GetShader(ShaderType);
+	if (Shader)
+	{
+		ShaderStats = Shader->GetShaderStats();
+	}
+
+	for (FShaderPipeline* Pipeline : ShaderPipelines)
+	{
+		FShader* PipelineShader = Pipeline->GetShader(ShaderType->GetFrequency());
+		if (PipelineShader)
+		{
+			ShaderStats = PipelineShader->GetShaderStats();
+		}
+	}
+
+	return ShaderStats;
 }
 
 struct FSortedShaderEntry

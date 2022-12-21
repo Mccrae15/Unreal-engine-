@@ -812,7 +812,6 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	uint32 bMobilePostProcessing:1;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
-		EditCondition = "!bMobilePostProcessing",
 		ConsoleVariable = "vr.MobileMultiView", DisplayName = "Mobile Multi-View",
 		ToolTip = "Enable single-pass stereoscopic rendering on mobile platforms.",
 		ConfigRestartRequired = true))
@@ -829,6 +828,13 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "Enable round-robin scheduling of occlusion queries for VR.",
 		ConfigRestartRequired = false))
 	uint32 bRoundRobinOcclusion : 1;
+
+	// AppSpaceWarp
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.SupportMobileSpaceWarp", DisplayName = "Support Mobile Application Space Warp",
+		ToolTip = "Allow to generate motion vector and depth buffer correctly for mobile application space warp).",
+		ConfigRestartRequired = true))
+		uint32 bMobileSupportSpaceWarp : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = Experimental, meta = (
 		ConsoleVariable="r.MeshStreaming",DisplayName="Mesh Streaming",

@@ -688,17 +688,17 @@ void FShaderCompileJobCollection::SubmitJobs(const TArray<FShaderCommonCompileJo
 						}
 						else
 						{
-							for (FShaderCommonCompileJob::TIterator It(PendingJobs[PriorityIndex]); It; ++It)
+						for (FShaderCommonCompileJob::TIterator It(PendingJobs[PriorityIndex]); It; ++It)
+						{
+							FShaderCommonCompileJob& ExistingJob = *It;
+							if (ExistingJob.GetNextLink() == nullptr)
 							{
-								FShaderCommonCompileJob& ExistingJob = *It;
-								if (ExistingJob.GetNextLink() == nullptr)
-								{
-									Job->LinkAfter(&ExistingJob);
+								Job->LinkAfter(&ExistingJob);
 									ExistingJobs[PriorityIndex] = Job;
-									break;
-								}
+								break;
 							}
 						}
+					}
 					}
 					else
 #endif // UE_SHADERCOMPILER_FIFO_JOB_EXECUTION
@@ -1930,15 +1930,15 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 		}
 		else
 		{
-			for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
+		for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
+		{
+			auto* CurrentJob = QueuedSingleJobs[JobIndex];
+			if (ReadSingleJob(CurrentJob, OutputFile))
 			{
-				auto* CurrentJob = QueuedSingleJobs[JobIndex];
-				if (ReadSingleJob(CurrentJob, OutputFile))
-				{
-					ReissueSourceJobs.Add(CurrentJob);
-				}
+				ReissueSourceJobs.Add(CurrentJob);
 			}
 		}
+	}
 	}
 
 	// Pipeline jobs
@@ -1960,43 +1960,43 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 		}
 		else
 		{
-			for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
+		for (int32 JobIndex = 0; JobIndex < NumJobs; JobIndex++)
+		{
+			FShaderPipelineCompileJob* CurrentJob = QueuedPipelineJobs[JobIndex];
+
+			FString PipelineName;
+			OutputFile << PipelineName;
+			if (PipelineName != CurrentJob->Key.ShaderPipeline->GetName())
 			{
-				FShaderPipelineCompileJob* CurrentJob = QueuedPipelineJobs[JobIndex];
+				FString Text = FString::Printf(TEXT("Worker returned Pipeline %s, expected %s!"), *PipelineName, CurrentJob->Key.ShaderPipeline->GetName());
+				ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
+			}
 
-				FString PipelineName;
-				OutputFile << PipelineName;
-				if (PipelineName != CurrentJob->Key.ShaderPipeline->GetName())
-				{
-					FString Text = FString::Printf(TEXT("Worker returned Pipeline %s, expected %s!"), *PipelineName, CurrentJob->Key.ShaderPipeline->GetName());
-					ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
-				}
+			check(!CurrentJob->bFinalized);
+			CurrentJob->bFinalized = true;
+			CurrentJob->bFailedRemovingUnused = false;
 
-				check(!CurrentJob->bFinalized);
-				CurrentJob->bFinalized = true;
-				CurrentJob->bFailedRemovingUnused = false;
+			int32 NumStageJobs = -1;
+			OutputFile << NumStageJobs;
 
-				int32 NumStageJobs = -1;
-				OutputFile << NumStageJobs;
-
-				if (NumStageJobs != CurrentJob->StageJobs.Num())
-				{
+			if (NumStageJobs != CurrentJob->StageJobs.Num())
+			{
 					FString Text = FString::Printf(TEXT("Worker returned %u stage pipeline jobs, %u expected"), NumStageJobs, CurrentJob->StageJobs.Num());
 					ModalErrorOrLog(Text, OutputFile.Tell(), FileSize);
 				}
 				else
 				{
-					CurrentJob->bSucceeded = true;
-					for (int32 Index = 0; Index < NumStageJobs; Index++)
-					{
-						FShaderCompileJob* SingleJob = CurrentJob->StageJobs[Index];
-						// cannot reissue a single stage of a pipeline job
-						ReadSingleJob(SingleJob, OutputFile);
+			CurrentJob->bSucceeded = true;
+			for (int32 Index = 0; Index < NumStageJobs; Index++)
+			{
+				FShaderCompileJob* SingleJob = CurrentJob->StageJobs[Index];
+				// cannot reissue a single stage of a pipeline job
+				ReadSingleJob(SingleJob, OutputFile);
 						CurrentJob->bFailedRemovingUnused = CurrentJob->bFailedRemovingUnused || SingleJob->Output.bFailedRemovingUnused;
-						CurrentJob->bSucceeded = CurrentJob->bSucceeded && SingleJob->bSucceeded;
-					}
-				}
+				CurrentJob->bSucceeded = CurrentJob->bSucceeded && SingleJob->bSucceeded;
 			}
+		}
+	}
 		}
 	}
 	
@@ -2210,7 +2210,7 @@ void FShaderCompileThreadRunnable::OnMachineResourcesChanged()
 			bWaitForWorkersToShutdown = Manager->NumShaderCompilingThreads < static_cast<uint32>(WorkerInfos.Num());
 			for (int32 Index = WorkerInfos.Num() - 1;
 				static_cast<uint32>(Index) >= Manager->NumShaderCompilingThreads; --Index)
-			{
+	{
 				WorkerInfos[Index]->bAvailable = false;
 			}
 		}
@@ -2227,7 +2227,7 @@ void FShaderCompileThreadRunnable::OnMachineResourcesChanged()
 			UE_LOG(LogShaderCompilers, Warning, TEXT("OnMachineResourcesChanged timedout waiting %.0f seconds for WorkerInfos to complete. Workers will remain allocated."),
 				(float)(CurrentTime - StartTime));
 			break;
-		}
+	}
 
 		FScopeLock WorkerScopeLock(&WorkerInfosLock);
 		for (int32 Index = WorkerInfos.Num() - 1;
@@ -4634,7 +4634,7 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 							*LegacyShaderPlatformToShaderFormat(ShaderMapToUseForRendering->GetShaderPlatform()).ToString());
 						for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
 						{
-							UE_LOG(LogShaders, Warning, TEXT("  %s"), *Errors[ErrorIndex]);
+							UE_LOG(LogShaders, Warning, TEXT("	%s"), *Errors[ErrorIndex]);
 						}
 					}
 				}
@@ -4660,7 +4660,7 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 						// Log the errors unsuppressed before the fatal error, so it's always obvious from the log what the compile error was
 						for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
 						{
-							ErrorString += FString::Printf(TEXT("  %s\n"), *Errors[ErrorIndex]);
+							ErrorString += FString::Printf(TEXT("	%s\n"), *Errors[ErrorIndex]);
 						}
 
 						ErrorString += FString::Printf(TEXT("Failed to compile default material %s!"), *Material->GetBaseMaterialPathName());
@@ -5408,26 +5408,42 @@ static void GenerateUniformBufferStructMember(FString& Result, const FShaderPara
 ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform ShaderPlatform)
 {
 	// Find the InstancedView uniform buffer struct
+	const FShaderParametersMetadata* View = nullptr;
 	const FShaderParametersMetadata* InstancedView = nullptr;
+
 	for (TLinkedList<FShaderParametersMetadata*>::TIterator StructIt(FShaderParametersMetadata::GetStructList()); StructIt; StructIt.Next())
 	{
+		if (StructIt->GetShaderVariableName() == FString(TEXT("View")))
+		{
+			View = *StructIt;
+		}
+
 		if (StructIt->GetShaderVariableName() == FString(TEXT("InstancedView")))
 		{
 			InstancedView = *StructIt;
+		}
+
+		if (View && InstancedView)
+		{
 			break;
 		}
 	}
+	checkSlow(View != nullptr);
 	checkSlow(InstancedView != nullptr);
-	const TArray<FShaderParametersMetadata::FMember>& StructMembers = InstancedView->GetMembers();
+
+	const TArray<FShaderParametersMetadata::FMember>& StructMembersView = View->GetMembers();
+	const TArray<FShaderParametersMetadata::FMember>& StructMembersInstanced = InstancedView->GetMembers();
 
 	// ViewState definition
 	Result =  "struct ViewState\r\n";
 	Result += "{\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
+	for (int32 MemberIndex = 0; MemberIndex < StructMembersInstanced.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
 		FString MemberDecl;
-		GenerateUniformBufferStructMember(MemberDecl, StructMembers[MemberIndex], ShaderPlatform);
+		// ViewState is only supposed to contain InstancedView members however we want their original type and array-length instead of their representation in the instanced array
+		// GPUSceneViewId for example needs to return 	uint GPUSceneViewId; and not uint4 InstancedView_GPUSceneViewId[2];
+		// and that initial representation is in StructMembersView
+		GenerateUniformBufferStructMember(MemberDecl, StructMembersView[MemberIndex], ShaderPlatform);
 		Result += FString::Printf(TEXT("\t%s;\r\n"), *MemberDecl);
 	}
 	Result += "\tFLWCInverseMatrix WorldToClip;\r\n";
@@ -5448,9 +5464,9 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform Sha
 	Result += "ViewState GetPrimaryView()\r\n";
 	Result += "{\r\n";
 	Result += "\tViewState Result;\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
+	for (int32 MemberIndex = 0; MemberIndex < StructMembersInstanced.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
+		const FShaderParametersMetadata::FMember& Member = StructMembersView[MemberIndex];
 		Result += FString::Printf(TEXT("\tResult.%s = View.%s;\r\n"), Member.GetName(), Member.GetName());
 	}
 	Result += "\tFinalizeViewState(Result);\r\n";
@@ -5458,27 +5474,53 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result, EShaderPlatform Sha
 	Result += "}\r\n";
 
 	// GetInstancedView definition
-	Result += "ViewState GetInstancedView()\r\n";
+	// This function has the side-effect of overwriting View with InstancedView values.
+	// This way, the View buffer is no longer referenced, and does not need to be bound.
+	Result += "#if (INSTANCED_STEREO || MOBILE_MULTI_VIEW)\r\n";
+	Result += "ViewState GetInstancedView(uint ViewIndex)\r\n";
 	Result += "{\r\n";
 	Result += "\tViewState Result;\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
+	for (int32 MemberIndex = 0; MemberIndex < StructMembersInstanced.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s;\r\n"), Member.GetName(), Member.GetName());
-	}
-	Result += "\tFinalizeViewState(Result);\r\n";
-	Result += "\treturn Result;\r\n";
-	Result += "}\r\n";
-	
-	// ResolveView definition for metal, this allows us to change the branch to a conditional move in the cross compiler
-	Result += "#if COMPILER_METAL && (COMPILER_HLSLCC == 1)\r\n";
-	Result += "ViewState ResolveView(uint ViewIndex)\r\n";
-	Result += "{\r\n";
-	Result += "\tViewState Result;\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
-	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		Result += FString::Printf(TEXT("\tResult.%s = (ViewIndex == 0) ? View.%s : InstancedView.%s;\r\n"), Member.GetName(), Member.GetName(), Member.GetName());
+		const FShaderParametersMetadata::FMember& ViewMember = StructMembersView[MemberIndex];
+		const FShaderParametersMetadata::FMember& InstancedViewMember = StructMembersInstanced[MemberIndex];
+
+		FString ViewMemberTypeName;
+		ViewMember.GenerateShaderParameterType(ViewMemberTypeName, ShaderPlatform);
+
+		// this code avoids an assumption that instanced buffer only supports 2 views, to be future-proof
+		if (ViewMember.GetNumElements() >= 1 && (InstancedViewMember.GetNumElements() >= 2 * ViewMember.GetNumElements()))
+		{
+			// if View has an array (even 1-sized) for this index, and InstancedView has Nx (N>=2) the element count -> per-view array
+			// Result.TranslucencyLightingVolumeMin[0] = (float4) InstancedView_TranslucencyLightingVolumeMin[ViewIndex * 2 + 0];
+			checkf((InstancedViewMember.GetNumElements() % ViewMember.GetNumElements()) == 0, TEXT("Per-view arrays are expected to be stored in an array that is an exact multiple of the original array."));
+			for (uint32 ElementIndex = 0; ElementIndex < ViewMember.GetNumElements(); ElementIndex++)
+			{
+				Result += FString::Printf(TEXT("\tResult.%s[%u] = (%s) InstancedView.%s[ViewIndex * %u + %u];\r\n"),
+					ViewMember.GetName(), ElementIndex, *ViewMemberTypeName, InstancedViewMember.GetName(), ViewMember.GetNumElements(), ElementIndex);
+			}
+		}
+		else if (InstancedViewMember.GetNumElements() > 1 && ViewMember.GetNumElements() == 0)
+		{
+			// if View has a scalar field for this index, and InstancedView has an array with >1 elements -> per-view scalar
+			// 	Result.TranslatedWorldToClip = (float4x4) InstancedView_TranslatedWorldToClip[ViewIndex];
+			Result += FString::Printf(TEXT("\tResult.%s = (%s) InstancedView.%s[ViewIndex];\r\n"),
+				ViewMember.GetName(), *ViewMemberTypeName, InstancedViewMember.GetName());
+		}
+		else if (InstancedViewMember.GetNumElements() == ViewMember.GetNumElements())
+		{
+			// if View has the same number of elements for this index as InstancedView, it's backed by a view-dependent array, assume a view-independent field
+			// 	Result.TemporalAAParams = InstancedView_TemporalAAParams;
+			Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s;\r\n"),
+				ViewMember.GetName(), InstancedViewMember.GetName());
+		}
+		else
+		{
+			// something unexpected, better crash now rather than generate wrong shader code and poison DDC 
+			UE_LOG(LogShaderCompilers, Fatal, TEXT("Don't know how to copy View buffers' field %s (NumElements=%d) from InstancedView field %s (NumElements=%d)"),
+				ViewMember.GetName(), ViewMember.GetNumElements(), InstancedViewMember.GetName(), InstancedViewMember.GetNumElements()
+			);
+		}
 	}
 	Result += "\tFinalizeViewState(Result);\r\n";
 	Result += "\treturn Result;\r\n";
@@ -5791,6 +5833,12 @@ void GlobalBeginCompileShader(
 		{
 			GShaderCompilingManager->SuppressWarnings(ShaderPlatform);
 		}
+
+		// AppSpaceWarp
+		if (SupportsSpaceWarp(ShaderPlatform))
+		{
+			Input.Environment.SetDefine(TEXT("SUPPORT_VR_FRAME_EXTRAPOLATION"), true);
+		}
 	}
 
 	ShaderType->AddReferencedUniformBufferIncludes(Input.Environment, Input.SourceFilePrefix, ShaderPlatform);
@@ -5849,8 +5897,8 @@ void GlobalBeginCompileShader(
 	{
 		Input.Environment.CompilerFlags.Add(CFLAG_NoFastMath);
 	}
-    
-    {
+	
+	{
         static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.FloatPrecisionMode"));
         Input.Environment.FullPrecisionInPS = CVar ? (CVar->GetInt() == EMobileFloatPrecisionMode::Full) : false;
     }
@@ -6924,27 +6972,27 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 				bool bOutdated = OutdatedShaderTypes && OutdatedShaderTypes->Contains(GlobalShaderType);
 				TShaderRef<FShader> GlobalShader = GlobalShaderMap->GetShader(GlobalShaderType, PermutationId);
 				if (bOutdated || !GlobalShader.IsValid())
+			{
+				if (bErrorOnMissing)
 				{
-					if (bErrorOnMissing)
-					{
-						UE_LOG(LogShaders, Fatal, TEXT("Missing global shader %s's permutation %i, Please make sure cooking was successful."),
-							GlobalShaderType->GetName(), PermutationId);
-					}
-
-					if (OutdatedShaderTypes)
-					{
-						// Remove old shader, if it exists
-						GlobalShaderMap->RemoveShaderTypePermutaion(GlobalShaderType, PermutationId);
-					}
-
-					// Compile this global shader type.
-					FGlobalShaderTypeCompiler::BeginCompileShader(GlobalShaderType, PermutationId, Platform, PermutationFlags, GlobalShaderJobs);
-					//TShaderTypePermutation<const FShaderType> ShaderTypePermutation(GlobalShaderType, PermutationId);
-					//check(!SharedShaderJobs.Find(ShaderTypePermutation));
-					//SharedShaderJobs.Add(ShaderTypePermutation, Job);
-					PermutationCountToCompile++;
+					UE_LOG(LogShaders, Fatal, TEXT("Missing global shader %s's permutation %i, Please make sure cooking was successful."),
+						GlobalShaderType->GetName(), PermutationId);
 				}
+
+				if (OutdatedShaderTypes)
+				{
+					// Remove old shader, if it exists
+					GlobalShaderMap->RemoveShaderTypePermutaion(GlobalShaderType, PermutationId);
+				}
+
+				// Compile this global shader type.
+				FGlobalShaderTypeCompiler::BeginCompileShader(GlobalShaderType, PermutationId, Platform, PermutationFlags, GlobalShaderJobs);
+				//TShaderTypePermutation<const FShaderType> ShaderTypePermutation(GlobalShaderType, PermutationId);
+				//check(!SharedShaderJobs.Find(ShaderTypePermutation));
+				//SharedShaderJobs.Add(ShaderTypePermutation, Job);
+				PermutationCountToCompile++;
 			}
+		}
 		}
 
 		ensureMsgf(
@@ -7309,59 +7357,59 @@ static bool TryLoadCookedGlobalShaderMap(EShaderPlatform Platform, FScopedSlowTa
 {
 	SlowTask.EnterProgressFrame(50);
 
-	bool bLoadedFromCacheFile = false;
+		bool bLoadedFromCacheFile = false;
 
-	// Load from the override global shaders first, this allows us to hot reload in cooked / pak builds
-	TArray<uint8> GlobalShaderData;
-	const bool bAllowOverrideGlobalShaders = !WITH_EDITOR && !UE_BUILD_SHIPPING;
-	if (bAllowOverrideGlobalShaders)
-	{
-		FString OverrideGlobalShaderCacheFilename = GetGlobalShaderCacheOverrideFilename(Platform);
-		FPaths::MakeStandardFilename(OverrideGlobalShaderCacheFilename);
-
-		bool bFileExist = IFileManager::Get().FileExists(*OverrideGlobalShaderCacheFilename);
-
-		if (!bFileExist)
-		{
-			UE_LOG(LogShaders, Display, TEXT("%s doesn't exists"), *OverrideGlobalShaderCacheFilename);
-		}
-		else
-		{
-			bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *OverrideGlobalShaderCacheFilename, FILEREAD_Silent);
-
-			if (bLoadedFromCacheFile)
+			// Load from the override global shaders first, this allows us to hot reload in cooked / pak builds
+			TArray<uint8> GlobalShaderData;
+			const bool bAllowOverrideGlobalShaders = !WITH_EDITOR && !UE_BUILD_SHIPPING;
+			if (bAllowOverrideGlobalShaders)
 			{
-				UE_LOG(LogShaders, Display, TEXT("%s has been loaded successfully"), *OverrideGlobalShaderCacheFilename);
+				FString OverrideGlobalShaderCacheFilename = GetGlobalShaderCacheOverrideFilename(Platform);
+				FPaths::MakeStandardFilename(OverrideGlobalShaderCacheFilename);
+
+				bool bFileExist = IFileManager::Get().FileExists(*OverrideGlobalShaderCacheFilename);
+
+				if (!bFileExist)
+				{
+					UE_LOG(LogShaders, Display, TEXT("%s doesn't exists"), *OverrideGlobalShaderCacheFilename);
+				}
+				else
+				{
+					bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *OverrideGlobalShaderCacheFilename, FILEREAD_Silent);
+
+					if (bLoadedFromCacheFile)
+					{
+						UE_LOG(LogShaders, Display, TEXT("%s has been loaded successfully"), *OverrideGlobalShaderCacheFilename);
+					}
+					else
+					{
+						UE_LOG(LogShaders, Error, TEXT("%s failed to load"), *OverrideGlobalShaderCacheFilename);
+					}
+				}
+			}
+
+			// is the data already loaded?
+			int64 PreloadedSize = 0;
+			void* PreloadedData = nullptr;
+			if (!bLoadedFromCacheFile)
+			{
+				PreloadedData = GGlobalShaderPreLoadFile.TakeOwnershipOfLoadedData(&PreloadedSize);
+			}
+
+			if (PreloadedData != nullptr)
+			{
+				FLargeMemoryReader MemoryReader((uint8*)PreloadedData, PreloadedSize, ELargeMemoryReaderFlags::TakeOwnership);
+				GGlobalShaderMap[Platform]->LoadFromGlobalArchive(MemoryReader);
+		bLoadedFromCacheFile = true;
 			}
 			else
 			{
-				UE_LOG(LogShaders, Error, TEXT("%s failed to load"), *OverrideGlobalShaderCacheFilename);
-			}
-		}
-	}
-
-	// is the data already loaded?
-	int64 PreloadedSize = 0;
-	void* PreloadedData = nullptr;
-	if (!bLoadedFromCacheFile)
-	{
-		PreloadedData = GGlobalShaderPreLoadFile.TakeOwnershipOfLoadedData(&PreloadedSize);
-	}
-
-	if (PreloadedData != nullptr)
-	{
-		FLargeMemoryReader MemoryReader((uint8*)PreloadedData, PreloadedSize, ELargeMemoryReaderFlags::TakeOwnership);
-		GGlobalShaderMap[Platform]->LoadFromGlobalArchive(MemoryReader);
-		bLoadedFromCacheFile = true;
-	}
-	else
-	{
-		FString GlobalShaderCacheFilename = FPaths::GetRelativePathToRoot() / GetGlobalShaderCacheFilename(Platform);
-		FPaths::MakeStandardFilename(GlobalShaderCacheFilename);
-		if (!bLoadedFromCacheFile)
-		{
-			bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *GlobalShaderCacheFilename, FILEREAD_Silent);
-		}
+				FString GlobalShaderCacheFilename = FPaths::GetRelativePathToRoot() / GetGlobalShaderCacheFilename(Platform);
+				FPaths::MakeStandardFilename(GlobalShaderCacheFilename);
+				if (!bLoadedFromCacheFile)
+				{
+					bLoadedFromCacheFile = FFileHelper::LoadFileToArray(GlobalShaderData, *GlobalShaderCacheFilename, FILEREAD_Silent);
+				}
 
 		if (bLoadedFromCacheFile)
 		{
@@ -7377,16 +7425,16 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 {
 	// No global shaders needed on dedicated server or clients that use NullRHI. Note that cook commandlet needs to have them, even if it is not allowed to render otherwise.
 	if (FPlatformProperties::IsServerOnly() || (!IsRunningCommandlet() && !FApp::CanEverRender()))
-	{
+				{
 		if (!GGlobalShaderMap[Platform])
-		{
+					{
 			GGlobalShaderMap[Platform] = new FGlobalShaderMap(Platform);
 		}
-		return;
-	}
+						return;
+					}
 
 	if (bRefreshShaderMap || GGlobalShaderTargetPlatform[Platform] != TargetPlatform)
-	{
+					{
 		// defer the deletion the current global shader map, delete the previous one if it is still valid
 		delete GGlobalShaderMap_DeferredDeleteCopy[Platform];	// deleting null is Okay
 		GGlobalShaderMap_DeferredDeleteCopy[Platform] = GGlobalShaderMap[Platform];
@@ -7396,7 +7444,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 
 		// make sure we look for updated shader source files
 		FlushShaderFileCache();
-	}
+				}
 
 	// If the global shader map hasn't been created yet, create it.
 	if (!GGlobalShaderMap[Platform])
@@ -7507,7 +7555,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 						DDCMisses++;
 					}
 					++BufferIndex;
-				}
+					}
 
 				GShaderCompilerStats->AddDDCHit(DDCHits);
 				GShaderCompilerStats->AddDDCMiss(DDCMisses);
@@ -7529,7 +7577,7 @@ void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* Tar
 				FMessageDialog::Open(EAppMsgType::Ok, Message);
 				FPlatformMisc::RequestExit(false);
 				return;
-			}
+				}
 			else
 			{
 				UE_LOG(LogShaders, Fatal, TEXT("%s"), *Message.ToString());
@@ -7876,22 +7924,22 @@ void RecompileShadersForRemote(
 
 			// Only compile for the desired platform if requested
 			if (ShaderPlatform == Args.ShaderPlatform || Args.ShaderPlatform == SP_NumPlatforms)
-			{
+		{
 				if (Args.CommandType == ODSCRecompileCommand::SingleShader &&
 					Args.ShaderTypesToLoad.Len() > 0)
-				{
+		{
 					TArray<const FShaderType*> ShaderTypes = FShaderType::GetShaderTypesByFilename(*Args.ShaderTypesToLoad);
 					TArray<const FShaderPipelineType*> ShaderPipelineTypes = FShaderPipelineType::GetShaderPipelineTypesByFilename(*Args.ShaderTypesToLoad);
 
 					for (const FShaderType* ShaderType : ShaderTypes)
-					{
+			{
 						UE_LOG(LogShaders, Display, TEXT("\t%s..."), ShaderType->GetName());
-					}
+		}
 
 					CompileGlobalShaderMapForRemote(ShaderTypes, ShaderPipelineTypes, ShaderPlatform, TargetPlatform, Args.GlobalShaderMap);
-				}
+	}
 				else if (Args.CommandType == ODSCRecompileCommand::Global ||
-						 Args.CommandType == ODSCRecompileCommand::Changed)
+					Args.CommandType == ODSCRecompileCommand::Changed)
 				{
 					// Explicitly get outdated types for global shaders.
 					const FGlobalShaderMap* ShaderMap = GGlobalShaderMap[ShaderPlatform];
@@ -8615,7 +8663,7 @@ void FShaderJobCache::Add(const FJobInputHash& Hash, const FJobCachedOutput& Con
 
 		CurrentlyAllocatedMemory += Outputs.GetAllocatedSize();
 		CurrentlyAllocatedMemory -= OutputsOriginalSize;
-	}
+					}
 
 	CurrentlyAllocatedMemory += InputHashToOutput.GetAllocatedSize();
 	CurrentlyAllocatedMemory -= InputHashToOutputOriginalSize;
@@ -8626,12 +8674,12 @@ void FShaderJobCache::RemoveByInputHash(const FJobInputHash& InputHash)
 	const FJobOutputHash* FoundOutputHash = InputHashToOutput.Find(InputHash);
 
 	if (FoundOutputHash)
-	{
+							{
 		const FJobOutputHash& OutputHash = *FoundOutputHash;
 		FStoredOutput** FoundStoredOutput = Outputs.Find(OutputHash);
 
 		if (FoundStoredOutput)
-		{
+								{
 			FStoredOutput* StoredOutput = *FoundStoredOutput;
 			checkf(StoredOutput, TEXT("Invalid entry found in FShaderJobCache Output hash table. All values are expected to be valid pointers."));
 
@@ -8639,7 +8687,7 @@ void FShaderJobCache::RemoveByInputHash(const FJobInputHash& InputHash)
 
 			// Decrement reference count and remove cached object if it's no longer referenced by any input hashes
 			if (StoredOutput->Release() == 0)
-			{
+							{
 				Outputs.Remove(OutputHash);
 				CurrentlyAllocatedMemory -= OutputSize;
 			}

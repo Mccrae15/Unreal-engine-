@@ -263,6 +263,14 @@
 	#endif
 #endif
 
+#ifndef VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
+	#ifdef VK_QCOM_fragment_density_map_offset
+		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET		1
+	#else
+		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET		0
+	#endif
+#endif
+
 #ifndef VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	#ifdef VK_KHR_fragment_shading_rate
 		#define VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE 1

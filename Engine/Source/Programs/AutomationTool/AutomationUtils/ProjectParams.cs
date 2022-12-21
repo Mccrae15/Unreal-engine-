@@ -343,6 +343,7 @@ namespace AutomationTool
 			this.Stage = InParams.Stage;
 			this.SkipStage = InParams.SkipStage;
             this.StageDirectoryParam = InParams.StageDirectoryParam;
+			this.DeploySoToDevice = InParams.DeploySoToDevice;
 			this.Manifests = InParams.Manifests;
             this.CreateChunkInstall = InParams.CreateChunkInstall;
 			this.SkipEncryption = InParams.SkipEncryption;
@@ -486,7 +487,7 @@ namespace AutomationTool
 			string BasedOnReleaseVersionBasePath = null,
 			string ReferenceContainerGlobalFileName = null,
 			string ReferenceContainerCryptoKeys = null,
-			bool? GeneratePatch = null,
+            bool? GeneratePatch = null,
 			bool? AddPatchLevel = null,
 			bool? StageBaseReleasePaks = null,
             string DiscVersion = null,
@@ -542,6 +543,7 @@ namespace AutomationTool
             bool? PrePak = null,
             bool? SkipStage = null,
 			bool? Stage = null,
+			bool? DeploySoToDevice = null,
 			bool? Manifests = null,
             bool? CreateChunkInstall = null,
 			bool? SkipEncryption = null,
@@ -665,7 +667,7 @@ namespace AutomationTool
 			this.StageBaseReleasePaks = GetParamValueIfNotSpecified(Command, StageBaseReleasePaks, this.StageBaseReleasePaks, "StageBaseReleasePaks");
 			this.DiscVersion = ParseParamValueIfNotSpecified(Command, DiscVersion, "DiscVersion", String.Empty);
 			this.AdditionalCookerOptions = ParseParamValueIfNotSpecified(Command, AdditionalCookerOptions, "AdditionalCookerOptions", String.Empty);
-		
+			
 			DLCName = ParseParamValueIfNotSpecified(Command, DLCName, "DLCName", String.Empty);
 			if (!String.IsNullOrEmpty(DLCName))
 			{
@@ -810,6 +812,7 @@ namespace AutomationTool
 			this.OptionalFileStagingDirectory = ParseParamValueIfNotSpecified(Command, OptionalFileStagingDirectory, "optionalfilestagingdirectory", String.Empty, true);
 			this.OptionalFileInputDirectory = ParseParamValueIfNotSpecified(Command, OptionalFileInputDirectory, "optionalfileinputdirectory", String.Empty, true);
 			this.CookerSupportFilesSubdirectory = ParseParamValueIfNotSpecified(Command, CookerSupportFilesSubdirectory, "CookerSupportFilesSubdirectory", String.Empty, true);
+			this.DeploySoToDevice = GetParamValueIfNotSpecified(Command, DeploySoToDevice, this.DeploySoToDevice, "deploysotodevice");
 			this.bCodeSign = GetOptionalParamValueIfNotSpecified(Command, CodeSign, CommandUtils.IsBuildMachine, "CodeSign", "NoCodeSign");
 			this.bTreatNonShippingBinariesAsDebugFiles = GetParamValueIfNotSpecified(Command, TreatNonShippingBinariesAsDebugFiles, false, "TreatNonShippingBinariesAsDebugFiles");
 			this.bUseExtraFlavor = GetParamValueIfNotSpecified(Command, UseExtraFlavor, false, "UseExtraFlavor");
@@ -980,7 +983,7 @@ namespace AutomationTool
 				this.SessionLabel += "=" + SessionLabel;	
 			}
 
-				if (ClientConfigsToBuild == null)
+			if (ClientConfigsToBuild == null)
 			{
 				if (Command != null)
 				{
@@ -1459,6 +1462,12 @@ namespace AutomationTool
 		public bool SkipStage { private set; get; }
 
 		/// <summary>
+		/// Shared: true if compiled .so sould be copied directly to device for Oculus. Experimental.
+		/// </summary>
+		[Help("deploysotodevice", "for Oculus, deploy compiled .so directly to device. Requires an installed development apk. Experimental")]
+		public bool DeploySoToDevice { private set; get; }
+
+		/// <summary>
 		/// Shared: true if this build is using streaming install manifests, command line: -manifests
 		/// </summary>
 		[Help("manifests", "generate streaming install manifests when cooking data")]
@@ -1519,7 +1528,7 @@ namespace AutomationTool
 
 		[Help("CookerSupportFilesSubdirectory=subdir", "Subdirectory under staging to copy CookerSupportFiles (as set in Build.cs files). -CookerSupportFilesSubdirectory=SDK")]
 		public string CookerSupportFilesSubdirectory;
-		
+        
 		[Help("unrealexe=ExecutableName", "Name of the Unreal Editor executable, i.e. -unrealexe=UnrealEditor.exe")]
 		public string UnrealExe;
 
@@ -1555,7 +1564,7 @@ namespace AutomationTool
 		[Help("createappbundle", "When archiving for Mac, set this to true to package it in a .app bundle instead of normal loose files")]
 		public bool CreateAppBundle;
 
-		/// <summary>
+        /// <summary>
 		/// Keeps track of any '-ini:type:[section]:value' arguments on the command line. These will override cached config settings for the current process, and can be passed along to other tools.
 		/// </summary>
 		public List<string> ConfigOverrideParams = new List<string>();
@@ -1772,9 +1781,9 @@ namespace AutomationTool
         public bool StageBaseReleasePaks;
 
 		/// <summary>
-		/// Name of dlc to cook and package (if this paramter is supplied cooks the dlc and packages it into the dlc directory)
-		/// </summary>
-		public FileReference DLCFile;
+        /// Name of dlc to cook and package (if this paramter is supplied cooks the dlc and packages it into the dlc directory)
+        /// </summary>
+        public FileReference DLCFile;
 
         /// <summary>
         /// Enable cooking of engine content when cooking dlc 
@@ -3156,6 +3165,7 @@ namespace AutomationTool
                 CommandUtils.LogLog("SkipStage={0}", SkipStage);
 				CommandUtils.LogLog("Stage={0}", Stage);
 				CommandUtils.LogLog("RehydrateAssets={0}", RehydrateAssets);
+				CommandUtils.LogLog("DeploySoToDevice={0}", DeploySoToDevice);
 				CommandUtils.LogLog("bTreatNonShippingBinariesAsDebugFiles={0}", bTreatNonShippingBinariesAsDebugFiles);
 				CommandUtils.LogLog("bUseExtraFlavor={0}", bUseExtraFlavor);
                 CommandUtils.LogLog("StageDirectoryParam={0}", StageDirectoryParam);

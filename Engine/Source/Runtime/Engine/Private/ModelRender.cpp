@@ -566,6 +566,8 @@ public:
 		Result.bShadowRelevance = IsShadowCast(View);
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
 		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
+		// AppSpaceWarp
+		Result.bVelocityRelevance = View->bIncludeStaticInVelocityPass ? Result.bOpaque && Result.bRenderInMainPass : false;
 		return Result;
 	}
 

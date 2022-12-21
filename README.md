@@ -1,3 +1,38 @@
+Oculus-VR/UnrealEngine
+=============
+ 
+This is the 5.1 preview branch for the Meta fork of UE5. The current public release is [oculus-5.0.3](https://github.com/Oculus-VR/UnrealEngine/releases/tag/oculus-5.0.3-release-1.79.0-v47.1)
+
+#### Known issues in this preview
+* Controller Input events are not consistent when using enhanced input actions.
+* Controller models rotations are offset when building apps using the VR Template sample hand models.
+ 
+Welcome to the Meta fork of Epic’s Unreal Engine. We recommend you use our fork whenever building apps for Meta Quest. In addition to the OVRPlugin, this fork contains features, samples, and fixes not yet available in Epic’s repo.
+
+You can find the latest UE5 plugin release notes [here](https://developer.oculus.com/downloads/package/unreal-engine-5-integration/).
+ 
+#### Features
+* [Application SpaceWarp (AppSW)](https://developer.oculus.com/documentation/unreal/unreal-asw/)
+* [Mobile Tonemap Subpass](https://developer.oculus.com/blog/graphics-showcase-using-vulkan-subpasses-in-ue4-for-performant-tone-mapping-on-quest/)
+* [OS Splash Screen](https://developer.oculus.com/blog/instant-runtime-driven-splash-screens/)
+* [Stereo Layer Bicubic Filtering](https://developer.oculus.com/documentation/unreal/unreal-overlay/)
+* [Perfetto](https://developer.oculus.com/documentation/unreal/ts-odh-logs-metrics/#run-perfetto-trace)
+* [Iteration Time Improvement](https://developer.oculus.com/documentation/unreal/unreal-reduce-app-deploy-time/)
+ 
+#### Fixes
+* PSO Cache
+* Fastbuild
+ 
+In addition to those listed, there are numerous other updates. Many of them are related to the Vulkan renderer.
+ 
+#### Samples
+* [Samples/Oculus/](/Samples/Oculus/)
+ 
+Additional samples can be found in the [Oculus Samples GitHub.](
+https://github.com/oculus-samples)
+ 
+Below you will find the current README from Epic’s repo.
+
 Unreal Engine
 =============
 

@@ -169,8 +169,40 @@ void FVulkanCmdBuffer::EndUniformUpdateBarrier()
 void FVulkanCmdBuffer::EndRenderPass()
 {
 	checkf(IsInsideRenderPass(), TEXT("Can't EndRP as we're NOT inside one! CmdBuffer 0x%p State=%d"), CommandBufferHandle, (int32)State);
-	VulkanRHI::vkCmdEndRenderPass(CommandBufferHandle);
+#if VULKAN_SUPPORTS_RENDERPASS2
+	if (Device->GetOptionalExtensions().HasKHRRenderPass2)
+	{
+		VkSubpassEndInfo SubpassInfo;
+		ZeroVulkanStruct(SubpassInfo, VK_STRUCTURE_TYPE_SUBPASS_END_INFO);
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
+		VkOffset2D Offsets[2];
+		VkSubpassFragmentDensityMapOffsetEndInfoQCOM offsetInfo;
+		if (Device->GetOptionalExtensions().HasQcomFragmentDensityMapOffset && GVulkanUseQcomFragmentDensityMapOffsets && RenderPassProperties.bHasFragmentDensityMap)
+		{
+			Offsets[0].x = (GVulkanQcomFragmentDensityMapOffsets[0].X / GRHIVariableRateShadingImageOffsetGranularity.X) * GRHIVariableRateShadingImageOffsetGranularity.X;
+			Offsets[0].y = (GVulkanQcomFragmentDensityMapOffsets[0].Y / GRHIVariableRateShadingImageOffsetGranularity.Y) * GRHIVariableRateShadingImageOffsetGranularity.Y;
+			Offsets[1].x = (GVulkanQcomFragmentDensityMapOffsets[1].X / GRHIVariableRateShadingImageOffsetGranularity.X) * GRHIVariableRateShadingImageOffsetGranularity.X;
+			Offsets[1].y = (GVulkanQcomFragmentDensityMapOffsets[1].Y / GRHIVariableRateShadingImageOffsetGranularity.Y) * GRHIVariableRateShadingImageOffsetGranularity.Y;
+
+			ZeroVulkanStruct(offsetInfo, VK_STRUCTURE_TYPE_SUBPASS_FRAGMENT_DENSITY_MAP_OFFSET_END_INFO_QCOM);
+			offsetInfo.sType = (VkStructureType)VK_STRUCTURE_TYPE_SUBPASS_FRAGMENT_DENSITY_MAP_OFFSET_END_INFO_QCOM;
+			offsetInfo.pFragmentDensityOffsets = Offsets;
+			offsetInfo.fragmentDensityOffsetCount = 2;
+
+			SubpassInfo.pNext = &offsetInfo;
+		}
+#endif // VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
+		VulkanRHI::vkCmdEndRenderPass2KHR(CommandBufferHandle, &SubpassInfo);
+	}
+	else
+#endif // VULKAN_SUPPORTS_RENDERPASS2
+	{
+		VulkanRHI::vkCmdEndRenderPass(CommandBufferHandle);
+	}
+
 	State = EState::IsInsideBegin;
+	RenderPassProperties = {};
 }
 
 void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues)
@@ -216,6 +248,7 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 		VulkanRHI::vkCmdBeginRenderPass(CommandBufferHandle, &Info, VK_SUBPASS_CONTENTS_INLINE);
 	}
 
+	RenderPassProperties.bHasFragmentDensityMap = Layout.GetHasFragmentDensityAttachment();
 	State = EState::IsInsideRenderPass;
 
 	// Acquire a descriptor pool set on a first render pass

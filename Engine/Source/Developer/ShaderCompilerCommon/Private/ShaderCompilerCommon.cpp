@@ -14,19 +14,19 @@ IMPLEMENT_MODULE(FDefaultModuleImpl, ShaderCompilerCommon);
 int16 GetNumUniformBuffersUsed(const FShaderCompilerResourceTable& InSRT)
 {
 	auto CountLambda = [&](const TArray<uint32>& In)
-					{
-						int16 LastIndex = -1;
-						for (int32 i = 0; i < In.Num(); ++i)
-						{
-							auto BufferIndex = FRHIResourceTableEntry::GetUniformBufferIndex(In[i]);
-							if (BufferIndex != static_cast<uint16>(FRHIResourceTableEntry::GetEndOfStreamToken()) )
-							{
-								LastIndex = FMath::Max(LastIndex, (int16)BufferIndex);
-							}
-						}
+	{
+		int16 LastIndex = -1;
+		for (int32 i = 0; i < In.Num(); ++i)
+		{
+			auto BufferIndex = FRHIResourceTableEntry::GetUniformBufferIndex(In[i]);
+			if (BufferIndex != static_cast<uint16>(FRHIResourceTableEntry::GetEndOfStreamToken()))
+			{
+				LastIndex = FMath::Max(LastIndex, (int16)BufferIndex);
+			}
+		}
 
-						return LastIndex + 1;
-					};
+		return LastIndex + 1;
+	};
 	int16 Num = CountLambda(InSRT.SamplerMap);
 	Num = FMath::Max(Num, (int16)CountLambda(InSRT.ShaderResourceViewMap));
 	Num = FMath::Max(Num, (int16)CountLambda(InSRT.TextureMap));
@@ -51,7 +51,7 @@ void BuildResourceTableTokenStream(const TArray<uint32>& InResourceMap, int32 Ma
 
 	// The token stream begins with a table that contains offsets per bound uniform buffer.
 	// This offset provides the start of the token stream.
-	OutTokenStream.AddZeroed(MaxBoundResourceTable+1);
+	OutTokenStream.AddZeroed(MaxBoundResourceTable + 1);
 	auto LastBufferIndex = FRHIResourceTableEntry::GetEndOfStreamToken();
 	for (int32 i = 0; i < SortedResourceMap.Num(); ++i)
 	{
@@ -90,15 +90,15 @@ bool BuildResourceTableMapping(
 	TArray<uint32> ResourceTableUAVs;
 
 	// Go through ALL the members of ALL the UB resources
-	for( auto MapIt = ResourceTableMap.CreateConstIterator(); MapIt; ++MapIt )
+	for (auto MapIt = ResourceTableMap.CreateConstIterator(); MapIt; ++MapIt)
 	{
-		const FString& Name	= MapIt->Key;
+		const FString& Name = MapIt->Key;
 		const FResourceTableEntry& Entry = MapIt->Value;
 
 		uint16 BufferIndex, BaseIndex, Size;
 
 		// If the shaders uses this member (eg View_PerlinNoise3DTexture)...
-		if (ParameterMap.FindParameterAllocation( *Name, BufferIndex, BaseIndex, Size ) )
+		if (ParameterMap.FindParameterAllocation(*Name, BufferIndex, BaseIndex, Size))
 		{
 			ParameterMap.RemoveParameterAllocation(*Name);
 
@@ -109,7 +109,7 @@ bool BuildResourceTableMapping(
 			if (!ParameterMap.FindParameterAllocation(*Entry.UniformBufferName, UniformBufferIndex, UBBaseIndex, UBSize))
 			{
 				UniformBufferIndex = UsedUniformBufferSlots.FindAndSetFirstZeroBit();
-				ParameterMap.AddParameterAllocation(*Entry.UniformBufferName,UniformBufferIndex,0,0,EShaderParameterType::UniformBuffer);
+				ParameterMap.AddParameterAllocation(*Entry.UniformBufferName, UniformBufferIndex, 0, 0, EShaderParameterType::UniformBuffer);
 			}
 
 			// Mark used UB index
@@ -123,7 +123,7 @@ bool BuildResourceTableMapping(
 			MaxBoundResourceTable = FMath::Max<int32>(MaxBoundResourceTable, (int32)UniformBufferIndex);
 
 			auto ResourceMap = FRHIResourceTableEntry::Create(UniformBufferIndex, Entry.ResourceIndex, BaseIndex);
-			switch( Entry.Type )
+			switch (Entry.Type)
 			{
 			case UBMT_TEXTURE:
 			case UBMT_RDG_TEXTURE:
@@ -256,8 +256,8 @@ const TCHAR* FindMatchingBlock(const TCHAR* OpeningCharPtr, char OpenChar, char 
 
 	return nullptr;
 }
-const TCHAR* FindMatchingClosingBrace(const TCHAR* OpeningCharPtr)			{ return FindMatchingBlock(OpeningCharPtr, '{', '}'); };
-const TCHAR* FindMatchingClosingParenthesis(const TCHAR* OpeningCharPtr)	{ return FindMatchingBlock(OpeningCharPtr, '(', ')'); };
+const TCHAR* FindMatchingClosingBrace(const TCHAR* OpeningCharPtr) { return FindMatchingBlock(OpeningCharPtr, '{', '}'); };
+const TCHAR* FindMatchingClosingParenthesis(const TCHAR* OpeningCharPtr) { return FindMatchingBlock(OpeningCharPtr, '(', ')'); };
 
 // See MSDN HLSL 'Symbol Name Restrictions' doc
 inline bool IsValidHLSLIdentifierCharacter(TCHAR Char)
@@ -290,7 +290,7 @@ void ParseHLSLTypeName(const TCHAR* SearchString, const TCHAR*& TypeNameStartPtr
 		{
 			Depth--;
 		}
-		else if (Depth == 0 
+		else if (Depth == 0
 			&& FChar::IsWhitespace(*TypeNameEndPtr)
 			// If we found a '<', we must not accept any whitespace before it
 			&& (!PotentialExtraTypeInfoPtr || *PotentialExtraTypeInfoPtr != '<' || TypeNameEndPtr > PotentialExtraTypeInfoPtr))
@@ -333,8 +333,8 @@ const TCHAR* ParseStructRecursive(
 	const TCHAR* StructStartPtr,
 	FString& UniformBufferName,
 	int32 StructDepth,
-	const FString& StructNamePrefix, 
-	const FString& GlobalNamePrefix, 
+	const FString& StructNamePrefix,
+	const FString& GlobalNamePrefix,
 	TMap<FString, TArray<FUniformBufferMemberInfo>>& UniformBufferNameToMembers)
 {
 	const TCHAR* OpeningBracePtr = FCString::Strstr(StructStartPtr, TEXT("{"));
@@ -381,7 +381,7 @@ const TCHAR* ParseStructRecursive(
 			FString MemberName;
 			const TCHAR* SymbolEndPtr = ParseHLSLSymbolName(MemberTypeEndPtr, MemberName);
 			check(MemberName.Len() > 0);
-			
+
 			MemberSearchPtr = SymbolEndPtr;
 
 			// Skip over trailing tokens '[1];'
@@ -398,8 +398,7 @@ const TCHAR* ParseStructRecursive(
 			NewMemberInfo.GlobalName = NestedGlobalNamePrefix + MemberName;
 			UniformBufferMembers.Add(MoveTemp(NewMemberInfo));
 		}
-	} 
-	while (MemberSearchPtr < LastMemberSemicolon);
+	} while (MemberSearchPtr < LastMemberSemicolon);
 
 	const TCHAR* StructEndPtr = StructNameEndPtr;
 
@@ -426,7 +425,7 @@ bool MatchStructMemberName(const FString& SymbolName, const TCHAR* SearchPtr, co
 		{
 			return false;
 		}
-		
+
 		SearchPtr++;
 
 		if (i < SymbolName.Len() - 1)
@@ -453,21 +452,21 @@ bool MatchStructMemberName(const FString& SymbolName, const TCHAR* SearchPtr, co
 TCHAR* FindNextUniformBufferReference(TCHAR* SearchPtr, const TCHAR* SearchString, uint32 SearchStringLength)
 {
 	TCHAR* FoundPtr = FCString::Strstr(SearchPtr, SearchString);
-	
-	while(FoundPtr)
+
+	while (FoundPtr)
 	{
 		if (FoundPtr == nullptr)
 		{
 			return nullptr;
 		}
-		else if (FoundPtr[SearchStringLength] == '.' || (FoundPtr[SearchStringLength] == ' ' && FoundPtr[SearchStringLength+1] == '.'))
+		else if (FoundPtr[SearchStringLength] == '.' || (FoundPtr[SearchStringLength] == ' ' && FoundPtr[SearchStringLength + 1] == '.'))
 		{
 			return FoundPtr;
 		}
-		
+
 		FoundPtr = FCString::Strstr(FoundPtr + SearchStringLength, SearchString);
 	}
-	
+
 	return nullptr;
 }
 
@@ -902,7 +901,7 @@ void RemoveUniformBuffersFromSource(const FShaderCompilerEnvironment& Environmen
 						check(SearchPtr[MemberNameAsStructMember.Len() + i] != 0);
 						SearchPtr[MemberNameAsStructMember.Len() + i] = ' ';
 					}
-							
+
 					break;
 				}
 			}
@@ -931,7 +930,7 @@ FString ParseText(const TCHAR* StartPtr, const TCHAR*& EndPtr)
 		{
 			Out += *CurrPtr;
 			CurrPtr++;
-		} while (CurrPtr != ClosingBracePtr+1);
+		} while (CurrPtr != ClosingBracePtr + 1);
 	}
 	EndPtr = ClosingBracePtr;
 	return Out;
@@ -991,11 +990,11 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 				const uint32 EntryIndex = Entries.Num();
 				uint32 ValidCharCount = 0;
 				FTextEntry& Entry = Entries.AddDefaulted_GetRef();
-				Entry.Index			= EntryIndex;
-				Entry.Offset		= GlobalCount;
-				Entry.SourceText	= Text;
+				Entry.Index = EntryIndex;
+				Entry.Offset = GlobalCount;
+				Entry.SourceText = Text;
 				ConvertTextToAsciiCharacter(Entry.SourceText, Entry.ConvertedText, Entry.EncodedText);
-				Entry.Hash			= CityHash32((const char*)&Entry.SourceText.GetCharArray(), sizeof(FString::ElementType) * Entry.SourceText.Len());
+				Entry.Hash = CityHash32((const char*)&Entry.SourceText.GetCharArray(), sizeof(FString::ElementType) * Entry.SourceText.Len());
 
 				GlobalCount += Entry.ConvertedText.Len();
 
@@ -1019,7 +1018,7 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 	// 5. Write the function for fetching character for a given entry index
 	const uint32 EntryCount = Entries.Num();
 	FString TextChars;
-	if (EntryCount>0 && GlobalCount>0)
+	if (EntryCount > 0 && GlobalCount > 0)
 	{
 		// 1. Encoded character for each text entry within a single global char array
 		TextChars = FString::Printf(TEXT("static const uint TEXT_CHARS[%d] = {\n"), GlobalCount);
@@ -1030,7 +1029,7 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 		TextChars += TEXT("};\n\n");
 
 		// 2. Offset within the global array
-		TextChars += FString::Printf(TEXT("static const uint TEXT_OFFSETS[%d] = {\n"), EntryCount+1);
+		TextChars += FString::Printf(TEXT("static const uint TEXT_OFFSETS[%d] = {\n"), EntryCount + 1);
 		for (FTextEntry& Entry : Entries)
 		{
 			TextChars += FString::Printf(TEXT("\t%d, // %d: \"%s\"\n"), Entry.Offset, Entry.Index, *Entry.SourceText);
@@ -1052,12 +1051,12 @@ void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource)
 		TextChars += TEXT("uint ShaderPrintGetHash(FShaderPrintText InText)   { return TEXT_HASHES[InText.Index]; }\n");
 	}
 	else
-	{	
+	{
 		TextChars += TEXT("uint ShaderPrintGetChar(uint Index)                { return 0; }\n");
 		TextChars += TEXT("uint ShaderPrintGetOffset(FShaderPrintText InText) { return 0; }\n");
 		TextChars += TEXT("uint ShaderPrintGetHash(FShaderPrintText InText)   { return 0; }\n");
 	}
-	
+
 	// 6. Insert global struct data + print function
 	{
 		const TCHAR* InsertToken = TEXT("GENERATED_SHADER_PRINT");
@@ -1178,24 +1177,24 @@ SHADERCOMPILERCOMMON_API void WriteShaderConductorCommandLine(const FShaderCompi
 	}
 }
 
-static int Mali_ExtractNumberInstructions(const FString &MaliOutput)
+static int OfflineCompiler_ExtractNumberInstructions(const FString& CompilerOutput, const TArray<FString>& InstructionStrings)
 {
 	int ReturnedNum = 0;
 
 	// Parse the instruction count
-	int32 InstructionStringLength = FPlatformString::Strlen(TEXT("Instructions Emitted:"));
-	int32 InstructionsIndex = MaliOutput.Find(TEXT("Instructions Emitted:"));
-
-	// new version of mali offline compiler uses a different string in its output
-	if (InstructionsIndex == INDEX_NONE)
+	int32 InstructionStringLength = 0, InstructionsIndex = 0;
+	for (int i = 0; i < InstructionStrings.Num(); i++)
 	{
-		InstructionStringLength = FPlatformString::Strlen(TEXT("Total instruction cycles:"));
-		InstructionsIndex = MaliOutput.Find(TEXT("Total instruction cycles:"));
+		const FString& InstStr = InstructionStrings[i];
+		InstructionStringLength = InstStr.Len();
+		InstructionsIndex = CompilerOutput.Find(*InstStr);
+		if (InstructionsIndex != INDEX_NONE)
+			break;
 	}
 
-	if (InstructionsIndex != INDEX_NONE && InstructionsIndex + InstructionStringLength < MaliOutput.Len())
+	if (InstructionsIndex != INDEX_NONE && InstructionsIndex + InstructionStringLength < CompilerOutput.Len())
 	{
-		const int32 EndIndex = MaliOutput.Find(TEXT("\n"), ESearchCase::IgnoreCase, ESearchDir::FromStart, InstructionsIndex + InstructionStringLength);
+		const int32 EndIndex = CompilerOutput.Find(TEXT("\n"), ESearchCase::IgnoreCase, ESearchDir::FromStart, InstructionsIndex + InstructionStringLength);
 
 		if (EndIndex != INDEX_NONE)
 		{
@@ -1206,17 +1205,17 @@ static int Mali_ExtractNumberInstructions(const FString &MaliOutput)
 
 			while (StartIndex < EndIndex)
 			{
-				if (FChar::IsDigit(MaliOutput[StartIndex]) && !bFoundNrStart)
+				if (FChar::IsDigit(CompilerOutput[StartIndex]) && !bFoundNrStart)
 				{
 					// found number's beginning
 					bFoundNrStart = true;
 					NumberIndex = StartIndex;
 				}
-				else if (FChar::IsWhitespace(MaliOutput[StartIndex]) && bFoundNrStart)
+				else if (FChar::IsWhitespace(CompilerOutput[StartIndex]) && bFoundNrStart)
 				{
 					// found number's end
 					bFoundNrStart = false;
-					const FString NumberString = MaliOutput.Mid(NumberIndex, StartIndex - NumberIndex);
+					const FString NumberString = CompilerOutput.Mid(NumberIndex, StartIndex - NumberIndex);
 					const float fNrInstructions = FCString::Atof(*NumberString);
 					ReturnedNum += ceil(fNrInstructions);
 				}
@@ -1229,150 +1228,344 @@ static int Mali_ExtractNumberInstructions(const FString &MaliOutput)
 	return ReturnedNum;
 }
 
-static FString Mali_ExtractErrors(const FString &MaliOutput)
+static FString OfflineCompiler_ExtractErrors(const FString& CompilerOutput)
 {
 	FString ReturnedErrors;
 
-	const int32 GlobalErrorIndex = MaliOutput.Find(TEXT("Compilation failed."));
+	const int32 GlobalErrorIndex = CompilerOutput.Find(TEXT("Compilation failed."));
 
 	// find each 'line' that begins with token "ERROR:" and copy it to the returned string
 	if (GlobalErrorIndex != INDEX_NONE)
 	{
-		int32 CompilationErrorIndex = MaliOutput.Find(TEXT("ERROR:"));
+		int32 CompilationErrorIndex = CompilerOutput.Find(TEXT("ERROR:"));
 		while (CompilationErrorIndex != INDEX_NONE)
 		{
-			int32 EndLineIndex = MaliOutput.Find(TEXT("\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, CompilationErrorIndex + 1);
-			EndLineIndex = EndLineIndex == INDEX_NONE ? MaliOutput.Len() - 1 : EndLineIndex;
+			int32 EndLineIndex = CompilerOutput.Find(TEXT("\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, CompilationErrorIndex + 1);
+			EndLineIndex = EndLineIndex == INDEX_NONE ? CompilerOutput.Len() - 1 : EndLineIndex;
 
-			ReturnedErrors += MaliOutput.Mid(CompilationErrorIndex, EndLineIndex - CompilationErrorIndex + 1);
+			ReturnedErrors += CompilerOutput.Mid(CompilationErrorIndex, EndLineIndex - CompilationErrorIndex + 1);
 
-			CompilationErrorIndex = MaliOutput.Find(TEXT("ERROR:"), ESearchCase::CaseSensitive, ESearchDir::FromStart, EndLineIndex);
+			CompilationErrorIndex = CompilerOutput.Find(TEXT("ERROR:"), ESearchCase::CaseSensitive, ESearchDir::FromStart, EndLineIndex);
 		}
 	}
 
 	return ReturnedErrors;
 }
 
-void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput& ShaderOutput, const ANSICHAR* ShaderSource, const int32 SourceSize, bool bVulkanSpirV, const ANSICHAR* VulkanSpirVEntryPoint)
+/**
+* Offline Shader Compiler (OSC)'s compilation command line options.
+* Each OSC should specify its own FOSCOptions. If one option is not supported by this OSC, leave it empty.
+* Frequency (VS/PS/etc.) here is called as stage sometime, too.
+*/
+class FOSCOptions
 {
-	const bool bCompilerExecutableExists = FPaths::FileExists(Input.ExtraSettings.OfflineCompilerPath);
+public:
+	/** Options applied to all shaders. */
+	FString CommonOptions;
+	/** MultiView option if it's enabled. */
+	FString MultiViewOption;
+	/** GPUTarget option*/
+	FString GPUTargetOption;
+	/** Default GPUTarget*/
+	FString DefaultGPUTarget;
+	/** SpirV file extension name*/
+	FString SpirVExt;
+	/** Default file extension name*/
+	FString DefaultGLSLExt;
+	/** GLSL source file extension used to specify which shader stage is being compiled. */
+	TMap<EShaderFrequency, FString> FrequencyGLSLExts;
+	/** Option to specify which shader stage is being compiled. */
+	TMap<EShaderFrequency, FString> FrequencyOptions;
+	/** Entrypoint option used to specify the entry point of each shader frequency. */
+	TMap<EShaderFrequency, FString> FrequencyEntryPoints;
+	/** Entrypoint option used to specify the entry point of all shader frequencies. */
+	TCHAR* DefaultEntryPoint;
 
-	if (bCompilerExecutableExists)
+	/** Instruction strings used to parse stats output to find total instruction count. Using array to support multiple compiler versions using different strings*/
+	TArray<FString> InstructionStrings;
+
+	static FString GetFrequenceName(EShaderFrequency Freq)
 	{
-		const auto Frequency = (EShaderFrequency)Input.Target.Frequency;
-		const FString WorkingDir(FPlatformProcess::ShaderDir());
-
-		FString CompilerPath = Input.ExtraSettings.OfflineCompilerPath;
-
-		FString CompilerCommand = "";
-
-		// add process and thread ids to the file name to avoid collision between workers
-		auto ProcID = FPlatformProcess::GetCurrentProcessId();
-		auto ThreadID = FPlatformTLS::GetCurrentThreadId();
-		FString GLSLSourceFile = WorkingDir / TEXT("GLSLSource#") + FString::FromInt(ProcID) + TEXT("#") + FString::FromInt(ThreadID);
-
-		// setup compilation arguments
-		TCHAR *FileExt = nullptr;
-		switch (Frequency)
+		static FString FrequencyName[SF_NumFrequencies] =
 		{
-			case SF_Vertex:
-				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".vert");
-				CompilerCommand += TEXT(" -v");
-			break;
-			case SF_Pixel:
-				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".frag");
-				CompilerCommand += TEXT(" -f");
-			break;
-			case SF_Geometry:
-				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".geom");
-				CompilerCommand += TEXT(" -g");
-			break;
-			case SF_Compute:
-				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".comp");
-				CompilerCommand += TEXT(" -C");
-			break;
+			TEXT("VS"), // SF_Vertex
+			TEXT("MS"), // SF_Mesh
+			TEXT("AS"), // SF_Amplification
+			TEXT("FS"), // SF_Pixel
+			TEXT("GS"), // SF_Geometry
+			TEXT("CS")  // SF_Compute
+		};
+		if (Freq <= SF_Compute)
+			return FrequencyName[Freq];
+		else
+			return FString("Unknown");
+	}
+};
 
-			default:
-				GLSLSourceFile += TEXT(".shd");
-			break;
-		}
+void CompileShaderOffline(const FShaderCompilerInput& Input,
+	FShaderCompilerOutput& ShaderOutput,
+	const ANSICHAR* ShaderSource,
+	const int32 SourceSize,
+	bool bVulkanSpirV,
+	const FOSCOptions& Options,
+	const ANSICHAR* VulkanSpirVEntryPoint)
+{
+	const auto Frequency = (EShaderFrequency)Input.Target.Frequency;
+	const FString WorkingDir(FPlatformProcess::ShaderDir());
 
-		if (bVulkanSpirV)
+	FString CompilerPath = Input.ExtraSettings.OfflineCompilerPath;
+
+	// add process and thread ids to the file name to avoid collision between workers
+	auto ProcID = FPlatformProcess::GetCurrentProcessId();
+	auto ThreadID = FPlatformTLS::GetCurrentThreadId();
+
+	auto GetFileName = [&](FString FileType, FString Ext, int NumInst = 0)
+	{
+		return WorkingDir
+			/ FOSCOptions::GetFrequenceName(Frequency) + (NumInst ? TEXT("-") + FString::FromInt(NumInst) : TEXT(""))
+			+ FString::Printf(TEXT("-%s"), (VulkanSpirVEntryPoint ? ANSI_TO_TCHAR(VulkanSpirVEntryPoint) : TEXT("")))
+			+ *FileType + TEXT("-") + FString::FromInt(ProcID) + TEXT("-") + FString::FromInt(ThreadID)
+			+ *Ext;
+	};
+
+	FString ShaderSrcExt;
+	if (bVulkanSpirV)
+	{
+		ShaderSrcExt = Options.SpirVExt;
+	}
+	else
+	{
+		if (const FString* Ext = Options.FrequencyGLSLExts.Find(Frequency))
 		{
-			CompilerCommand += FString::Printf(TEXT(" -y %s -p"), ANSI_TO_TCHAR(VulkanSpirVEntryPoint));
+			ShaderSrcExt = *Ext;
 		}
 		else
 		{
-			CompilerCommand += TEXT(" -s");
+			ShaderSrcExt = Options.DefaultGLSLExt;
 		}
+	}
+	FString ShaderSourceFile = GetFileName(FString("-Source"), ShaderSrcExt);
 
-		FArchive* Ar = IFileManager::Get().CreateFileWriter(*GLSLSourceFile, FILEWRITE_EvenIfReadOnly);
+	FString CompilerCommand = Options.CommonOptions;
+	if (!Options.GPUTargetOption.IsEmpty())
+	{
+		FString GPUTarget = Input.ExtraSettings.GPUTarget;
+		if (GPUTarget.IsEmpty())
+			GPUTarget = Options.DefaultGPUTarget;
+		CompilerCommand += FString::Printf(TEXT("%s=%s"), *Options.GPUTargetOption, *GPUTarget);
+	}
+	if (Input.ExtraSettings.bMobileMultiView)
+		CompilerCommand += Options.MultiViewOption;
 
-		if (Ar == nullptr)
+	CompilerCommand += Options.FrequencyOptions[Frequency];
+
+	if (bVulkanSpirV)
+	{
+		CompilerCommand += FString::Printf(TEXT("%s %s"), *Options.FrequencyEntryPoints[Frequency], ANSI_TO_TCHAR(VulkanSpirVEntryPoint));
+	}
+
+	FArchive* Ar = IFileManager::Get().CreateFileWriter(*ShaderSourceFile, FILEWRITE_EvenIfReadOnly);
+
+	if (Ar == nullptr)
+	{
+		return;
+	}
+
+	// write out the shader source to a file and use it below as input for the compiler
+	Ar->Serialize((void*)ShaderSource, SourceSize);
+	delete Ar;
+
+	FString StdOut;
+	FString StdErr;
+	int32 ReturnCode = 0;
+
+	// Since v6.2.0, Mali compiler needs to be started in the executable folder or it won't find "external/glslangValidator" for Vulkan
+	FString CompilerWorkingDirectory = FPaths::GetPath(CompilerPath);
+
+	if (!CompilerWorkingDirectory.IsEmpty() && FPaths::DirectoryExists(CompilerWorkingDirectory))
+	{
+		// compiler command line contains flags and the GLSL source file name
+		CompilerCommand += " " + FPaths::ConvertRelativePathToFull(ShaderSourceFile);
+
+		// Run shader compiler and wait for completion
+		FPlatformProcess::ExecProcess(*CompilerPath, *CompilerCommand, &ReturnCode, &StdOut, &StdErr, *CompilerWorkingDirectory);
+	}
+	else
+	{
+		StdErr = "Couldn't find offline compiler at " + CompilerPath;
+	}
+
+	// parse compiler's output and extract instruction count or eventual errors
+	ShaderOutput.bSucceeded = (ReturnCode >= 0);
+	if (ShaderOutput.bSucceeded)
+	{
+		// check for errors
+		if (StdErr.Len())
 		{
-			return;
-		}
+			ShaderOutput.bSucceeded = false;
 
-		// write out the shader source to a file and use it below as input for the compiler
-		Ar->Serialize((void*)ShaderSource, SourceSize);
-		delete Ar;
-
-		FString StdOut;
-		FString StdErr;
-		int32 ReturnCode = 0;
-
-		// Since v6.2.0, Mali compiler needs to be started in the executable folder or it won't find "external/glslangValidator" for Vulkan
-		FString CompilerWorkingDirectory = FPaths::GetPath(CompilerPath);
-
-		if (!CompilerWorkingDirectory.IsEmpty() && FPaths::DirectoryExists(CompilerWorkingDirectory))
-		{
-			// compiler command line contains flags and the GLSL source file name
-			CompilerCommand += " " + FPaths::ConvertRelativePathToFull(GLSLSourceFile);
-
-			// Run Mali shader compiler and wait for completion
-			FPlatformProcess::ExecProcess(*CompilerPath, *CompilerCommand, &ReturnCode, &StdOut, &StdErr, *CompilerWorkingDirectory);
+			FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
+			NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + StdErr;
+			ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
 		}
 		else
 		{
-			StdErr = "Couldn't find Mali offline compiler at " + CompilerPath;
+			FString Errors = OfflineCompiler_ExtractErrors(StdOut);
+
+			if (Errors.Len())
+			{
+				FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
+				NewError->StrippedErrorMessage = TEXT("[Offline Complier]\n") + Errors;
+				ShaderOutput.ShaderStats = NewError->StrippedErrorMessage;
+				ShaderOutput.bSucceeded = false;
+			}
 		}
 
-		// parse Mali's output and extract instruction count or eventual errors
-		ShaderOutput.bSucceeded = (ReturnCode >= 0);
+		// extract instruction count
 		if (ShaderOutput.bSucceeded)
 		{
-			// check for errors
-			if (StdErr.Len())
+			FString OutputStatsFile;
+			if (Input.ExtraSettings.bSaveCompilerStatsFiles)
 			{
-				ShaderOutput.bSucceeded = false;
-
-				FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-				NewError->StrippedErrorMessage = TEXT("[Mali Offline Complier]\n") + StdErr;
-			}
-			else
-			{
-				FString Errors = Mali_ExtractErrors(StdOut);
-
-				if (Errors.Len())
+				OutputStatsFile = GetFileName(FString("-Stats"), FString(".txt"), ShaderOutput.NumInstructions);
+				FArchive* ArOutput = IFileManager::Get().CreateFileWriter(*OutputStatsFile, FILEWRITE_EvenIfReadOnly);
+				if (ArOutput == nullptr)
 				{
-					FShaderCompilerError* NewError = new(ShaderOutput.Errors) FShaderCompilerError();
-					NewError->StrippedErrorMessage = TEXT("[Mali Offline Complier]\n") + Errors;
-					ShaderOutput.bSucceeded = false;
+					return;
 				}
+
+				FString StatsOutput = CompilerCommand + FString("\n") + StdOut;
+				const int32 StatsLen = StatsOutput.Len();
+				TSharedPtr<ANSICHAR> ShaderStats = MakeShareable(new ANSICHAR[StatsLen + 1]);
+				FCStringAnsi::Strcpy(ShaderStats.Get(), StatsLen + 1, TCHAR_TO_ANSI(*StatsOutput));
+				// write out the stats to a file
+				ArOutput->Serialize((void*)ShaderStats.Get(), StatsLen);
+				delete ArOutput;
 			}
 
-			// extract instruction count
-			if (ShaderOutput.bSucceeded)
-			{
-				ShaderOutput.NumInstructions = Mali_ExtractNumberInstructions(StdOut);
-			}
+			ShaderOutput.ShaderStats = FString("\n") + OutputStatsFile + FString("\n") + StdOut;
 		}
-
-		// we're done so delete the shader file
-		IFileManager::Get().Delete(*GLSLSourceFile, true, true);
 	}
+
+	// we're done so delete the shader file
+	if (Input.ExtraSettings.bSaveCompilerStatsFiles) {
+		FString DstShaderSourceFile = GetFileName(FString("-Source"), ShaderSrcExt, ShaderOutput.NumInstructions);
+		IFileManager::Get().Move(*DstShaderSourceFile, *ShaderSourceFile, true, true);
+		IFileManager::Get().Delete(*ShaderSourceFile, true, true);
+	}
+	IFileManager::Get().Delete(*ShaderSourceFile, true, true);
 }
 
+void CompileShaderOffline_Mali(const FShaderCompilerInput& Input,
+	FShaderCompilerOutput& ShaderOutput,
+	const ANSICHAR* ShaderSource,
+	const int32 SourceSize,
+	bool bVulkanSpirV,
+	const ANSICHAR* VulkanSpirVEntryPoint)
+{
+	static FOSCOptions Options;
+	if (bVulkanSpirV)
+	{
+		Options.CommonOptions = TEXT(" -p");
+	}
+	else
+	{
+		Options.CommonOptions = TEXT(" -s");
+	}
+
+	if (Options.SpirVExt.IsEmpty())
+	{
+		Options.SpirVExt = TEXT(".spv");
+		Options.DefaultGLSLExt = TEXT(".shd");
+		Options.FrequencyGLSLExts.Emplace(SF_Vertex, TEXT(".vert"));
+		Options.FrequencyGLSLExts.Emplace(SF_Pixel, TEXT(".frag"));
+		Options.FrequencyGLSLExts.Emplace(SF_Geometry, TEXT(".geom"));
+		Options.FrequencyGLSLExts.Emplace(SF_Compute, TEXT(".comp"));
+
+		Options.FrequencyOptions.Emplace(SF_Vertex, FString(" -v"));
+		Options.FrequencyOptions.Emplace(SF_Pixel, FString(" -f"));
+		Options.FrequencyOptions.Emplace(SF_Geometry, FString(" -g"));
+		Options.FrequencyOptions.Emplace(SF_Compute, FString(" -C"));
+
+		Options.FrequencyEntryPoints.Emplace(SF_Vertex, TEXT(" -y"));
+		Options.FrequencyEntryPoints.Emplace(SF_Pixel, TEXT(" -y"));
+		Options.FrequencyEntryPoints.Emplace(SF_Geometry, TEXT(" -y"));
+		Options.FrequencyEntryPoints.Emplace(SF_Compute, TEXT(" -y"));
+
+		Options.InstructionStrings.Add("Instructions Emitted:");
+		Options.InstructionStrings.Add("Total instruction cycles:");
+	}
+
+	CompileShaderOffline(Input, ShaderOutput, ShaderSource, SourceSize, bVulkanSpirV, Options, VulkanSpirVEntryPoint);
+}
+
+void CompileShaderOffline_Adreno(const FShaderCompilerInput& Input,
+	FShaderCompilerOutput& ShaderOutput,
+	const ANSICHAR* ShaderSource,
+	const int32 SourceSize,
+	bool bVulkanSpirV,
+	const ANSICHAR* VulkanSpirVEntryPoint)
+{
+	static FOSCOptions Options;
+	if (bVulkanSpirV)
+	{
+		Options.CommonOptions = TEXT(" -api=Vulkan");
+	}
+
+	if (Options.MultiViewOption.IsEmpty())
+	{
+		Options.MultiViewOption = TEXT(" -view_mask=0x3");
+		Options.GPUTargetOption = TEXT(" -arch");
+		Options.DefaultGPUTarget = TEXT("a650");
+
+		Options.SpirVExt = TEXT(".spv");
+		Options.DefaultGLSLExt = TEXT(".shd");
+		Options.FrequencyGLSLExts.Emplace(SF_Vertex, TEXT(".vert"));
+		Options.FrequencyGLSLExts.Emplace(SF_Pixel, TEXT(".frag"));
+		Options.FrequencyGLSLExts.Emplace(SF_Geometry, TEXT(".geom"));
+		Options.FrequencyGLSLExts.Emplace(SF_Compute, TEXT(".comp"));
+
+		Options.FrequencyOptions.Emplace(SF_Vertex, FString(" -vs"));
+		Options.FrequencyOptions.Emplace(SF_Pixel, FString(" -fs"));
+		Options.FrequencyOptions.Emplace(SF_Geometry, FString(" -gs"));
+		Options.FrequencyOptions.Emplace(SF_Compute, FString(" -cs"));
+
+		Options.FrequencyEntryPoints.Emplace(SF_Vertex, TEXT(" -entry_point_vs"));
+		Options.FrequencyEntryPoints.Emplace(SF_Pixel, TEXT(" -entry_point_ps"));
+		Options.FrequencyEntryPoints.Emplace(SF_Geometry, TEXT(" -entry_point_gs"));
+		Options.FrequencyEntryPoints.Emplace(SF_Compute, TEXT(" -entry_point_cs"));
+
+		Options.InstructionStrings.Add("Total instruction count                                     :");
+	}
+
+	CompileShaderOffline(Input, ShaderOutput, ShaderSource, SourceSize, bVulkanSpirV, Options, VulkanSpirVEntryPoint);
+}
+
+void CompileShaderOffline(const FShaderCompilerInput& Input,
+	FShaderCompilerOutput& ShaderOutput,
+	const ANSICHAR* ShaderSource,
+	const int32 SourceSize,
+	bool bVulkanSpirV,
+	const ANSICHAR* VulkanSpirVEntryPoint)
+{
+	const bool bCompilerExecutableExists = FPaths::FileExists(Input.ExtraSettings.OfflineCompilerPath);
+	if (!bCompilerExecutableExists)
+		return;
+	EOfflineShaderCompilerType OfflineCompiler = Input.ExtraSettings.OfflineCompiler;
+	switch (OfflineCompiler)
+	{
+	case EOfflineShaderCompilerType::Mali:
+		CompileShaderOffline_Mali(Input, ShaderOutput, ShaderSource, SourceSize, bVulkanSpirV, VulkanSpirVEntryPoint);
+		break;
+	case EOfflineShaderCompilerType::Adreno:
+		CompileShaderOffline_Adreno(Input, ShaderOutput, ShaderSource, SourceSize, bVulkanSpirV, VulkanSpirVEntryPoint);
+		break;
+	case EOfflineShaderCompilerType::Num:
+		break;
+	default:
+		break;
+	}
+}
 
 FString GetDumpDebugUSFContents(const FShaderCompilerInput& Input, const FString& Source, uint32 HlslCCFlags)
 {
@@ -1768,7 +1961,7 @@ namespace CrossCompiler
 				{
 					return false;
 				}
-				
+
 				if (!ParseIntegerNumber(ShaderSource, UniformBlock.Index))
 				{
 					return false;
@@ -1790,7 +1983,7 @@ namespace CrossCompiler
 				{
 					continue;
 				}
-			
+
 				//#todo-rco: Need a log here
 				//UE_LOG(ShaderCompilerCommon, Warning, TEXT("Invalid char '%c'"), *ShaderSource);
 				return false;
@@ -1802,51 +1995,51 @@ namespace CrossCompiler
 			// @todo-mobile: Will we ever need to support this code path?
 			check(0);
 			return false;
-/*
-			ShaderSource += UniformsPrefixLen;
+			/*
+						ShaderSource += UniformsPrefixLen;
 
-			while (*ShaderSource && *ShaderSource != '\n')
-			{
-				uint16 ArrayIndex = 0;
-				uint16 Offset = 0;
-				uint16 NumComponents = 0;
+						while (*ShaderSource && *ShaderSource != '\n')
+						{
+							uint16 ArrayIndex = 0;
+							uint16 Offset = 0;
+							uint16 NumComponents = 0;
 
-				FString ParameterName = ParseIdentifier(ShaderSource);
-				verify(ParameterName.Len() > 0);
-				verify(Match(ShaderSource, '('));
-				ArrayIndex = ParseNumber(ShaderSource);
-				verify(Match(ShaderSource, ':'));
-				Offset = ParseNumber(ShaderSource);
-				verify(Match(ShaderSource, ':'));
-				NumComponents = ParseNumber(ShaderSource);
-				verify(Match(ShaderSource, ')'));
+							FString ParameterName = ParseIdentifier(ShaderSource);
+							verify(ParameterName.Len() > 0);
+							verify(Match(ShaderSource, '('));
+							ArrayIndex = ParseNumber(ShaderSource);
+							verify(Match(ShaderSource, ':'));
+							Offset = ParseNumber(ShaderSource);
+							verify(Match(ShaderSource, ':'));
+							NumComponents = ParseNumber(ShaderSource);
+							verify(Match(ShaderSource, ')'));
 
-				ParameterMap.AddParameterAllocation(
-					*ParameterName,
-					ArrayIndex,
-					Offset * BytesPerComponent,
-					NumComponents * BytesPerComponent
-					);
+							ParameterMap.AddParameterAllocation(
+								*ParameterName,
+								ArrayIndex,
+								Offset * BytesPerComponent,
+								NumComponents * BytesPerComponent
+								);
 
-				if (ArrayIndex < OGL_NUM_PACKED_UNIFORM_ARRAYS)
-				{
-					PackedUniformSize[ArrayIndex] = FMath::Max<uint16>(
-						PackedUniformSize[ArrayIndex],
-						BytesPerComponent * (Offset + NumComponents)
-						);
-				}
+							if (ArrayIndex < OGL_NUM_PACKED_UNIFORM_ARRAYS)
+							{
+								PackedUniformSize[ArrayIndex] = FMath::Max<uint16>(
+									PackedUniformSize[ArrayIndex],
+									BytesPerComponent * (Offset + NumComponents)
+									);
+							}
 
-				// Skip the comma.
-				if (Match(ShaderSource, '\n'))
-				{
-					break;
-				}
+							// Skip the comma.
+							if (Match(ShaderSource, '\n'))
+							{
+								break;
+							}
 
-				verify(Match(ShaderSource, ','));
-			}
+							verify(Match(ShaderSource, ','));
+						}
 
-			Match(ShaderSource, '\n');
-*/
+						Match(ShaderSource, '\n');
+			*/
 		}
 
 		// @PackedGlobals: Global0(h:0,1),Global1(h:4,1),Global2(h:8,1)
@@ -1930,7 +2123,7 @@ namespace CrossCompiler
 			{
 				return false;
 			}
-			
+
 			if (!ParseIntegerNumber(ShaderSource, PackedUB.Attribute.Index))
 			{
 				return false;
@@ -1964,7 +2157,7 @@ namespace CrossCompiler
 				{
 					return false;
 				}
-				
+
 				if (!Match(ShaderSource, ','))
 				{
 					return false;
@@ -2061,15 +2254,14 @@ namespace CrossCompiler
 					do
 					{
 						FString SamplerState;
-						
+
 						if (!ParseIdentifier(ShaderSource, SamplerState))
 						{
 							return false;
 						}
 
 						Sampler.SamplerStates.Add(SamplerState);
-					}
-					while (Match(ShaderSource, ','));
+					} while (Match(ShaderSource, ','));
 
 					if (!Match(ShaderSource, ']'))
 					{
@@ -2282,7 +2474,7 @@ namespace CrossCompiler
 				return false;
 			}
 		}
-	
+
 		return ParseCustomHeaderEntries(ShaderSource);
 	}
 

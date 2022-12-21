@@ -293,8 +293,10 @@ void UOculusNetDriver::LowLevelSend(TSharedPtr<const FInternetAddr> Address, voi
 	{
 		return UIpNetDriver::LowLevelSend(Address, Data, CountBits, Traits);
 	}
-	FInternetAddrOculus OculusAddr = FInternetAddrOculus::FromUrl(FURL(nullptr, *Address->ToString(false), ETravelType::TRAVEL_Absolute));
-	ovrID PeerID = OculusAddr.GetID();
+	const FInternetAddr* AddressPtr = Address.Get();
+	const FInternetAddrOculus* OculusAddr = StaticCast<const FInternetAddrOculus*>(AddressPtr);
+	ovrID PeerID = OculusAddr->GetID();
+
 	if (ovr_Net_IsConnected(PeerID))
 	{
 		const uint8* DataToSend = reinterpret_cast<uint8*>(Data);

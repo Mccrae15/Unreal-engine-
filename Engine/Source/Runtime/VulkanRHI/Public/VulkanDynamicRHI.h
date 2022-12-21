@@ -356,6 +356,8 @@ public:
 		return Viewports;
 	}
 
+	virtual void RHISetQcomFragmentDensityMapOffsets(bool bUseOffsets, FIntPoint Offsets[2]) final override;
+
 public:
 	static void SavePipelineCache();
 

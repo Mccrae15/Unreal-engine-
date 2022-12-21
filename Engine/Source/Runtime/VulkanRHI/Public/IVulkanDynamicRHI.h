@@ -79,6 +79,8 @@ struct IVulkanDynamicRHI : public FDynamicRHI
 
 	virtual void           RHIVerifyResult(VkResult Result, const ANSICHAR* VkFuntion, const ANSICHAR* Filename, uint32 Line) = 0;
 
+	virtual void           RHISetQcomFragmentDensityMapOffsets(bool bUseOffsets, FIntPoint Offsets[2]) = 0;
+
 	static VULKANRHI_API void AddEnabledInstanceExtensionsAndLayers(TArrayView<const ANSICHAR* const> InInstanceExtensions, TArrayView<const ANSICHAR* const> InInstanceLayers);
 	static VULKANRHI_API void AddEnabledDeviceExtensionsAndLayers(TArrayView<const ANSICHAR* const> InDeviceExtensions, TArrayView<const ANSICHAR* const> InDeviceLayers);
 };

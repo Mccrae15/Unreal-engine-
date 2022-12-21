@@ -223,7 +223,7 @@ public class AndroidPlatform : Platform
 
 			string AndroidStudioExe = "/Applications/Android Studio.app";
 			if (Directory.Exists(AndroidStudioExe))
-			{
+		{
 				return AndroidStudioExe;
 			}
 
@@ -273,7 +273,7 @@ public class AndroidPlatform : Platform
 				for (int LineIndex = BashProfileContents.Length - 1; LineIndex >= 0; --LineIndex)
 				{
 					if (BashProfileContents[LineIndex].StartsWith("export " + SdkKey + "="))
-					{
+		{
 						string PathVar = BashProfileContents[LineIndex].Split
 ('=')[1].Replace("\"", "");
 Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
@@ -310,7 +310,7 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 			if (!bHaveAndroidStudio)
 			{
 				TurnkeyContext.ReportError("Android Studio is not installed correctly.");
-			}
+	}
 			if (!Directory.Exists(SdkDir))
 			{
 				TurnkeyContext.ReportError("Android SDK directory is not set correctly.");
@@ -2257,7 +2257,7 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 		if (!(NonUFSResult.Output.Contains("bytes") || NonUFSResult.Output.Contains("[100%]")))
 		{
 			LogWarning("Failed retrieving NonUFS Manifest: {0}", NonUFSResult.Output);
-			// Did not retrieve both so delete one we did retrieve
+			// DGener	id not retrieve both so delete one we did retrieve
 			File.Delete(RetrievedUFSManifestFileName);
 			return false;
 		}
@@ -2898,6 +2898,10 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(Params.RawProjectPath), UnrealTargetPlatform.Android);
 		bool bDisablePerfHarden = false;
 		Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bEnableMaliPerfCounters", out bDisablePerfHarden);
+		// Deploy .so to device is either defined from the settings or with the param
+		bool bDeploySoToDevice = false;
+		Ini.GetBool("/Script/OculusHMD.OculusHMDRuntimeSettings", "bDeploySoToDevice", out bDeploySoToDevice);
+		bDeploySoToDevice |= Params.DeploySoToDevice;
 
 		foreach (var DeviceName in Params.DeviceNames)
         {
@@ -2905,13 +2909,16 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
             string ApkName = GetFinalApkName(Params, SC.StageExecutables[0], true, DeviceArchitecture);
 
             // make sure APK is up to date (this is fast if so)
-            var Deploy = AndroidExports.CreateDeploymentHandler(Params.RawProjectPath, Params.ForcePackageData);
-            if (!Params.Prebuilt)
             {
+                bool ShouldFastSoDeployOculus = IsPackagingforOculusMobile(SC) && bDeploySoToDevice && File.Exists(ApkName);
+                if (!Params.Prebuilt && !ShouldFastSoDeployOculus)
+                {
+            var Deploy = AndroidExports.CreateDeploymentHandler(Params.RawProjectPath, Params.ForcePackageData);
                 string CookFlavor = SC.FinalCookPlatform.IndexOf("_") > 0 ? SC.FinalCookPlatform.Substring(SC.FinalCookPlatform.IndexOf("_")) : "";
 				string SOName = GetSONameWithoutArchitecture(Params, SC.StageExecutables[0]);
 				Deploy.SetAndroidPluginData(AppArchitectures, CollectPluginDataPaths(SC));
                 Deploy.PrepForUATPackageOrDeploy(Params.RawProjectPath, Params.ShortProjectName, SC.ProjectRoot, SOName, SC.LocalRoot + "/Engine", Params.Distribution, CookFlavor, SC.StageTargets[0].Receipt.Configuration, true, false);
+            }
             }
 
             // now we can use the apk to get more info
@@ -2943,6 +2950,8 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 
             // determine if APK out of date
             string APKLastUpdateTime = new FileInfo(ApkName).LastWriteTime.ToString();
+            string SOLastUpdateTime = string.Empty;
+
             bool bNeedAPKInstall = true;
             if (Params.IterativeDeploy)
             {
@@ -2983,6 +2992,13 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
                 string UninstallCommandline = "uninstall " + PackageName;
                 RunAndLogAdbCommand(Params, DeviceName, UninstallCommandline, out SuccessCode);
 
+                // Delete filestamp files
+                RunAndLogAdbCommand(Params, DeviceName, "shell rm " + RemoteDir + "/APKFileStamp.txt", out SuccessCode);
+                if (IsPackagingforOculusMobile(SC))
+                {
+                    RunAndLogAdbCommand(Params, DeviceName, "shell rm " + RemoteDir + "/SOFileStamp.txt", out SuccessCode);
+                }
+
                 // install the apk
                 string InstallCommandline = "install \"" + ApkName + "\"";
                 string InstallOutput = RunAndLogAdbCommand(Params, DeviceName, InstallCommandline, out SuccessCode);
@@ -3016,6 +3032,15 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
                     RunAndLogAdbCommand(Params, DeviceName, WritePermissionCommandLine, out SuccessCode);
                 }
             }
+
+            // By pushing libUnreal.so directly into the application's user dir, oculus devices with the extlib manifest on are able to
+            // link that library instead of the packaged one in order to speed up code-only deployment
+            if (bDeploySoToDevice && !Params.Distribution && !Params.Package && IsPackagingforOculusMobile(SC))
+            {
+                string SymbolizedSODirectory = GetFinalSymbolizedSODirectory(ApkName, SC, DeviceArchitecture);
+                DeployLibUnrealToAppUserDir(ApkName, Params, DeviceName, RemoteDir, PackageName, SymbolizedSODirectory, ref SOLastUpdateTime);
+            }
+
 
             // update the uecommandline.txt
             // update and deploy uecommandline.txt
@@ -3388,10 +3413,85 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
             }
 
             // write new timestamp for APK (do it here since RemoteDir will now exist)
-            if (bNeedAPKInstall)
+            if (!string.IsNullOrEmpty(APKLastUpdateTime))
             {
                 int SuccessCode = 0;
                 RunAndLogAdbCommand(Params, DeviceName, "shell \"echo 'APK: " + APKLastUpdateTime + "' > " + RemoteDir + "/APKFileStamp.txt\"", out SuccessCode);
+            }
+
+            // write new timestamp for SO (do it here since RemoteDir will now exist)
+            if (!string.IsNullOrEmpty(SOLastUpdateTime))
+            {
+                int SuccessCode = 0;
+                RunAndLogAdbCommand(Params, DeviceName, "shell \"echo 'SO: " + SOLastUpdateTime + "' > " + RemoteDir + "/SOFileStamp.txt\"", out SuccessCode);
+            }
+        }
+    }
+
+    // Push libUnreal.so directly into the application's user dir. Oculus devices with the extlib manifest ON are able to
+    // link that library instead of the packaged one in order to speed up code-only deployment
+    private void DeployLibUnrealToAppUserDir(
+        string ApkName, ProjectParams Params, string DeviceName, string RemoteDir, string PackageName, string SymbolizedSODirectory, ref string SOLastUpdateTime)
+    {
+        // Determine if .so is newer than apk
+        var SOFile = FileReference.FromString(Path.ChangeExtension(ApkName, ".so"));
+        if (new FileInfo(SOFile.FullName).LastWriteTime > new FileInfo(ApkName).LastWriteTime)
+        {
+            SOLastUpdateTime = new FileInfo(SOFile.FullName).LastWriteTime.ToString();
+            bool bNeedSoInstall = true;
+
+            // package is installed, already checked
+            IProcessResult InstalledResult = RunAdbCommand(Params, DeviceName, "shell cat " + RemoteDir + "/SOFileStamp.txt", null, ERunOptions.AppMustExist);
+            if (InstalledResult.Output.StartsWith("SO: "))
+            {
+                if (InstalledResult.Output.Substring(4).Trim() == SOLastUpdateTime)
+                    bNeedSoInstall = false;
+            }
+
+            // Copy .so to symbolized directory for debugger
+            string SymbolizedSOPath = Path.Combine(Path.Combine(Path.GetDirectoryName(ApkName), SymbolizedSODirectory), "libUnreal.so");
+            var LibUnrealFile = FileReference.FromString(SymbolizedSOPath);
+            if (!File.Exists(LibUnrealFile.FullName) ||
+                File.GetLastWriteTimeUtc(LibUnrealFile.FullName) != File.GetLastWriteTimeUtc(SOFile.FullName))
+            {
+                Log.TraceInformation("Copying {0} to libUnreal.so for debugger", SOFile.GetFileName());
+                CopyFile(SOFile.FullName, LibUnrealFile.FullName);
+                File.SetLastWriteTimeUtc(LibUnrealFile.FullName, File.GetLastWriteTimeUtc(LibUnrealFile.FullName));
+            }
+
+            if (bNeedSoInstall)
+            {
+                var StrippedSoFile = FileReference.FromString(Path.ChangeExtension(ApkName, ".stripped.so"));
+                if (!File.Exists(StrippedSoFile.FullName) ||
+                    File.GetLastWriteTimeUtc(StrippedSoFile.FullName) < File.GetLastWriteTimeUtc(SOFile.FullName))
+                {
+                    Log.TraceInformation("Copying and stripping symbols from {0}", SOFile.GetFileName());
+                    StripSymbols(SOFile, StrippedSoFile);
+                }
+
+                string DestSoPath = string.Format("{0}/{1}", RemoteDir, StrippedSoFile.GetFileName());
+                string PushCommandLine = string.Format("push \"{0}\" \"{1}\"", StrippedSoFile.FullName, DestSoPath);
+                string CopyCommandLine = string.Format("shell run-as {0} cp \"{1}\" ./libUnreal.so", PackageName, DestSoPath);
+                string ModCommandLine = string.Format("shell run-as {0} chmod +x ./libUnreal.so", PackageName);
+                int SuccessCode = 0;
+                RunAndLogAdbCommand(Params, DeviceName, PushCommandLine, out SuccessCode);
+                if (SuccessCode != 0)
+                {
+                    LogError("Failed to push .so to device");
+                    throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to push .so to device");
+                }
+                RunAndLogAdbCommand(Params, DeviceName, CopyCommandLine, out SuccessCode);
+                if (SuccessCode != 0)
+                {
+                    LogError("Failed to move .so on device to package path");
+                    throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to move .so on device to package path");
+                }
+                RunAndLogAdbCommand(Params, DeviceName, ModCommandLine, out SuccessCode);
+                if (SuccessCode != 0)
+                {
+                    LogError("Failed to chown .so on device");
+                    throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to chown .so on device");
+                }
             }
         }
     }
@@ -3522,6 +3622,13 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 		LogInformation("packageInfo return value: {0}", ReturnValue);
 
 		return ReturnValue;
+	}
+
+	private static bool IsPackagingforOculusMobile(DeploymentContext SC)
+	{
+		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(SC.RawProjectPath), SC.StageTargetPlatform.PlatformType);
+		Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out var OculusMobileDevices);
+		return OculusMobileDevices.Count > 0;
 	}
 
 	/** Returns the launch activity name to launch (must call GetPackageInfo first), returns "com.epicgames.unreal.SplashActivity" default if not found */
@@ -3891,8 +3998,8 @@ Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
 			RunAdbCommand(DeviceName, CommandLine);
 
 			// wait before getting the process list with "adb shell ps" from AdbCreatedProcess
-			// on some devices the list is not yet ready
-			Thread.Sleep(2000);
+		// on some devices the list is not yet ready
+		Thread.Sleep(2000);
 
 			// Start logging process and return immediately.
 			// Stdout from the title is continuosly emitted to stdout in UAT.

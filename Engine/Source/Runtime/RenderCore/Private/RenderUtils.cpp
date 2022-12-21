@@ -796,13 +796,13 @@ FIntPoint CalcMipMapExtent( uint32 TextureSizeX, uint32 TextureSizeY, EPixelForm
 
 SIZE_T CalcTextureMipWidthInBlocks(uint32 TextureSizeX, EPixelFormat Format, uint32 MipIndex)
 {
-	const uint32 WidthInTexels = FMath::Max<uint32>(TextureSizeX >> MipIndex, 1);
+		const uint32 WidthInTexels = FMath::Max<uint32>(TextureSizeX >> MipIndex, 1);
 	return GPixelFormats[Format].GetBlockCountForWidth(WidthInTexels);
 }
 
 SIZE_T CalcTextureMipHeightInBlocks(uint32 TextureSizeY, EPixelFormat Format, uint32 MipIndex)
 {
-	const uint32 HeightInTexels = FMath::Max<uint32>(TextureSizeY >> MipIndex, 1);
+		const uint32 HeightInTexels = FMath::Max<uint32>(TextureSizeY >> MipIndex, 1);
 	return GPixelFormats[Format].GetBlockCountForHeight(HeightInTexels);
 }
 
@@ -1230,7 +1230,7 @@ RENDERCORE_API bool MobileBasePassAlwaysUsesCSM(const FStaticShaderPlatform Plat
 	}
 	else
 	{
-		return CVar && (CVar->GetValueOnAnyThread() & 0xF) == 5 && IsMobileDistanceFieldEnabled(Platform);
+	return CVar && (CVar->GetValueOnAnyThread() & 0xF) == 5 && IsMobileDistanceFieldEnabled(Platform);
 	}
 }
 
@@ -1248,6 +1248,18 @@ RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform)
 RENDERCORE_API bool SupportsTSR(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetSupportsGen5TemporalAA(Platform);
+}
+
+// AppSpaceWarp
+RENDERCORE_API bool SupportsSpaceWarp(const FStaticShaderPlatform Platform)
+{
+	if (IsVulkanMobilePlatform(Platform))
+	{
+		static const auto CVarSupportMobileSpaceWarp = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SupportMobileSpaceWarp"));
+		static bool SpaceWarpSupported = CVarSupportMobileSpaceWarp != NULL && (CVarSupportMobileSpaceWarp->GetValueOnAnyThread() != 0);
+		return SpaceWarpSupported;
+	}
+	return false;
 }
 
 RENDERCORE_API int32 GUseForwardShading = 0;
@@ -1357,9 +1369,9 @@ RENDERCORE_API void RenderUtilsInit()
 					uint64 Mask = 1ull << ShaderPlatformToEdit;
 
 					if (!FDataDrivenShaderPlatformInfo::IsValid(ShaderPlatformToEdit))
-					{
+				{
 						continue;
-					}
+				}
 
 					GForwardShadingPlatformMask[ShaderPlatformIndex] = TargetPlatform->UsesForwardShading();
 
@@ -1375,11 +1387,11 @@ RENDERCORE_API void RenderUtilsInit()
 
 					GMobileAmbientOcclusionPlatformMask[ShaderPlatformIndex] = TargetPlatform->UsesMobileAmbientOcclusion();
 				}
-			}
+				}
 
 
-			if (TargetPlatform->UsesRayTracing())
-			{
+				if (TargetPlatform->UsesRayTracing())
+				{
 				TArray<FName> PlatformRayTracingShaderFormats;
 				TargetPlatform->GetRayTracingShaderFormats(PlatformRayTracingShaderFormats);
 
@@ -1392,10 +1404,10 @@ RENDERCORE_API void RenderUtilsInit()
 					PossiblePreviewPlatformsAndMainPlatform.Add(MainShaderPlatform);
 
 					for (EShaderPlatform ShaderPlatform : PossiblePreviewPlatformsAndMainPlatform)
-					{
+				{
 						uint32 ShaderPlatformIndex = static_cast<uint32>(ShaderPlatform);
 						GRayTracingPlatformMask[ShaderPlatformIndex] = true;
-					}
+				}
 				}
 			}
 		}
@@ -1717,8 +1729,9 @@ RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatfor
 {
 	if (IsMobilePlatform(Platform))
 	{
+		// AppSpaceWarp
 		// Enable velocity rendering if desktop Gen4 TAA is supported on mobile.
-		return SupportsGen4TAA(Platform);
+		return SupportsGen4TAA(Platform) || SupportsSpaceWarp(Platform);
 	}
 
 	return true;

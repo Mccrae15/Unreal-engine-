@@ -226,13 +226,13 @@ void FreeSkeletalMeshBuffersSinkCallback()
 	{
 		bPreviousFreeSkeletalMeshBuffers = bFreeSkeletalMeshBuffers;
 		if (bFreeSkeletalMeshBuffers)
-		{
-			FlushRenderingCommands();
+	{
+		FlushRenderingCommands();
 			for (TObjectIterator<USkeletalMesh> It; It; ++It)
-			{
+		{
 				USkeletalMesh* SkeletalMesh = *It;
 				if (!SkeletalMesh->HasPendingInitOrStreaming() && !SkeletalMesh->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel))
-				{
+			{
 					SkeletalMesh->ReleaseCPUResources();
 				}
 			}
@@ -1604,19 +1604,19 @@ void USkeletalMesh::Serialize( FArchive& Ar )
 				if (bCooked)
 				{
 #if WITH_EDITORONLY_DATA
-					ITargetPlatform* RunningPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
-					const ITargetPlatform* ArchiveCookingTarget = Ar.CookingTarget();
-					constexpr bool bIsSerializeSaving = true;
-					if (ArchiveCookingTarget)
-					{
-						LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, ArchiveCookingTarget, bIsSerializeSaving);
-					}
-					else
-					{
-						//Fall back in case we use an archive that the cooking target has not been set (i.e. Duplicate archive)
-						check(RunningPlatform != NULL);
-						LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, RunningPlatform, bIsSerializeSaving);
-					}
+				ITargetPlatform* RunningPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
+				const ITargetPlatform* ArchiveCookingTarget = Ar.CookingTarget();
+				constexpr bool bIsSerializeSaving = true;
+				if (ArchiveCookingTarget)
+				{
+					LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, ArchiveCookingTarget, bIsSerializeSaving);
+				}
+				else
+				{
+					//Fall back in case we use an archive that the cooking target has not been set (i.e. Duplicate archive)
+					check(RunningPlatform != NULL);
+					LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, RunningPlatform, bIsSerializeSaving);
+				}
 #endif
 					int32 MaxBonesPerChunk = LocalSkeletalMeshRenderData->GetMaxBonesPerSection();
 
@@ -6725,7 +6725,8 @@ FPrimitiveViewRelevance FSkeletalMeshSceneProxy::GetViewRelevance(const FSceneVi
 	}
 #endif
 
-	Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
+	// AppSpaceWarp
+	Result.bVelocityRelevance = (View->bIncludeStaticInVelocityPass || DrawsVelocity()) && Result.bOpaque && Result.bRenderInMainPass;
 
 	return Result;
 }
@@ -7046,16 +7047,16 @@ FSkinnedMeshComponentRecreateRenderStateContext::~FSkinnedMeshComponentRecreateR
 	{
 		if(USkinnedMeshComponent* Component = MeshComponents[ComponentIndex].Get())
 		{
-			if (bRefreshBounds)
-			{
-				Component->UpdateBounds();
-			}
-
-			if (Component->IsRegistered() && !Component->IsRenderStateCreated() && Component->ShouldCreateRenderState())
-			{
-				Component->CreateRenderState_Concurrent(nullptr);
-			}
+		if (bRefreshBounds)
+		{
+			Component->UpdateBounds();
 		}
+
+		if (Component->IsRegistered() && !Component->IsRenderStateCreated() && Component->ShouldCreateRenderState())
+		{
+			Component->CreateRenderState_Concurrent(nullptr);
+		}
+	}
 	}
 }
 

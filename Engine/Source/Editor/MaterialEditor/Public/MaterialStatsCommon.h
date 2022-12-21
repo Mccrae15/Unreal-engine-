@@ -72,6 +72,7 @@ public:
 		ERepresentativeShader ShaderType;
 		FString ShaderDescription;
 		int32 InstructionCount;
+		FString ShaderStats;
 	};
 
 	struct MATERIALEDITOR_API FRepresentativeShaderInfo
@@ -112,6 +113,6 @@ public:
 	static FSlateColor PlatformTypeColor(EPlatformCategoryType PlatformType);
 
 	MATERIALEDITOR_API static bool IsPlatformOfflineCompilerAvailable(const EShaderPlatform ShaderPlatform);
-	MATERIALEDITOR_API static FString GetPlatformOfflineCompilerPath(const EShaderPlatform ShaderPlatform);
+	MATERIALEDITOR_API static void GetPlatformOfflineCompilerSettings(const EShaderPlatform ShaderPlatform, FExtraShaderCompilerSettings& SCSettings);
 	MATERIALEDITOR_API static bool PlatformNeedsOfflineCompiler(const EShaderPlatform ShaderPlatform);
 };

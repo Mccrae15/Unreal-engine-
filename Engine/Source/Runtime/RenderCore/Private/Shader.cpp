@@ -519,6 +519,7 @@ FShaderCompiledShaderInitializerType::FShaderCompiledShaderInitializerType(
 	, NumTextureSamplers(CompilerOutput.NumTextureSamplers)
 	, CodeSize(CompilerOutput.ShaderCode.GetShaderCodeSize())
 	, PermutationId(InPermutationId)
+	, ShaderStats(CompilerOutput.ShaderStats)
 {
 }
 
@@ -550,6 +551,7 @@ FShader::FShader(const CompiledShaderInitializerType& Initializer)
 	, NumInstructions(Initializer.NumInstructions)
 	, NumTextureSamplers(Initializer.NumTextureSamplers)
 	, CodeSize(Initializer.CodeSize)
+	, ShaderStats(Initializer.ShaderStats)
 #endif // WITH_EDITORONLY_DATA
 {
 	checkSlow(Initializer.OutputHash != FSHAHash());
@@ -620,7 +622,7 @@ void FShader::BuildParameterMapInfo(const TMap<FString, FParameterAllocation>& P
 		const FParameterAllocation& ParamValue = ParameterIt.Value();
 
 		switch (ParamValue.Type)
-		{
+	{
 		case EShaderParameterType::UniformBuffer:
 			UniformCount++;
 			break;
@@ -656,41 +658,41 @@ void FShader::BuildParameterMapInfo(const TMap<FString, FParameterAllocation>& P
 		}
 	};
 
-	for (TMap<FString, FParameterAllocation>::TConstIterator ParameterIt(ParameterMap); ParameterIt; ++ParameterIt)
-	{
-		const FParameterAllocation& ParamValue = ParameterIt.Value();
+			for (TMap<FString, FParameterAllocation>::TConstIterator ParameterIt(ParameterMap); ParameterIt; ++ParameterIt)
+			{
+				const FParameterAllocation& ParamValue = ParameterIt.Value();
 
 		if (ParamValue.Type == EShaderParameterType::LooseData)
-		{
-			bool bAddedToExistingBuffer = false;
-
-			for (int32 LooseParameterBufferIndex = 0; LooseParameterBufferIndex < ParameterMapInfo.LooseParameterBuffers.Num(); LooseParameterBufferIndex++)
-			{
-				FShaderLooseParameterBufferInfo& LooseParameterBufferInfo = ParameterMapInfo.LooseParameterBuffers[LooseParameterBufferIndex];
-
-				if (LooseParameterBufferInfo.BaseIndex == ParamValue.BufferIndex)
 				{
-					LooseParameterBufferInfo.Parameters.Emplace(ParamValue.BaseIndex, ParamValue.Size);
-					LooseParameterBufferInfo.Size += ParamValue.Size;
-					bAddedToExistingBuffer = true;
-				}
-			}
+					bool bAddedToExistingBuffer = false;
 
-			if (!bAddedToExistingBuffer)
-			{
-				FShaderLooseParameterBufferInfo NewParameterBufferInfo(ParamValue.BufferIndex, ParamValue.Size);
+					for (int32 LooseParameterBufferIndex = 0; LooseParameterBufferIndex < ParameterMapInfo.LooseParameterBuffers.Num(); LooseParameterBufferIndex++)
+					{
+						FShaderLooseParameterBufferInfo& LooseParameterBufferInfo = ParameterMapInfo.LooseParameterBuffers[LooseParameterBufferIndex];
+
+						if (LooseParameterBufferInfo.BaseIndex == ParamValue.BufferIndex)
+						{
+					LooseParameterBufferInfo.Parameters.Emplace(ParamValue.BaseIndex, ParamValue.Size);
+							LooseParameterBufferInfo.Size += ParamValue.Size;
+							bAddedToExistingBuffer = true;
+						}
+					}
+
+					if (!bAddedToExistingBuffer)
+					{
+						FShaderLooseParameterBufferInfo NewParameterBufferInfo(ParamValue.BufferIndex, ParamValue.Size);
 
 				NewParameterBufferInfo.Parameters.Emplace(ParamValue.BaseIndex, ParamValue.Size);
 
-				ParameterMapInfo.LooseParameterBuffers.Add(NewParameterBufferInfo);
-			}
-		}
+						ParameterMapInfo.LooseParameterBuffers.Add(NewParameterBufferInfo);
+					}
+				}
 		else if (ParamValue.Type == EShaderParameterType::UniformBuffer)
-		{
+			{
 			ParameterMapInfo.UniformBuffers.Emplace(ParamValue.BufferIndex);
-		}
+			}
 		else if (TMemoryImageArray<FShaderResourceParameterInfo>* ParameterInfoArray = GetResourceParameterMap(ParamValue.Type))
-		{
+			{
 			ParameterInfoArray->Emplace(ParamValue.BaseIndex, ParamValue.BufferIndex, ParamValue.Type);
 		}
 	}
@@ -1444,6 +1446,12 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 	}
 
+	// AppSpaceWarp
+	if (SupportsSpaceWarp(Platform))
+	{
+		KeyString += TEXT("_ASW");
+	}
+
 	{
 		KeyString += IsUsingSelectiveBasePassOutputs(Platform) ? TEXT("_SO") : TEXT("");
 	}
@@ -1581,12 +1589,12 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 				if (MobileShadingPathCVar->GetInt() != 0)
 				{
 					KeyString += (MobileUsesExtenedGBuffer(Platform) ? TEXT("_MobDShEx") : TEXT("_MobDSh"));
-				}
+		}
 				else
 				{
 					static IConsoleVariable* MobileForwardEnableClusteredReflectionsCVAR = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.Forward.EnableClusteredReflections"));
 					if (MobileForwardEnableClusteredReflectionsCVAR && MobileForwardEnableClusteredReflectionsCVAR->GetInt() != 0)
-					{
+		{
 						KeyString += TEXT("_MobFCR");
 					}
 				}

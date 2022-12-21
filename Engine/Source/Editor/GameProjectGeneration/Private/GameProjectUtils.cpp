@@ -2072,12 +2072,12 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 	// Don't override these settings for templates
 	if (InProjectInfo.TemplateFile.IsEmpty())
 	{
-		// New projects always have DX12 by default on Windows
-		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
-			TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
-			TEXT("DefaultGraphicsRHI"),
-			TEXT("DefaultGraphicsRHI_DX12"),
-			false /* ShouldReplaceExistingValue */);
+	// New projects always have DX12 by default on Windows
+	ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+		TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+		TEXT("DefaultGraphicsRHI"),
+		TEXT("DefaultGraphicsRHI_DX11"),
+		false /* ShouldReplaceExistingValue */);
 
 		// Force clear D3D12TargetedShaderFormats since the BaseEngine list can change at any time.
 		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
@@ -2117,10 +2117,10 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 			FileContents += TEXT("[/Script/EngineSettings.GameMapsSettings]") LINE_TERMINATOR;
 
 			if (GameProjectUtils::IsEngineStarterContentAvailable() && GameProjectUtils::IsUsingEngineStarterContent(InProjectInfo)) // if use Engine StarterContent
-			{
-				FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-				FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-			}
+				{
+					FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+					FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+				}
 
 			if (InProjectInfo.bShouldGenerateCode)
 			{

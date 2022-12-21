@@ -141,6 +141,20 @@ static TRefCountPtr<FRHITexture2D> FindStereoDepthTexture(uint32 bSupportsXRDept
 	return nullptr;
 }
 
+// AppSpaceWarp
+static bool FindStereoMotionVectorTexture(FTexture2DRHIRef& MVTexture, FIntPoint& MVTextureSize, FTexture2DRHIRef& MVDepthTexture, FIntPoint& MVDepthTextureSize)
+{
+	if (IStereoRenderTargetManager* StereoRenderTargetManager = FindStereoRenderTargetManager())
+	{
+		if (StereoRenderTargetManager->AllocateMotionVectorTexture(0, PF_FloatRGBA, 0, TexCreate_None, TexCreate_None, MVTexture, MVTextureSize, MVDepthTexture, MVDepthTextureSize)) {
+			return true;
+		}
+	}
+	MVTexture = nullptr;
+	MVDepthTexture = nullptr;
+	return false;
+}
+
 /** Helper class used to track and compute a suitable scene texture extent for the renderer based on history / global configuration. */
 class FSceneTextureExtentState
 {
@@ -183,7 +197,7 @@ public:
 						{
 							// If this is VR, but not a capture (only current XR capture is for Planar Reflections), then we want
 							// to use the requested size. Ideally, capture targets will be able to 'grow' into the VR extents.
-							if (DesiredFamilyExtent.X != LastStereoExtent.X || DesiredFamilyExtent.Y != LastStereoExtent.Y)
+							if (DesiredFamilyExtent.X != LastStereoExtent.X || DesiredFamilyExtent.Y != LastStereoExtent.Y || LastStereoExtent != LastExtent)
 							{
 								LastStereoExtent = DesiredFamilyExtent;
 								UE_LOG(LogRenderer, Warning, TEXT("Resizing VR buffer to %d by %d"), DesiredFamilyExtent.X, DesiredFamilyExtent.Y);
@@ -592,6 +606,19 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 		Desc.NumSamples = Config.NumSamples;
 		SceneTextures.DepthAux = CreateTextureMSAA(GraphBuilder, Desc, TEXT("SceneDepthAux"));
 	}
+
+	// AppSpaceWarp
+	if (Config.ShadingPath == EShadingPath::Mobile && SupportsSpaceWarp(Config.ShaderPlatform))
+	{
+		FTexture2DRHIRef StereoMVRHI, StereoMVDepthRHI;
+		FIntPoint StereoMVSize, StereoMVDepthSize;
+		if (FindStereoMotionVectorTexture(StereoMVRHI, StereoMVSize, StereoMVDepthRHI, StereoMVDepthSize))
+		{
+			SceneTextures.MotionVector = RegisterExternalTexture(GraphBuilder, StereoMVRHI, TEXT("MotionVector"));
+			SceneTextures.MotionVectorDepth = RegisterExternalTexture(GraphBuilder, StereoMVDepthRHI, TEXT("MotionVectorDepth"));
+		}
+	}
+
 #if WITH_EDITOR
 	{
 		const FRDGTextureDesc ColorDesc(FRDGTextureDesc::Create2D(Config.Extent, PF_B8G8R8A8, FClearValueBinding::Transparent, TexCreate_ShaderResource | TexCreate_RenderTargetable, 1, Config.EditorPrimitiveNumSamples));

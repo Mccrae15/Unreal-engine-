@@ -59,6 +59,7 @@ struct FOptionalVulkanDeviceExtensions
 			uint64 HasNVDiagnosticCheckpoints : 1;
 			uint64 HasNVDeviceDiagnosticConfig : 1;
 			uint64 HasQcomRenderPassTransform : 1;
+			uint64 HasQcomFragmentDensityMapOffset : 1;
 
 			// Promoted to 1.1
 			uint64 HasKHRMaintenance1 : 1;

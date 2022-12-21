@@ -53,6 +53,12 @@ public:
 	*/
 	virtual bool NeedReAllocateShadingRateTexture(const TRefCountPtr<struct IPooledRenderTarget>& ShadingRateTarget) { return false; }
 
+	// AppSpaceWarp
+	/**
+	* Returns true, if motion vector texture must be re-calculated.
+	*/
+	virtual bool NeedReAllocateMotionVectorTexture(const TRefCountPtr<struct IPooledRenderTarget>& MotionVectorTarget, const TRefCountPtr<struct IPooledRenderTarget>& MotionVectorDepthTarget) { return false; }
+
 	/**
 	 * Returns number of required buffered frames.
 	 */
@@ -99,6 +105,16 @@ public:
 	 * @return							true, if HDR information is available for the stereo device
 	 */
 	virtual bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported) { return false; }
+
+	// AppSpaceWarp
+	/**
+	 * Allocates a motion vector texture and motion vector depth texture.
+	 * The default implementation always returns false to indicate that the default texture allocation should be used instead.
+	 *
+	 * @param Index			(in) index of the buffer, changing from 0 to GetNumberOfBufferedFrames()
+	 * @return				true, if texture was allocated; false, if the default texture allocation should be used.
+	 */
+	virtual bool AllocateMotionVectorTexture(uint32 Index, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize, FTexture2DRHIRef& OutDepthTexture, FIntPoint& OutDepthTextureSize) { return false; }
 
 	static EPixelFormat GetStereoLayerPixelFormat() { return PF_B8G8R8A8; }
 };

@@ -137,7 +137,8 @@ public class Core : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"cxademangle",
 				"zlib",
-				"libunwind"
+				"libunwind",
+				"perfetto"
 				);
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))

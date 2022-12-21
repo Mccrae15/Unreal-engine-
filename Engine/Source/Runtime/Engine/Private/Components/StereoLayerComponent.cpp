@@ -132,7 +132,7 @@ void UStereoLayerComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 	}
 
 	bool bCurrVisible = GetVisibleFlag();
-	if (!Texture || !Texture->GetResource())
+	if ((!Texture || !Texture->GetResource()) && LayerRequiresTexture())
 	{
 		bCurrVisible = false;
 	}
@@ -162,6 +162,9 @@ void UStereoLayerComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 		LayerDesc.Flags |= (bQuadPreserveTextureRatio) ? IStereoLayers::LAYER_FLAG_QUAD_PRESERVE_TEX_RATIO : 0;
 		LayerDesc.Flags |= (bSupportsDepth) ? IStereoLayers::LAYER_FLAG_SUPPORT_DEPTH : 0;
 		LayerDesc.Flags |= (!bCurrVisible) ? IStereoLayers::LAYER_FLAG_HIDDEN : 0;
+#ifdef WITH_OCULUS_BRANCH
+		LayerDesc.Flags |= (bBicubicFiltering) ? IStereoLayers::LAYER_FLAG_BICUBIC_FILTERING : 0;
+#endif
 
 		switch (StereoLayerType)
 		{

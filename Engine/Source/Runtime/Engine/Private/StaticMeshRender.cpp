@@ -1840,19 +1840,19 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			CachedRayTracingMaterials.Reset();
 			CachedRayTracingMaterials.Reserve(NumRayTracingMaterialEntries);
 
-			for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
+		for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
+		{
+			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 			{
-				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
-				{
 					FMeshBatch &MeshBatch = CachedRayTracingMaterials.AddDefaulted_GetRef();
 
 					bool bResult = GetMeshElement(LODIndex, BatchIndex, SectionIndex, PrimitiveDPG, false, false, MeshBatch);
-					if (!bResult)
-					{
-						// Hidden material
+				if (!bResult)
+				{
+					// Hidden material
 						MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 						MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
-					}
+				}
 
 					MeshBatch.SegmentIndex = SectionIndex;
 					MeshBatch.MeshIdInPrimitive = SectionIndex;
@@ -2002,7 +2002,8 @@ FPrimitiveViewRelevance FStaticMeshSceneProxy::GetViewRelevance(const FSceneView
 		Result.bOpaque = true;
 	}
 
-	Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
+	// AppSpaceWarp
+	Result.bVelocityRelevance = (View->bIncludeStaticInVelocityPass || DrawsVelocity()) && Result.bOpaque && Result.bRenderInMainPass;
 
 	return Result;
 }

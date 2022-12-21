@@ -10,7 +10,9 @@
 		</isArch>
 		<setBoolFromPropertyContains result="bPackageForOculusQuest" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest"/>
 		<setBoolFromPropertyContains result="bPackageForOculusQuest2" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest2"/>
+		<setBoolFromPropertyContains result="bPackageForQuestPro" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="QuestPro"/>
 		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusQuest)" arg2="$B(bPackageForOculusQuest2)"/>
+		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusMobile)" arg2="$B(bPackageForQuestPro)"/>
 
 		<if condition="bCpuArchSupported">
 			<false>
@@ -76,6 +78,11 @@
 					<if condition="bPackageForOculusQuest2">
 						<true>
 							<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="quest2|" />
+						</true>
+					</if>
+                    <if condition="bPackageForQuestPro">
+						<true>
+							<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="cambria|" />
 						</true>
 					</if>
 					<setIntLength result="devicesStringLength" source="$S(devicesString)"/>

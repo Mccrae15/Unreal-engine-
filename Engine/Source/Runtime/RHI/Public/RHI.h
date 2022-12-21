@@ -777,6 +777,9 @@ extern RHI_API int32 GRHIVariableRateShadingImageTileMinWidth;
 /** Minimum tile height in a screen space texture that can be used to drive Variable Rate Shading. */
 extern RHI_API int32 GRHIVariableRateShadingImageTileMinHeight;
 
+/** Minimum granularity that can be controlled by the Variable Rate Shading offset. */
+extern RHI_API FIntPoint GRHIVariableRateShadingImageOffsetGranularity;
+
 /** Data type contained in a shading-rate image for image-based Variable Rate Shading. */
 extern RHI_API EVRSImageDataType GRHIVariableRateShadingImageDataType;
 

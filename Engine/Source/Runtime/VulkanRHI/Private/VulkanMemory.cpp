@@ -723,7 +723,7 @@ namespace VulkanRHI
 		if(Device->GetOptionalExtensions().HasMemoryBudget)
 		{
 			VULKAN_LOGMEMORY(TEXT("Memory Budget Extension:"));
-			VULKAN_LOGMEMORY(TEXT("\t         | Usage                     | Budget          | Size            |"));
+			VULKAN_LOGMEMORY(TEXT("\t         | Usage                      | Budget           | Size             |"));
 			VULKAN_LOGMEMORY(TEXT("\t---------|------------------------------------------------------------------|"));
 			for(uint32 HeapIndex = 0; HeapIndex < VK_MAX_MEMORY_HEAPS; ++HeapIndex)
 			{
@@ -803,7 +803,7 @@ namespace VulkanRHI
 				UpdateMemoryProperties();
 			}			
 			OutLimit = GetBaseHeapSize(PrimaryHeapIndex);
-	}
+		}
 	}
 
 	FDeviceMemoryAllocation* FDeviceMemoryManager::Alloc(bool bCanFail, VkDeviceSize AllocationSize, uint32 MemoryTypeBits, VkMemoryPropertyFlags MemoryPropertyFlags, void* DedicatedAllocateInfo, float Priority, bool bExternal, const char* File, uint32 Line)
@@ -875,8 +875,8 @@ namespace VulkanRHI
 		VkMemoryPriorityAllocateInfoEXT Prio;
 		if (Device->GetOptionalExtensions().HasMemoryPriority)
 		{
-			ZeroVulkanStruct(Prio, VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT);
-			Prio.priority = Priority;
+		ZeroVulkanStruct(Prio, VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT);
+		Prio.priority = Priority;
 			Info.pNext = &Prio;
 		}
 #endif
@@ -1382,6 +1382,13 @@ namespace VulkanRHI
 			Range.size = InSize;
 			VERIFYVULKANRESULT(VulkanRHI::vkInvalidateMappedMemoryRanges(DeviceHandle, 1, &Range));
 		}
+	}
+
+	VkDeviceSize FDeviceMemoryAllocation::GetCommitedSize()
+	{
+		VkDeviceSize size = 0;
+		VulkanRHI::vkGetDeviceMemoryCommitment(DeviceHandle, Handle, &size);
+		return size;
 	}
 
 	void FRange::JoinConsecutiveRanges(TArray<FRange>& Ranges)
@@ -2483,9 +2490,9 @@ namespace VulkanRHI
 
 		if (bTryFree)
 		{
-			Owner->ReleaseSubresourceAllocator(this);
+				Owner->ReleaseSubresourceAllocator(this);
+			}
 		}
-	}
 
 	void FMemoryManager::FreeVulkanAllocation(FVulkanAllocation& Allocation, EVulkanFreeFlags FreeFlags)
 	{
@@ -2867,21 +2874,21 @@ namespace VulkanRHI
 		FScopeLock ScopeLockPages(&ResourceTypeHeaps[SubresourceAllocator->MemoryTypeIndex]->PagesLock);
 
 		if (SubresourceAllocator->JoinFreeBlocks())
+	{
+		if (SubresourceAllocator->Type == EVulkanAllocationPooledBuffer)
 		{
-			if (SubresourceAllocator->Type == EVulkanAllocationPooledBuffer)
-			{
-				UsedBufferAllocations[SubresourceAllocator->PoolSizeIndex].RemoveSingleSwap(SubresourceAllocator, false);
-				SubresourceAllocator->FrameFreed = GFrameNumberRenderThread;
-				FreeBufferAllocations[SubresourceAllocator->PoolSizeIndex].Add(SubresourceAllocator);
-			}
-			else
-			{
-				FVulkanResourceHeap* Heap = ResourceTypeHeaps[SubresourceAllocator->MemoryTypeIndex];
-				Heap->FreePage(SubresourceAllocator);
-			}
+			UsedBufferAllocations[SubresourceAllocator->PoolSizeIndex].RemoveSingleSwap(SubresourceAllocator, false);
+			SubresourceAllocator->FrameFreed = GFrameNumberRenderThread;
+			FreeBufferAllocations[SubresourceAllocator->PoolSizeIndex].Add(SubresourceAllocator);
+		}
+		else
+		{
+			FVulkanResourceHeap* Heap = ResourceTypeHeaps[SubresourceAllocator->MemoryTypeIndex];
+			Heap->FreePage(SubresourceAllocator);
+		}
 
 			return true;
-		}
+	}
 		return false;
 	}
 
@@ -3364,6 +3371,7 @@ namespace VulkanRHI
 			TArrayView<uint32> MemoryUsed = Allocator.GetMemoryUsed();
 			uint32 NumAllocations = Allocator.GetNumSubAllocations();
 			uint32 TotalMemory = Allocator.GetMaxSize();
+			uint32 CommitedMemory = Allocator.GetCommitedSize();
 			uint32 TotalUsed = 0;
 			uint32 FreeCount = Allocator.FreeList.Num();
             uint32 LargestFree = 0;
@@ -3377,12 +3385,13 @@ namespace VulkanRHI
 			}
 			uint64 Free= TotalMemory - TotalUsed;
 			uint8 AllocatorFlags =  Allocator.GetSubresourceAllocatorFlags();
-			VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4d %8d | %3d%% / %8.2fmb / %8.2fmb / %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb / %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb / %8.2fmb | %d %d | %s"),
+			VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4d %8d | %3d%% / %8.2fmb / %8.2fmb / %8.2fmb / %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb / %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb | %8.2fmb / %8.2fmb / %8.2fmb | %d %d | %s"),
 				*Name,
 				FreeCount,
 				NumAllocations,
                 int(100 * (TotalMemory-Free) / TotalMemory),
 				TotalUsed / (1024.f * 1024.f),
+				CommitedMemory / (1024.f * 1024.f),
 				Free / (1024.f * 1024.f),
 				TotalMemory / (1024.f * 1024.f),
                 LargestFree / (1024.f * 1024.f),
@@ -3427,12 +3436,13 @@ namespace VulkanRHI
 				}
 				FString MemoryString = VK_FLAGS_TO_STRING(VkMemoryPropertyFlags, Flags);
 				VULKAN_LOGMEMORY(VULKAN_LOGMEMORY_PAD2);
-				VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4s %8s | %4s / %10s / %10s / %10s / %10s | %10s / %10s / %10s / %10s | %10s / %10s | %10s / %10s / %10s | Mapped/Evictable |"),
+				VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4s %8s | %4s / %10s / %10s / %10s / %10s / %10s | %10s / %10s / %10s / %10s | %10s / %10s | %10s / %10s / %10s | Mapped/Evictable |"),
 					TEXT(""),
 					TEXT("Free"),
 					TEXT("Count"),
                     TEXT("Fill"), 
 					TEXT("Used"),
+					TEXT("Comm"),
 					TEXT("Free"),
 					TEXT("Total"),
                     TEXT("Largest"),
@@ -3460,12 +3470,13 @@ namespace VulkanRHI
 
 
 		VULKAN_LOGMEMORY(VULKAN_LOGMEMORY_PAD2);
-		VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4s %8s | %4s / %10s / %10s / %10s / %10s | %10s / %10s / %10s / %10s | %10s / %10s | %10s / %10s / %10s |"),
+		VULKAN_LOGMEMORY(TEXT("\t\t%-45s  | %4s %8s | %4s / %10s / %10s / %10s / %10s / %10s | %10s / %10s / %10s / %10s | %10s / %10s | %10s / %10s / %10s |"),
 			TEXT(""),
 			TEXT("Free"),
 			TEXT("Count"),
             TEXT("Fill"),
 			TEXT("Used"),
+			TEXT("Comm"),
 			TEXT("Free"),
 			TEXT("Total"),
             TEXT("Largest"),
@@ -3499,14 +3510,14 @@ namespace VulkanRHI
         };
 		VULKAN_LOGMEMORY(VULKAN_LOGMEMORY_PAD2);
 		for (int32 TypeIndex = 0; TypeIndex < ResourceTypeHeaps.Num(); ++TypeIndex)
-			{
+		{
 			if (ResourceTypeHeaps[TypeIndex])
-				{
+			{
 				for (uint32 SubIndex = 0; SubIndex < FVulkanResourceHeap::MAX_BUCKETS; ++SubIndex)
-					{
+				{
 					TArray<FVulkanSubresourceAllocator*>& PageArray = ResourceTypeHeaps[TypeIndex]->ActivePages[SubIndex];
 					DumpAllocatorRange(FString::Printf(TEXT("Page[%s] - ResTypeHeaps[%d] ActivePages[%d]"), PageSuffix(TypeIndex, SubIndex), TypeIndex, SubIndex), PageArray);
-					}
+				}
 				DumpAllocatorRange(FString::Printf(TEXT("UsedDedicatedImagePages - ResTypeHeaps[%d]"), TypeIndex), ResourceTypeHeaps[TypeIndex]->UsedDedicatedImagePages);
 			}
 		}
@@ -3579,9 +3590,9 @@ namespace VulkanRHI
 
 		if (Contents)
 		{
-			FMemory::Memcpy(OutAllocation.GetMappedPointer(Device), Contents, Size);
-			OutAllocation.FlushMappedMemory(Device);
-		}
+		FMemory::Memcpy(OutAllocation.GetMappedPointer(Device), Contents, Size);
+		OutAllocation.FlushMappedMemory(Device);
+	}
 	}
 	void FMemoryManager::FreeUniformBuffer(FVulkanAllocation& InAllocation)
 	{
@@ -3844,7 +3855,7 @@ namespace VulkanRHI
 		check(InternalData[Index].NextFree == -1);
 		InternalData[Index].NextFree = InternalFreeList;
 		InternalFreeList = Index;
-		InternalData[Index].State  = FVulkanAllocationInternal::EUNUSED;
+		InternalData[Index].State = FVulkanAllocationInternal::EUNUSED;
 	}
 
 
@@ -3983,23 +3994,23 @@ namespace VulkanRHI
 
 				if  (Alloc.State == FVulkanAllocationInternal::EALLOCATED)
 				{
-				const TCHAR* TypeStr = VulkanAllocationMetaTypeToString(Alloc.MetaType);
-				const TCHAR* Name = TEXT("< ? >");
-				FString Tmp;
+					const TCHAR* TypeStr = VulkanAllocationMetaTypeToString(Alloc.MetaType);
+					const TCHAR* Name = TEXT("< ? >");
+					FString Tmp;
 
 				if(Alloc.MetaType == EVulkanAllocationMetaImageRenderTarget)
-				{
-					FVulkanEvictable* Evictable = Alloc.AllocationOwner;
+					{
+						FVulkanEvictable* Evictable = Alloc.AllocationOwner;
 					FVulkanTexture* Texture = Evictable->GetEvictableTexture();
 					if(Texture)
-					{
+							{
 						Tmp = Texture->GetName().ToString();
-						Name = *Tmp;
-					}
-				}
+								Name = *Tmp;
+							}
+						}
 
-				VULKAN_LOGMEMORY(TEXT("\t\t    [%08x - %08x]  | %11.3fMB | %20s   %s"), Entry.Offset, Entry.Offset + Entry.Size, Entry.Size / (1024.f * 1024.f), TypeStr, Name);
-			}
+					VULKAN_LOGMEMORY(TEXT("\t\t    [%08x - %08x]  | %11.3fMB | %20s   %s"), Entry.Offset, Entry.Offset + Entry.Size, Entry.Size / (1024.f * 1024.f), TypeStr, Name);
+				}
 				else
 				{
 					const TCHAR* StateStr =

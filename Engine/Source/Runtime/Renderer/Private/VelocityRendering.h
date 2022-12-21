@@ -55,6 +55,10 @@ struct FVelocityRendering
 
 	/** Returns true if we wait for outstanding tasks in velocity pass. */
 	static bool IsVelocityWaitForTasksEnabled(EShaderPlatform ShaderPlatform);
+
+	// AppSpaceWarp
+	/** Returns true if we want to generate depth buffer in velocity pass. */
+	static bool IsVelocityWithFullDepthSupported();
 };
 
 /**
@@ -110,11 +114,14 @@ public:
 		FMeshPassDrawListContext* InDrawListContext);
 
 	/** Returns true if the object is capable of having velocity for any frame. */
-	static bool PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
-	static bool PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bDrawVelocity, bool bHasStaticLighting);
+	// AppSpaceWarp
+	static bool PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bAllowStatic, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
+
+	static bool PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bAllowStatic, bool bDrawVelocity, bool bHasStaticLighting);
 
 	/** Returns true if the primitive has velocity for the current frame. */
-	static bool PrimitiveHasVelocityForFrame(const FPrimitiveSceneProxy* PrimitiveSceneProxy);
+	// AppSpaceWarp
+	static bool PrimitiveHasVelocityForFrame(bool bAllowStatic, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
 
 private:
 	bool TryAddMeshBatch(

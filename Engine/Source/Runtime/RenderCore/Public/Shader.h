@@ -870,6 +870,7 @@ public:
 	inline const FShaderTarget GetTarget() const { return Target; }
 	inline bool IsFrozen() const { return Type.IsFrozen(); }
 	inline uint32 GetNumInstructions() const { return NumInstructions; }
+	inline FMemoryImageString& GetShaderStats() { return ShaderStats; }
 
 #if WITH_EDITORONLY_DATA
 	inline uint32 GetNumTextureSamplers() const { return NumTextureSamplers; }
@@ -984,6 +985,9 @@ private:
 
 	/** Size of shader's compiled code */
 	LAYOUT_FIELD_EDITORONLY(uint32, CodeSize);
+
+	/** Shader's stats which could come from offline shader compiler or something else*/
+	LAYOUT_FIELD(FMemoryImageString, ShaderStats);
 };
 
 RENDERCORE_API const FTypeLayoutDesc& GetTypeLayoutDesc(const FPointerTableBase* PtrTable, const FShader& Shader);
@@ -1462,6 +1466,7 @@ struct FShaderCompiledShaderInitializerType
 	uint32 NumTextureSamplers;
 	uint32 CodeSize;
 	int32 PermutationId;
+	FString ShaderStats;
 
 	RENDERCORE_API FShaderCompiledShaderInitializerType(
 		const FShaderType* InType,
@@ -2128,6 +2133,7 @@ public:
 	inline bool HasShaderPipeline(const FShaderPipelineType* PipelineType) const { return (GetShaderPipeline(PipelineType) != nullptr); }
 
 	uint32 GetMaxNumInstructionsForShader(const FShaderMapBase& InShaderMap, FShaderType* ShaderType) const;
+	FString GetShaderStats(const FShaderMapBase& InShaderMap, FShaderType* ShaderType) const;
 
 	void Finalize(const FShaderMapResourceCode* Code);
 

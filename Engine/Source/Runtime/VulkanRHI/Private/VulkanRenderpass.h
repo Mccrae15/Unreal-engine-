@@ -299,6 +299,15 @@ struct FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo>
 	}
 };
 
+struct FVulkanRenderPassFragmentDensityMapCreateInfoEXT
+	: public VkRenderPassFragmentDensityMapCreateInfoEXT
+{
+	FVulkanRenderPassFragmentDensityMapCreateInfoEXT()
+	{
+		ZeroVulkanStruct(*this, VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT);
+	}
+};
+
 #if VULKAN_SUPPORTS_RENDERPASS2
 template<>
 struct FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>
@@ -349,6 +358,7 @@ class FVulkanRenderPassBuilder
 public:
 	FVulkanRenderPassBuilder(FVulkanDevice& InDevice)
 		: Device(InDevice)
+		, CorrelationMask(0)
 	{}
 
 	void BuildCreateInfo(const FVulkanRenderTargetLayout& RTLayout)
@@ -361,7 +371,13 @@ public:
 
 		const bool bDeferredShadingSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DeferredShadingSubpass;
 		const bool bDepthReadSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DepthReadSubpass;
-		const bool bApplyFragmentShadingRate = GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingEnabled && GRHIAttachmentVariableRateShadingEnabled && RTLayout.GetFragmentDensityAttachmentReference() != nullptr;
+		const bool bApplyFragmentShadingRate =
+			Device.GetOptionalExtensions().HasKHRFragmentShadingRate &&
+			GRHISupportsAttachmentVariableRateShading &&
+			GRHIVariableRateShadingEnabled &&
+			GRHIAttachmentVariableRateShadingEnabled &&
+			GRHIVariableRateShadingImageDataType == VRSImage_Fractional &&
+			RTLayout.GetHasFragmentDensityAttachment();
 
 #if VULKAN_SUPPORTS_RENDERPASS2
 		if (bApplyFragmentShadingRate)
@@ -557,7 +573,7 @@ public:
 		Bit mask that specifices correlation between views
 		An implementation may use this for optimizations (concurrent render)
 		*/
-		const uint32_t CorrelationMask = MultiviewMask;
+		CorrelationMask = MultiviewMask;
 
 		VkRenderPassMultiviewCreateInfo MultiviewInfo;
 		if (RTLayout.GetIsMultiView())
@@ -584,10 +600,8 @@ public:
 			}
 		}
 
-		VkRenderPassFragmentDensityMapCreateInfoEXT FragDensityCreateInfo;
 		if (Device.GetOptionalExtensions().HasEXTFragmentDensityMap && RTLayout.GetHasFragmentDensityAttachment())
 		{
-			ZeroVulkanStruct(FragDensityCreateInfo, VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT);
 			FragDensityCreateInfo.fragmentDensityMapAttachment = *RTLayout.GetFragmentDensityAttachmentReference();
 
 			// Chain fragment density info onto create info and the rest of the pNexts
@@ -639,9 +653,11 @@ private:
 	FVulkanAttachmentReference<VkAttachmentReference2> ShadingRateAttachmentReference;
 	FVulkanFragmentShadingRateAttachmentInfo FragmentShadingRateAttachmentInfo;
 #endif
+	FVulkanRenderPassFragmentDensityMapCreateInfoEXT FragDensityCreateInfo;
 
 	TRenderPassCreateInfoClass CreateInfo;
 	FVulkanDevice& Device;
+	uint32_t CorrelationMask;
 };
 
 VkRenderPass CreateVulkanRenderPass(FVulkanDevice& Device, const FVulkanRenderTargetLayout& RTLayout);

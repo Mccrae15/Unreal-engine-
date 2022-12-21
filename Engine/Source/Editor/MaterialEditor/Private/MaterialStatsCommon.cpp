@@ -16,7 +16,7 @@
 void FMaterialResourceStats::SetupExtaCompilationSettings(const EShaderPlatform Platform, FExtraShaderCompilerSettings& Settings) const
 {
 	Settings.bExtractShaderSource = true;
-	Settings.OfflineCompilerPath = FMaterialStatsUtils::GetPlatformOfflineCompilerPath(Platform);
+	FMaterialStatsUtils::GetPlatformOfflineCompilerSettings(Platform, Settings);
 }
 
 /*end FMaterialResourceStats functions*/
@@ -134,24 +134,49 @@ FString FMaterialStatsUtils::ShaderPlatformTypeName(const EShaderPlatform Platfo
 	return FormatName;
 }
 
-FString FMaterialStatsUtils::GetPlatformOfflineCompilerPath(const EShaderPlatform ShaderPlatform)
+void FMaterialStatsUtils::GetPlatformOfflineCompilerSettings(const EShaderPlatform ShaderPlatform, FExtraShaderCompilerSettings& SCSettings)
 {
+	auto GetSCType = [](EOfflineShaderCompiler SC)
+	{
+		switch (SC)
+		{
+		case EOfflineShaderCompiler::Mali:
+			return EOfflineShaderCompilerType::Mali;
+			break;
+		case EOfflineShaderCompiler::Adreno:
+			return EOfflineShaderCompilerType::Adreno;
+			break;
+		default:
+			return EOfflineShaderCompilerType::Num;
+		}
+		return EOfflineShaderCompilerType::Num;
+	};
+
 	if (FDataDrivenShaderPlatformInfo::GetNeedsOfflineCompiler(ShaderPlatform))
 	{
 		if (FDataDrivenShaderPlatformInfo::GetIsAndroidOpenGLES(ShaderPlatform)
 			|| (FDataDrivenShaderPlatformInfo::GetIsLanguageVulkan(ShaderPlatform) && FDataDrivenShaderPlatformInfo::GetIsMobile(ShaderPlatform)))
 		{
-			return FPaths::ConvertRelativePathToFull(GetDefault<UMaterialEditorSettings>()->MaliOfflineCompilerPath.FilePath);
+			SCSettings.OfflineCompiler = GetSCType(GetDefault<UMaterialEditorSettings>()->OfflineCompiler);
+			SCSettings.OfflineCompilerPath = FPaths::ConvertRelativePathToFull(GetDefault<UMaterialEditorSettings>()->OfflineCompilerPath.FilePath);
+			SCSettings.GPUTarget = GetDefault<UMaterialEditorSettings>()->GPUTarget;
+			SCSettings.bSaveCompilerStatsFiles = GetDefault<UMaterialEditorSettings>()->bSaveCompilerStatsFiles;
+
+			static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+			SCSettings.bMobileMultiView = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
+			return;
 		}
 	}
-	return FString();
+	SCSettings.OfflineCompiler = EOfflineShaderCompilerType::Num;
+	return;
 }
 
 bool FMaterialStatsUtils::IsPlatformOfflineCompilerAvailable(const EShaderPlatform ShaderPlatform)
 {
-	FString CompilerPath = GetPlatformOfflineCompilerPath(ShaderPlatform);
+	FExtraShaderCompilerSettings Settings;
+	GetPlatformOfflineCompilerSettings(ShaderPlatform, Settings);
 
-	bool bCompilerExists = FPaths::FileExists(CompilerPath);
+	bool bCompilerExists = FPaths::FileExists(Settings.OfflineCompilerPath);
 
 	return bCompilerExists;
 }
@@ -421,9 +446,9 @@ void FMaterialStatsUtils::GetRepresentativeShaderTypesAndDescriptions(TMap<FName
 					{
 						bool bEnableLocalLights = false;
 						MobileBasePassShaderName(false, TEXT("TLightMapPolicyLQ"), bEnableLocalLights, bMobileHDR, bOnlySkyPermutation, ShaderNameStr);
-						ShaderTypeNamesAndDescriptions.FindOrAdd(FLocalVertexFactoryName)
-							.Add(FRepresentativeShaderInfo(ERepresentativeShader::StationarySurface, FName(ShaderNameStr),
-								FString::Printf(TEXT("Mobile base pass shader with static lighting%s"), DescSuffix)));
+					ShaderTypeNamesAndDescriptions.FindOrAdd(FLocalVertexFactoryName)
+						.Add(FRepresentativeShaderInfo(ERepresentativeShader::StationarySurface, FName(ShaderNameStr),
+							FString::Printf(TEXT("Mobile base pass shader with static lighting%s"), DescSuffix)));
 					}
 
 					{
@@ -503,11 +528,13 @@ void FMaterialStatsUtils::GetRepresentativeInstructionCounts(TArray<FShaderInstr
 						FShaderType* ShaderType = FindShaderTypeByName(ShaderInfo.ShaderName);
 						check(ShaderType);
 						const int32 NumInstructions = MaterialShaderMap->GetMaxNumInstructionsForShader(ShaderType);
+						FString ShaderStats = MaterialShaderMap->GetShaderStats(ShaderType);
 
 						FShaderInstructionsInfo Info;
 						Info.ShaderType = ShaderInfo.ShaderType;
 						Info.ShaderDescription = ShaderInfo.ShaderDescription;
 						Info.InstructionCount = NumInstructions;
+						Info.ShaderStats = ShaderStats;
 
 						Results.Push(Info);
 
@@ -540,11 +567,13 @@ void FMaterialStatsUtils::GetRepresentativeInstructionCounts(TArray<FShaderInstr
 								FShaderType* ShaderType = (*ShaderEntry).GetType();
 								{
 									const int32 NumInstructions = MeshShaderMap->GetMaxNumInstructionsForShader(*MaterialShaderMap, ShaderType);
+									FString ShaderStats = MeshShaderMap->GetShaderStats(*MaterialShaderMap, ShaderType);
 
 									FShaderInstructionsInfo Info;
 									Info.ShaderType = ShaderInfo.ShaderType;
 									Info.ShaderDescription = ShaderInfo.ShaderDescription;
 									Info.InstructionCount = NumInstructions;
+									Info.ShaderStats = ShaderStats;
 
 									Results.Push(Info);
 
@@ -587,7 +616,7 @@ void FMaterialStatsUtils::ExtractMatertialStatsInfo(EShaderPlatform ShaderPlatfo
 
 			Content.StrDescription = ShaderInstructionInfo[InstructionIndex].InstructionCount > 0 ? FString::Printf(TEXT("%u"), ShaderInstructionInfo[InstructionIndex].InstructionCount) : TEXT("n/a");
 			Content.StrDescriptionLong = ShaderInstructionInfo[InstructionIndex].InstructionCount > 0 ?
-				FString::Printf(TEXT("%s: %u instructions"), *ShaderInstructionInfo[InstructionIndex].ShaderDescription, ShaderInstructionInfo[InstructionIndex].InstructionCount) :
+				FString::Printf(TEXT("%s: %u instructions\nStats: %s"), *ShaderInstructionInfo[InstructionIndex].ShaderDescription, ShaderInstructionInfo[InstructionIndex].InstructionCount, *ShaderInstructionInfo[InstructionIndex].ShaderStats) :
 				TEXT("Offline shader compiler not available or an error was encountered!");
 
 			OutInfo.ShaderInstructionCount.Add(ShaderInstructionInfo[InstructionIndex].ShaderType, Content);

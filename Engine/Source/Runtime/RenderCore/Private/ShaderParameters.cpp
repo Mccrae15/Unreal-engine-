@@ -266,7 +266,20 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 
 			// Generate the member declaration.
 			FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
-			Decl.ConstantBufferMembers += FString::Printf(TEXT("\t%s%s %s%s;\r\n"),*BaseTypeName,*TypeDim,*ParameterName,*ArrayDim);
+
+			if (NamePrefix.StartsWith(TEXT("View_")))
+			{
+				// Create non-const static variables for View members, which are overwritten if GetInstancedView() is called.
+				// When this happens, references to View buffer are replaced with references to InstancedView buffer.
+				// The View buffer, no longer referenced, does not need to be bound.
+				Decl.ConstantBufferMembers += FString::Printf(TEXT("\t%s%s _%s%s;\r\n"), *BaseTypeName, *TypeDim, *ParameterName, *ArrayDim);
+				Decl.ResourceMembers += FString::Printf(TEXT("static %s%s %s%s = _%s;\r\n"), *BaseTypeName, *TypeDim, *ParameterName, *ArrayDim, *ParameterName);
+			}
+			else
+			{
+				Decl.ConstantBufferMembers += FString::Printf(TEXT("\t%s%s %s%s;\r\n"), *BaseTypeName, *TypeDim, *ParameterName, *ArrayDim);
+			}
+
 			Decl.StructMembers += FString::Printf(TEXT("\t%s%s %s%s;\r\n"),*BaseTypeName,*TypeDim,Member.GetName(),*ArrayDim);
 			Decl.Initializer += FString::Printf(TEXT("%s,"),*ParameterName);
 		}
@@ -396,7 +409,7 @@ void FShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment&
 	ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
 	for (;;)
 	{
-		// Cache uniform buffer struct declarations referenced by this shader type's files
+	// Cache uniform buffer struct declarations referenced by this shader type's files
 		if (CachedUniformBufferPlatform == Platform)
 		{
 			break;
@@ -406,22 +419,22 @@ void FShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment&
 		//     Write the ReferencedUniformBufferStructsCache for the new Platform
 		// Drop the WriteLock, reacquire the ReadLock
 		ReadScopeLock.Reset();
-		{
+	{
 			FWriteScopeLock WriteScopeLock(UniformBufferLocks[LockIndex]);
-			if (CachedUniformBufferPlatform != Platform)
-			{
+		if (CachedUniformBufferPlatform != Platform)
+		{
 				// If there is already a cache but for another platform, keep the keys but reset the values
-				if (CachedUniformBufferPlatform != SP_NumPlatforms)
+			if (CachedUniformBufferPlatform != SP_NumPlatforms)
+			{
+				for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
 				{
-					for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
-					{
-						It.Value() = FCachedUniformBufferDeclaration();
-					}
+					It.Value() = FCachedUniformBufferDeclaration();
 				}
-				CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
-				CachedUniformBufferPlatform = Platform;
 			}
+			CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
+			CachedUniformBufferPlatform = Platform;
 		}
+	}
 		ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
 	}
 
@@ -536,7 +549,7 @@ void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvir
 	ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
 	for (;;)
 	{
-		// Cache uniform buffer struct declarations referenced by this shader type's files
+	// Cache uniform buffer struct declarations referenced by this shader type's files
 		if (CachedUniformBufferPlatform == Platform)
 		{
 			break;
@@ -546,20 +559,20 @@ void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvir
 		//     Write the ReferencedUniformBufferStructsCache for the new Platform
 		// Drop the WriteLock, reacquire the ReadLock
 		ReadScopeLock.Reset();
-		{
+	{
 			FWriteScopeLock WriteScopeLock(UniformBufferLocks[LockIndex]);
-			if (CachedUniformBufferPlatform != Platform)
-			{
+		if (CachedUniformBufferPlatform != Platform)
+		{
 				// If there is already a cache but for another platform, keep the keys but reset the values
-				if (CachedUniformBufferPlatform != SP_NumPlatforms)
+			if (CachedUniformBufferPlatform != SP_NumPlatforms)
+			{
+				for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
 				{
-					for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
-					{
-						It.Value() = FCachedUniformBufferDeclaration();
-					}
+					It.Value() = FCachedUniformBufferDeclaration();
 				}
-				CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
-				CachedUniformBufferPlatform = Platform;
+			}
+			CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
+			CachedUniformBufferPlatform = Platform;
 			}
 		}
 		ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);

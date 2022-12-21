@@ -115,7 +115,7 @@ bool FOpenXRHMD::FVulkanExtensions::GetVulkanInstanceExtensionsRequired(TArray<c
 	ANSICHAR* Context = nullptr;
 	for (ANSICHAR* Tok = FCStringAnsi::Strtok(Extensions.GetData(), " ", &Context); Tok != nullptr; Tok = FCStringAnsi::Strtok(nullptr, " ", &Context))
 	{
-		Out.Add(Tok);
+				Out.Add(Tok);
 	}
 #endif
 	return true;
@@ -138,7 +138,7 @@ bool FOpenXRHMD::FVulkanExtensions::GetVulkanDeviceExtensionsRequired(VkPhysical
 	ANSICHAR* Context = nullptr;
 	for (ANSICHAR* Tok = FCStringAnsi::Strtok(DeviceExtensions.GetData(), " ", &Context); Tok != nullptr; Tok = FCStringAnsi::Strtok(nullptr, " ", &Context))
 	{
-		Out.Add(Tok);
+				Out.Add(Tok);
 	}
 #endif
 	return true;
@@ -1223,9 +1223,7 @@ FOpenXRHMD::FOpenXRHMD(const FAutoRegister& AutoRegister, XrInstance InInstance,
 	bSpaceAccellerationSupported = IsExtensionEnabled(XR_EPIC_SPACE_ACCELERATION_NAME);
 
 	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-	static const auto CVarMobileHDR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileHDR"));
-	const bool bMobileHDR = (CVarMobileHDR && CVarMobileHDR->GetValueOnAnyThread() != 0);
-	const bool bMobileMultiView = !bMobileHDR && (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
+	const bool bMobileMultiView = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
 #if PLATFORM_HOLOLENS
 	bIsMobileMultiViewEnabled = bMobileMultiView && GRHISupportsArrayIndexFromAnyShader;
 #else
@@ -1700,7 +1698,7 @@ bool FOpenXRHMD::OnStereoStartup()
 	XR_ENSURE(xrCreateReferenceSpace(Session, &SpaceInfo, &HmdSpace));
 	{
 		FWriteScopeLock DeviceLock(DeviceMutex);
-		DeviceSpaces[HMDDeviceId].Space = HmdSpace;
+	DeviceSpaces[HMDDeviceId].Space = HmdSpace;
 	}
 
 	ensure(ReferenceSpaces.Contains(XR_REFERENCE_SPACE_TYPE_LOCAL));
@@ -1747,15 +1745,15 @@ bool FOpenXRHMD::OnStereoStartup()
 	// Create action spaces for all devices
 	{
 		FWriteScopeLock DeviceLock(DeviceMutex);
-		for (FDeviceSpace& DeviceSpace : DeviceSpaces)
-		{
-			DeviceSpace.CreateSpace(Session);
-		}
+	for (FDeviceSpace& DeviceSpace : DeviceSpaces)
+	{
+		DeviceSpace.CreateSpace(Session);
+	}
 	}
 
 	if (RenderBridge.IsValid())
 	{
-		RenderBridge->SetOpenXRHMD(this);
+	RenderBridge->SetOpenXRHMD(this);
 	}
 
 	// grab a pointer to the renderer module for displaying our mirror window
@@ -1885,10 +1883,10 @@ void FOpenXRHMD::DestroySession()
 		// when the session is created again.
 		{
 			FReadScopeLock DeviceLock(DeviceMutex);
-			for (FDeviceSpace& Device : DeviceSpaces)
-			{
-				Device.DestroySpace();
-			}
+		for (FDeviceSpace& Device : DeviceSpaces)
+		{
+			Device.DestroySpace();
+		}
 		}
 
 		// Close the session now we're allowed to.
@@ -2113,7 +2111,7 @@ void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32
 
 	FReadScopeLock Lock(SessionHandleMutex);
 	if (!Session || !bDepthExtensionSupported)
-	{
+		{
 		return;
 	}
 
@@ -2123,7 +2121,7 @@ void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32
 	const FRHITexture2D* const DepthSwapchainTexture = DepthSwapchain == nullptr ? nullptr : DepthSwapchain->GetTexture2DArray() ? DepthSwapchain->GetTexture2DArray() : DepthSwapchain->GetTexture2D();
 	if (DepthSwapchain == nullptr || DepthSwapchainTexture == nullptr || 
 		DepthSwapchainTexture->GetSizeX() != SizeX || DepthSwapchainTexture->GetSizeY() != SizeY)
-	{
+			{
 		// We're only creating a 1x target here, but we don't know whether it'll be the targeted texture
 		// or the resolve texture. Because of this, we unify the input flags.
 		ETextureCreateFlags UnifiedCreateFlags = TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead;
@@ -2141,9 +2139,9 @@ void FOpenXRHMD::AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32
 		uint8 UnusedActualFormat = 0;
 		DepthSwapchain = RenderBridge->CreateSwapchain(Session, PF_DepthStencil, UnusedActualFormat, SizeX, SizeY, bIsMobileMultiViewEnabled ? 2 : 1, NumMipsExpected, NumSamplesExpected, UnifiedCreateFlags, FClearValueBinding::DepthFar);
 		if (!DepthSwapchain)
-		{
+				{
 			return;
-		}
+				}
 
 		// image will be acquired next time we begin the rendering
 	}
@@ -2251,7 +2249,7 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 				}
 			}
 			else if (Layer.Desc.IsVisible())
-			{
+	{
 				EmulatedSceneLayers.Add(Layer.Desc);
 			}
 		});
@@ -2266,9 +2264,9 @@ void FOpenXRHMD::SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHI
 					return true;
 				}
 				if (DescA.Priority > DescB.Priority)
-				{
-					return false;
-				}
+		{
+			return false;
+		}
 				return DescA.Id < DescB.Id;
 			}
 			return false;
@@ -2392,7 +2390,7 @@ void FOpenXRHMD::DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, 
 		if (Infos.Num())
 		{
 			RHICmdList.Transition(Infos);
-		}
+	}
 
 		FTexture2DRHIRef RenderTarget = InView.Family->RenderTarget->GetRenderTargetTexture();
 
@@ -3264,12 +3262,12 @@ void FOpenXRHMD::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, 
 		const bool bSameSize = DstRect.Size() == SrcRect.Size();
 		if (ScreenPS)
 		{
-			if (bSameSize)
-			{
+		if (bSameSize)
+		{
 				ScreenPS->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SrcTexture);
-			}
-			else
-			{
+		}
+		else
+		{
 				ScreenPS->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SrcTexture);
 			}
 		}

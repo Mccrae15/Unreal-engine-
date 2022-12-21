@@ -276,3 +276,10 @@ Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/**
 
 # Ignore test json data files in NeuralNetworkInterface
 /Engine/Plugins/Experimental/NNI/Source/ThirdParty/Deps/json/**
+
+# Add exceptions for Oculus Collaboration folder
+!/Collaboration/Oculus/**
+
+# Ignore the private building scripts (which belongs to oculus-build-scripts branch)
+/Collaboration/Private/Scripts/
+

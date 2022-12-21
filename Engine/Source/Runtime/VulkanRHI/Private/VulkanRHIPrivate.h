@@ -914,6 +914,9 @@ inline bool ValidateShadingRateDataType()
 extern int32 GVulkanSubmitAfterEveryEndRenderPass;
 extern int32 GWaitForIdleOnSubmit;
 
+extern bool GVulkanUseQcomFragmentDensityMapOffsets;
+extern FIntPoint GVulkanQcomFragmentDensityMapOffsets[2];
+
 // Vendor-specific GPU crash dumps
 extern bool GGPUCrashDebuggingEnabled;
 

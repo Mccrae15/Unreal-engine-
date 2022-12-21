@@ -1030,7 +1030,7 @@ static void BuildShaderOutput(
 			PackedGlobal.Offset * BytesPerComponent,
 			PackedGlobal.Count * BytesPerComponent,
 			ShaderOutput
-		);
+			);
 
 		NEWEntryTypes.Add(PackedGlobal.Name, FVulkanShaderHeader::PackedGlobal);
 
@@ -1330,7 +1330,7 @@ static void BuildShaderOutput(
 	{
 		if (SupportsOfflineCompiler(ShaderInput.ShaderFormat))
 		{
-			CompileOfflineMali(ShaderInput, ShaderOutput, (const ANSICHAR*)Spirv.GetByteData(), Spirv.GetByteSize(), true, Spirv.EntryPointName);
+			CompileShaderOffline(ShaderInput, ShaderOutput, (const ANSICHAR*)Spirv.GetByteData(), Spirv.GetByteSize(), true, Spirv.EntryPointName);
 		}
 	}
 
@@ -1820,6 +1820,15 @@ static bool BuildShaderOutputFromSpirv(
 
 	// Overwrite updated SPIRV code
 	Spirv.Data = TArray<uint32>(Reflection.GetCode(), Reflection.GetCodeSize() / 4);
+
+	// Check if input argument forces not to strip reflection for Android platform.
+	bool bStripReflectOfAndroidShader = true;
+	const FString* StripReflect_Android = Input.Environment.GetDefinitions().Find(TEXT("STRIP_REFLECT_ANDROID"));
+	if (StripReflect_Android && *StripReflect_Android == "0")
+	{
+		bStripReflectOfAndroidShader = false;
+	}
+	bStripReflect &= bStripReflectOfAndroidShader;
 
 	// We have to strip out most debug instructions (except OpName) for Vulkan mobile
 	if (bStripReflect)

@@ -2644,9 +2644,10 @@ struct FRelevancePacket : public FSceneRenderingAllocatorObject<FRelevancePacket
 
 									if (FVelocityMeshProcessor::PrimitiveHasVelocityForView(View, PrimitiveSceneProxy))
 									{
+										// AppSpaceWarp
 										if (ViewRelevance.bVelocityRelevance &&
-											FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(View.GetShaderPlatform(), PrimitiveSceneProxy) &&
-											FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(PrimitiveSceneProxy))
+											FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(View.GetShaderPlatform(), View.bIncludeStaticInVelocityPass, PrimitiveSceneProxy) &&
+											FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(View.bIncludeStaticInVelocityPass, PrimitiveSceneProxy))
 										{
 											DrawCommandPacket.AddCommandsForMesh(PrimitiveIndex, PrimitiveSceneInfo, StaticMeshRelevance, StaticMesh, Scene, bCanCache, EMeshPass::Velocity);
 											bIsMeshInVelocityPass = true;
@@ -5271,7 +5272,7 @@ void FSceneRenderer::SetupSceneReflectionCaptureBuffer(FRHICommandListImmediate&
 		}
 		else
 		{
-			View.ReflectionCaptureUniformBuffer = ReflectionCaptureUniformBuffer;
+		View.ReflectionCaptureUniformBuffer = ReflectionCaptureUniformBuffer;
 		}
 		
 		View.NumBoxReflectionCaptures = 0;
@@ -5338,8 +5339,8 @@ void FDeferredShadingSceneRenderer::InitViewsAfterPrepass(FRDGBuilder& GraphBuil
 
 		if (GDynamicRHI->RHIIncludeOptionalFlushes())
 		{
-			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-		}
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
 	}
 
 	// If parallel ILC update is disabled, then process it in place.

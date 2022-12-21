@@ -1124,4 +1124,14 @@ public class DeploymentContext //: ProjectParams
 	{
 		return string.Format("Manifest_UFSFiles_{0}{1}.txt", StageTargetPlatform.PlatformType, GetSanitizedDeviceNameSuffix(DeviceName));
 	}
+
+	public string GetRetrievedNonUFSDeployedManifestFileName(string DeviceName)
+	{
+		return string.Format("Manifest_NonUFSFiles_Retrieved_{0}{1}.txt", StageTargetPlatform.PlatformType, GetSanitizedDeviceNameSuffix(DeviceName));
+	}
+
+	public string GetRetrievedUFSDeployedManifestFileName(string DeviceName)
+	{
+		return string.Format("Manifest_UFSFiles_Retrieved_{0}{1}.txt", StageTargetPlatform.PlatformType, GetSanitizedDeviceNameSuffix(DeviceName));
+	}
 }

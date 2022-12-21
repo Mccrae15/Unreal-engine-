@@ -140,7 +140,7 @@ float2 RayBoxIntersection(float3 RO, float3 RD, float3 Extents )
 float3x3 GetTraceViewMatrix()
 {
 	float3 CameraX = normalize(float3(-1, 0.1,0));
-	float rot = frac( View.GameTime * 0.1) * 2 * PI;
+	float rot = frac( ResolvedView.GameTime * 0.1) * 2 * PI;
 	CameraX = RotateAboutAxis( float4( float3(0,0,1) , rot) , 0 , CameraX) + CameraX;
 	float3 CameraY = normalize( cross( CameraX, float3(0,0,1) ) );
 	float3x3 ViewMatrix = { CameraX, CameraY, -normalize(cross( CameraX, CameraY ) ) };

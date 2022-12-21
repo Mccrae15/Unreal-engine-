@@ -240,6 +240,9 @@ public:
 	/** returns the actual shader source selected by the shaders viewer's combo-box */
 	FText GetShaderCode(const EMaterialQualityLevel::Type QualityType);
 
+	/** returns all shaders' stats concatenated together*/
+	FString GetShadersStats();
+
 	/** call this whenever the analyzed material or material instance is changed */
 	void SetMaterial(UMaterial *InMaterial);
 	void SetMaterial(UMaterialInstance *InMaterialInstance);
@@ -416,6 +419,9 @@ public:
 
 	/** returns the shader code computed by the specified platform with some quality level */
 	FText GetShaderCode(const EShaderPlatform PlatformID, const EMaterialQualityLevel::Type QualityType);
+
+	/** returns all shaders' stats concatenated together*/
+	FString GetShadersStats();
 
 	/** call this whenever some material property is changed, as it will trigger shader recompilation */
 	void SignalMaterialChanged();

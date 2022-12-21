@@ -233,6 +233,13 @@ private:
 	void AllocMemory();
 	void FreeMemory();
 
+	struct FRenderPassProperties
+	{
+		uint8 bHasFragmentDensityMap : 1;
+	};
+
+	// Various properties of a render pass that need to be tracked until the renderpass ends
+	FRenderPassProperties RenderPassProperties;
 public:
 	//#todo-rco: Hide this
 	TMap<uint32, class FVulkanTypedDescriptorPoolSet*> TypedDescriptorPoolSets;

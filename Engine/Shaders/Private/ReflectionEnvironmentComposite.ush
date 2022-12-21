@@ -20,7 +20,7 @@ float3 CompositeReflectionCapturesAndSkylightTWS(
 	bool bCompositeSkylight,
 	uint EyeIndex)
 {
-	float Mip = ComputeReflectionCaptureMipFromRoughness(Roughness, View.ReflectionCubemapMaxMip);
+	float Mip = ComputeReflectionCaptureMipFromRoughness(Roughness, ResolvedView.ReflectionCubemapMaxMip);
 	float4 ImageBasedReflections = float4(0, 0, 0, CompositeAlpha);
 	float2 CompositedAverageBrightness = float2(0.0f, 1.0f);
 
@@ -57,7 +57,7 @@ float3 CompositeReflectionCapturesAndSkylightTWS(
 #endif
 
 		FLWCVector3 CaptureWorldPosition = MakeLWCVector3(GetReflectionTilePosition(CaptureIndex).xyz, GetReflectionPositionAndRadius(CaptureIndex).xyz);
-		float3 CaptureTranslatedWorldPosition = LWCToFloat(LWCAdd(CaptureWorldPosition, PrimaryView.PreViewTranslation));
+		float3 CaptureTranslatedWorldPosition = LWCToFloat(LWCAdd(CaptureWorldPosition, ResolvedView.PreViewTranslation));
 		float CaptureRadius = GetReflectionPositionAndRadius(CaptureIndex).w;
 
 		float4 CaptureProperties = GetReflectionCaptureProperties(CaptureIndex);
@@ -125,7 +125,7 @@ float3 CompositeReflectionCapturesAndSkylightTWS(
 	float3 ProjectedCaptureVector = RayDirection;
 
 	FLWCVector3 SingleCaptureWorldPosition = MakeLWCVector3(GetReflectionTilePosition(SingleCaptureIndex).xyz, GetReflectionPositionAndRadius(SingleCaptureIndex).xyz);
-	float3 SingleCaptureTranslatedWorldPosition = LWCToFloat(LWCAdd(SingleCaptureWorldPosition, PrimaryView.PreViewTranslation));
+	float3 SingleCaptureTranslatedWorldPosition = LWCToFloat(LWCAdd(SingleCaptureWorldPosition, ResolvedView.PreViewTranslation));
 	float SingleCaptureRadius = GetReflectionPositionAndRadius(SingleCaptureIndex).w;
 
 	float4 SingleCaptureOffsetAndAverageBrightness = GetReflectionCaptureOffsetAndAverageBrightness(SingleCaptureIndex);
@@ -158,8 +158,8 @@ float3 CompositeReflectionCapturesAndSkylightTWS(
 #endif
 
 	// Apply indirect lighting scale while we have only accumulated reflection captures
-	ImageBasedReflections.rgb *= View.PrecomputedIndirectSpecularColorScale;
-	CompositedAverageBrightness.x *= Luminance( View.PrecomputedIndirectSpecularColorScale );
+	ImageBasedReflections.rgb *= ResolvedView.PrecomputedIndirectSpecularColorScale;
+	CompositedAverageBrightness.x *= Luminance( ResolvedView.PrecomputedIndirectSpecularColorScale );
 
 #if ENABLE_SKY_LIGHT
 

@@ -290,7 +290,7 @@ int32 FMatExpressionPreview::CompilePropertyAndSetMaterialProperty(EMaterialProp
 		// Hardcoding output 0 as we don't have the UI to specify any other output
 		const int32 OutputIndex = 0;
 		int32 PreviewCodeChunk = INDEX_NONE;
-		PreviewCodeChunk = Expression->CompilePreview(Compiler, OutputIndex);
+			PreviewCodeChunk = Expression->CompilePreview(Compiler, OutputIndex);
 
 		// Get back into gamma corrected space, as DrawTile does not do this adjustment.
 		Ret = Compiler->Power(Compiler->Max(PreviewCodeChunk, Compiler->Constant(0)), Compiler->Constant(1.f / 2.2f));
@@ -920,11 +920,11 @@ void FMaterialEditor::GetAllMaterialExpressionGroups(TArray<FString>* OutGroups)
 	if (!EditorOnlyData)
 	{
 		return;
-	}
+			}
 
 	TArray<FParameterGroupData> UpdatedGroups;
 	for (const UMaterialExpression* MaterialExpression : Material->GetExpressions())
-	{
+					{
 		FMaterialParameterMetadata ParameterMeta;
 		if (MaterialExpression->GetParameterValue(ParameterMeta))
 		{
@@ -2168,7 +2168,7 @@ void FMaterialEditor::DrawMaterialInfoStrings(
 
 		for (int32 InstructionIndex = 0; InstructionIndex < Descriptions.Num(); InstructionIndex++)
 		{
-			FString InstructionCountString = FString::Printf(TEXT("%s: %u instructions"), *Descriptions[InstructionIndex].ShaderDescription, Descriptions[InstructionIndex].InstructionCount);
+			FString InstructionCountString = FString::Printf(TEXT("%s: %u instructions\nStats: %s"), *Descriptions[InstructionIndex].ShaderDescription, Descriptions[InstructionIndex].InstructionCount, *Descriptions[InstructionIndex].ShaderStats);
 			Canvas->DrawShadowedString(5, DrawPositionY, *InstructionCountString, FontToUse, FLinearColor(1, 1, 0));
 			DrawPositionY += SpacingBetweenLines;
 		}
@@ -2870,10 +2870,10 @@ void FMaterialEditor::UpdateMaterialinfoList_Old()
 
 			for (int32 InstructionIndex = 0; InstructionIndex < Results.Num(); InstructionIndex++)
 				{
-				FString InstructionCountString = FString::Printf(TEXT("%s: %u instructions"), *Results[InstructionIndex].ShaderDescription, Results[InstructionIndex].InstructionCount);
+				FString InstructionCountString = FString::Printf(TEXT("%s: %u instructions\nStats: %s"), *Results[InstructionIndex].ShaderDescription, Results[InstructionIndex].InstructionCount, *Results[InstructionIndex].ShaderStats);
 					if (bBuiltinStats)
 					{
-					InstructionCountString += FString::Printf(TEXT(" - Built-in instructions: %u"), EmptyMaterialResults[InstructionIndex].InstructionCount);
+					InstructionCountString += FString::Printf(TEXT(" - Built-in instructions: %u\nStats: %s"), EmptyMaterialResults[InstructionIndex].InstructionCount, *EmptyMaterialResults[InstructionIndex].ShaderStats);
 					}
 					TempMaterialInfoList.Add(MakeShareable(new FMaterialInfo(InstructionCountString, FLinearColor::Yellow)));
 					TSharedRef<FTokenizedMessage> Line = FTokenizedMessage::Create(EMessageSeverity::Info);
@@ -4788,13 +4788,13 @@ FString FMaterialEditor::GetDocLinkForSelectedNode()
 		for (UObject* ObjectInSelection : SelectedNodes)
 		{
 			if (ObjectInSelection != NULL)
-			{
+		{
 				UMaterialGraphNode* SelectedGraphNode = Cast<UMaterialGraphNode>(ObjectInSelection);
-				FString DocLink = SelectedGraphNode->GetDocumentationLink();
-				FString DocExcerpt = SelectedGraphNode->GetDocumentationExcerptName();
+			FString DocLink = SelectedGraphNode->GetDocumentationLink();
+			FString DocExcerpt = SelectedGraphNode->GetDocumentationExcerptName();
 
-				DocumentationLink = FEditorClassUtils::GetDocumentationLinkFromExcerpt(DocLink, DocExcerpt);
-			}
+			DocumentationLink = FEditorClassUtils::GetDocumentationLinkFromExcerpt(DocLink, DocExcerpt);
+		}
 			break;
 		}
 	}

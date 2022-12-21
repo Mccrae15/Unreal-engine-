@@ -189,7 +189,7 @@ public:
 	*/
 	FString ToString(bool bAppendPort) const override
 	{
-		return OculusId->ToString();
+		return FString::Printf(TEXT("%s.oculus"), *OculusId->ToString());
 	}
 
 	/**

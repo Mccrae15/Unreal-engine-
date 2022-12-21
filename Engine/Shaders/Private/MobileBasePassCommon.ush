@@ -40,7 +40,7 @@ struct FSharedMobileBasePassInterpolants
 	float OutClipDistance : SV_ClipDistance;
 #endif
 
-#if MOBILE_MULTI_VIEW
+#if USE_MULTI_VIEW_ID_INTERPOLANT
 	nointerpolation uint MultiViewId : VIEW_ID;
 #endif
 

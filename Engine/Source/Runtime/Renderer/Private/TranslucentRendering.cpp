@@ -1002,12 +1002,20 @@ static FViewShaderParameters GetSeparateTranslucencyViewParameters(const FViewIn
 
 		ViewParameters.View = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(ViewUniformParameters, UniformBuffer_SingleFrame);
 
-		if (const FViewInfo* InstancedView = View.GetInstancedView())
+		if (View.bShouldBindInstancedViewUB)
 		{
-			SetupPostMotionBlurTranslucencyViewParameters(*InstancedView, ViewUniformParameters);
+			FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
+			InstancedViewParametersUtils::CopyIntoInstancedViewParameters(LocalInstancedViewUniformShaderParameters, ViewUniformParameters, 0);
+
+			if (const FViewInfo* InstancedView = View.GetInstancedView())
+			{
+				SetupPostMotionBlurTranslucencyViewParameters(*InstancedView, ViewUniformParameters);
+
+				InstancedViewParametersUtils::CopyIntoInstancedViewParameters(LocalInstancedViewUniformShaderParameters, ViewUniformParameters, 1);
+			}
 
 			ViewParameters.InstancedView = TUniformBufferRef<FInstancedViewUniformShaderParameters>::CreateUniformBufferImmediate(
-				reinterpret_cast<const FInstancedViewUniformShaderParameters&>(ViewUniformParameters),
+				LocalInstancedViewUniformShaderParameters,
 				UniformBuffer_SingleFrame);
 		}
 	}
@@ -1024,17 +1032,25 @@ static FViewShaderParameters GetSeparateTranslucencyViewParameters(const FViewIn
 
 		ViewParameters.View = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(DownsampledTranslucencyViewParameters, UniformBuffer_SingleFrame);
 
-		if (const FViewInfo* InstancedView = View.GetInstancedView())
+		if (View.bShouldBindInstancedViewUB)
 		{
-			SetupDownsampledTranslucencyViewParameters(
-				*InstancedView,
-				TextureExtent,
-				GetScaledRect(InstancedView->ViewRect, ViewportScale),
-				TranslucencyPass,
-				DownsampledTranslucencyViewParameters);
+			FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
+			InstancedViewParametersUtils::CopyIntoInstancedViewParameters(LocalInstancedViewUniformShaderParameters, DownsampledTranslucencyViewParameters, 0);
+
+			if (const FViewInfo* InstancedView = View.GetInstancedView())
+			{
+				SetupDownsampledTranslucencyViewParameters(
+					*InstancedView,
+					TextureExtent,
+					GetScaledRect(InstancedView->ViewRect, ViewportScale),
+					TranslucencyPass,
+					DownsampledTranslucencyViewParameters);
+
+				InstancedViewParametersUtils::CopyIntoInstancedViewParameters(LocalInstancedViewUniformShaderParameters, DownsampledTranslucencyViewParameters, 1);
+			}
 
 			ViewParameters.InstancedView = TUniformBufferRef<FInstancedViewUniformShaderParameters>::CreateUniformBufferImmediate(
-				reinterpret_cast<const FInstancedViewUniformShaderParameters&>(DownsampledTranslucencyViewParameters),
+				LocalInstancedViewUniformShaderParameters,
 				UniformBuffer_SingleFrame);
 		}
 	}

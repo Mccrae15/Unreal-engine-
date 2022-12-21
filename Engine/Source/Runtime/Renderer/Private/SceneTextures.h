@@ -89,6 +89,10 @@ struct RENDERER_API FSceneTextures : public FMinimalSceneTextures
 	// (Mobile) Texture used by mobile PPR in the next frame.
 	FRDGTextureRef PixelProjectedReflection{};
 
+	// AppSpaceWarp
+	FRDGTextureRef MotionVector{};
+	FRDGTextureRef MotionVectorDepth{};
+
 	// Textures used to composite editor primitives. Also used by the base pass when in wireframe mode.
 #if WITH_EDITOR
 	FRDGTextureRef EditorPrimitiveColor{};

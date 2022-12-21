@@ -29,39 +29,32 @@ void FinalizeViewState(inout ViewState InOutView)
 	InOutView.PrevPreViewTranslation = MakeLWCVector3(-InOutView.ViewTilePosition, InOutView.RelativePrevPreViewTranslation);
 }
 
-#define PrimaryView GetPrimaryView()
+#define PrimaryView ResolveView()
 
-static ViewState ResolvedView = (ViewState)0.0f;
+static ViewState ResolvedView;
 
 ViewState ResolveView()
 {
-	return GetPrimaryView();
+	static ViewState StaticView = GetPrimaryView();
+	return StaticView;
 }
+
+#if (INSTANCED_STEREO || MOBILE_MULTI_VIEW)
+ViewState ResolveView(uint ViewIndex)
+{
+	return GetInstancedView(ViewIndex);
+}
+#endif
 
 #if INSTANCED_STEREO
 static const float EyeOffsetScale[2] = { -1.0, 1.0 };
 static const float4 EyeClipEdge[2] = { float4(-1.0, 0.0, 0.0, 1.0), float4(1.0, 0.0, 0.0, 1.0) };
 #endif
 
-// Generated for Metal in GeneratedInstancedStereo.usf
-#if !(COMPILER_METAL && (COMPILER_HLSLCC == 1)) && (INSTANCED_STEREO || MOBILE_MULTI_VIEW)
-ViewState ResolveView(uint ViewIndex)
-{
-	if (ViewIndex == 0)
-	{
-		return GetPrimaryView();
-	}
-	else
-	{
-		return GetInstancedView();
-	}
-}
-#endif
-
 bool IsInstancedStereo()
 {
 #if INSTANCED_STEREO
-	return InstancedView_StereoPassIndex > 0;
+	return (uint)InstancedView_StereoPassIndex[1] > 0;
 #else
 	return false;
 #endif
@@ -84,3 +77,6 @@ uint GetInstanceId(uint InstanceId)
 	return InstanceId;
 #endif
 }
+
+#define USE_MULTI_VIEW_ID_SV (MOBILE_MULTI_VIEW && (COMPILER_VULKAN && !INSTANCED_STEREO))
+#define USE_MULTI_VIEW_ID_INTERPOLANT (MOBILE_MULTI_VIEW && !(COMPILER_VULKAN && !INSTANCED_STEREO))

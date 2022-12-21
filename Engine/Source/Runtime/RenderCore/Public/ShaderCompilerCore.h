@@ -160,16 +160,30 @@ struct FShaderCompilerResourceTable
 	}
 };
 
+/** enumeration of offline shader compiler for the material editor */
+enum class EOfflineShaderCompilerType : uint8
+{
+	Mali,
+	Adreno,
+
+	Num
+};
+
 /** Additional compilation settings that can be configured by each FMaterial instance before compilation */
 struct FExtraShaderCompilerSettings
 {
 	bool bExtractShaderSource = false;
 	FString OfflineCompilerPath;
+	EOfflineShaderCompilerType OfflineCompiler;
+	FString GPUTarget;
+	bool bSaveCompilerStatsFiles = false;
+	bool bMobileMultiView = false;
 
 	friend FArchive& operator<<(FArchive& Ar, FExtraShaderCompilerSettings& StatsSettings)
 	{
 		// Note: this serialize is used to pass between UE and the shader compile worker, recompile both when modifying
-		return Ar << StatsSettings.bExtractShaderSource << StatsSettings.OfflineCompilerPath;
+		return Ar << StatsSettings.bExtractShaderSource << StatsSettings.OfflineCompilerPath 
+			<< StatsSettings.OfflineCompiler << StatsSettings.GPUTarget << StatsSettings.bSaveCompilerStatsFiles << StatsSettings.bMobileMultiView;
 	}
 };
 
@@ -473,6 +487,7 @@ struct FShaderCompilerOutput
 	FString OptionalFinalShaderSource;
 
 	TArray<uint8> PlatformDebugData;
+	FString ShaderStats;
 
 	/** Generates OutputHash from the compiler output. */
 	RENDERCORE_API void GenerateOutputHash();
@@ -490,6 +505,7 @@ struct FShaderCompilerOutput
 		Ar << Output.OptionalPreprocessedShaderSource;
 		Ar << Output.OptionalFinalShaderSource;
 		Ar << Output.PlatformDebugData;
+		Ar << Output.ShaderStats;
 
 		return Ar;
 	}

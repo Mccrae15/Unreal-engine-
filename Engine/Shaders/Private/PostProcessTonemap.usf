@@ -29,7 +29,11 @@
 SCREEN_PASS_TEXTURE_VIEWPORT(Color)
 SCREEN_PASS_TEXTURE_VIEWPORT(Output)
 
+#if USE_MULTI_VIEW_ID_SV
+Texture2DArray ColorTexture;
+#else
 Texture2D ColorTexture;
+#endif
 SamplerState ColorSampler;
 
 
@@ -349,20 +353,24 @@ float2 ComputeCounterStepForTileDebugging(float4 SvPosition, int2 TileSize, out 
 #define OffsetInterpolator(CounterStep, InterpolatorName) \
 		InterpolatorName += ddx(InterpolatorName) * CounterStep.x + ddy(InterpolatorName) * CounterStep.y;
 
-float4 SampleSceneColor(float2 SceneUV)
+float4 SampleSceneColor(float2 SceneUV, float ArrayIndex)
 {
 	SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
+	#if USE_MULTI_VIEW_ID_SV
+	return Texture2DArraySample(ColorTexture, ColorSampler, float3(SceneUV.xy,ArrayIndex));
+	#else
 	return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
+	#endif
 }
 
-half3 LookupSceneColor(float2 SceneUV, float2 PixelOffset)
+half3 LookupSceneColor(float2 SceneUV, float ArrayIndex, float2 PixelOffset)
 {
 	float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
-	return SampleSceneColor(SampleUV).xyz;
+	return SampleSceneColor(SampleUV, ArrayIndex).xyz;
 }
 
 float4 TonemapCommonPS(
-	float2 UV,
+	float3 UV,
 	float4 ExposureScaleVignette,
 	float4 GrainUV,
 	float2 ScreenPos, // [-1, 1]x[-1, 1]
@@ -384,7 +392,7 @@ float4 TonemapCommonPS(
 
 		float2 CounterStep = ComputeCounterStepForTileDebugging(SvPosition, TileSize, DebugTile, LocalDebugTilePosition);
 
-		OffsetInterpolator(CounterStep, UV);
+		OffsetInterpolator(CounterStep, UV.xy);
 		OffsetInterpolator(CounterStep, GrainUV);
 		OffsetInterpolator(CounterStep, ScreenPos);
 		OffsetInterpolator(CounterStep, FullViewUV);
@@ -397,6 +405,7 @@ float4 TonemapCommonPS(
 #endif
 
 	float2 SceneUV = UV.xy;
+	float ArrayIndex = UV.z;
 
 	#if USE_COLOR_FRINGE
 		float2 SceneUVJitter = float2(0.0, 0.0);
@@ -415,13 +424,13 @@ float4 TonemapCommonPS(
 			CAUV.xy = ScreenPosToUV(CAUV.xy, Color_ExtentInverse);
 	        CAUV.zw = ScreenPosToUV(CAUV.zw, Color_ExtentInverse);
 
-		half4 SceneColor = SampleSceneColor(CAUV.xy + SceneUVJitter.xy);
-		half SceneColorG = SampleSceneColor(CAUV.zw + SceneUVJitter.xy).g;
-		half SceneColorB = SampleSceneColor(SceneUV).b;
+		half4 SceneColor = SampleSceneColor(CAUV.xy + SceneUVJitter.xy, ArrayIndex);
+		half SceneColorG = SampleSceneColor(CAUV.zw + SceneUVJitter.xy, ArrayIndex).g;
+		half SceneColorB = SampleSceneColor(SceneUV, ArrayIndex).b;
 		SceneColor.g = SceneColorG;
 		SceneColor.b = SceneColorB;
 	#else
-		half4 SceneColor = SampleSceneColor(SceneUV);
+		half4 SceneColor = SampleSceneColor(SceneUV, ArrayIndex);
 	#endif
 
 #if METAL_MSAA_HDR_DECODE && !USE_GAMMA_ONLY
@@ -439,15 +448,15 @@ float4 TonemapCommonPS(
 
 #if USE_LOCAL_EXPOSURE
 	{
-		float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
-		float LogLuminance = log2(LuminanceVal);
-		float MiddleGreyLumValue = ExposureScaleVignette.y;
+	float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
+	float LogLuminance = log2(LuminanceVal);
+	float MiddleGreyLumValue = ExposureScaleVignette.y;
 
-		float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
+	float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
 		float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScale), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureHighlightContrastScale, EyeAdaptation_LocalExposureShadowContrastScale, EyeAdaptation_LocalExposureDetailStrength);
 
-		// Apply before bloom
-		SceneColor.rgb *= LocalExposure;
+	// Apply before bloom
+	SceneColor.rgb *= LocalExposure;
 		LocalExposureOneOverPreExposure *= LocalExposure;
 	}
 #endif
@@ -485,8 +494,8 @@ float4 TonemapCommonPS(
 				
 		half4 LuminanceNeighbors;
 
-		half3 C1 = LookupSceneColor(SceneUV, float2(PQMP.QuadVector.x, 0)).rgb * LocalExposureOneOverPreExposure;
-		half3 C3 = LookupSceneColor(SceneUV, float2(0, PQMP.QuadVector.y)).rgb * LocalExposureOneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, ArrayIndex, float2(PQMP.QuadVector.x, 0)).rgb * LocalExposureOneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, ArrayIndex, float2(0, PQMP.QuadVector.y)).rgb * LocalExposureOneOverPreExposure;
 		LuminanceNeighbors.x = Luminance(C1);
 		LuminanceNeighbors.y = Luminance(C3);
 		
@@ -495,10 +504,10 @@ float4 TonemapCommonPS(
 		LuminanceNeighbors.z =  PQMPReadX(PQMP,A0);
 		LuminanceNeighbors.w =  PQMPReadY(PQMP,A0);
 	#else
-		half3 C1 = LookupSceneColor(SceneUV, float2(-1,  0)) * LocalExposureOneOverPreExposure;
-		half3 C2 = LookupSceneColor(SceneUV, float2( 1,  0)) * LocalExposureOneOverPreExposure;
-		half3 C3 = LookupSceneColor(SceneUV, float2( 0, -1)) * LocalExposureOneOverPreExposure;
-		half3 C4 = LookupSceneColor(SceneUV, float2( 0,  1)) * LocalExposureOneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, ArrayIndex, float2(-1,  0)) * LocalExposureOneOverPreExposure;
+		half3 C2 = LookupSceneColor(SceneUV, ArrayIndex, float2( 1,  0)) * LocalExposureOneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, ArrayIndex, float2( 0, -1)) * LocalExposureOneOverPreExposure;
+		half3 C4 = LookupSceneColor(SceneUV, ArrayIndex, float2( 0,  1)) * LocalExposureOneOverPreExposure;
 		half4 LuminanceNeighbors = half4(Luminance(C1), Luminance(C2), Luminance(C3), Luminance(C4));
 	#endif
 
@@ -554,7 +563,7 @@ float4 TonemapCommonPS(
 			}
 			#else
 			{
-				BloomUV = ApplyScreenTransform(UV, ColorToBloom);
+				BloomUV = ApplyScreenTransform(UV.xy, ColorToBloom);
 				BloomUV = clamp(BloomUV, BloomUVViewportBilinearMin, BloomUVViewportBilinearMax);
 			}
 			#endif
@@ -707,11 +716,19 @@ void MainPS(
 	in noperspective float4 GrainUV : TEXCOORD2,
 	in noperspective float2 ScreenPos : TEXCOORD3,
 	in noperspective float2 FullViewUV : TEXCOORD4,
+	#if USE_MULTI_VIEW_ID_SV
+	in uint MultiViewId : SV_ViewID,
+	#endif
 	float4 SvPosition : SV_POSITION,		// after all interpolators
 	out float4 OutColor : SV_Target0
 	)
 {
-    OutColor = TonemapCommonPS(UV, InExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
+	#if USE_MULTI_VIEW_ID_SV
+		float3 UVI = float3(UV.xy,MultiViewId);
+	#else
+		float3 UVI = float3(UV.xy,0);
+	#endif
+	OutColor = TonemapCommonPS(UVI, InExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
 }
 
 #if COMPUTESHADER
@@ -734,7 +751,7 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	float2 FullViewUV, ScreenPos;	
 	TonemapCommonVS(InScreenPos, UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV);
 
-	float4 OutColor = TonemapCommonPS(UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
+	float4 OutColor = TonemapCommonPS(float3(UV.xy,0), ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
 
 	uint2 PixelPos = DispatchThreadId + Output_ViewportMin;
 

@@ -1390,7 +1390,7 @@ namespace UnrealBuildTool
 		}
 
 		private void CopyPSOService(string UnrealBuildPath, string PreBuiltPath, string UnrealArch, string NDKArch)
-		{
+			{
 			// copy it in!
 			string SourceSOName = Path.Combine(PreBuiltPath, "PSOService/Android/Release/" + NDKArch) + "/libpsoservice.so";
 			string FinalSOName = UnrealBuildPath + "/jni/" + NDKArch + "/libpsoservice.so";
@@ -2332,6 +2332,24 @@ namespace UnrealBuildTool
 			{
 				string StylesPath = UnrealBuildPath + "/res/values-land/styles.xml";
 				SafeDeleteFile(StylesPath);
+			}
+
+			if(bPackageForOculusMobile && bShowLaunchImage)
+			{
+				string LandscapeFilename = UnrealBuildPath + "/res/drawable/" + "splashscreen_landscape.png";
+				string OculusSplashTargetPath = UnrealBuildPath + "/assets/vr_splash.png";
+
+				if (!File.Exists(LandscapeFilename))
+				{
+					Log.TraceWarning("Warning: Landscape splash screen source image {0} not available, Oculus splash screen will not function properly!", LandscapeFilename);
+				}
+				else if (FilesAreDifferent(LandscapeFilename, OculusSplashTargetPath))
+				{					
+					SafeDeleteFile(OculusSplashTargetPath);
+					MakeDirectoryIfRequired(OculusSplashTargetPath);
+					File.Copy(LandscapeFilename, OculusSplashTargetPath, true);
+					Log.TraceInformation("Copying {0} to {1} for Oculus splash", LandscapeFilename, OculusSplashTargetPath);
+				}
 			}
 
 			// Loop through each of the resolutions (only /res/drawable/ is required, others are optional)
@@ -3664,10 +3682,10 @@ namespace UnrealBuildTool
 						using (MemoryStream CompressedStream = new MemoryStream())
 						{
 							using (DeflateStream Compressor = new DeflateStream(CompressedStream, CompressionMode.Compress, leaveOpen: true))
-							{
+				{
 								SourceFile.CopyTo(Compressor);
 								SourceFile.Close();
-							}
+				}
 
 							byte[] CompressedBuffer = CompressedStream.GetBuffer();
 							CompressedSize = (uint)CompressedStream.Length;
@@ -3699,7 +3717,7 @@ namespace UnrealBuildTool
 
 							// write compressed data
 							DestWriter.BaseStream.Write(CompressedBuffer, 0, (int)CompressedSize);
-						}
+			}
 
 						// write central directory entry for this file
 						DirectoryWriter.Write(Signature);
@@ -4558,8 +4576,8 @@ namespace UnrealBuildTool
 				if (BuildListComboRemaining == 0)
 				{
 					Logger.LogInformation("\n===={Time}====COMPLETED MAKE APK=======================================================================", DateTime.Now.ToString());
-					return;
-				}
+				return;
+			}
 			}
 
 			// at this point, we can write out the cached build settings to compare for a next build
@@ -4748,9 +4766,9 @@ namespace UnrealBuildTool
 				Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bSkipLibCpp", out bSkipLibCpp);
 				if (!bSkipLibCpp)
 				{
-					// after ndk-build is called, we can now copy in the stl .so (ndk-build deletes old files)
-					// copy libc++_shared.so to library
-					CopySTL(ToolChain, UnrealBuildPath, Arch, NDKArch, bForDistribution);
+				// after ndk-build is called, we can now copy in the stl .so (ndk-build deletes old files)
+				// copy libc++_shared.so to library
+				CopySTL(ToolChain, UnrealBuildPath, Arch, NDKArch, bForDistribution);
 				}
 				CopyPSOService(UnrealBuildPath, UnrealPreBuiltFilesPath, Arch, NDKArch);
 				CopyGfxDebugger(UnrealBuildPath, Arch, NDKArch);

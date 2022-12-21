@@ -891,15 +891,15 @@ bool FDepthPassMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBat
 		bool bPositionOnly = false;
 		bool bUseDefaultMaterial = UseDefaultMaterial(Material, Material.MaterialModifiesMeshPosition_RenderThread(), MeshBatch.VertexFactory->SupportsPositionOnlyStream(), bPositionOnly);
 
-		const FMaterialRenderProxy* EffectiveMaterialRenderProxy = &MaterialRenderProxy;
-		const FMaterial* EffectiveMaterial = &Material;
+				const FMaterialRenderProxy* EffectiveMaterialRenderProxy = &MaterialRenderProxy;
+				const FMaterial* EffectiveMaterial = &Material;
 		if (bUseDefaultMaterial)
-		{
+				{
 			// Override with the default material
-			EffectiveMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-			EffectiveMaterial = EffectiveMaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
-			check(EffectiveMaterial);
-		}
+					EffectiveMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+					EffectiveMaterial = EffectiveMaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+					check(EffectiveMaterial);
+				}
 
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
@@ -911,9 +911,9 @@ bool FDepthPassMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBat
 		}
 		else
 		{
-			bResult = Process<false>(MeshBatch, BatchElementMask, StaticMeshId, BlendMode, PrimitiveSceneProxy, *EffectiveMaterialRenderProxy, *EffectiveMaterial, MeshFillMode, MeshCullMode);
+				bResult = Process<false>(MeshBatch, BatchElementMask, StaticMeshId, BlendMode, PrimitiveSceneProxy, *EffectiveMaterialRenderProxy, *EffectiveMaterial, MeshFillMode, MeshCullMode);
+			}
 		}
-	}
 
 	return bResult;
 }
@@ -961,15 +961,16 @@ void FDepthPassMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 		// todo: Move that logic to a single place.
 
 		const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
-		if (FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(ShaderPlatform, PrimitiveSceneProxy))
+		// AppSpaceWarp
+		checkSlow(ViewIfDynamicMeshCommand->bIsViewInfo);
+		FViewInfo* ViewInfo = (FViewInfo*)ViewIfDynamicMeshCommand;
+		bool bAllowStatic = (ViewInfo == nullptr) ? FVelocityRendering::IsVelocityWithFullDepthSupported() : ViewInfo->bIncludeStaticInVelocityPass;
+		if (FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(ShaderPlatform, bAllowStatic, PrimitiveSceneProxy))
 		{
 			if (ViewIfDynamicMeshCommand)
 			{
-				if (FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(PrimitiveSceneProxy))
+				if (FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(bAllowStatic, PrimitiveSceneProxy))
 				{
-					checkSlow(ViewIfDynamicMeshCommand->bIsViewInfo);
-					FViewInfo* ViewInfo = (FViewInfo*)ViewIfDynamicMeshCommand;
-
 					if (FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForView(*ViewInfo, PrimitiveSceneProxy))
 					{
 						bDraw = false;

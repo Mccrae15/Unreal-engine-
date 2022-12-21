@@ -90,6 +90,9 @@ static FAutoConsoleVariableRef GCVarEnableTransientResourceAllocator(
 	ECVF_ReadOnly
 );
 
+bool GVulkanUseQcomFragmentDensityMapOffsets = false;
+FIntPoint GVulkanQcomFragmentDensityMapOffsets[2] = { {0, 0}, {0, 0} };
+
 bool GGPUCrashDebuggingEnabled = false;
 
 
@@ -1937,6 +1940,16 @@ IRHITransientResourceAllocator* FVulkanDynamicRHI::RHICreateTransientResourceAll
 	}
 #endif
 	return nullptr;
+}
+
+void FVulkanDynamicRHI::RHISetQcomFragmentDensityMapOffsets(bool bUseOffsets, FIntPoint Offsets[2])
+{
+	if (bUseOffsets)
+	{
+		GVulkanQcomFragmentDensityMapOffsets[0] = Offsets[0];
+		GVulkanQcomFragmentDensityMapOffsets[1] = Offsets[1];
+	}
+	GVulkanUseQcomFragmentDensityMapOffsets = bUseOffsets;
 }
 
 #undef LOCTEXT_NAMESPACE

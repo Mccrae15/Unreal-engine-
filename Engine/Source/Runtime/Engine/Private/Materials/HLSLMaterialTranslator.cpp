@@ -4366,7 +4366,7 @@ int32 FHLSLMaterialTranslator::ViewProperty(EMaterialExposedViewProperty Propert
 
 int32 FHLSLMaterialTranslator::IsOrthographic()
 {
-	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("((View.ViewToClip[3][3] < 1.0f) ? 0.0f : 1.0f)"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("((ResolvedView.ViewToClip[3][3] < 1.0f) ? 0.0f : 1.0f)"));
 }
 
 
@@ -4374,7 +4374,7 @@ int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 {
 	if (!bPeriodic)
 	{
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, bCompilingPreviousFrame ? TEXT("View.PrevFrameGameTime") : TEXT("View.GameTime"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, bCompilingPreviousFrame ? TEXT("ResolvedView.PrevFrameGameTime") : TEXT("ResolvedView.GameTime"));
 	}
 	else if (Period == 0.0f)
 	{
@@ -4385,12 +4385,12 @@ int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 
 	if (bCompilingPreviousFrame)
 	{
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
 	}
 
 	// Note: not using FHLSLMaterialTranslator::Fmod(), which will emit MaterialFloat types which will be converted to fp16 on mobile.
 	// We want full 32 bit float precision until the fmod when using a period.
-	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.GameTime,%s)"), *GetParameterCode(PeriodChunk));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.GameTime,%s)"), *GetParameterCode(PeriodChunk));
 }
 
 int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
@@ -4399,10 +4399,10 @@ int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
 	{
 		if (bCompilingPreviousFrame)
 		{
-			return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.PrevFrameRealTime"));
+			return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("ResolvedView.PrevFrameRealTime"));
 		}
 
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.RealTime"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("ResolvedView.RealTime"));
 	}
 	else if (Period == 0.0f)
 	{
@@ -4413,10 +4413,10 @@ int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
 
 	if (bCompilingPreviousFrame)
 	{
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.PrevFrameRealTime,%s)"), *GetParameterCode(PeriodChunk));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.PrevFrameRealTime,%s)"), *GetParameterCode(PeriodChunk));
 	}
 
-	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.RealTime,%s)"), *GetParameterCode(PeriodChunk));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.RealTime,%s)"), *GetParameterCode(PeriodChunk));
 }
 
 int32 FHLSLMaterialTranslator::DeltaTime()
@@ -4424,7 +4424,7 @@ int32 FHLSLMaterialTranslator::DeltaTime()
 	// explicitly avoid trying to return previous frame's delta time for bCompilingPreviousFrame here
 	// DeltaTime expression is designed to be used when generating custom motion vectors, by using world position offset along with previous frame switch
 	// in this context, we will technically be evaluating the previous frame, but we want to use the current frame's delta tick in order to offset the vector used to create previous position
-	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.DeltaTime"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("ResolvedView.DeltaTime"));
 }
 
 int32 FHLSLMaterialTranslator::PeriodicHint(int32 PeriodicCode)
@@ -4996,7 +4996,7 @@ int32 FHLSLMaterialTranslator::GetViewportUV()
 	FString FiniteCode = TEXT("GetViewportUV(Parameters)");
 	if (IsAnalyticDerivEnabled())
 	{
-		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, TEXT("float2(View.ViewSizeAndInvSize.z, 0.0f)"), TEXT("float2(0.0f, View.ViewSizeAndInvSize.w)"), EDerivativeType::Float2);
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, TEXT("float2(ResolvedView.ViewSizeAndInvSize.z, 0.0f)"), TEXT("float2(0.0f, ResolvedView.ViewSizeAndInvSize.w)"), EDerivativeType::Float2);
 		return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, MCT_Float2, false, EDerivativeStatus::Valid);
 	}
 	else
@@ -6138,19 +6138,19 @@ int32 FHLSLMaterialTranslator::TextureSample(
 		if (MipValueMode == TMVM_Derivative)
 		{
 			// When doing derivative based sampling, multiply.
-			int32 Multiplier = AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.MaterialTextureDerivativeMultiply"));
+			int32 Multiplier = AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("ResolvedView.MaterialTextureDerivativeMultiply"));
 			MipValue0Index = Mul(MipValue0Index, Multiplier);
 			MipValue1Index = Mul(MipValue1Index, Multiplier);
 		}
 		else if (MipValue0Index != INDEX_NONE && (MipValueMode == TMVM_MipLevel || MipValueMode == TMVM_MipBias))
 		{
 			// Adds bias to existing input level bias.
-			MipValue0Index = Add(MipValue0Index, AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.MaterialTextureMipBias")));
+			MipValue0Index = Add(MipValue0Index, AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("ResolvedView.MaterialTextureMipBias")));
 		}
 		else
 		{
 			// Sets bias.
-			MipValue0Index = AddInlinedCodeChunkZeroDeriv(MCT_Float1, TEXT("View.MaterialTextureMipBias"));
+			MipValue0Index = AddInlinedCodeChunkZeroDeriv(MCT_Float1, TEXT("ResolvedView.MaterialTextureMipBias"));
 		}
 
 		// If no Mip mode, then use MipBias.
@@ -6594,7 +6594,7 @@ int32 FHLSLMaterialTranslator::SceneTextureLookup(int32 ViewportUV, uint32 InSce
 
 	if (SceneTextureId == PPI_PostProcessInput0 && Material->GetMaterialDomain() == MD_PostProcess && Material->GetBlendableLocation() != BL_AfterTonemapping)
 	{
-		return AddInlinedCodeChunk(MCT_Float4, TEXT("(float4(View.OneOverPreExposure.xxx, 1) * %s)"), *CoerceParameter(LookUp, MCT_Float4));
+		return AddInlinedCodeChunk(MCT_Float4, TEXT("(float4(ResolvedView.OneOverPreExposure.xxx, 1) * %s)"), *CoerceParameter(LookUp, MCT_Float4));
 	}
 	else
 	{
@@ -9005,7 +9005,7 @@ int32 FHLSLMaterialTranslator::TemporalSobol(int32 Index, int32 Seed)
 	AddEstimatedTextureSample(2);
 
 	return AddCodeChunk(MCT_Float2,
-		TEXT("float2(SobolIndex(SobolPixel(uint2(Parameters.SvPosition.xy)), uint(View.StateFrameIndexMod8 + 8 * %s)) ^ uint2(%s * 0x10000) & 0xffff) / 0x10000"),
+		TEXT("float2(SobolIndex(SobolPixel(uint2(Parameters.SvPosition.xy)), uint(ResolvedView.StateFrameIndexMod8 + 8 * %s)) ^ uint2(%s * 0x10000) & 0xffff) / 0x10000"),
 		*GetParameterCode(Index),
 		*GetParameterCode(Seed));
 }

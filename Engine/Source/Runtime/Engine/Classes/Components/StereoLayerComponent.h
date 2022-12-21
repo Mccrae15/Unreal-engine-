@@ -341,6 +341,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "StereoLayer")
 	uint32 bNoAlphaChannel:1;
 
+//#ifdef WITH_OCULUS_BRANCH
+	/**  Can increase quality for small details on text and icons being viewed at farther distances. Will only apply to devices and/or runtimes that support this feature */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "StereoLayer", DisplayName = "Bicubic Filtering")
+	uint32 bBicubicFiltering : 1;
+//#endif
+
 	void MarkStereoLayerDirty();
 protected:
 	/** Texture displayed on the stereo layer (is stereocopic textures are supported on the platfrom and more than one texture is provided, this will be the right eye) **/
@@ -398,7 +404,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category= "StereoLayer")
 	int32 Priority;
 
-private:
+protected:
+	// returns if the layer requires a texture to operate
+	virtual bool LayerRequiresTexture() { return true; };
+
 	/** Dirty state determines whether the stereo layer needs updating **/
 	bool bIsDirty;
 

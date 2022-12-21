@@ -110,7 +110,20 @@ static ATrace_endSection_Type ATrace_endSection = NULL;
 static ATrace_isEnabled_Type ATrace_isEnabled = NULL;
 
 static bool bUseNativeSystrace = false;
+static TAtomic<bool> bPerfettoTraceActive(false);
 
+#define USE_PERFETTO 1
+#define UE_PERFETTO_CATEGORY_NAME_EVENTS   "com.epicgames.unreal.events"
+
+#if USE_PERFETTO
+#include <perfetto/perfetto.h>
+
+PERFETTO_DEFINE_CATEGORIES(
+	perfetto::Category(UE_PERFETTO_CATEGORY_NAME_EVENTS)
+	.SetDescription("Events from Unreal Engine"));
+
+PERFETTO_TRACK_EVENT_STATIC_STORAGE();
+#endif
 #endif
 
 // run time compatibility information
@@ -227,7 +240,7 @@ static void InitCpuThermalSensor()
 	}
 	else
 	{
-		UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
+	UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
 	}
 }
 
@@ -569,6 +582,15 @@ void FAndroidMisc::PlatformInit()
 	{
 		bUseNativeSystrace = true;
 	}
+
+#if USE_PERFETTO
+	perfetto::TracingInitArgs perfettoArgs;
+	perfettoArgs.backends |= perfetto::kSystemBackend;
+	perfetto::Tracing::Initialize(perfettoArgs);
+	perfetto::TrackEvent::Register();
+
+	bPerfettoTraceActive = TRACE_EVENT_CATEGORY_ENABLED(UE_PERFETTO_CATEGORY_NAME_EVENTS);
+#endif
 #endif
 
 #if USE_ANDROID_JNI
@@ -2571,11 +2593,24 @@ void FAndroidMisc::BeginNamedEventFrame()
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::FrameStart();
 #endif // FRAMEPRO_ENABLED
+
+	//refresh perfetto trace active once per frame instead of every event for performance
+#if USE_PERFETTO
+	bPerfettoTraceActive = TRACE_EVENT_CATEGORY_ENABLED(UE_PERFETTO_CATEGORY_NAME_EVENTS);
+#endif
 }
 
 static void WriteTraceMarkerEvent(const ANSICHAR* Text, int32 TraceMarkerFileDescriptor)
 {
-	if (bUseNativeSystrace)
+	if (bPerfettoTraceActive)
+	{
+#if USE_PERFETTO
+		TRACE_EVENT_BEGIN(UE_PERFETTO_CATEGORY_NAME_EVENTS, nullptr, [&](perfetto::EventContext ctx) {
+			ctx.event()->set_name(Text);
+			});
+#endif
+	}
+	else if (bUseNativeSystrace)
 	{
 		ATrace_beginSection(Text);
 	}
@@ -2594,7 +2629,7 @@ void FAndroidMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR* Text
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif // FRAMEPRO_ENABLED
-	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
+	if (!bPerfettoTraceActive && (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1))
 	{
 		return;
 	}
@@ -2621,7 +2656,7 @@ void FAndroidMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* T
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #endif // FRAMEPRO_ENABLED
-	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
+	if (!bPerfettoTraceActive && (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1))
 	{
 		return;
 	}
@@ -2634,16 +2669,17 @@ void FAndroidMisc::EndNamedEvent()
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PopEvent();
 #endif // FRAMEPRO_ENABLED
-	if (bUseNativeSystrace ? !ATrace_isEnabled() : TraceMarkerFileDescriptor == -1)
+	if (bPerfettoTraceActive)
 	{
-		return;
+#if USE_PERFETTO
+		TRACE_EVENT_END(UE_PERFETTO_CATEGORY_NAME_EVENTS);
+#endif
 	}
-
-	if (bUseNativeSystrace)
+	else if (bUseNativeSystrace)
 	{
 		ATrace_endSection();
 	}
-	else
+	else if (TraceMarkerFileDescriptor != -1)
 	{
 		const ANSICHAR EventTerminatorChar = 'E';
 		write(TraceMarkerFileDescriptor, &EventTerminatorChar, 1);

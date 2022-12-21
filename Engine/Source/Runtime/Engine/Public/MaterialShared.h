@@ -1219,6 +1219,7 @@ public:
 	}
 
 	uint32 GetMaxNumInstructionsForShader(FShaderType* ShaderType) const { return GetContent()->GetMaxNumInstructionsForShader(*this, ShaderType); }
+	FString GetShaderStats(FShaderType* ShaderType) const { return GetContent()->GetShaderStats(*this, ShaderType); }
 
 	void SubmitCompileJobs(uint32 CompilingShaderMapId,
 		const FMaterial* Material,
@@ -2964,7 +2965,7 @@ public:
 	ENGINE_API virtual bool HasRuntimeVirtualTextureOutput() const override;
 	ENGINE_API virtual bool CastsRayTracedShadows() const override;
 	ENGINE_API virtual bool HasRenderTracePhysicalMaterialOutputs() const override;
-	ENGINE_API virtual UMaterialInterface* GetMaterialInterface() const override;
+	ENGINE_API  virtual UMaterialInterface* GetMaterialInterface() const override;
 	/**
 	 * Should shaders compiled for this material be saved to disk?
 	 */

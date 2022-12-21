@@ -140,6 +140,29 @@ FText FShaderPlatformSettings::GetShaderCode(const EMaterialQualityLevel::Type Q
 	return PlatformData[QualityType].ShaderCode;
 }
 
+/** returns all shaders' stats concatenated together*/
+FString FShaderPlatformSettings::GetShadersStats()
+{
+	static FString ExtraLine("---------------------------------------------\n");
+	FString ShadersStats;
+	for (int q = 0; q < EMaterialQualityLevel::Num; ++q)
+	{
+		auto& Data = PlatformData[(EMaterialQualityLevel::Type)q];
+		if (Data.ShaderStatsInfo.ShaderInstructionCount.IsEmpty())
+			continue;
+		for (int32 i = 0; i < (int32)ERepresentativeShader::Num; ++i)
+		{
+			auto* Count = Data.ShaderStatsInfo.ShaderInstructionCount.Find((ERepresentativeShader)i);
+			if (Count)
+			{				
+				ShadersStats += FString("\n") + ExtraLine + FMaterialStatsUtils::RepresentativeShaderTypeToString((ERepresentativeShader)i);
+				ShadersStats += Count->StrDescriptionLong;
+			}
+		}
+	}
+	return ShadersStats;
+}
+
 void FShaderPlatformSettings::AllocateMaterialResources()
 {
 	ClearResources();
@@ -656,6 +679,26 @@ FText FMaterialStats::GetShaderCode(const EShaderPlatform PlatformID, const EMat
 	}
 
 	return (*Entry)->GetShaderCode(QualityType);
+}
+
+FString FMaterialStats::GetShadersStats()
+{
+	static FString ExtraLine("=============================================\n");
+	FString ShadersStats;
+	int i = 0; 
+	for (const auto& MapEntry : ShaderPlatformStatsDB)
+	{
+		TSharedPtr<FShaderPlatformSettings> PlatformPtr = MapEntry.Value;
+		FString PlatformShadersStats = PlatformPtr->GetShadersStats();
+		if (PlatformShadersStats.Len())
+		{
+			ShadersStats += (i ? FString("\n\n") : FString("")) + ExtraLine + ExtraLine + PlatformPtr->GetPlatformName().GetPlainNameString();
+			ShadersStats += PlatformShadersStats;
+			++i;
+		}
+	}
+
+	return ShadersStats;
 }
 
 void FMaterialStats::Update()

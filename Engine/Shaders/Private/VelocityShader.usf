@@ -47,13 +47,25 @@ void MainVertexShader(
 #if INSTANCED_STEREO
 	, out uint ViewportIndex : SV_ViewPortArrayIndex
 #endif
+#if USE_MULTI_VIEW_ID_SV
+	, in uint ViewId : SV_ViewID
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+	, out nointerpolation uint MultiViewId : VIEW_ID
+#endif
 	)
 {
 #if INSTANCED_STEREO
 	const uint EyeIndex = GetEyeIndexFromVF(Input);
 	ViewportIndex = EyeIndex;
-#endif
+        ResolvedView = ResolveViewFromVF(Input);
+#elif MOBILE_MULTI_VIEW
+#if USE_MULTI_VIEW_ID_INTERPOLANT
+	MultiViewId = ViewId;
+#endif // USE_MULTI_VIEW_ID_INTERPOLANT
+	ResolvedView = ResolveView(ViewId);
+#else
 	ResolvedView = ResolveViewFromVF(Input);
+#endif
 	
 	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
 	float4 TranslatedWorldPosition = VertexFactoryGetWorldPosition( Input, VFIntermediates );
@@ -117,10 +129,17 @@ void MainPixelShader(
 #if MATERIALBLENDING_MASKED_USING_COVERAGE
 	, out uint OutCoverage : SV_Coverage
 #endif
+#if USE_MULTI_VIEW_ID_SV
+	, in uint MultiViewId : SV_ViewID
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+	, in nointerpolation uint MultiViewId : VIEW_ID
+#endif
 	)
 {
 #if INSTANCED_STEREO
 	ResolvedView = ResolveView(Input.FactoryInterpolants.EyeIndex);
+#elif MOBILE_MULTI_VIEW
+	ResolvedView = ResolveView(MultiViewId);
 #else
 	ResolvedView = ResolveView();
 #endif
@@ -143,5 +162,11 @@ void MainPixelShader(
 	// 3d velocity, includes camera an object motion
 	float3 Velocity = Calculate3DVelocity(Input.PackedVelocityA, Input.PackedVelocityC);
 
+// AppSpaceWarp
+#if SUPPORT_VR_FRAME_EXTRAPOLATION
+	OutColor.xyz = Velocity;
+	OutColor.w = 0.0f;
+#else
 	OutColor = EncodeVelocityToTexture(Velocity);
+#endif
 }

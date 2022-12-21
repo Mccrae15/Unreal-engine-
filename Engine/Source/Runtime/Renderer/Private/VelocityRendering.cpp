@@ -423,6 +423,14 @@ bool FVelocityRendering::IsVelocityWaitForTasksEnabled(EShaderPlatform ShaderPla
 	return FVelocityRendering::IsParallelVelocity(ShaderPlatform) && (CVarRHICmdFlushRenderThreadTasksVelocityPass.GetValueOnRenderThread() > 0 || CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() > 0);
 }
 
+// AppSpaceWarp
+bool FVelocityRendering::IsVelocityWithFullDepthSupported()
+{
+	static const auto CVarVelocityDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SupportMobileSpaceWarp"));
+	bool bSupportVelocityWithFullDepth = CVarVelocityDepth && (CVarVelocityDepth->GetValueOnAnyThread() != 0);
+	return bSupportVelocityWithFullDepth;
+}
+
 bool FVelocityMeshProcessor::PrimitiveHasVelocityForView(const FViewInfo& View, const FPrimitiveSceneProxy* PrimitiveSceneProxy)
 {
 	// Skip camera cuts which effectively reset velocity for the new frame.
@@ -452,19 +460,20 @@ bool FVelocityMeshProcessor::PrimitiveHasVelocityForView(const FViewInfo& View, 
 	return true;
 }
 
-bool FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, const FPrimitiveSceneProxy* PrimitiveSceneProxy)
+// AppSpaceWarp
+bool FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bAllowStatic, const FPrimitiveSceneProxy* PrimitiveSceneProxy)
 {
-	return PrimitiveCanHaveVelocity(ShaderPlatform, PrimitiveSceneProxy->DrawsVelocity(), PrimitiveSceneProxy->HasStaticLighting());
+	return PrimitiveCanHaveVelocity(ShaderPlatform, bAllowStatic, PrimitiveSceneProxy->DrawsVelocity(), PrimitiveSceneProxy->HasStaticLighting());
 }
 
-bool FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bDrawVelocity, bool bHasStaticLighting)
+bool FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(EShaderPlatform ShaderPlatform, bool bAllowStatic, bool bDrawVelocity, bool bHasStaticLighting)
 {
 	if (!FVelocityRendering::IsVelocityPassSupported(ShaderPlatform) || !PlatformSupportsVelocityRendering(ShaderPlatform))
 	{
 		return false;
 	}
 
-	if (!bDrawVelocity)
+	if (!bAllowStatic && !bDrawVelocity)
 	{
 		return false;
 	}
@@ -472,9 +481,10 @@ bool FOpaqueVelocityMeshProcessor::PrimitiveCanHaveVelocity(EShaderPlatform Shad
 	return true;
 }
 
-bool FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(const FPrimitiveSceneProxy* PrimitiveSceneProxy)
+// AppSpaceWarp
+bool FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(bool bAllowStatic, const FPrimitiveSceneProxy* PrimitiveSceneProxy)
 {
-	if (!PrimitiveSceneProxy->AlwaysHasVelocity())
+	if (!bAllowStatic && !PrimitiveSceneProxy->AlwaysHasVelocity())
 	{
 		// Check if the primitive has moved.
 		const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo();
@@ -492,6 +502,7 @@ bool FOpaqueVelocityMeshProcessor::PrimitiveHasVelocityForFrame(const FPrimitive
 
 	return true;
 }
+
 
 static bool UseDefaultMaterial(const FMaterial* Material, bool bMaterialModifiesMeshPosition)
 {
@@ -541,20 +552,26 @@ void FOpaqueVelocityMeshProcessor::AddMeshBatch(
 	int32 StaticMeshId)
 {
 	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
-	if (!PrimitiveCanHaveVelocity(ShaderPlatform, PrimitiveSceneProxy))
+	FViewInfo* ViewInfo = (FViewInfo*)ViewIfDynamicMeshCommand;
+
+	// AppSpaceWarp
+	// For cached mesh, we allow them to be in the velocity buffer if IsVelocityWithFullDepthSupported is true.
+	// Otherwise, we won't get a chance to add them later on dynamiclly
+	bool bAllowStatic = (ViewInfo == nullptr) ? FVelocityRendering::IsVelocityWithFullDepthSupported() : ViewInfo->bIncludeStaticInVelocityPass;
+	if (!PrimitiveCanHaveVelocity(ShaderPlatform, bAllowStatic, PrimitiveSceneProxy))
 	{
 		return;
 	}
 
+
 	if (ViewIfDynamicMeshCommand)
 	{
-		if (!PrimitiveHasVelocityForFrame(PrimitiveSceneProxy))
+		checkSlow(ViewIfDynamicMeshCommand->bIsViewInfo);
+		// AppSpaceWarp
+		if (!PrimitiveHasVelocityForFrame(ViewInfo->bIncludeStaticInVelocityPass, PrimitiveSceneProxy))
 		{
 			return;
 		}
-
-		checkSlow(ViewIfDynamicMeshCommand->bIsViewInfo);
-		FViewInfo* ViewInfo = (FViewInfo*)ViewIfDynamicMeshCommand;
 
 		if (!PrimitiveHasVelocityForView(*ViewInfo, PrimitiveSceneProxy))
 		{
@@ -582,7 +599,11 @@ void FOpaqueVelocityMeshProcessor::CollectPSOInitializers(const FSceneTexturesCo
 {
 	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
 	bool bDrawsVelocity = (PreCacheParams.Mobility == EComponentMobility::Movable || PreCacheParams.Mobility == EComponentMobility::Stationary || PreCacheParams.bHasWorldPositionOffsetVelocity);
-	if (!PrimitiveCanHaveVelocity(ShaderPlatform, bDrawsVelocity, PreCacheParams.bStaticLighting))
+	// AppSpaceWarp
+	FViewInfo* ViewInfo = (FViewInfo*)ViewIfDynamicMeshCommand;
+	bool bAllowStatic = (ViewInfo == nullptr) ? FVelocityRendering::IsVelocityWithFullDepthSupported() : ViewInfo->bIncludeStaticInVelocityPass;
+
+	if (!PrimitiveCanHaveVelocity(ShaderPlatform, bAllowStatic, bDrawsVelocity, PreCacheParams.bStaticLighting))
 	{
 		return;
 	}
@@ -856,7 +877,10 @@ FMeshPassProcessor* CreateVelocityPassProcessor(ERHIFeatureLevel::Type FeatureLe
 	
 	FMeshPassProcessorRenderState VelocityPassState;
 	VelocityPassState.SetBlendState(TStaticBlendState<CW_RGBA>::GetRHI());
-	VelocityPassState.SetDepthStencilState((EarlyZPassMode == DDM_AllOpaqueNoVelocity) // if the depth mode is all opaque except velocity, it relies on velocity to write the depth of the remaining meshes
+
+	// AppSpaceWarp
+	const EShaderPlatform ShaderPlatform = Scene->GetShaderPlatform();
+	VelocityPassState.SetDepthStencilState(SupportsSpaceWarp(ShaderPlatform) || (EarlyZPassMode == DDM_AllOpaqueNoVelocity) // if the depth mode is all opaque except velocity, it relies on velocity to write the depth of the remaining meshes
 										    ? TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI()
 											: TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 

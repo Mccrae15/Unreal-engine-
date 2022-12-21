@@ -79,6 +79,36 @@ void UAndroidRuntimeSettings::HandlesRGBHWSupport()
 
 }
 
+void UAndroidRuntimeSettings::HandleOculusMobileSupport()
+{
+	if (PackageForOculusMobile.Num() > 0)
+	{
+		// Automatically disable x86_64, and Vulkan Desktop if building for Oculus Mobile devices and switch to appropriate alternatives
+		if (bBuildForX8664)
+		{
+			bBuildForX8664 = false;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForX8664)), GetDefaultConfigFilename());
+		}
+		if (!bBuildForArm64)
+		{
+			bBuildForArm64 = true;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArm64)), GetDefaultConfigFilename());
+		}
+		if (bSupportsVulkanSM5)
+		{
+			bSupportsVulkanSM5 = false;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkanSM5)), GetDefaultConfigFilename());
+			EnsureValidGPUArch();
+		}
+		if (bBuildForES31)
+		{
+			bBuildForES31 = false;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), GetDefaultConfigFilename());
+			EnsureValidGPUArch();
+		}
+	}
+}
+
 static void InvalidateAllAndroidPlatforms()
 {
 	ITargetPlatformModule* Module = FModuleManager::GetModulePtr<IAndroidTargetPlatformModule>("AndroidTargetPlatform");
@@ -88,6 +118,30 @@ static void InvalidateAllAndroidPlatforms()
 	{
 		FCoreDelegates::OnTargetPlatformChangedSupportedFormats.Broadcast(TargetPlatform);
 	}
+}
+
+bool UAndroidRuntimeSettings::CanEditChange(const FProperty* InProperty) const
+{
+	bool bIsEditable = Super::CanEditChange(InProperty);
+	if (bIsEditable && InProperty)
+	{
+		const FName PropertyName = InProperty->GetFName();
+
+		
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForX8664) ||		// x86_64 is not supported for Oculus Mobile Devices, use arm64 instead
+			PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkanSM5) ||	// Vulkan Desktop is not supported for Oculus Mobile Devices, use Vulkan instead
+			PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31))		// OpenGL ES3.2 is not supported for Oculus Mobile Devices, use Vulkan instead
+		{
+			bIsEditable = PackageForOculusMobile.Num() == 0;
+		}
+
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bAndroidOpenGLSupportsBackbufferSampling))
+		{
+			bIsEditable = bBuildForES31;
+		}
+	}
+
+	return bIsEditable;
 }
 
 void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
@@ -163,8 +217,12 @@ void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEven
 					PackageForOculusMobile.Last() = deviceList[i];
 					break;
 				}
+				// Just add another copy of the first device if nothing was available
+				PackageForOculusMobile.Last() = deviceList[deviceList.Num() - 1];
 			}
 		}
+		EnsureValidGPUArch();
+		HandleOculusMobileSupport();
 	}
 
 	HandlesRGBHWSupport();
@@ -183,6 +241,7 @@ void UAndroidRuntimeSettings::PostInitProperties()
 	}
 
 	EnsureValidGPUArch();
+	HandleOculusMobileSupport();
 	HandlesRGBHWSupport();
 }
 
@@ -191,8 +250,17 @@ void UAndroidRuntimeSettings::EnsureValidGPUArch()
 	// Ensure that at least one GPU architecture is supported
 	if (!bSupportsVulkan && !bBuildForES31 && !bSupportsVulkanSM5)
 	{
+		// Default to Vulkan for Oculus Mobile devices
+		if (PackageForOculusMobile.Num() > 0)
+		{
+			bSupportsVulkan = true;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkan)), GetDefaultConfigFilename());
+		}
+		else
+		{
 		bBuildForES31 = true;
 		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), GetDefaultConfigFilename());
+		}
 
 		// Supported shader formats changed so invalidate cache
 		InvalidateAllAndroidPlatforms();

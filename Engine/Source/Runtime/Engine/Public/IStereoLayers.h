@@ -75,6 +75,10 @@ public:
 		LAYER_FLAG_TEX_EXTERNAL = 0x00000010,
 		// When set, this layer will not be rendered.
 		LAYER_FLAG_HIDDEN = 0x00000020,
+#ifdef WITH_OCULUS_BRANCH
+		// Enables bicubic filtering for the layer if supported by the device and/or runtime.
+		LAYER_FLAG_BICUBIC_FILTERING = 0x00000040,
+#endif
 	};
 
 

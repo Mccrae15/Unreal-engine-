@@ -283,6 +283,7 @@ namespace VulkanRHI
 
 		void FlushMappedMemory(VkDeviceSize InOffset, VkDeviceSize InSize);
 		void InvalidateMappedMemory(VkDeviceSize InOffset, VkDeviceSize InSize);
+		VkDeviceSize GetCommitedSize();
 
 		inline VkDeviceMemory GetHandle() const
 		{
@@ -601,6 +602,9 @@ namespace VulkanRHI
 		void Invalidate(VkDeviceSize Offset, VkDeviceSize AllocationSize);
 		uint32 GetMaxSize() const { return MaxSize; }
 		uint32 GetUsedSize() const { return UsedSize; }
+		uint32 GetCommitedSize() {
+			return (uint32)(MemoryAllocation->GetCommitedSize());
+		}
 
 		inline uint32 GetHandleId() const
 		{

@@ -62,6 +62,8 @@ private:
 
 	TSharedPtr<SWidget> BuildMessageArea();
 
+	FReply OnButtonClick(EAppReturnType::Type ButtonID);
+
 protected:
 	static const float ColumnSizeSmall;
 	static const float ColumnSizeMedium;

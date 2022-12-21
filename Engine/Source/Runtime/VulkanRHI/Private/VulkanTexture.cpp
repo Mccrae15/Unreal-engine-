@@ -322,6 +322,13 @@ void FVulkanTexture::GenerateImageCreateInfo(
 		ImageCreateInfo.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT_KHR;
 	}
 
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP_OFFSET
+	if (InDevice.GetOptionalExtensions().HasQcomFragmentDensityMapOffset)
+	{
+		ImageCreateInfo.flags |= VK_IMAGE_CREATE_FRAGMENT_DENSITY_MAP_OFFSET_BIT_QCOM;
+	}
+#endif
+
 	ImageCreateInfo.tiling = bForceLinearTexture ? VK_IMAGE_TILING_LINEAR : GVulkanViewTypeTilingMode[ResourceType];
 
 	ImageCreateInfo.usage = 0;

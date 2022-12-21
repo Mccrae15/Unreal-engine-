@@ -773,6 +773,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, bIsMobileMultiViewEnabled(false)
 	, bShouldBindInstancedViewUB(false)
 	, UnderwaterDepth(-1.0f)
+	// AppSpaceWarp
+	, bIncludeStaticInVelocityPass(false)
 	, bForceCameraVisibilityReset(false)
 	, bForcePathTracerReset(false)
 	, GlobalClippingPlane(FPlane(0, 0, 0, 0))
@@ -858,10 +860,19 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Query instanced stereo and multi-view state
 	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.InstancedStereo"));
+		bIsInstancedStereoEnabled = !bUsingMobileRenderer && RHISupportsInstancedStereo(ShaderPlatform) && (CVar && CVar->GetValueOnAnyThread() != 0);
+
+		static const auto MobileMultiviewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+		const bool bHasMobileMultiviewShaders = bUsingMobileRenderer && (CVar && CVar->GetValueOnAnyThread() != 0);
+
+		// AppSpaceWarp
+		static const auto CVarOculusEnableSpaceWarpInternal = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.Oculus.SpaceWarp.EnableInternal"));
+		bIncludeStaticInVelocityPass = CVarOculusEnableSpaceWarpInternal && CVarOculusEnableSpaceWarpInternal->GetValueOnAnyThread() != 0;
 		// The shader variants that are compiled have ISR or MMV _enabled_ in the shader, even if the current ViewFamily doesn't
 		// require multiple views functionality.
 		const UE::StereoRenderUtils::FStereoShaderAspects Aspects(ShaderPlatform);
-		bShouldBindInstancedViewUB = Aspects.IsInstancedStereoEnabled() || Aspects.IsMobileMultiViewEnabled();
+		bShouldBindInstancedViewUB = Aspects.IsInstancedStereoEnabled() || Aspects.IsMobileMultiViewEnabled() || bHasMobileMultiviewShaders;
 
 		if (Family && Family->bRequireMultiView && !Aspects.IsMobileMultiViewEnabled())
 		{
@@ -2883,9 +2894,8 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 	if (GEngine && GEngine->IsStereoscopic3D())
 	{
 		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-		const bool bSkipPostprocessing = !IsMobileHDR();
 		const bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(GetFeatureLevel()) == EShadingPath::Mobile;
-		bRequireMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && bUsingMobileRenderer && bSkipPostprocessing && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
+		bRequireMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && bUsingMobileRenderer && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
 	}
 
 	// Check if the translucency are allowed to be rendered after DOF, if not, translucency after DOF will be rendered in standard translucency.

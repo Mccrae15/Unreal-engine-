@@ -45,10 +45,14 @@ void Main(
 	const uint EyeIndex = GetEyeIndexFromVF(Input);
 	ResolvedView = ResolveView(EyeIndex);
 	LayerIndex = EyeIndex;
+#if USE_MULTI_VIEW_ID_INTERPOLANT
 	Output.BasePassInterpolants.MultiViewId = EyeIndex;
+#endif
 #elif MOBILE_MULTI_VIEW
 	ResolvedView = ResolveView(ViewId);
+#if USE_MULTI_VIEW_ID_INTERPOLANT
 	Output.BasePassInterpolants.MultiViewId = ViewId;
+#endif
 #else
 	ResolvedView = ResolveView();
 #endif

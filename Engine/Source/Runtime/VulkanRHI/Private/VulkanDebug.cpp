@@ -2709,6 +2709,16 @@ void FWrapLayer::CmdEndRenderPass(VkResult Result, VkCommandBuffer CommandBuffer
 	}
 }
 
+void FWrapLayer::CmdEndRenderPass2KHR(VkResult Result, VkCommandBuffer CommandBuffer, const VkSubpassEndInfo* SubpassEndInfo)
+{
+	if (Result == VK_RESULT_MAX_ENUM)
+	{
+#if VULKAN_ENABLE_DUMP_LAYER
+		CmdPrintfBegin(CommandBuffer, TEXT("----- vkCmdEndRenderPass2KHR()"));
+#endif
+	}
+}
+
 void FWrapLayer::CmdNextSubpass(VkResult Result, VkCommandBuffer CommandBuffer, VkSubpassContents Contents)
 {
 	if (Result == VK_RESULT_MAX_ENUM)

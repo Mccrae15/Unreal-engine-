@@ -75,7 +75,7 @@ namespace EAndroidInstallLocation
 	};
 }
 
-/** The target Oculus Mobile device for application packaging */
+/** The target Meta Quest device for application packaging */
 UENUM()
 namespace EOculusMobileDevice
 {
@@ -83,11 +83,14 @@ namespace EOculusMobileDevice
 	{
 		// 0 was the deprecated OculusGo
 
-		/** Package for Oculus Quest */
-		Quest = 1 UMETA(DisplayName = "Oculus Quest"),
+		/** Package for Meta Quest */
+		Quest = 1 UMETA(DisplayName = "Meta Quest"),
 
-		/** Package for Oculus Quest 2*/
-		Quest2 = 2 UMETA(DisplayName = "Oculus Quest 2"),
+		/** Package for Meta Quest 2 */
+		Quest2 = 2 UMETA(DisplayName = "Meta Quest 2"),
+
+		/** Package for Meta Quest Pro */
+		QuestPro = 3 UMETA(DisplayName = "Meta Quest Pro"),
 	};
 }
 
@@ -410,6 +413,13 @@ public:
 	ConfigRestartRequired = true))
 	bool bStripShaderReflection;
 
+	// Strip reflect information of shaders under Android.
+	UPROPERTY(config, EditAnywhere, Category = AdvancedBuild, meta = (
+	DisplayName = "Strip reflect information",
+	ToolTip = "If true, strip reflect information of shaders under Android",
+	ConfigRestartRequired = true))
+	bool bStripReflectOfAndroidShader;
+
 	// If selected, the checked architectures will be split into separate .apk files [CURRENTLY FOR FULL SOURCE GAMES ONLY]
 	// @todo android fat binary: Currently, there isn't much utility in merging multiple .so's into a single .apk except for debugging,
 	// but we can't properly handle multiple GPU architectures in a single .apk, so we are disabling the feature for now
@@ -632,9 +642,11 @@ public:
 
 private:
 	// UObject interface
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostInitProperties() override;
 	void HandlesRGBHWSupport();
+	void HandleOculusMobileSupport();
 	
 	// End of UObject interface
 	void EnsureValidGPUArch();

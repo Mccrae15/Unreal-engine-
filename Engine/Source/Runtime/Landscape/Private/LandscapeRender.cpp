@@ -621,7 +621,7 @@ void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& Graph
 			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 
 			for (auto& Pair : LandscapeRenderSystems)
-			{
+	{
 				FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 				RenderSystem.CachedSectionLODValues.Reset();
 				RenderSystem.FetchHeightmapLODBiases();
@@ -631,16 +631,16 @@ void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& Graph
 			{
 				LandscapeView.LandscapeIndirection.SetNum(FLandscapeRenderSystem::LandscapeIndexAllocator.Num());
 
-				for (auto& Pair : LandscapeRenderSystems)
-				{
-					FLandscapeRenderSystem& RenderSystem = *Pair.Value;
+		for (auto& Pair : LandscapeRenderSystems)
+		{
+			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 
-					// Store index where the LOD data for this landscape starts
+			// Store index where the LOD data for this landscape starts
 					LandscapeView.LandscapeIndirection[RenderSystem.LandscapeIndex] = LandscapeView.LandscapeLODData.Num();
 
-					// Compute sections lod values for this view & append to the global landscape LOD data
+			// Compute sections lod values for this view & append to the global landscape LOD data
 					LandscapeView.LandscapeLODData.Append(RenderSystem.ComputeSectionsLODForView(*LandscapeView.View));
-				}
+		}
 			}
 		};
 
@@ -676,9 +676,9 @@ void FLandscapeSceneViewExtension::PreInitViews_RenderThread(FRDGBuilder& GraphB
 			FRHIResourceCreateInfo CreateInfoIndirection(TEXT("LandscapeIndirectionBuffer"), &LandscapeView.LandscapeIndirection);
 			LandscapeIndirectionBuffer = RHICreateVertexBuffer(LandscapeView.LandscapeIndirection.GetResourceDataSize(), BUF_ShaderResource | BUF_Volatile, CreateInfoIndirection);
 			LandscapeView.View->LandscapeIndirectionBuffer = RHICreateShaderResourceView(LandscapeIndirectionBuffer, sizeof(uint32), PF_R32_UINT);
-		}
-		else
-		{
+	}
+	else
+	{
 			LandscapeView.View->LandscapePerComponentDataBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 			LandscapeView.View->LandscapeIndirectionBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 		}
@@ -822,8 +822,8 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 			
-	HeightmapSubsectionOffsetU = 0;
-	HeightmapSubsectionOffsetV = 0;
+		HeightmapSubsectionOffsetU = 0;
+		HeightmapSubsectionOffsetV = 0;
 	if (HeightmapTexture)
 	{
 		HeightmapSubsectionOffsetU = ((float)(InComponent->SubsectionSizeQuads + 1) / (float)FMath::Max<int32>(1, HeightmapTexture->GetSizeX()));
@@ -984,16 +984,16 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	// TODO: Mobile has its own MobileWeightmapLayerAllocations, and visibility layer could be in a different channel potentially?
 	if (FeatureLevel > ERHIFeatureLevel::ES3_1)
 	{
-		for (int32 Idx = 0; Idx < InComponent->WeightmapLayerAllocations.Num(); Idx++)
-		{
-			const FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
+	for (int32 Idx = 0; Idx < InComponent->WeightmapLayerAllocations.Num(); Idx++)
+	{
+		const FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
 			if (Allocation.GetLayerName() == UMaterialExpressionLandscapeVisibilityMask::ParameterName && Allocation.IsAllocated())
-			{
-				VisibilityWeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
-				VisibilityWeightmapChannel = Allocation.WeightmapTextureChannel;
-				break;
-			}
+		{
+			VisibilityWeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
+			VisibilityWeightmapChannel = Allocation.WeightmapTextureChannel;
+			break;
 		}
+	}
 	}
 
 	bSupportsInstanceDataBuffer = true;
@@ -1382,6 +1382,8 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 		Result.bStaticRelevance = true;
 	}
 
+	// AppSpaceWarp
+	Result.bVelocityRelevance = View->bIncludeStaticInVelocityPass && Result.bOpaque && Result.bRenderInMainPass;
 	Result.bShadowRelevance = (GAllowLandscapeShadows > 0) && IsShadowCast(View) && View->Family->EngineShowFlags.Landscape;
 
 #if !UE_BUILD_SHIPPING
@@ -2583,7 +2585,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 {
 	NumVertices = FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections);
 	
-	VertexBuffer = new FLandscapeVertexBuffer(InFeatureLevel, NumVertices, SubsectionSizeVerts, NumSubsections);
+		VertexBuffer = new FLandscapeVertexBuffer(InFeatureLevel, NumVertices, SubsectionSizeVerts, NumSubsections);
 
 	IndexBuffers = new FIndexBuffer * [NumIndexBuffers];
 	FMemory::Memzero(IndexBuffers, sizeof(FIndexBuffer*) * NumIndexBuffers);

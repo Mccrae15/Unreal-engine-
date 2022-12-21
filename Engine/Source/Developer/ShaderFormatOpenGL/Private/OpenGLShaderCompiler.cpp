@@ -741,7 +741,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 			PackedGlobal.Offset* BytesPerComponent,
 			PackedGlobal.Count* BytesPerComponent,
 			ShaderOutput
-		);
+			);
 
 		uint16& Size = PackedGlobalArraySize.FindOrAdd(PackedGlobal.PackedType);
 		Size = FMath::Max<uint16>(BytesPerComponent * (PackedGlobal.Offset + PackedGlobal.Count), Size);
@@ -3655,6 +3655,6 @@ void FOpenGLFrontend::PlatformCompileOffline(const FShaderCompilerInput& Input, 
 {
 	if (ShaderVersion == GLSL_ES3_1_ANDROID)
 	{
-		CompileOfflineMali(Input, ShaderOutput, ShaderSource, FPlatformString::Strlen(ShaderSource), false);
+		CompileShaderOffline(Input, ShaderOutput, ShaderSource, FPlatformString::Strlen(ShaderSource), false);
 	}
 }

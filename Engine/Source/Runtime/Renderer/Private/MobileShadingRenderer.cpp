@@ -120,42 +120,42 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 	// Find out whether there are primitives will render in custom depth pass or just always render custom depth
 	if ((View.bHasCustomDepthPrimitives || GetCustomDepthMode() == ECustomDepthMode::EnabledWithStencil))
 	{
-		// Find out whether CustomDepth/Stencil used in translucent materials
+	// Find out whether CustomDepth/Stencil used in translucent materials
 		if (CVarMobileCustomDepthForTranslucency.GetValueOnAnyThread() != 0)
-		{
+	{
 			CustomDepthStencilUsage.bUsesCustomDepthStencil = View.bUsesCustomDepth || View.bUsesCustomStencil;
 			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomDepth && View.bUsesCustomStencil;
-		}
+	}
 
 		if (!CustomDepthStencilUsage.bSamplesCustomDepthAndStencil)
+	{
+		// Find out whether post-process materials use CustomDepth/Stencil lookups
+		const FBlendableManager& BlendableManager = View.FinalPostProcessSettings.BlendableManager;
+		FBlendableEntry* BlendableIt = nullptr;
+		while (FPostProcessMaterialNode* DataPtr = BlendableManager.IterateBlendables<FPostProcessMaterialNode>(BlendableIt))
 		{
-			// Find out whether post-process materials use CustomDepth/Stencil lookups
-			const FBlendableManager& BlendableManager = View.FinalPostProcessSettings.BlendableManager;
-			FBlendableEntry* BlendableIt = nullptr;
-			while (FPostProcessMaterialNode* DataPtr = BlendableManager.IterateBlendables<FPostProcessMaterialNode>(BlendableIt))
+			if (DataPtr->IsValid())
 			{
-				if (DataPtr->IsValid())
-				{
-					FMaterialRenderProxy* Proxy = DataPtr->GetMaterialInterface()->GetRenderProxy();
-					check(Proxy);
+				FMaterialRenderProxy* Proxy = DataPtr->GetMaterialInterface()->GetRenderProxy();
+				check(Proxy);
 
-					const FMaterial& Material = Proxy->GetIncompleteMaterialWithFallback(View.GetFeatureLevel());
+				const FMaterial& Material = Proxy->GetIncompleteMaterialWithFallback(View.GetFeatureLevel());
 					const FMaterialShaderMap* MaterialShaderMap = Material.GetRenderingThreadShaderMap();
 					bool bUsesCustomDepth = MaterialShaderMap->UsesSceneTexture(PPI_CustomDepth);
 					bool bUsesCustomStencil = MaterialShaderMap->UsesSceneTexture(PPI_CustomStencil);
 					if (Material.IsStencilTestEnabled() || bUsesCustomDepth || bUsesCustomStencil)
-					{
+				{
 						CustomDepthStencilUsage.bUsesCustomDepthStencil |= true;
-					}
+				}
 
 					if (bUsesCustomDepth && bUsesCustomStencil)
-					{
+				{
 						CustomDepthStencilUsage.bSamplesCustomDepthAndStencil |= true;
-						break;
-					}
+					break;
 				}
 			}
 		}
+	}
 	}
 	
 	return CustomDepthStencilUsage;
@@ -229,7 +229,7 @@ static void SetupGBufferFlags(FSceneTexturesConfig& SceneTexturesConfig, bool bR
 		Bindings.GBufferD.Flags |= AddFlags;
 		Bindings.GBufferE.Flags |= AddFlags;
 
-		// Mobile uses FBF/subpassLoad to fetch data from GBuffer, and FBF does not always work with sRGB targets 
+	// Mobile uses FBF/subpassLoad to fetch data from GBuffer, and FBF does not always work with sRGB targets 
 		Bindings.GBufferA.Flags &= (~TexCreate_SRGB);
 		Bindings.GBufferB.Flags &= (~TexCreate_SRGB);
 		Bindings.GBufferC.Flags &= (~TexCreate_SRGB);
@@ -578,7 +578,7 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
     SceneTexturesConfig.NumSamples = NumMSAASamples;
     
     SceneTexturesConfig.BuildSceneColorAndDepthFlags();
-    
+	
 	if (bDeferredShading) 
 	{
 		SetupGBufferFlags(SceneTexturesConfig, bRequiresMultiPass || GraphBuilder.IsDumpingFrame() || bRequireSeparateViewPass);
@@ -672,8 +672,8 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, UpdateGPUScene);
 
 		Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
-		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-		{
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
 			Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
 		}
 	}
@@ -778,7 +778,7 @@ void FMobileSceneRenderer::RenderFullDepthPrepass(FRDGBuilder& GraphBuilder, FSc
 
 				if (bDoOcclusionQueries)
 				{
-					RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
+				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 					RenderOcclusion(RHICmdList);
 				}
 			});
@@ -1044,8 +1044,11 @@ void FMobileSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
+					FViewInfo& View = Views[ViewIndex];
+					if (View.ShouldRenderView()) {
 					RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
-					AddMobilePostProcessingPasses(GraphBuilder, Scene, Views[ViewIndex], PostProcessingInputs, InstanceCullingManager);
+						AddMobilePostProcessingPasses(GraphBuilder, Scene, View, PostProcessingInputs, InstanceCullingManager);
+					}
 				}
 			}
 		}
@@ -1085,6 +1088,71 @@ void FMobileSceneRenderer::BuildInstanceCullingDrawParams(FRDGBuilder& GraphBuil
 			BuildMeshPassInstanceCullingDrawParams(GraphBuilder, Scene->GPUScene, View.ParallelMeshDrawCommandPasses[PassType], *PassParameters, MeshPassInstanceCullingDrawParams[PassType]);
 		}
 	}
+}
+
+// AppSpaceWarp
+BEGIN_SHADER_PARAMETER_STRUCT(FMotionVectorPassParameters, )
+	SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTextures)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
+void FMobileSceneRenderer::RenderForwardMotionVectors(FRDGBuilder& GraphBuilder, FViewInfo& View, const FSceneTextures& SceneTextures)
+{
+	SCOPED_NAMED_EVENT(RenderForwardMotionVectors, FColor::Magenta);
+
+	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+	const bool bIsMultiViewApplication = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
+	if (View.ShouldRenderView())
+	{
+		FParallelMeshDrawCommandPass& ParallelMeshPass = View.ParallelMeshDrawCommandPasses[GetMeshPassFromVelocityPass(EVelocityPass::Opaque)];
+
+		View.BeginRenderView();
+
+		FRenderTargetBindingSlots MotionVectorRenderTargets;
+		MotionVectorRenderTargets[0] = FRenderTargetBinding(SceneTextures.MotionVector, ERenderTargetLoadAction::EClear);
+		MotionVectorRenderTargets.DepthStencil = FDepthStencilBinding(SceneTextures.MotionVectorDepth, ERenderTargetLoadAction::EClear, FExclusiveDepthStencil::DepthWrite_StencilWrite);
+		MotionVectorRenderTargets.MultiViewCount = View.bIsMobileMultiViewEnabled ? 2 : (bIsMultiViewApplication ? 1 : 0);
+		MotionVectorRenderTargets.SubpassHint = ESubpassHint::None;
+
+		EMobileSceneTextureSetupMode SetupMode = EMobileSceneTextureSetupMode::SceneVelocity;
+		FMotionVectorPassParameters* PassParameters = GraphBuilder.AllocParameters<FMotionVectorPassParameters>();
+		PassParameters->View = View.GetShaderParameters();
+		PassParameters->SceneTextures = SceneTextures.UniformBuffer;
+		PassParameters->RenderTargets = MotionVectorRenderTargets;
+
+		ParallelMeshPass.BuildRenderingCommands(GraphBuilder, Scene->GPUScene, PassParameters->InstanceCullingDrawParams);
+
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("ForwardMotionVectorRendering"),
+			PassParameters,
+			ERDGPassFlags::Raster | ERDGPassFlags::NeverMerge,
+			[this, PassParameters, &ParallelMeshPass, &View, SceneTextures](FRHICommandListImmediate& RHICmdList)
+		{
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderMotionVectors);
+			SCOPED_DRAW_EVENT(RHICmdList, RenderMotionVectors);
+			SCOPE_CYCLE_COUNTER(STAT_BasePassDrawTime);
+			SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
+
+			// Always use full resolution velocity buffer
+			FIntPoint VelocityBufferSize(SceneTextures.MotionVector->GetRHI()->GetSizeXYZ().X, SceneTextures.MotionVector->GetRHI()->GetSizeXYZ().Y);
+			RHICmdList.SetStereoViewport(0, 0, 0, 0, 0.0f, VelocityBufferSize.X, VelocityBufferSize.X, VelocityBufferSize.Y, VelocityBufferSize.Y, 1.0f);
+
+			ParallelMeshPass.DispatchDraw(nullptr, RHICmdList, &PassParameters->InstanceCullingDrawParams);
+		});
+	}
+}
+
+bool FMobileSceneRenderer::ShouldRenderMotionVectors(FSceneTextures& SceneTextures)
+{
+	static const auto CVarOculusEnableSpaceWarpInternal = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.Oculus.SpaceWarp.EnableInternal"));
+	bool bNeedsVelocities = CVarOculusEnableSpaceWarpInternal && CVarOculusEnableSpaceWarpInternal->GetValueOnAnyThread() != 0;
+	if (SceneTextures.MotionVector != nullptr && SceneTextures.MotionVectorDepth != nullptr)
+	{
+		return bNeedsVelocities;
+	}
+	return false;
 }
 
 void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureRef ViewFamilyTexture, FSceneTextures& SceneTextures)
@@ -1152,6 +1220,12 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 
 		SCOPED_GPU_MASK(GraphBuilder.RHICmdList, !View.IsInstancedStereoPass() ? View.GPUMask : (View.GPUMask | View.GetInstancedView()->GPUMask));
 		SCOPED_CONDITIONAL_DRAW_EVENTF(GraphBuilder.RHICmdList, EventView, RenderViews.Num() > 1, TEXT("View%d"), ViewContext.ViewIndex);
+
+		// AppSpaceWarp
+		if (ShouldRenderMotionVectors(SceneTextures) && !View.bIsSceneCapture && !View.bIsReflectionCapture)
+		{
+			RenderForwardMotionVectors(GraphBuilder, View, SceneTextures);
+		}
 
 		if (!ViewContext.bIsFirstView)
 		{
@@ -1222,7 +1296,6 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 		RenderMobileBasePass(RHICmdList, View);
 		RenderMobileDebugView(RHICmdList, View);
 		RHICmdList.PollOcclusionQueries();
-		PostRenderBasePass(RHICmdList, View);
 		// scene depth is read only and can be fetched
 		RHICmdList.NextSubpass();
 		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Translucency));
@@ -1237,16 +1310,17 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 			// Issue occlusion queries
 			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 			const bool bAdrenoOcclusionMode = (CVarMobileAdrenoOcclusionMode.GetValueOnRenderThread() != 0 && IsOpenGLPlatform(ShaderPlatform));
-			if (bAdrenoOcclusionMode)
-			{
-				// flush
-				RHICmdList.SubmitCommandsHint();
-			}
+		if (bAdrenoOcclusionMode)
+		{
+			// flush
+			RHICmdList.SubmitCommandsHint();
+		}
 			RenderOcclusion(RHICmdList);
 		}
 
 		// Pre-tonemap before MSAA resolve (iOS only)
 		PreTonemapMSAA(RHICmdList, SceneTextures);
+		PostRenderBasePass(RHICmdList, View);
 	});
 	
 	// resolve MSAA depth
@@ -1287,7 +1361,7 @@ void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMo
 	// resolve MSAA depth
 	if (!bIsFullDepthPrepassEnabled)
 	{
-		AddResolveSceneDepthPass(GraphBuilder, View, SceneTextures.Depth);
+	AddResolveSceneDepthPass(GraphBuilder, View, SceneTextures.Depth);
 	}
 	if (bRequiresSceneDepthAux)
 	{

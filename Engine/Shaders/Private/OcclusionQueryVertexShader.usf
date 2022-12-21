@@ -15,15 +15,25 @@ float4 StencilingGeometryPosAndScale;
 void Main(
 	in float4 InPosition : ATTRIBUTE0,
 	out float4 OutPosition : SV_POSITION
-#if MOBILE_MULTI_VIEW && !INSTANCED_STEREO
+#if INSTANCED_STEREO
+	, uint InstanceId : SV_InstanceID
+#elif MOBILE_MULTI_VIEW
 	, in uint InViewId : SV_ViewID
+#endif
+#if USE_MULTI_VIEW_ID_INTERPOLANT
 	, out uint OutViewId : VIEW_ID
 #endif
 	)
 {
-#if MOBILE_MULTI_VIEW && !INSTANCED_STEREO
-	OutViewId = InViewId;
+#if INSTANCED_STEREO
+	uint InViewId = GetEyeIndex(InstanceId);
+#endif
 
+#if USE_MULTI_VIEW_ID_INTERPOLANT
+	OutViewId = InViewId;
+#endif
+
+#if MOBILE_MULTI_VIEW
 	// Make the triangles degenerate if we're not targeting this view.
 	// We don't need to resolve the view info, since we already set the
 	// primary view with the data for the view we're interested in.

@@ -84,8 +84,8 @@ namespace UE::ShaderCompilerCommon
 extern SHADERCOMPILERCOMMON_API void HandleReflectedGlobalConstantBufferMember(
 	const FString& MemberName,
 	uint32 ConstantBufferIndex,
-	int32 ReflectionOffset,
-	int32 ReflectionSize,
+		int32 ReflectionOffset,
+		int32 ReflectionSize,
 	FShaderCompilerOutput& CompilerOutput
 );
 
@@ -93,8 +93,8 @@ extern SHADERCOMPILERCOMMON_API void HandleReflectedRootConstantBufferMember(
 	const FShaderCompilerInput& Input,
 	const FShaderParameterParser& ShaderParameterParser,
 	const FString& MemberName,
-	int32 ReflectionOffset,
-	int32 ReflectionSize,
+		int32 ReflectionOffset,
+		int32 ReflectionSize,
 	FShaderCompilerOutput& CompilerOutput
 );
 
@@ -230,8 +230,13 @@ inline void DumpDebugUSF(const FShaderCompilerInput& Input, const ANSICHAR* Sour
 	DumpDebugUSF(Input, Source, HlslCCFlags, OverrideBaseFilename);
 }
 
-// calls 'Mali Offline Compiler' to compile the glsl source code and extract the generated instruction count
-extern SHADERCOMPILERCOMMON_API void CompileOfflineMali(const FShaderCompilerInput &Input, FShaderCompilerOutput& ShaderOutput, const ANSICHAR* ShaderSource, const int32 SourceSize, bool bVulkanSpirV, const ANSICHAR* VulkanSpirVEntryPoint = nullptr);
+// calls 'Offline Compiler' to compile the source code and extract the stats
+extern SHADERCOMPILERCOMMON_API void CompileShaderOffline(const FShaderCompilerInput &Input, 
+	FShaderCompilerOutput& ShaderOutput, 
+	const ANSICHAR* ShaderSource, 
+	const int32 SourceSize, 
+	bool bVulkanSpirV,
+	const ANSICHAR* VulkanSpirVEntryPoint = nullptr);
 
 // Cross compiler support/common functionality
 namespace CrossCompiler

@@ -1527,6 +1527,7 @@ int32 GRHIVariableRateShadingImageTileMaxWidth = 0;
 int32 GRHIVariableRateShadingImageTileMaxHeight = 0;
 int32 GRHIVariableRateShadingImageTileMinWidth = 0;
 int32 GRHIVariableRateShadingImageTileMinHeight = 0;
+FIntPoint GRHIVariableRateShadingImageOffsetGranularity(0, 0);
 EVRSImageDataType GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
 EPixelFormat GRHIVariableRateShadingImageFormat = PF_Unknown;
 bool GRHISupportsLateVariableRateShadingUpdate = false;

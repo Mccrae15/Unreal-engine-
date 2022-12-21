@@ -95,80 +95,80 @@ void FD3D11DynamicRHI::ResolveTextureUsingShader(
 		if (bDepthStencil)
 		{
 			RHICmdList.RunOnContext([bClearDestTexture, DestTextureDSV](auto& Context)
-			{
-				// Clear the destination texture.
+	{
+		// Clear the destination texture.
 				if (bClearDestTexture)
-				{
+		{
 					Context.GPUProfilingData.RegisterGPUWork(0);
 
 					Context.Direct3DDeviceIMContext->ClearDepthStencilView(DestTextureDSV,D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,0,0);
-				}
+		}
 
-				//hack this to  pass validation in SetDepthStencil state since we are directly changing targets with a call to OMSetRenderTargets later.
+		//hack this to  pass validation in SetDepthStencil state since we are directly changing targets with a call to OMSetRenderTargets later.
 				Context.CurrentDSVAccessType = FExclusiveDepthStencil::DepthWrite_StencilWrite;
 			});
 
 			check(DestTexture);
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_Always>::GetRHI();
-			GraphicsPSOInit.DepthStencilTargetFormat = DestTexture->GetFormat();
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_Always>::GetRHI();
+		GraphicsPSOInit.DepthStencilTargetFormat = DestTexture->GetFormat();
 
-			RHICmdList.BeginRenderPass(FRHIRenderPassInfo(DestTexture, EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil), TEXT(""));
-		}
-		else
-		{
+		RHICmdList.BeginRenderPass(FRHIRenderPassInfo(DestTexture, EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil), TEXT(""));
+	}
+	else
+	{
 			RHICmdList.RunOnContext([bClearDestTexture, DestTextureRTV](auto& Context)
 			{
-				// Clear the destination texture.
+		// Clear the destination texture.
 				if (bClearDestTexture)
-				{
+		{
 					Context.GPUProfilingData.RegisterGPUWork(0);
 
-					FLinearColor ClearColor(0,0,0,0);
+			FLinearColor ClearColor(0,0,0,0);
 					Context.Direct3DDeviceIMContext->ClearRenderTargetView(DestTextureRTV,(float*)&ClearColor);
-				}
+		}
 			});
 
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
-			RHICmdList.BeginRenderPass(FRHIRenderPassInfo(DestTexture, ERenderTargetActions::Load_Store), TEXT(""));
-		}
+		RHICmdList.BeginRenderPass(FRHIRenderPassInfo(DestTexture, ERenderTargetActions::Load_Store), TEXT(""));
+	}
 
-		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)ResolveTargetDesc.Width, (float)ResolveTargetDesc.Height, 1.0f);
+	RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)ResolveTargetDesc.Width, (float)ResolveTargetDesc.Height, 1.0f);
 
-		// Set the vertex and pixel shader
-		auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-		TShaderMapRef<FResolveVS> ResolveVertexShader(ShaderMap);
-		TShaderMapRef<TPixelShader> ResolvePixelShader(ShaderMap);
+	// Set the vertex and pixel shader
+	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+	TShaderMapRef<FResolveVS> ResolveVertexShader(ShaderMap);
+	TShaderMapRef<TPixelShader> ResolvePixelShader(ShaderMap);
 
-		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = ResolveVertexShader.GetVertexShader();
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ResolvePixelShader.GetPixelShader();
-		GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = ResolveVertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ResolvePixelShader.GetPixelShader();
+	GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
 		RHICmdList.RunOnContext([DestTexture](auto& Context)
 		{
 			Context.CurrentDepthTexture = DestTexture;
 		});
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-		RHICmdList.SetBlendFactor(FLinearColor::White);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+	RHICmdList.SetBlendFactor(FLinearColor::White);
 
-		ResolveVertexShader->SetParameters(RHICmdList, SourceRect, DestRect, ResolveTargetDesc.Width, ResolveTargetDesc.Height);
-		ResolvePixelShader->SetParameters(RHICmdList, PixelShaderParameter);
+	ResolveVertexShader->SetParameters(RHICmdList, SourceRect, DestRect, ResolveTargetDesc.Width, ResolveTargetDesc.Height);
+	ResolvePixelShader->SetParameters(RHICmdList, PixelShaderParameter);
 
-		// Set the source texture.
-		const uint32 TextureIndex = ResolvePixelShader->UnresolvedSurface.GetBaseIndex();
+	// Set the source texture.
+	const uint32 TextureIndex = ResolvePixelShader->UnresolvedSurface.GetBaseIndex();
 
-		if (SourceTexture)
-		{
+	if (SourceTexture)
+	{
 			RHICmdList.RunOnContext([SourceTexture, TextureIndex](FD3D11DynamicRHI& Context)
 			{
 				Context.SetShaderResourceView<SF_Pixel>(SourceTexture, SourceTexture->GetShaderResourceView(), TextureIndex);
 			});
-		}
+	}
 
-		RHICmdList.DrawPrimitive(0, 2, 1);
+	RHICmdList.DrawPrimitive(0, 2, 1);
 
-		RHICmdList.EndRenderPass();
+	RHICmdList.EndRenderPass();
 	}
 
 	if (SourceTexture)
@@ -203,6 +203,9 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 
 	FD3D11Texture* SourceTexture2D   = GetD3D11TextureFromRHITexture(SourceTextureRHI->GetTexture2D());
 	FD3D11Texture* DestTexture2D     = GetD3D11TextureFromRHITexture(DestTextureRHI->GetTexture2D());
+
+	FD3D11Texture* SourceTexture2DArray = GetD3D11TextureFromRHITexture(SourceTextureRHI->GetTexture2DArray());
+	FD3D11Texture* DestTexture2DArray = GetD3D11TextureFromRHITexture(DestTextureRHI->GetTexture2DArray());
 
 	FD3D11Texture* SourceTextureCube = GetD3D11TextureFromRHITexture(SourceTextureRHI->GetTextureCube());
 	FD3D11Texture* DestTextureCube   = GetD3D11TextureFromRHITexture(DestTextureRHI->GetTextureCube());
@@ -280,7 +283,35 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 			}
 		}
 	}
-	else if(SourceTextureCube && DestTextureCube)
+	else if (SourceTexture2DArray && DestTexture2DArray)
+	{
+		check(!SourceTexture2D && !DestTexture2D);
+
+		if (SourceTexture2DArray != DestTexture2DArray)
+		{
+			DXGI_FORMAT SrcFmt = (DXGI_FORMAT)GPixelFormats[SourceTexture2DArray->GetFormat()].PlatformFormat;
+			DXGI_FORMAT DstFmt = (DXGI_FORMAT)GPixelFormats[DestTexture2DArray->GetFormat()].PlatformFormat;
+
+			DXGI_FORMAT Fmt = ConvertTypelessToUnorm((DXGI_FORMAT)GPixelFormats[DestTexture2DArray->GetFormat()].PlatformFormat);
+
+			// Determine whether a MSAA resolve is needed, or just a copy.
+			if (SourceTextureRHI->IsMultisampled() && !DestTextureRHI->IsMultisampled() && SourceTexture2DArray->GetSizeZ() == DestTexture2DArray->GetSizeZ())
+			{
+				// resolve all slices of the texture array
+				for (int32 ArrayIndex = 0; ArrayIndex < (int32)DestTexture2DArray->GetSizeZ(); ArrayIndex++)
+				{
+					Direct3DDeviceIMContext->ResolveSubresource(
+						DestTexture2DArray->GetResource(),
+						ArrayIndex,
+						SourceTexture2DArray->GetResource(),
+						ArrayIndex,
+						Fmt
+					);
+				}
+			}
+		}
+	}
+	else if (SourceTextureCube && DestTextureCube)
 	{
 		check(!SourceTexture2D && !DestTexture2D);			
 
@@ -1163,7 +1194,7 @@ void FD3D11DynamicRHI::ResolveTexture(UE::RHICore::FResolveTextureInfo Info)
 	const FRHITextureDesc& DestDesc   = DestTexture->GetDesc();
 
 	if (SourceDesc.Format == PF_DepthStencil)
-	{
+		{
 		D3D11_TEXTURE2D_DESC ResolveTargetDesc;
 		DestTexture->GetD3D11Texture2D()->GetDesc(&ResolveTargetDesc);
 
@@ -1178,7 +1209,7 @@ void FD3D11DynamicRHI::ResolveTexture(UE::RHICore::FResolveTextureInfo Info)
 			GetDefaultRect(Info.ResolveRect, DestDesc.Extent.X, DestDesc.Extent.Y),
 			FDummyResolveParameter()
 		);
-	}
+		}
 	else
 	{
 		const DXGI_FORMAT DestFormatTypeless = ConvertTypelessToUnorm((DXGI_FORMAT)GPixelFormats[DestDesc.Format].PlatformFormat);
@@ -1190,10 +1221,10 @@ void FD3D11DynamicRHI::ResolveTexture(UE::RHICore::FResolveTextureInfo Info)
 		{
 			ArraySliceBegin = 0;
 			ArraySliceEnd   = SourceDesc.ArraySize;
-		}
+	}
 
 		for (int32 ArraySlice = ArraySliceBegin; ArraySlice < ArraySliceEnd; ArraySlice++)
-		{
+	{
 			int32 DestSubresource   = D3D11CalcSubresource(Info.MipLevel, ArraySlice, DestDesc.ArraySize);
 			int32 SourceSubresource = D3D11CalcSubresource(Info.MipLevel, ArraySlice, SourceDesc.ArraySize);
 

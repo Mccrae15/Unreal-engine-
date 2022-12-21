@@ -45,8 +45,8 @@ float3 GetSkyLightReflection(float3 ReflectionVector, float Roughness, out float
 	float AbsoluteSpecularMip = ComputeReflectionCaptureMipFromRoughness(Roughness, ReflectionStruct.SkyLightParameters.x);
 	float3 Reflection = TextureCubeSampleLevel(ReflectionStruct.SkyLightCubemap, ReflectionStruct.SkyLightCubemapSampler, ReflectionVector, AbsoluteSpecularMip).rgb;
 
-	OutSkyAverageBrightness = GetSkyLightCubemapBrightness() * Luminance(View.SkyLightColor.rgb);
-	return Reflection * View.SkyLightColor.rgb;
+	OutSkyAverageBrightness = GetSkyLightCubemapBrightness() * Luminance(ResolvedView.SkyLightColor.rgb);
+	return Reflection * ResolvedView.SkyLightColor.rgb;
 }
 
 float3 GetSkyLightReflectionSupportingBlend(float3 ReflectionVector, float Roughness, out float OutSkyAverageBrightness)
@@ -59,22 +59,22 @@ float3 GetSkyLightReflectionSupportingBlend(float3 ReflectionVector, float Rough
 		float AbsoluteSpecularMip = ComputeReflectionCaptureMipFromRoughness(Roughness, ReflectionStruct.SkyLightParameters.x);
 		float3 BlendDestinationReflection = TextureCubeSampleLevel(ReflectionStruct.SkyLightBlendDestinationCubemap, ReflectionStruct.SkyLightBlendDestinationCubemapSampler, ReflectionVector, AbsoluteSpecularMip).rgb;
 
-		Reflection = lerp(Reflection, BlendDestinationReflection * View.SkyLightColor.rgb, ReflectionStruct.SkyLightParameters.w);
+		Reflection = lerp(Reflection, BlendDestinationReflection * ResolvedView.SkyLightColor.rgb, ReflectionStruct.SkyLightParameters.w);
 	}
 
 	return Reflection;
 }
 
 bool ShouldSkyLightApplyPrecomputedBentNormalShadowing() {
-	return View.SkyLightApplyPrecomputedBentNormalShadowingFlag != 0.0f;
+	return ResolvedView.SkyLightApplyPrecomputedBentNormalShadowingFlag != 0.0f;
 }
 
 bool ShouldSkyLightAffectReflection() {
-	return View.SkyLightAffectReflectionFlag != 0.0f;
+	return ResolvedView.SkyLightAffectReflectionFlag != 0.0f;
 }
 
 bool ShouldSkyLightAffectGlobalIllumination() {
-	return View.SkyLightAffectGlobalIlluminationFlag != 0.0f;
+	return ResolvedView.SkyLightAffectGlobalIlluminationFlag != 0.0f;
 }
 
 /** 
@@ -203,7 +203,7 @@ float3 GetLookupVectorForSphereCapture(float3 ReflectionVector, float3 WorldPosi
 half ComputeMixingWeight(half IndirectIrradiance, half AverageBrightness, half Roughness)
 {
 	// Mirror surfaces should have no mixing, so they match reflections from other sources (SSR, planar reflections)
-	half MixingAlpha = smoothstep(0, 1, saturate(Roughness * View.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.x + View.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.y));
+	half MixingAlpha = smoothstep(0, 1, saturate(Roughness * ResolvedView.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.x + ResolvedView.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.y));
 
 	// We have high frequency directional data but low frequency spatial data in the envmap.
 	// We have high frequency spatial data but low frequency directional data in the lightmap.
@@ -211,7 +211,7 @@ half ComputeMixingWeight(half IndirectIrradiance, half AverageBrightness, half R
 	// This is only done with luma so as to not get odd color shifting.
 	half MixingWeight = IndirectIrradiance / max(AverageBrightness, .0001f);
 
-	MixingWeight = min(MixingWeight, View.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.z);
+	MixingWeight = min(MixingWeight, ResolvedView.ReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight.z);
 
 	return lerp(1.0f, MixingWeight, MixingAlpha);
 }

@@ -415,6 +415,19 @@ void FAndroidTargetSettingsCustomization::BuildIconSection(IDetailLayoutBuilder&
 	}
 }
 
+static EVisibility LaunchImageSettingsVisibility(FText IconName, TSharedPtr<IPropertyHandle> PackageForOculusProperty)
+{
+	uint32 NumElements = 0;
+	const TSharedPtr<IPropertyHandleArray> PackageForOculusPropertyArray = PackageForOculusProperty->AsArray();
+	FPropertyAccess::Result Result = PackageForOculusPropertyArray->GetNumElements(NumElements);
+	if (Result == FPropertyAccess::Success && NumElements > 0 && IconName.ToString() != "Launch Landscape")
+	{
+		return EVisibility::Hidden;
+	}
+
+	return EVisibility::Visible;
+}
+
 void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutBuilder& DetailLayout)
 {
 	// Add the launch images
@@ -431,7 +444,7 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 				.FillWidth(1.0f)
 				[
 					SNew(SRichTextBlock)
-					.Text(LOCTEXT("LaunchImageInfoMessage", "The <RichTextBlock.TextHighlight>Download Background</> image is used as the background for OBB downloading.  The <RichTextBlock.TextHighlight>Launch Portrait</> image is used as a splash screen for applications with Portrait, Reverse Portrait, Sensor Portrait, Sensor, or Full Sensor orientation.  The <RichTextBlock.TextHighlight>Launch Landscape</> image is used as a splash screen for applications with Landscape, Sensor Landscape, Reverse Landscape, Sensor, or Full Sensor orientation.\n\nThe launch images will be scaled to fit the device in the active orientation. Additional optional launch images may be provided as overrides for LDPI, MDPI, HDPI, and XHDPI by placing them in the project's corresponding Build/Android/res/drawable-* directory."))
+					.Text(LOCTEXT("LaunchImageInfoMessage", "The <RichTextBlock.TextHighlight>Download Background</> image is used as the background for OBB downloading.  The <RichTextBlock.TextHighlight>Launch Portrait</> image is used as a splash screen for applications with Portrait, Reverse Portrait, Sensor Portrait, Sensor, or Full Sensor orientation.  The <RichTextBlock.TextHighlight>Launch Landscape</> image is used as a splash screen for applications with Landscape, Sensor Landscape, Reverse Landscape, Sensor, Full Sensor orientation, or Oculus VR applications.\n\nThe launch images will be scaled to fit the device in the active orientation. Additional optional launch images may be provided as overrides for LDPI, MDPI, HDPI, and XHDPI by placing them in the project's corresponding Build/Android/res/drawable-* directory."))
 					.TextStyle(FAppStyle::Get(), "MessageLog")
 					.DecoratorStyleSet(&FAppStyle::Get())
 					.AutoWrapText(true)
@@ -440,6 +453,8 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 			]
 		];
 
+	TSharedPtr<IPropertyHandle> PackageForOculusProperty = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, PackageForOculusMobile));
+
 	const FVector2D LaunchImageMaxSize(150.0f, 150.0f);
 
 	for (const FPlatformIconInfo& Info : LaunchImageNames)
@@ -447,7 +462,12 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 		const FString AutomaticImagePath = EngineAndroidPath / Info.IconPath;
 		const FString TargetImagePath = GameAndroidPath / Info.IconPath;
 
+		TAttribute<EVisibility> LaunchImageSettingsVisibility(
+			TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(LaunchImageSettingsVisibility, Info.IconName, PackageForOculusProperty))
+		);
+
 		LaunchImageCategory.AddCustomRow(Info.IconName)
+			.Visibility(LaunchImageSettingsVisibility)
 			.NameContent()
 			[
 				SNew(SHorizontalBox)
