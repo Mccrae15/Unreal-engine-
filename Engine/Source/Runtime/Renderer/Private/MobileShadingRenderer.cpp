@@ -124,7 +124,7 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 		if (CVarMobileCustomDepthForTranslucency.GetValueOnAnyThread() != 0)
 		{
 			CustomDepthStencilUsage.bUsesCustomDepthStencil = View.bUsesCustomDepth || View.bUsesCustomStencil;
-			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomDepth && View.bUsesCustomStencil;
+			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomStencil;
 		}
 
 		if (!CustomDepthStencilUsage.bSamplesCustomDepthAndStencil)
@@ -148,7 +148,7 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 						CustomDepthStencilUsage.bUsesCustomDepthStencil |= true;
 					}
 
-					if (bUsesCustomDepth && bUsesCustomStencil)
+					if (bUsesCustomStencil)
 					{
 						CustomDepthStencilUsage.bSamplesCustomDepthAndStencil |= true;
 						break;
