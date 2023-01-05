@@ -468,7 +468,7 @@ void FNiagaraUserParameterNodeBuilder::GenerateRowForUserParameter(IDetailChildr
 			}
 		}
 	
-		ParameterNameToDisplayStruct.Add(UserParameter.GetName(), TWeakPtr<FStructOnScope>(StructOnScope));
+		ParameterToDisplayStruct.Add(UserParameter, TWeakPtr<FStructOnScope>(StructOnScope));
 	}
 
 	TSharedPtr<SWidget> DefaultNameWidget;
@@ -896,7 +896,7 @@ void FNiagaraComponentUserParametersNodeBuilder::GenerateChildContent(IDetailChi
 			
 		ParameterProxies.Reserve(UserParameters.Num());
 
-		ParameterNameToDisplayStruct.Empty();
+		ParameterToDisplayStruct.Empty();
 
 		GenerateUserParameterRows(ChildrenBuilder, *Cast<UNiagaraSystemEditorData>(SystemAsset->GetEditorData())->UserParameterHierarchy.Get(),Component.Get());
 	}
@@ -929,13 +929,18 @@ void FNiagaraComponentUserParametersNodeBuilder::ParameterValueChanged()
 		{
 			if (UserParameter.IsUObject() == false)
 			{
-				TWeakPtr<FStructOnScope>* DisplayStructPtr = ParameterNameToDisplayStruct.Find(UserParameter.GetName());
+				TWeakPtr<FStructOnScope>* DisplayStructPtr = ParameterToDisplayStruct.Find(UserParameter);
 				if (DisplayStructPtr != nullptr && DisplayStructPtr->IsValid())
 				{
 					TSharedPtr<FStructOnScope> DisplayStruct = DisplayStructPtr->Pin();
 					if (UserParameter.GetType() == FNiagaraTypeDefinition::GetPositionDef())
 					{
-						FMemory::Memcpy(DisplayStruct->GetStructMemory(), OverrideParameters.GetPositionParameterValue(UserParameter.GetName()), UserParameter.GetSizeInBytes());
+						const FVector* PositionValue = OverrideParameters.GetPositionParameterValue(UserParameter.GetName());
+						if (ensureMsgf(PositionValue != nullptr, TEXT("Position user parameter %s was missing it's position data.  Path: %s"),
+							*UserParameter.GetName().ToString(), *Component->GetPathName()))
+						{
+							FMemory::Memcpy(DisplayStruct->GetStructMemory(), PositionValue, DisplayStruct->GetStruct()->GetStructureSize());
+						}
 					}
 					else
 					{
@@ -1004,7 +1009,7 @@ void FNiagaraSystemUserParameterBuilder::GenerateChildContent(IDetailChildrenBui
 		System->GetExposedParameters().GetUserParameters(UserParameters);
 		ParameterProxies.Reserve(UserParameters.Num());
 
-		ParameterNameToDisplayStruct.Empty();
+		ParameterToDisplayStruct.Empty();
 
 		UNiagaraHierarchyRoot* Root = Cast<UNiagaraSystemEditorData>(System->GetEditorData())->UserParameterHierarchy;
 		GenerateUserParameterRows(ChildrenBuilder, *Root, System.Get());
@@ -1091,7 +1096,7 @@ void FNiagaraSystemUserParameterBuilder::ParameterValueChanged()
 		{
 			if (UserParameter.IsUObject() == false)
 			{
-				TWeakPtr<FStructOnScope>* DisplayStructPtr = ParameterNameToDisplayStruct.Find(UserParameter.GetName());
+				TWeakPtr<FStructOnScope>* DisplayStructPtr = ParameterToDisplayStruct.Find(UserParameter);
 				if (DisplayStructPtr != nullptr && DisplayStructPtr->IsValid())
 				{
 					TSharedPtr<FStructOnScope> DisplayStruct = DisplayStructPtr->Pin();
