@@ -199,6 +199,7 @@ FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping,
 	PlayRateMultiplier = InPlayRate;
 	EffectiveBlendWeight = InFinalBlendWeight;
 	bLooping = bInLooping;
+	BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
 }
 
 FAnimTickRecord::FAnimTickRecord(
