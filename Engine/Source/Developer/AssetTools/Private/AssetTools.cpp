@@ -677,6 +677,7 @@ namespace UE::AssetTools::Private
 		static void SaveInstancedPackagesIntoDestination(FPackageMigrationContext& PackageMigrationContext, FPackageMigrationImplContext& MigrationImplContext)
 		{
 			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Standalone;
 			SaveArgs.SaveFlags |= SAVE_RehydratePayloads;
 
 			// We should look into creating our own log to report the save erros to the user.
