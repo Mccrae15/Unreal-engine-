@@ -7822,7 +7822,6 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>();
 	check(LandscapeSubsystem != nullptr);
 	FLandscapeNotificationManager* LandscapeNotificationManager = LandscapeSubsystem->GetNotificationManager();
-	check(LandscapeNotificationManager != nullptr);
 
 	// Make sure Update doesn't dirty Landscape packages when not in Landscape Ed Mode
 	FLandscapeDirtyOnlyInModeScope DirtyOnlyInMode(LandscapeInfo);
@@ -7887,14 +7886,18 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	// The Edit layers shaders only work on SM5 : cancel any update that might happen when SM5+ shading model is not active :
 	if (World->FeatureLevel < ERHIFeatureLevel::SM5)
 	{
-		if (!InvalidShadingModelNotification.IsValid())
+		if (LandscapeNotificationManager)
 		{
-			InvalidShadingModelNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::ShadingModelInvalid);
-			static const FText NotificationText(LOCTEXT("InvalidShadingModel", "Landscape editor cannot update landscape with a feature level less than SM5"));
-			InvalidShadingModelNotification->NotificationText = NotificationText;
+			if (!InvalidShadingModelNotification.IsValid())
+			{
+				InvalidShadingModelNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::ShadingModelInvalid);
+				static const FText NotificationText(LOCTEXT("InvalidShadingModel", "Landscape editor cannot update landscape with a feature level less than SM5"));
+				InvalidShadingModelNotification->NotificationText = NotificationText;
+			}
+			LandscapeNotificationManager->RegisterNotification(InvalidShadingModelNotification);
+			bHideNotifications = false;
 		}
-		LandscapeNotificationManager->RegisterNotification(InvalidShadingModelNotification);
-		bHideNotifications = false;
+
 		return;
 	}
 	else
@@ -7906,9 +7909,9 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	static constexpr double TimeBeforeDisplayingWaitingForResourcesNotification = 3.0;
 
 	bResourcesReady &= PrepareLayersTextureResources(bInWaitForStreaming);
-	if (!bResourcesReady)
+	if (!bResourcesReady && LandscapeNotificationManager)
 	{
-		WaitingForLandscapeTextureResourcesStartTime = FSlateApplicationBase::Get().GetCurrentTime();
+		WaitingForLandscapeTextureResourcesStartTime = FApp::GetCurrentTime();
 		if (!WaitingForTexturesNotification.IsValid())
 		{
 			WaitingForTexturesNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::LandscapeTextureResourcesNotReady);
@@ -7926,9 +7929,9 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	}
 
 	bResourcesReady &= PrepareLayersBrushResources(World->FeatureLevel, bInWaitForStreaming);
-	if (!bResourcesReady)
+	if (!bResourcesReady && LandscapeNotificationManager)
 	{
-		WaitingForLandscapeBrushResourcesStartTime = FSlateApplicationBase::Get().GetCurrentTime();
+		WaitingForLandscapeBrushResourcesStartTime = FApp::GetCurrentTime();
 		if (!WaitingForBrushesNotification.IsValid())
 		{
 			WaitingForBrushesNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::LandscapeBrushResourcesNotReady);
