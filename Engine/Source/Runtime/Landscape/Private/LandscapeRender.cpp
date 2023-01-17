@@ -1559,9 +1559,9 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	FTextureResource* HeightmapResource = HeightmapTexture ? HeightmapTexture->GetResource() : nullptr;
 	if (HeightmapResource)
 	{
-		LandscapeParams.HeightmapTexture = HeightmapResource->TextureRHI.GetReference();
+		LandscapeParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
-		LandscapeParams.NormalmapTexture = HeightmapResource->TextureRHI.GetReference();
+		LandscapeParams.NormalmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.NormalmapTextureSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 	}
 	else
@@ -1575,7 +1575,7 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	FTextureResource* XYOffsetmapResource = XYOffsetmapTexture ? XYOffsetmapTexture->GetResource() : nullptr;
 	if (XYOffsetmapResource)
 	{
-		LandscapeParams.XYOffsetmapTexture = XYOffsetmapResource->TextureRHI.GetReference();
+		LandscapeParams.XYOffsetmapTexture = XYOffsetmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.XYOffsetmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
 	}
 	else
