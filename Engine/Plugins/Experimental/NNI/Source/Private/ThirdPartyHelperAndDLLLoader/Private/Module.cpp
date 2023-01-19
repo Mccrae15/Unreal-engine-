@@ -11,8 +11,17 @@
 void FThirdPartyHelperAndDLLLoaderModule::StartupModule()
 {
 #ifdef PLATFORM_WIN64
+#ifdef WITH_EDITOR
+
 	const FString PluginDir = IPluginManager::Get().FindPlugin(TEXT("NeuralNetworkInference"))->GetBaseDir();
 	const FString DirectMLRuntimeBinPath = PluginDir / TEXT(PREPROCESSOR_TO_STRING(DIRECTML_PLATFORM_PATH));
+
+#else
+
+	const FString DirectMLRuntimeBinPath = FPlatformProcess::BaseDir();
+	
+#endif // WITH_EDITOR
+
 	const FString DirectMLDLLPath = DirectMLRuntimeBinPath / TEXT(PREPROCESSOR_TO_STRING(DIRECTML_DLL_NAME));
 
 	// Sanity check
@@ -23,9 +32,11 @@ void FThirdPartyHelperAndDLLLoaderModule::StartupModule()
 		UE_LOG(LogNeuralNetworkInferenceThirdPartyHelperAndDLLLoader, Warning, TEXT("FThirdPartyHelperAndDLLLoaderModule::StartupModule(): %s"), *ErrorMessage);
 		checkf(false, TEXT("%s"), *ErrorMessage);
 	}
+
 	FPlatformProcess::PushDllDirectory(*DirectMLRuntimeBinPath);
 	DirectMLDLLHandle = FPlatformProcess::GetDllHandle(*DirectMLDLLPath);
 	FPlatformProcess::PopDllDirectory(*DirectMLRuntimeBinPath);
+
 #endif //PLATFORM_WIN64
 }
 
