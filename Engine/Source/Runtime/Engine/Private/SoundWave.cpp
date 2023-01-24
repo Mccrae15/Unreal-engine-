@@ -1693,13 +1693,16 @@ void USoundWave::PostLoad()
 				// if a sound class defined our loading behavior as something other than Retain and our cvar default is to retain, we need to release our handle.
 				ReleaseCompressedAudio();
 
-				const bool bHasMultipleChunks = GetNumChunks() > 1;
 				bool bShouldPrime = (ActualLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad);
 				bShouldPrime |= (GIsEditor && (ActualLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)); // treat this scenario like PrimeOnLoad
 
-				if (bShouldPrime && bHasMultipleChunks)
+				if (bShouldPrime) 
 				{
-					IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+					const bool bHasMultipleChunks = GetNumChunks() > 1;
+					if (bHasMultipleChunks)
+					{
+						IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+					}
 				}
 			}
 
