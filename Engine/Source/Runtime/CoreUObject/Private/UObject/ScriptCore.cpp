@@ -2195,7 +2195,7 @@ DEFINE_FUNCTION(UObject::execLocalVariable)
 				}
 				else
 				{
-					ObjProperty->GetValue_InContainer(Stack.MostRecentPropertyContainer, RESULT_PARAM);
+					VarProperty->GetValue_InContainer(Stack.MostRecentPropertyContainer, RESULT_PARAM);
 				}
 			}
 			else
