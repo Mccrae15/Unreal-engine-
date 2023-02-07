@@ -474,8 +474,12 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 			LocalHitLocation,
 			LastLocalHitLocation,
 			1.0f,
-			false);
-		
+			false,
+			false,
+			false,
+			FModifierKeysState(),
+			0,
+			VirtualUser->GetUserIndex());		
 	}
 	else
 	{
@@ -487,7 +491,8 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 			PressedKeys,
 			Key,
 			0.0f,
-			ModifierKeys);
+			ModifierKeys,
+			VirtualUser->GetUserIndex());
 	}
 	
 		

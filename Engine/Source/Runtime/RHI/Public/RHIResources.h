@@ -3223,14 +3223,19 @@ struct FImmutableSamplerState
 enum class ESubpassHint : uint8
 {
 	// Regular rendering
-	None,
+	None = 0,
 
 	// Render pass has depth reading subpass
-	DepthReadSubpass,
+	DepthReadSubpass = (1u << 0),
 
-	// Mobile defferred shading subpass
-	DeferredShadingSubpass,
+	// Mobile deferred shading subpass
+	DeferredShadingSubpass = (1u << 1),
+
+	// Mobile tonemapping subpass,
+	MobileTonemapSubpass = (1u << 2),
 };
+
+ENUM_CLASS_FLAGS(ESubpassHint);
 
 enum class EConservativeRasterization : uint8
 {

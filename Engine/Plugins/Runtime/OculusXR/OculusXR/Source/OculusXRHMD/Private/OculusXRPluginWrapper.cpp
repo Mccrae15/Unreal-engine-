@@ -262,7 +262,24 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetSpaceSemanticLabels),
 		OCULUS_BIND_ENTRY_POINT(GetSpaceRoomLayout),
 		OCULUS_BIND_ENTRY_POINT(GetSpaceBoundary2D),    
-		OCULUS_BIND_ENTRY_POINT(RequestSceneCapture),   
+		OCULUS_BIND_ENTRY_POINT(RequestSceneCapture),
+
+		// MovementSDK
+		OCULUS_BIND_ENTRY_POINT(GetBodyState),
+		OCULUS_BIND_ENTRY_POINT(GetBodyTrackingEnabled),
+		OCULUS_BIND_ENTRY_POINT(GetBodyTrackingSupported),
+		OCULUS_BIND_ENTRY_POINT(StartBodyTracking),
+		OCULUS_BIND_ENTRY_POINT(StopBodyTracking),
+		OCULUS_BIND_ENTRY_POINT(GetFaceTrackingEnabled),
+		OCULUS_BIND_ENTRY_POINT(GetFaceTrackingSupported),
+		OCULUS_BIND_ENTRY_POINT(GetFaceState),
+		OCULUS_BIND_ENTRY_POINT(StartFaceTracking),
+		OCULUS_BIND_ENTRY_POINT(StopFaceTracking),
+		OCULUS_BIND_ENTRY_POINT(GetEyeTrackingEnabled),
+		OCULUS_BIND_ENTRY_POINT(GetEyeTrackingSupported),
+		OCULUS_BIND_ENTRY_POINT(GetEyeGazesState),
+		OCULUS_BIND_ENTRY_POINT(StartEyeTracking),
+		OCULUS_BIND_ENTRY_POINT(StopEyeTracking),
 
 		// OVR_Plugin_Insight.h
 		OCULUS_BIND_ENTRY_POINT(InitializeInsightPassthrough),

@@ -5213,7 +5213,7 @@ void AddResolveSceneColorPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, 
 	const EShaderPlatform CurrentShaderPlatform = GetFeatureLevelShaderPlatform(View.FeatureLevel);
 
 	if (NumSamples == 1 || !SceneColor.IsSeparate()
-		|| EnumHasAnyFlags(SceneColor.Target->Desc.Flags, TexCreate_Memoryless))
+		|| EnumHasAnyFlags(SceneColor.Target->Desc.Flags, TexCreate_Memoryless) || IsMobileTonemapSubpassEnabled())
 	{
 		return;
 	}

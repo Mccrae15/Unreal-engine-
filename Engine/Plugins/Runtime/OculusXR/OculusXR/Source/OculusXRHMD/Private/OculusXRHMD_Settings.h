@@ -74,6 +74,15 @@ public:
 
 			/** Whether Anchors and Scene can be used with the app */
 			uint64				bAnchorSupportEnabled : 1;
+
+			/** Whether body tracking functionality can be used with the app */
+			uint64				bBodyTrackingEnabled : 1;
+
+			/** Whether eye tracking functionality can be used with the app */
+			uint64				bEyeTrackingEnabled : 1;
+
+			/** Whether face tracking functionality can be used with the app */
+			uint64				bFaceTrackingEnabled : 1;
 		};
 		uint64 Raw;
 	} Flags;
@@ -109,6 +118,7 @@ public:
 
 	EOculusXRXrApi XrApi;
 	EOculusXRColorSpace ColorSpace;
+	EOculusXRControllerPoseAlignment ControllerPoseAlignment;
 
 	EOculusXRHandTrackingSupport HandTrackingSupport;
 	EOculusXRHandTrackingFrequency HandTrackingFrequency;

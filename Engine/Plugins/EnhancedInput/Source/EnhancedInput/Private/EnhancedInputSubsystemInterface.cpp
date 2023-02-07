@@ -638,7 +638,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 	// Order contexts by priority
 	OrderedInputContexts.ValueSort([](const int32& A, const int32& B) { return A > B; });
 
-	TSet<FKey> AppliedKeys;
+	TMap<FKey, int32> AppliedKeys;
 
 	TArray<int32> ChordedMappings;
 
@@ -660,7 +660,12 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 				Mapping.Key = *PlayerKey;
 			}
 			
-			if (Mapping.Action && !AppliedKeys.Contains(Mapping.Key))
+			bool bToApply = (Mapping.Action != nullptr);
+			if (bToApply && AppliedKeys.Contains(Mapping.Key)) {
+				//If AppliedKeys has a key with same priority as the current mapping, both Mapping should be applied.
+				bToApply = (AppliedKeys[Mapping.Key] <= ContextPair.Value);
+			}
+			if (bToApply)
 			{
 				// TODO: Wasteful query as we've already established chord state within ReorderMappings. Store TOptional bConsumeInput per mapping, allowing override? Query override via delegate?
 				auto IsChord = [](const UInputTrigger* Trigger) { return Cast<const UInputTriggerChordAction>(Trigger) != nullptr; };
@@ -706,7 +711,9 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 			}
 		}
 
-		AppliedKeys.Append(MoveTemp(ContextAppliedKeys));
+		for (auto& AppliedKey : ContextAppliedKeys) {
+			AppliedKeys.Add(AppliedKey) = ContextPair.Value;
+		}
 	}
 
 	InjectChordBlockers(ChordedMappings);

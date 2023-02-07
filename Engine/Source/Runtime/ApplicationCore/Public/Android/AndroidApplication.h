@@ -123,6 +123,8 @@ private:
 
     EDeviceScreenOrientation DeviceOrientation;
     void HandleDeviceOrientation();
+
+	const bool bDisableOrientationPolling;
 };
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

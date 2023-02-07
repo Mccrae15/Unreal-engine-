@@ -111,18 +111,18 @@ enum class EOculusXRColorSpace : uint8
 	Unknown = 0,
 	/// No color correction, not recommended for production use. See documentation for more info
 	Unmanaged = 1,
-	/// Preferred color space for standardized color across all Oculus HMDs with D65 white point
+	/// Color space for standardized color across all Oculus HMDs with D65 white point
 	Rec_2020 = 2,
 	/// Rec. 709 is used on Oculus Go and shares the same primary color coordinates as sRGB
 	Rec_709 = 3,
 	/// Oculus Rift CV1 uses a unique color space, see documentation for more info
-	Rift_CV1 = 4	UMETA(DisplayName = "Rift CV1 (Recommended)"),
+	Rift_CV1 = 4	UMETA(DisplayName = "Rift CV1"),
 	/// Oculus Rift S uses a unique color space, see documentation for more info
 	Rift_S = 5,
 	/// Oculus Quest's native color space is slightly different than Rift CV1
 	Quest = 6		UMETA(DisplayName = "Quest 1"),
-	/// Similar to DCI-P3. See documentation for more details on P3
-	P3 = 7,
+	/// DCI-P3 color space. See documentation for more details
+	P3 = 7			UMETA(DisplayName = "P3 (Recommended)"),
 	/// Similar to sRGB but with deeper greens using D65 white point
 	Adobe_RGB = 8,
 };
@@ -218,6 +218,16 @@ struct FOculusXRGuardianTestResult
 	/** Normal of closest point */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Boundary Test Result")
 	FVector ClosestPointNormal = FVector(0.0f, 0.0f, 1.0f);
+};
+
+UENUM()
+enum class EOculusXRControllerPoseAlignment : uint8
+{
+	Default = 0 UMETA(ToolTip = "Default pose alignment used in all versions of the Meta XR plugin. Recommended pose for compatibility with previous assets designed for the Meta XR plugin."),
+
+	Grip = 1 UMETA(ToolTip = "Grip pose alignment as defined by OpenXR. Use this for cross-plugin compatibility with assets designed for the native OpenXR grip pose."),
+
+	Aim = 2 UMETA(ToolTip = "Aim pose alignment as defined by OpenXR. Use this for cross-plugin compatibility with assets designed for the native OpenXR aim pose."),
 };
 
 UCLASS()

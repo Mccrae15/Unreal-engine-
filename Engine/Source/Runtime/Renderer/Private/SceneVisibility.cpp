@@ -820,7 +820,7 @@ static void PrimitiveCullTask(FThreadSafeCounter& NumCulledPrimitives, const FSc
 					bool bHasMaxDrawDistance = Bounds.MaxCullDistance < FLT_MAX;
 					bool bHasMinDrawDistance = Bounds.MinDrawDistance > 0;
 
-					if (bHasMaxDrawDistance || bHasMinDrawDistance)
+					if (bHasMaxDrawDistance || bHasMinDrawDistance || View.FarCullDistance > 0.0f)
 					{
 						float MaxDrawDistance = Bounds.MaxCullDistance * MaxDrawDistanceScale;
 						float MinDrawDistanceSq = FMath::Square(Bounds.MinDrawDistance);
@@ -839,7 +839,8 @@ static void PrimitiveCullTask(FThreadSafeCounter& NumCulledPrimitives, const FSc
 						}
 
 						// Check for distance culling first
-						const bool bFarDistanceCulled = bHasMaxDrawDistance && (DistanceSquared > FMath::Square(MaxDrawDistance));
+						const bool bFarDistanceCulled = ((bHasMaxDrawDistance && (DistanceSquared > FMath::Square(MaxDrawDistance))) ||
+							(View.FarCullDistance > 0.0f && (Bounds.BoxSphereBounds.Origin - ViewOriginForDistanceCulling).SizeSquared() > FMath::Square(View.FarCullDistance + Bounds.BoxSphereBounds.SphereRadius)));
 						const bool bNearDistanceCulled = bHasMinDrawDistance && (DistanceSquared < MinDrawDistanceSq);
 						bool bIsDistanceCulled = bNearDistanceCulled || bFarDistanceCulled;
 

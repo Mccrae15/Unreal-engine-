@@ -76,7 +76,7 @@ class FOculusXRHMD : public FHeadMountedDisplayBase, public FXRRenderTargetManag
 	friend class FConsoleCommands;
 
 public:
-	static const FName OculusSystemName;
+	OCULUSXRHMD_API static const FName OculusSystemName;
 	// IXRSystemIdentifier
 	virtual FName GetSystemName() const override;
 	virtual int32 GetXRSystemFlags() const override;
@@ -264,6 +264,9 @@ protected:
 	void EyeTrackedFoveatedRenderingFallback();
 
 public:
+
+	OCULUSXRHMD_API static FOculusXRHMD* GetOculusXRHMD();
+
 	bool IsHMDActive() const;
 
 	FSplash* GetSplash() const { return Splash.Get(); }

@@ -3344,3 +3344,11 @@ static TAutoConsoleVariable<int32> CVarMobileSupportsGen4TAA(
 		 "0: Fallback to FXAA"
 		 "1: Support Desktop Gen4 TAA (default)"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarDisableOrientationPolling(
+	TEXT("r.Android.DisableOrientationPolling"),
+	0,
+	TEXT("Disable orientation polling logic. (Android Only)\n"
+		 "0: Orientation polling enabled [default]"
+		 "1: Orientation polling disabled. Relevant for standalone VR devices."),
+	ECVF_ReadOnly);

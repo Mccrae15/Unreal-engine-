@@ -19,7 +19,7 @@ namespace OculusXRAnchors
 {
 	OculusXRHMD::FOculusXRHMD* GetHMD(bool& OutSuccessful)
 	{
-		OculusXRHMD::FOculusXRHMD* OutHMD = GEngine->XRSystem.IsValid() ? (OculusXRHMD::FOculusXRHMD*)(GEngine->XRSystem->GetHMDDevice()) : nullptr;
+		OculusXRHMD::FOculusXRHMD* OutHMD = OculusXRHMD::FOculusXRHMD::GetOculusXRHMD();
 		if (!OutHMD)
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Unable to retrieve OculusXRHMD"));

@@ -129,7 +129,7 @@ static void SetupCopyOrResolveRegion(RegionType& Region, const FVulkanTexture& S
 
 void FVulkanCommandListContext::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRHITexture* DestTextureRHI, const FResolveParams& InResolveParams)
 {
-	if (!SourceTextureRHI || !DestTextureRHI)
+	if (!SourceTextureRHI || !DestTextureRHI || ((RenderPassInfo.SubpassHint & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None))
 	{
 		// no need to do anything (silently ignored)
 		return;

@@ -83,17 +83,3 @@ TArray<uint8> FEdgeStyleParameters::GenerateBrightnessContrastSaturationColorMap
 
 	return NewColorMapData;
 }
-
-ovrpInsightPassthroughColorMapType FEdgeStyleParameters::GetOVRPColorMapType(EOculusXRColorMapType InColorMapType)
-{
-	switch (InColorMapType) {
-	case ColorMapType_GrayscaleToColor:
-		return ovrpInsightPassthroughColorMapType_MonoToRgba;
-	case ColorMapType_Grayscale:
-		return ovrpInsightPassthroughColorMapType_MonoToMono;
-	case ColorMapType_ColorAdjustment:
-		return ovrpInsightPassthroughColorMapType_BrightnessContrastSaturation;
-	default:
-		return ovrpInsightPassthroughColorMapType_None;
-	}
-}

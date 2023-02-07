@@ -248,6 +248,9 @@ void Main(
 	, out HALF4_TYPE OutGBufferD : SV_Target4
 	#endif
 #else
+#if MOBILE_TONEMAP_SUBPASS_EDITOR
+	, out half4 OutGBufferA	: SV_Target1
+#endif
 	, out HALF4_TYPE OutColor : SV_Target0
 #endif
 #if USE_SCENE_DEPTH_AUX
@@ -707,6 +710,10 @@ void Main(
 	#if OUTPUT_GAMMA_SPACE
 		OutColor.rgb = sqrt(OutColor.rgb);
 	#endif
+#endif
+
+#if MOBILE_TONEMAP_SUBPASS_EDITOR
+	OutGBufferA = OutColor;
 #endif
 
 #if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED

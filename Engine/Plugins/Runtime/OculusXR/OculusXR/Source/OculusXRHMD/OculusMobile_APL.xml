@@ -58,6 +58,10 @@
 		<!-- check for experimental feature support from config -->
 		<setBoolFromProperty result="bSupportExperimentalFeatures" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSupportExperimentalFeatures" default="false"/>
 
+		<setBoolFromProperty result="bBodyTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bBodyTrackingEnabled" default="false"/>
+		<setBoolFromProperty result="bEyeTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bEyeTrackingEnabled" default="false"/>
+		<setBoolFromProperty result="bFaceTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bFaceTrackingEnabled" default="false"/>
+
 		<!-- get packaging for Oculus Mobile from ini and reset it if architecture not supported -->
 		<if condition="bPackageForOculusMobile">
 			<true>
@@ -182,12 +186,29 @@
 				<!-- Add Eye Tracking flags-->
 				<setBool result="bEyeTrackingFeature" value="false"/>
 				<setBoolOr result="bEyeTrackingFeature" arg1="$B(bEyeTrackingFeature)" arg2="$B(bSupportEyeTrackedFoveatedRendering)"/>
+				<setBoolOr result="bEyeTrackingFeature" arg1="$B(bEyeTrackingFeature)" arg2="$B(bEyeTrackingEnabled)"/>
 				<!-- Check for other features that require eye tracking here -->
 				<if condition="bEyeTrackingFeature">
 					<true>
 						<log text="Adding eye tracking feature and permission tags to manifest"/>
 						<addPermission android:name="com.oculus.permission.EYE_TRACKING" />
 						<addFeature android:name="oculus.software.eye_tracking" android:required="false"/>
+					</true>
+				</if>
+				<!-- Add Body Tracking flags-->
+				<if condition="bBodyTrackingEnabled">
+					<true>
+						<log text="Adding body tracking feature and permission tags to manifest"/>
+						<addPermission android:name="com.oculus.permission.BODY_TRACKING" />
+						<addFeature android:name="com.oculus.software.body_tracking" android:required="true"/>
+					</true>
+				</if>
+				<!-- Add Face Tracking flags-->
+				<if condition="bFaceTrackingEnabled">
+					<true>
+						<log text="Adding face tracking feature and permission tags to manifest"/>
+						<addPermission android:name="com.oculus.permission.FACE_TRACKING" />
+						<addFeature android:name="oculus.software.face_tracking" android:required="true"/>
 					</true>
 				</if>
 				<!-- Add Experimental Features flag-->

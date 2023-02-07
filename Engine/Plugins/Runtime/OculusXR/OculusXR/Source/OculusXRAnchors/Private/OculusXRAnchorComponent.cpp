@@ -178,7 +178,7 @@ void UOculusXRAnchorComponent::UpdateAnchorTransform() const
 
 bool UOculusXRAnchorComponent::ToWorldSpacePose(FTransform CameraTransform, FTransform& OutTrackingSpaceTransform) const
 {
-	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GEngine->XRSystem.IsValid() ? (OculusXRHMD::FOculusXRHMD*)(GEngine->XRSystem->GetHMDDevice()) : nullptr;
+	OculusXRHMD::FOculusXRHMD* OculusXRHMD = OculusXRHMD::FOculusXRHMD::GetOculusXRHMD();
 	if (!OculusXRHMD)
 	{
 		UE_LOG(LogOculusXRAnchors, Warning, TEXT("Unable to retrieve OculusXRHMD, cannot calculate anchor world space pose."));

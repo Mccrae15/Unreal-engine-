@@ -65,6 +65,13 @@ static FAutoConsoleVariableRef CVarCalcLocalPlayerCachedLODDistanceFactor(
 
 DECLARE_CYCLE_STAT(TEXT("CalcSceneView"), STAT_CalcSceneView, STATGROUP_Engine);
 
+static TAutoConsoleVariable<float> CVarFarCullingDistance(
+	TEXT("r.FarCullingDistance"),
+	0.0f,
+	TEXT("If greater than 0.0, culls all meshes beyond specified distance.\n")
+	TEXT("0.0: off(default)\n"),
+	ECVF_RenderThreadSafe);
+
 //////////////////////////////////////////////////////////////////////////
 // Things used by ULocalPlayer::Exec
 //@TODO: EXEC
@@ -805,6 +812,9 @@ bool ULocalPlayer::CalcSceneViewInitOptions(
 	ViewInitOptions.WorldToMetersScale = PlayerController->GetWorldSettings()->WorldToMeters;
 	ViewInitOptions.CursorPos = Viewport->HasMouseCapture() ? FIntPoint(-1, -1) : FIntPoint(Viewport->GetMouseX(), Viewport->GetMouseY());
 	ViewInitOptions.OriginOffsetThisFrame = PlayerController->GetWorld()->OriginOffsetThisFrame;
+
+	static TConsoleVariableData<float>* CVarFarCullDist = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.FarCullingDistance"));
+	ViewInitOptions.FarCullDistance = CVarFarCullDist->GetValueOnAnyThread();
 
 	return true;
 }

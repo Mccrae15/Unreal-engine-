@@ -155,13 +155,17 @@ static void GetSceneColorFormatAndCreateFlags(ERHIFeatureLevel::Type FeatureLeve
 
 	SceneColorCreateFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource | ExtraSceneColorCreateFlags;
 	const ETextureCreateFlags sRGBFlag = (bIsMobilePlatform && IsMobileColorsRGB()) ? TexCreate_SRGB : TexCreate_None;
-	if (FeatureLevel >= ERHIFeatureLevel::SM5 && NumSamples == 1)
+	if (FeatureLevel >= ERHIFeatureLevel::SM5 && NumSamples == 1 && !IsMobileTonemapSubpassEnabled())
 	{
 		SceneColorCreateFlags |= TexCreate_UAV;
 	}
 	if (NumSamples > 1 && bMemorylessMSAA)
 	{
 		SceneColorCreateFlags |= TexCreate_Memoryless;
+	}
+	if (IsMobileTonemapSubpassEnabled())
+	{
+		SceneColorCreateFlags |= TexCreate_InputAttachmentRead;
 	}
 	SceneColorCreateFlags |= sRGBFlag;
 }

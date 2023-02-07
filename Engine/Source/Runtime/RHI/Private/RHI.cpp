@@ -2089,7 +2089,7 @@ void FRHIRenderPassInfo::Validate() const
 			//ensure(StencilStore == ERenderTargetStoreAction::EStore);
 		}
 		
-		if (SubpassHint == ESubpassHint::DepthReadSubpass)
+		if ((SubpassHint & ESubpassHint::DepthReadSubpass) != ESubpassHint::None)
 		{
 			// for depth read sub-pass
 			// 1. render pass must have depth target
@@ -2101,7 +2101,7 @@ void FRHIRenderPassInfo::Validate() const
 	{
 		ensure(DepthStencilRenderTarget.Action == EDepthStencilTargetActions::DontLoad_DontStore);
 		ensure(DepthStencilRenderTarget.ExclusiveDepthStencil == FExclusiveDepthStencil::DepthNop_StencilNop);
-		ensure(SubpassHint != ESubpassHint::DepthReadSubpass);
+		ensure((SubpassHint & ESubpassHint::DepthReadSubpass) == ESubpassHint::None);
 	}
 }
 #endif

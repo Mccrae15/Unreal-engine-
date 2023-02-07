@@ -74,3 +74,43 @@ struct FTonemapInputs
 };
 
 FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FTonemapInputs& Inputs);
+
+struct FMobileTonemapperInputs
+{
+	// [Optional] Render to the specified output. If invalid, a new texture is created and returned.
+	FScreenPassRenderTarget OverrideOutput;
+
+	// [Required] HDR scene color to tonemap.
+	FScreenPassTexture SceneColor;
+
+	// [Optional] Color grading texture used to remap colors.
+	FRHITexture* ColorGradingTexture = nullptr;
+
+	// [Required] Filtered bloom texture to composite with tonemapped scene color. This should be transparent black for no bloom.
+	FScreenPassTexture BloomOutput;
+
+	FScreenPassTexture DofOutput;
+
+	FScreenPassTexture SunShaftAndDof;
+
+	FRHIShaderResourceView* EyeAdaptationBuffer = nullptr;
+
+	// Whether to leave the final output in HDR.
+	bool bOutputInHDR = false;
+
+	bool bMetalMSAAHDRDecode = false;
+
+	bool bUseEyeAdaptation = false;
+
+	bool bSRGBAwareTarget = false;
+
+	uint32 MsaaSamples = 1;
+
+	FIntPoint TargetSize;
+
+	FRDGBufferSRVRef EyeAdaptationBufferSRV;
+
+	FEyeAdaptationParameters EyeAdaptationParameters;
+};
+
+void AddMobileTonemapperSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FMobileTonemapperInputs& Inputs);

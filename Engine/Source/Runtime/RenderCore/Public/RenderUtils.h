@@ -486,6 +486,8 @@ RENDERCORE_API bool MobileSupportsGPUScene();
 
 RENDERCORE_API bool IsMobileDeferredShadingEnabled(const FStaticShaderPlatform Platform);
 
+RENDERCORE_API bool IsMobileTonemapSubpassEnabled();
+
 RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool SupportsTextureCubeArray(ERHIFeatureLevel::Type FeatureLevel);
@@ -617,7 +619,7 @@ inline bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
 {
 	if (IsMobilePlatform(Platform))
 	{
-		return IsMobileDeferredShadingEnabled(Platform);
+		return IsMobileDeferredShadingEnabled(Platform) || (GIsEditor && IsMobileTonemapSubpassEnabled());
 	}
 	else
 	{

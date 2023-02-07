@@ -2528,6 +2528,13 @@ namespace OculusXRHMD
 			}
 			bNeedReAllocateMotionVectorTexture_RenderThread = false;
 
+#if PLATFORM_WINDOWS
+			if (!FOculusXRHMDModule::Get().PreInit())
+			{
+				return false;
+			}
+#endif
+
 			if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().Initialize7(
 				CustomPresent->GetRenderAPI(),
 				logCallback,
@@ -3250,6 +3257,19 @@ namespace OculusXRHMD
 	}
 #endif // #if !UE_BUILD_SHIPPING
 
+	FOculusXRHMD* FOculusXRHMD::GetOculusXRHMD()
+	{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+		if (GEngine && GEngine->XRSystem.IsValid())
+		{
+			if (GEngine->XRSystem->GetSystemName() == OculusXRHMD::FOculusXRHMD::OculusSystemName)
+			{
+				return static_cast<OculusXRHMD::FOculusXRHMD*>(GEngine->XRSystem.Get());
+			}
+		}
+#endif
+		return nullptr;
+	}
 
 	bool FOculusXRHMD::IsHMDActive() const
 	{
@@ -4161,6 +4181,7 @@ namespace OculusXRHMD
 		Settings->PixelDensityMin = HMDSettings->PixelDensityMin;
 		Settings->PixelDensityMax = HMDSettings->PixelDensityMax;
 		Settings->ColorSpace = HMDSettings->ColorSpace;
+		Settings->ControllerPoseAlignment = HMDSettings->ControllerPoseAlignment;
 		Settings->bLateLatching = HMDSettings->bLateLatching;
 		Settings->XrApi = HMDSettings->XrApi;
 		Settings->bSupportExperimentalFeatures = HMDSettings->bSupportExperimentalFeatures;

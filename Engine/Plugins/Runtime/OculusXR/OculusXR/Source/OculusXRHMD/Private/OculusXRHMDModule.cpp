@@ -8,12 +8,11 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/Paths.h"
 #if PLATFORM_ANDROID
-#include "Android/AndroidApplication.h"
-#include "Android/AndroidPlatformMisc.h"
+	#include "Android/AndroidApplication.h"
+	#include "Android/AndroidPlatformMisc.h"
 #endif
 #include "Interfaces/IPluginManager.h"
 #include "ShaderCore.h"
-
 
 //-------------------------------------------------------------------------------------------------
 // FOculusXRHMDModule
@@ -74,15 +73,15 @@ bool FOculusXRHMDModule::PreInit()
 	if (!bPreInitCalled)
 	{
 		bPreInit = false;
-		bPreInitCalled = true;
 
-#if PLATFORM_ANDROID
+	#if PLATFORM_ANDROID
+		bPreInitCalled = true;
 		if (!AndroidThunkCpp_IsOculusMobileApplication())
 		{
 			UE_LOG(LogHMD, Log, TEXT("App is not packaged for Oculus Mobile"));
 			return false;
 		}
-#endif
+	#endif
 
 		// Init module if app can render
 		if (FApp::CanEverRender())
@@ -104,24 +103,29 @@ bool FOculusXRHMDModule::PreInit()
 
 			// Initialize OVRPlugin
 			ovrpRenderAPIType PreinitApiType = ovrpRenderAPI_None;
-#if PLATFORM_ANDROID
-			void* Activity = (void*) FAndroidApplication::GetGameActivityThis();
+	#if PLATFORM_ANDROID
+			void* Activity = (void*)FAndroidApplication::GetGameActivityThis();
 			PreinitApiType = ovrpRenderAPI_Vulkan;
-#else
+	#else
 			void* Activity = nullptr;
-#endif
+	#endif
 
 			if (OVRP_FAILURE(PluginWrapper.PreInitialize5(Activity, PreinitApiType, ovrpPreinitializeFlags::ovrpPreinitializeFlag_None)))
 			{
 				UE_LOG(LogHMD, Log, TEXT("Failed initializing OVRPlugin %s"), TEXT(OVRP_VERSION_STR));
+#if PLATFORM_WINDOWS
+				return true;
+#else
 				return false;
+#endif
 			}
 
-#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS
+			bPreInitCalled = true;
 			const LUID* DisplayAdapterId;
-			if (OVRP_SUCCESS(PluginWrapper.GetDisplayAdapterId2((const void**) &DisplayAdapterId)) && DisplayAdapterId)
+			if (OVRP_SUCCESS(PluginWrapper.GetDisplayAdapterId2((const void**)&DisplayAdapterId)) && DisplayAdapterId)
 			{
-				SetGraphicsAdapterLuid(*(const uint64*) DisplayAdapterId);
+				SetGraphicsAdapterLuid(*(const uint64*)DisplayAdapterId);
 			}
 			else
 			{
@@ -129,7 +133,7 @@ bool FOculusXRHMDModule::PreInit()
 			}
 
 			const WCHAR* AudioInDeviceId;
-			if (OVRP_SUCCESS(PluginWrapper.GetAudioInDeviceId2((const void**) &AudioInDeviceId)) && AudioInDeviceId)
+			if (OVRP_SUCCESS(PluginWrapper.GetAudioInDeviceId2((const void**)&AudioInDeviceId)) && AudioInDeviceId)
 			{
 				GConfig->SetString(TEXT("Oculus.Settings"), TEXT("AudioInputDevice"), AudioInDeviceId, GEngineIni);
 			}
@@ -139,7 +143,7 @@ bool FOculusXRHMDModule::PreInit()
 			}
 
 			const WCHAR* AudioOutDeviceId;
-			if (OVRP_SUCCESS(PluginWrapper.GetAudioOutDeviceId2((const void**) &AudioOutDeviceId)) && AudioOutDeviceId)
+			if (OVRP_SUCCESS(PluginWrapper.GetAudioOutDeviceId2((const void**)&AudioOutDeviceId)) && AudioOutDeviceId)
 			{
 				GConfig->SetString(TEXT("Oculus.Settings"), TEXT("AudioOutputDevice"), AudioOutDeviceId, GEngineIni);
 			}
@@ -147,14 +151,14 @@ bool FOculusXRHMDModule::PreInit()
 			{
 				UE_LOG(LogHMD, Log, TEXT("Could not determine HMD audio output device"));
 			}
-#endif
+	#endif
 
 			float ModulePriority;
 			if (!GConfig->GetFloat(TEXT("HMDPluginPriority"), *GetModuleKeyName(), ModulePriority, GEngineIni))
 			{
-				// if user doesn't set priority set it for them to allow this hmd to be used if enabled 
+				// if user doesn't set priority set it for them to allow this hmd to be used if enabled
 				ModulePriority = 45.0f;
-				GConfig->SetFloat(TEXT("HMDPluginPriority"), *GetModuleKeyName(), ModulePriority , GEngineIni);
+				GConfig->SetFloat(TEXT("HMDPluginPriority"), *GetModuleKeyName(), ModulePriority, GEngineIni);
 			}
 
 			UE_LOG(LogHMD, Log, TEXT("FOculusXRHMDModule PreInit successfully"));
@@ -169,7 +173,6 @@ bool FOculusXRHMDModule::PreInit()
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
 
-
 bool FOculusXRHMDModule::IsHMDConnected()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
@@ -182,7 +185,6 @@ bool FOculusXRHMDModule::IsHMDConnected()
 	return false;
 }
 
-
 uint64 FOculusXRHMDModule::GetGraphicsAdapterLuid()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
@@ -190,16 +192,13 @@ uint64 FOculusXRHMDModule::GetGraphicsAdapterLuid()
 	{
 		int GraphicsAdapter;
 
-		if (GConfig->GetInt(TEXT("Oculus.Settings"), TEXT("GraphicsAdapter"), GraphicsAdapter, GEngineIni) &&
-			GraphicsAdapter >= 0)
+		if (GConfig->GetInt(TEXT("Oculus.Settings"), TEXT("GraphicsAdapter"), GraphicsAdapter, GEngineIni) && GraphicsAdapter >= 0)
 		{
 			TRefCountPtr<IDXGIFactory> DXGIFactory;
 			TRefCountPtr<IDXGIAdapter> DXGIAdapter;
 			DXGI_ADAPTER_DESC DXGIAdapterDesc;
 
-			if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)DXGIFactory.GetInitReference())) &&
-				SUCCEEDED(DXGIFactory->EnumAdapters(GraphicsAdapter, DXGIAdapter.GetInitReference())) &&
-				SUCCEEDED(DXGIAdapter->GetDesc(&DXGIAdapterDesc)))
+			if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)DXGIFactory.GetInitReference())) && SUCCEEDED(DXGIFactory->EnumAdapters(GraphicsAdapter, DXGIAdapter.GetInitReference())) && SUCCEEDED(DXGIAdapter->GetDesc(&DXGIAdapterDesc)))
 			{
 				FMemory::Memcpy(&GraphicsAdapterLuid, &DXGIAdapterDesc.AdapterLuid, sizeof(GraphicsAdapterLuid));
 			}
@@ -214,7 +213,6 @@ uint64 FOculusXRHMDModule::GetGraphicsAdapterLuid()
 #endif
 }
 
-
 FString FOculusXRHMDModule::GetAudioInputDevice()
 {
 	FString AudioInputDevice;
@@ -224,12 +222,11 @@ FString FOculusXRHMDModule::GetAudioInputDevice()
 	return AudioInputDevice;
 }
 
-
 FString FOculusXRHMDModule::GetAudioOutputDevice()
 {
 	FString AudioOutputDevice;
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS
 	if (bPreInit)
 	{
 		if (FApp::CanEverRender())
@@ -241,15 +238,14 @@ FString FOculusXRHMDModule::GetAudioOutputDevice()
 			}
 		}
 	}
-#else
+	#else
 	GConfig->GetString(TEXT("Oculus.Settings"), TEXT("AudioOutputDevice"), AudioOutputDevice, GEngineIni);
-#endif
+	#endif
 #endif
 	return AudioOutputDevice;
 }
 
-
-TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOculusXRHMDModule::CreateTrackingSystem()
+TSharedPtr<class IXRTrackingSystem, ESPMode::ThreadSafe> FOculusXRHMDModule::CreateTrackingSystem()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	if (PreInit())
@@ -267,8 +263,7 @@ TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOculusXRHMDModule::C
 	return nullptr;
 }
 
-
-TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe >  FOculusXRHMDModule::GetVulkanExtensions()
+TSharedPtr<IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe> FOculusXRHMDModule::GetVulkanExtensions()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	if (PreInit())
@@ -291,17 +286,17 @@ FString FOculusXRHMDModule::GetDeviceSystemName()
 	{
 		switch (SystemHeadset)
 		{
-		case ovrpSystemHeadset_Oculus_Quest:
-			return FString("Oculus Quest");
+			case ovrpSystemHeadset_Oculus_Quest:
+				return FString("Oculus Quest");
 
-		case ovrpSystemHeadset_Oculus_Quest_2:
-		default:
-			return FString("Oculus Quest2");
+			case ovrpSystemHeadset_Oculus_Quest_2:
+			default:
+				return FString("Oculus Quest2");
 
-#ifdef WITH_OCULUS_BRANCH
-		case ovrpSystemHeadset_Meta_Quest_Pro:
-			return FString("Meta Quest Pro");
-#endif // WITH_OCULUS_BRANCH
+	#ifdef WITH_OCULUS_BRANCH
+			case ovrpSystemHeadset_Meta_Quest_Pro:
+				return FString("Meta Quest Pro");
+	#endif // WITH_OCULUS_BRANCH
 		}
 	}
 	return FString();
@@ -319,13 +314,12 @@ bool FOculusXRHMDModule::IsStandaloneStereoOnlyDevice()
 #endif
 }
 
-
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 void* FOculusXRHMDModule::GetOVRPluginHandle()
 {
 	void* OVRPluginHandle = nullptr;
 
-#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS
 	FString XrApi;
 	if (!GConfig->GetString(TEXT("/Script/OculusXRHMD.OculusXRHMDRuntimeSettings"), TEXT("XrApi"), XrApi, GEngineIni) || XrApi.Equals(FString("OVRPluginOpenXR")))
 	{
@@ -334,13 +328,12 @@ void* FOculusXRHMDModule::GetOVRPluginHandle()
 		OVRPluginHandle = FPlatformProcess::GetDllHandle(*(BinariesPath / "OpenXR/OVRPlugin.dll"));
 		FPlatformProcess::PopDllDirectory(*BinariesPath);
 	}
-#elif PLATFORM_ANDROID
+	#elif PLATFORM_ANDROID
 	OVRPluginHandle = FPlatformProcess::GetDllHandle(TEXT("libOVRPlugin.so"));
-#endif // PLATFORM_ANDROID
+	#endif // PLATFORM_ANDROID
 
 	return OVRPluginHandle;
 }
-
 
 bool FOculusXRHMDModule::PoseToOrientationAndPosition(const FQuat& InOrientation, const FVector& InPosition, FQuat& OutOrientation, FVector& OutPosition) const
 {
@@ -366,12 +359,11 @@ bool FOculusXRHMDModule::PoseToOrientationAndPosition(const FQuat& InOrientation
 	return false;
 }
 
-
 void FOculusXRHMDModule::SetGraphicsAdapterLuid(uint64 InLuid)
 {
 	GraphicsAdapterLuid = InLuid;
 
-#if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
+	#if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
 	TRefCountPtr<IDXGIFactory> DXGIFactory;
 
 	if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)DXGIFactory.GetInitReference())))
@@ -381,8 +373,7 @@ void FOculusXRHMDModule::SetGraphicsAdapterLuid(uint64 InLuid)
 			TRefCountPtr<IDXGIAdapter> DXGIAdapter;
 			DXGI_ADAPTER_DESC DXGIAdapterDesc;
 
-			if (FAILED(DXGIFactory->EnumAdapters(adapterIndex, DXGIAdapter.GetInitReference())) ||
-				FAILED(DXGIAdapter->GetDesc(&DXGIAdapterDesc)))
+			if (FAILED(DXGIFactory->EnumAdapters(adapterIndex, DXGIAdapter.GetInitReference())) || FAILED(DXGIAdapter->GetDesc(&DXGIAdapterDesc)))
 			{
 				break;
 			}
@@ -395,7 +386,7 @@ void FOculusXRHMDModule::SetGraphicsAdapterLuid(uint64 InLuid)
 			}
 		}
 	}
-#endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
+	#endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
 }
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 

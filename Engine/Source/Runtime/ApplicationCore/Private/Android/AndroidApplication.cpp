@@ -25,6 +25,7 @@ FAndroidApplication::FAndroidApplication()
 	: GenericApplication(MakeShareable(new FAndroidCursor()))
 	, InputInterface( FAndroidInputInterface::Create( MessageHandler, Cursor ) )
 	, bHasLoadedInputPlugins(false)
+	, bDisableOrientationPolling(IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Android.DisableOrientationPolling")))
 {
 	_application = this;
 }
@@ -33,6 +34,7 @@ FAndroidApplication::FAndroidApplication(TSharedPtr<class FAndroidInputInterface
 	: GenericApplication((InInputInterface.IsValid() && InInputInterface->GetCursor()) ? InInputInterface->GetCursor() : MakeShareable(new FAndroidCursor()))
 	, InputInterface(InInputInterface)
 	, bHasLoadedInputPlugins(false)
+	, bDisableOrientationPolling(IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Android.DisableOrientationPolling")))
 {
 	_application = this;
 }
@@ -93,8 +95,11 @@ void FAndroidApplication::PollGameDeviceState( const float TimeDelta )
 
 		bWindowSizeChanged = false;
 	}
-    
-    HandleDeviceOrientation();
+
+	if (!bDisableOrientationPolling)
+	{
+		HandleDeviceOrientation();
+	}
 }
 
 void FAndroidApplication::HandleDeviceOrientation()

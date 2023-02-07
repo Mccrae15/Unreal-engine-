@@ -25,7 +25,8 @@ FSettings::FSettings() :
 	, bDynamicFoveatedRendering(true)
 	, bSupportEyeTrackedFoveatedRendering(false)
 	, XrApi(EOculusXRXrApi::OVRPluginOpenXR)
-	, ColorSpace(EOculusXRColorSpace::Rift_CV1)
+	, ColorSpace(EOculusXRColorSpace::P3)
+	, ControllerPoseAlignment(EOculusXRControllerPoseAlignment::Default)
 	, HandTrackingSupport(EOculusXRHandTrackingSupport::ControllersOnly)
 	, HandTrackingFrequency(EOculusXRHandTrackingFrequency::LOW)
 	, ColorScale(ovrpVector4f{1,1,1,1})
@@ -56,6 +57,9 @@ FSettings::FSettings() :
 	Flags.bRequiresSystemKeyboard = false;
 	Flags.bInsightPassthroughEnabled = false;
 	Flags.bAnchorSupportEnabled = false;
+	Flags.bBodyTrackingEnabled = false;
+	Flags.bEyeTrackingEnabled = false;
+	Flags.bFaceTrackingEnabled = false;
 	EyeRenderViewport[0] = EyeRenderViewport[1] = FIntRect(0, 0, 0, 0);
 
 	RenderTargetSize = FIntPoint(0, 0);

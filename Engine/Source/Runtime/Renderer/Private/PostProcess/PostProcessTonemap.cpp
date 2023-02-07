@@ -67,7 +67,7 @@ namespace TonemapperPermutation
 // Shared permutation dimensions between deferred and mobile renderer.
 class FTonemapperBloomDim          : SHADER_PERMUTATION_BOOL("USE_BLOOM");
 class FTonemapperGammaOnlyDim      : SHADER_PERMUTATION_BOOL("USE_GAMMA_ONLY");
-class FTonemapperLocalExposureDim : SHADER_PERMUTATION_BOOL("USE_LOCAL_EXPOSURE");
+class FTonemapperLocalExposureDim  : SHADER_PERMUTATION_BOOL("USE_LOCAL_EXPOSURE");
 class FTonemapperVignetteDim       : SHADER_PERMUTATION_BOOL("USE_VIGNETTE");
 class FTonemapperSharpenDim        : SHADER_PERMUTATION_BOOL("USE_SHARPEN");
 class FTonemapperFilmGrainDim      : SHADER_PERMUTATION_BOOL("USE_FILM_GRAIN");
@@ -899,3 +899,183 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	return MoveTemp(Output);
 }
 
+class FMobileTonemapSubpassPS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FMobileTonemapSubpassPS);
+	SHADER_USE_PARAMETER_STRUCT(FMobileTonemapSubpassPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER(FVector4f, ColorScale0)
+		SHADER_PARAMETER(FVector4f, ColorScale1)
+		SHADER_PARAMETER(FVector4f, TonemapperParams)
+		SHADER_PARAMETER(FVector4f, OverlayColor)
+		SHADER_PARAMETER_EX(FVector4f, ColorMatrixR_ColorCurveCd1, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorMatrixG_ColorCurveCd3Cm3, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorMatrixB_ColorCurveCm2, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorCurve_Cm0Cd0_Cd2_Ch0Cm1_Ch3, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorCurve_Ch1_Ch2, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorShadow_Luma, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorShadow_Tint1, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_EX(FVector4f, ColorShadow_Tint2, EShaderPrecisionModifier::Half)
+		SHADER_PARAMETER_TEXTURE(Texture2D, ColorGradingLUT)
+		SHADER_PARAMETER_SAMPLER(SamplerState, ColorGradingLUTSampler)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+
+	// Mobile renderer specific permutation dimensions.
+	class FTonemapperSubpassMsaaDim : SHADER_PERMUTATION_SPARSE_INT("SUBPASS_MSAA_SAMPLES", 1, 2, 4, 8);
+	class FTonemapperColorGradingDim : SHADER_PERMUTATION_BOOL("USE_COLOR_GRADING");
+	class FTonemapperColorMatrixDim : SHADER_PERMUTATION_BOOL("USE_COLOR_MATRIX");
+	class FTonemapperShadowTintDim : SHADER_PERMUTATION_BOOL("USE_SHADOW_TINT");
+	class FTonemapperContrastDim : SHADER_PERMUTATION_BOOL("USE_CONTRAST");
+	class FTonemapperVignetteDim : SHADER_PERMUTATION_BOOL("USE_VIGNETTE");
+	class FTonemapperEditorDim : SHADER_PERMUTATION_BOOL("MOBILE_TONEMAP_SUBPASS_EDITOR");
+
+	using FPermutationDomain = TShaderPermutationDomain<
+		FTonemapperSubpassMsaaDim,
+		FTonemapperColorGradingDim,
+		FTonemapperColorMatrixDim,
+		FTonemapperShadowTintDim,
+		FTonemapperContrastDim,
+		FTonemapperVignetteDim,
+		FTonemapperEditorDim>;
+
+	static FPermutationDomain BuildPermutationVector(const FViewInfo& View, uint32 MsaaSamples, bool bColorLUT)
+	{
+		FMobileTonemapSubpassPS::FPermutationDomain SubpassPermutationVector;
+
+		SubpassPermutationVector.Set<FTonemapperSubpassMsaaDim>(MsaaSamples);
+		SubpassPermutationVector.Set<FTonemapperColorGradingDim>(bColorLUT);
+
+		const FFinalPostProcessSettings& Settings = View.FinalPostProcessSettings;
+		SubpassPermutationVector.Set<FTonemapperVignetteDim>(Settings.VignetteIntensity > 0.0f);
+
+		SubpassPermutationVector.Set<FTonemapperEditorDim>(GIsEditor);
+
+		return SubpassPermutationVector;
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return true;
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		const int UseVolumeLut = PipelineVolumeTextureLUTSupportGuaranteedAtRuntime(Parameters.Platform) ? 1 : 0;
+		OutEnvironment.SetDefine(TEXT("USE_VOLUME_LUT"), UseVolumeLut);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FMobileTonemapSubpassPS, "/Engine/Private/PostProcessTonemapSubpass.usf", "MainPS_MobileSubpass", SF_Pixel);
+
+void AddMobileTonemapperSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FMobileTonemapperInputs& Inputs)
+{
+	// Part of scene rendering pass
+	check(RHICmdList.IsInsideRenderPass());
+
+	SCOPED_DRAW_EVENT(RHICmdList, MobileTonemapSubpass);
+	
+	const FIntPoint TargetSize = Inputs.TargetSize;
+
+	const FIntPoint& BufferSize = TargetSize;
+	const FIntPoint DofBlurSize = Inputs.DofOutput.IsValid() ? Inputs.DofOutput.Texture->Desc.Extent : FIntPoint(1);
+
+	const FPostProcessSettings& Settings = View.FinalPostProcessSettings;
+	const FSceneViewFamily& ViewFamily = *(View.Family);
+
+	const bool bIsEyeAdaptationResource = false;// (View.GetFeatureLevel() >= ERHIFeatureLevel::SM5) ? Inputs.EyeAdaptationTexture != nullptr : Inputs.EyeAdaptationBuffer != nullptr;
+	const bool bEyeAdaptation = ViewFamily.EngineShowFlags.EyeAdaptation && bIsEyeAdaptationResource;
+
+	FVector3f GrainRandomFullValue;
+	{
+		uint8 FrameIndexMod8 = 0;
+		if (View.State)
+		{
+			FrameIndexMod8 = View.ViewState->GetFrameIndex(8);
+		}
+		GrainRandomFromFrame(&GrainRandomFullValue, FrameIndexMod8);
+	}
+
+	FIntPoint ViewportOffset = FIntPoint(0.0, 0.0);
+	FIntPoint ViewportExtent = TargetSize;
+
+	FVector4 ScreenPosToScenePixelValue(
+		ViewportExtent.X * 0.5f,
+		-ViewportExtent.Y * 0.5f,
+		ViewportExtent.X * 0.5f + ViewportOffset.X,
+		ViewportExtent.Y * 0.5f + ViewportOffset.Y);
+
+	float Sharpen = FMath::Clamp(CVarTonemapperSharpen.GetValueOnRenderThread(), 0.0f, 10.0f);
+
+	FVector InvDisplayGammaValue;
+	InvDisplayGammaValue.X = 1.0f / ViewFamily.RenderTarget->GetDisplayGamma();
+	InvDisplayGammaValue.Y = 2.2f / ViewFamily.RenderTarget->GetDisplayGamma();
+	InvDisplayGammaValue.Z = 1.0; // Unused on mobile.
+
+	FRHISamplerState* BilinearClampSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	
+	FTonemapVS::FPermutationDomain VertexPermutationVector;
+	VertexPermutationVector.Set<TonemapperPermutation::FTonemapperEyeAdaptationDim>(bEyeAdaptation);
+	TShaderMapRef<FTonemapVS> VertexShader(View.ShaderMap, VertexPermutationVector);
+	
+	FTonemapParameters VSShaderParameters;
+
+	VSShaderParameters.View = View.ViewUniformBuffer;
+	VSShaderParameters.DefaultEyeExposure = Inputs.bUseEyeAdaptation ? 0.0f : GetEyeAdaptationFixedExposure(View);
+	VSShaderParameters.EyeAdaptationBuffer = Inputs.EyeAdaptationBufferSRV;
+	VSShaderParameters.EyeAdaptation = Inputs.EyeAdaptationParameters;
+	VSShaderParameters.LensPrincipalPointOffsetScale = View.LensPrincipalPointOffsetScale;
+	VSShaderParameters.ColorTexture = Inputs.SceneColor.Texture;
+	VSShaderParameters.LumBilateralGridSampler = BilinearClampSampler;
+	VSShaderParameters.BlurredLogLumSampler = BilinearClampSampler;
+	VSShaderParameters.ColorSampler = BilinearClampSampler;
+	VSShaderParameters.ColorGradingLUTSampler = BilinearClampSampler;
+	VSShaderParameters.bOutputInHDR = ViewFamily.bIsHDR;
+	VSShaderParameters.LensPrincipalPointOffsetScale = View.LensPrincipalPointOffsetScale;
+
+	auto PixelShaderPermutationVector = FMobileTonemapSubpassPS::BuildPermutationVector(View, Inputs.MsaaSamples, Inputs.ColorGradingTexture != nullptr);
+
+	TShaderMapRef<FMobileTonemapSubpassPS> PixelShader(View.ShaderMap, PixelShaderPermutationVector);
+
+	FMobileTonemapSubpassPS::FParameters PSShaderParameters;
+
+	PSShaderParameters.View = View.ViewUniformBuffer;
+	PSShaderParameters.ColorScale0 = FVector4f(Settings.SceneColorTint.R, Settings.SceneColorTint.G, Settings.SceneColorTint.B, 0);
+	PSShaderParameters.ColorScale1 = FVector4f(Settings.BloomIntensity, Settings.BloomIntensity, Settings.BloomIntensity, 0);
+	PSShaderParameters.TonemapperParams = FVector4f(Settings.VignetteIntensity, Sharpen, 0.0f, 0.0f);
+	PSShaderParameters.OverlayColor = View.OverlayColor;
+	PSShaderParameters.ColorGradingLUT = Inputs.ColorGradingTexture;
+	PSShaderParameters.ColorGradingLUTSampler = BilinearClampSampler;
+
+	FGraphicsPipelineStateInitializer GraphicsPSOInit;
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+
+	GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+
+	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+	
+	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSShaderParameters);
+	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSShaderParameters);
+	
+	RHICmdList.SetViewport(0, 0, 0.0f, TargetSize.X, TargetSize.Y, 1.0f);
+	
+	DrawRectangle(
+		RHICmdList,
+		0, 0,
+		TargetSize.X, TargetSize.Y,
+		0, 0,
+		TargetSize.X, TargetSize.Y,
+		TargetSize,
+		TargetSize,
+		VertexShader,
+		EDRF_UseTriangleOptimization);
+}

@@ -20,6 +20,13 @@ namespace UE
 		static FAutoConsoleVariableRef CVarShouldOnlyTriggerLastActionInChord(TEXT("EnhancedInput.OnlyTriggerLastActionInChord"),
 			ShouldOnlyTriggerLastActionInChord,
 			TEXT("Should only the last action in a ChordedAction trigger be fired? If this is disabled, then the dependant chords will be fired as well"));
+		static int32 ShouldReplaceAxisFKeyWithActionFKey = 1;
+		static TAutoConsoleVariable<int32> CVarReplaceAxisFKeyWithActionFKey(
+			TEXT("EnhancedInput.ReplaceAxisFKeyWithActionFKey"),
+			ShouldReplaceAxisFKeyWithActionFKey,
+			TEXT("Should an axis FKey bound to a boolean action be replaced by its corresponding action FKey if there is one?\n"),
+			ECVF_Scalability | ECVF_RenderThreadSafe);
+
 	}
 }
 
@@ -616,7 +623,25 @@ FInputActionValue UEnhancedPlayerInput::GetActionValue(TObjectPtr<const UInputAc
 int32 UEnhancedPlayerInput::AddMapping(const FEnhancedActionKeyMapping& Mapping)
 {
 	int32 MappingIndex = EnhancedActionMappings.AddUnique(Mapping);
-	++EnhancedKeyBinds.FindOrAdd(Mapping.Key);
+	
+	FKey Key = Mapping.Key;
+	if (UE::Input::CVarReplaceAxisFKeyWithActionFKey.GetValueOnAnyThread())
+	{
+		static TMap<FKey, FKey> LookUpTable ={ 
+			{FKey("OculusTouch_Left_Trigger_Axis"), FKey("OculusTouch_Left_Trigger")}
+			, {FKey("OculusTouch_Right_Trigger_Axis"), FKey("OculusTouch_Right_Trigger")}
+			, {FKey("OculusTouch_Right_Trigger_Axis"), FKey("OculusTouch_Right_Trigger")}
+			, {FKey("OculusTouch_Left_Grip_Axis"), FKey("OculusTouch_Left_Grip_Click")}
+			, {FKey("OculusTouch_Right_Grip_Axis"), FKey("OculusTouch_Right_Grip_Click")}
+		};
+		if (Mapping.Action->ValueType == EInputActionValueType::Boolean &&
+			LookUpTable.Contains(Mapping.Key))
+		{
+			Key = LookUpTable[Mapping.Key];
+			EnhancedActionMappings[MappingIndex].Key = Key;
+		}
+	}
+	++EnhancedKeyBinds.FindOrAdd(Key);
 	bKeyMapsBuilt = false;
 
 	return MappingIndex;

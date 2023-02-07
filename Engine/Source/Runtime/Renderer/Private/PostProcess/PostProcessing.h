@@ -70,6 +70,17 @@ struct FMobilePostProcessingInputs
 	}
 };
 
+struct FMobilePostProcessingSubpassInputs
+{
+	FRHITexture* ColorGradingTexture = nullptr;	// Optional parameter for subpass color grading LUT
+	FIntPoint TargetSize;
+
+	void Validate() const
+	{
+
+	}
+};
+
 void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, FScene* Scene, const FViewInfo& View, const FMobilePostProcessingInputs& Inputs, FInstanceCullingManager& InstanceCullingManager);
 
 void AddBasicPostProcessPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View);

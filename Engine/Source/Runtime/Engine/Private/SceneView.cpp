@@ -652,6 +652,8 @@ static void SetupViewFrustum(FSceneView& View)
 {
 	if (View.SceneViewInitOptions.OverrideFarClippingPlaneDistance > 0.0f)
 	{
+		View.FarCullDistance = View.SceneViewInitOptions.OverrideFarClippingPlaneDistance;
+
 		const FPlane FarPlane(View.ViewMatrices.GetViewOrigin() + View.GetViewDirection() * View.SceneViewInitOptions.OverrideFarClippingPlaneDistance, View.GetViewDirection());
 		// Derive the view frustum from the view projection matrix, overriding the far plane
 		GetViewFrustumBounds(View.ViewFrustum, View.ViewMatrices.GetViewProjectionMatrix(), FarPlane, true, false);
@@ -779,6 +781,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, bForcePathTracerReset(false)
 	, GlobalClippingPlane(FPlane(0, 0, 0, 0))
 	, LensPrincipalPointOffsetScale(0.0f, 0.0f, 1.0f, 1.0f)
+	, FarCullDistance(InitOptions.FarCullDistance)
 #if WITH_EDITOR
 	, OverrideLODViewOrigin(InitOptions.OverrideLODViewOrigin)
 	, bAllowTranslucentPrimitivesInHitProxy( true )

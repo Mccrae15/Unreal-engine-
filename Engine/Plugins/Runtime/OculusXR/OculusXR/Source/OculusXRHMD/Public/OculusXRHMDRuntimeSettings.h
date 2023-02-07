@@ -42,6 +42,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = General)
 	EOculusXRColorSpace	ColorSpace;
 
+	/** Whether the controller hand poses align to the Meta XR pose definitions or the OpenXR pose definitions */
+	UPROPERTY(config, EditAnywhere, Category = General, meta = (EditCondition = "XrApi != EOculusXRXrApi::NativeOpenXR"))
+	EOculusXRControllerPoseAlignment ControllerPoseAlignment;
+
 	/** Whether Dash is supported by the app, which will keep the app in foreground when the User presses the oculus button (needs the app to handle input focus loss!) */
 	UPROPERTY(config, EditAnywhere, Category = PC)
 	bool bSupportsDash;
@@ -128,6 +132,18 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Support"))
 	bool bAnchorSupportEnabled;
 
+	/** Whether body tracking functionality can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Body Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
+	bool bBodyTrackingEnabled;
+
+	/** Whether eye tracking functionality can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Eye Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
+	bool bEyeTrackingEnabled;
+
+	/** Whether face tracking functionality can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Face Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
+	bool bFaceTrackingEnabled;
+
 	/** On supported Oculus mobile platforms, copy compiled .so directly to device. Allows updating compiled code without rebuilding and installing an APK. */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Deploy compiled .so directly to device"))
 	bool bDeploySoToDevice;
@@ -143,5 +159,5 @@ private:
 #endif // WITH_EDITOR
 
 	void LoadFromIni();
-
+	void RenameProperties();
 };

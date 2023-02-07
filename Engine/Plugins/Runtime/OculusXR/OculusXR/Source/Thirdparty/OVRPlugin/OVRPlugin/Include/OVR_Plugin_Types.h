@@ -28,7 +28,7 @@
 #endif
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 79
+#define OVRP_MINOR_VERSION 81
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -138,6 +138,8 @@ typedef enum {
   ovrpFailure_InsufficientSize = -1007,
   ovrpFailure_DataIsInvalid = -1008,
   ovrpFailure_DeprecatedOperation = -1009,
+  ovrpFailure_ErrorLimitReached = -1010,
+  ovrpFailure_ErrorInitializationFailed = -1011,
 
   /// Space error cases
   ovrpFailure_SpaceCloudStorageDisabled = -2000,
@@ -166,6 +168,7 @@ typedef enum {
   ovrpPreinitializeFlag_UseUnityOpenXR = (1 << 0),
   /// Unreal native OpenXR Plugin is being used
   ovrpPreinitializeFlag_UseUnrealOpenXR = (1 << 1),
+
 
 
 
@@ -1256,6 +1259,8 @@ typedef enum {
   ovrpLayerSubmitFlag_BicubicFiltering = (1 << 15),
   // Higher quality but more costly version of ovrpLayerSubmitFlag_Sharpen
   ovrpLayerSubmitFlag_QualitySharpen = (1 << 16),
+  // Layer submit flag version of secure content
+  ovrpLayerSubmitFlag_SecureContent = (1 << 17),
 } ovrpLayerSubmitFlags;
 
 /// Factors used for source and dest alpha to make up the blend function.
@@ -1806,6 +1811,15 @@ typedef struct ovrpEyeGazesState_ {
 
 
 
+
+
+
+
+
+
+
+
+
 //-----------------------------------------------------------------
 // Color Space Management
 //-----------------------------------------------------------------
@@ -1919,6 +1933,18 @@ typedef enum ovrpEventType_ {
   ovrpEventType_SpaceShareResult = 56,
   ovrpEventType_SpaceListSaveResult = 57,
   ovrpEventType_SceneCaptureComplete = 100,
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2211,34 +2237,6 @@ typedef enum {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 //-----------------------------------------------------------------
 // Insight Passthrough
 //-----------------------------------------------------------------
@@ -2248,6 +2246,9 @@ typedef enum {
   ovrpInsightPassthroughColorMapType_MonoToMono = 2,
   ovrpInsightPassthroughColorMapType_HandsContrast = 3,
   ovrpInsightPassthroughColorMapType_BrightnessContrastSaturation = 4,
+
+
+
   ovrpInsightPassthroughColorMapType_EnumSize = 0x7fffffff
 } ovrpInsightPassthroughColorMapType;
 
@@ -2609,6 +2610,321 @@ typedef enum {
 
   ovrpInteractionProfile_EnumSize = 0x7fffffff
 } ovrpInteractionProfile;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifdef __clang__
 #pragma clang diagnostic pop

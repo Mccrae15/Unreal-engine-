@@ -184,6 +184,9 @@ struct FSceneViewInitOptions : public FSceneViewProjectionData
 	/** Whether this view is being used to render a planar reflection. */
 	bool bIsPlanarReflection;
 
+	/** Whether to apply a global far culling distance. */
+	float FarCullDistance;
+
 #if WITH_EDITOR
 	/** default to 0'th view index, which is a bitfield of 1 */
 	uint64 EditorViewBitflag;
@@ -223,6 +226,7 @@ struct FSceneViewInitOptions : public FSceneViewProjectionData
 		, bSceneCaptureUsesRayTracing(false)
 		, bIsReflectionCapture(false)
 		, bIsPlanarReflection(false)
+		, FarCullDistance(0.0f)
 #if WITH_EDITOR
 		, EditorViewBitflag(1)
 		, OverrideLODViewOrigin(ForceInitToZero)
@@ -1212,6 +1216,9 @@ public:
 	FPlane NearClippingPlane;
 
 	float NearClippingDistance;
+
+	/** Handle the far cull override directly, the ViewFrustum does not apply a far plane */
+	float FarCullDistance;
 
 	/** Monoscopic culling frustum, same as ViewFrustum in case of non-stereo */
 	FConvexVolume CullingFrustum;

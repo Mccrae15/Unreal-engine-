@@ -230,7 +230,7 @@ void FMetalRHICommandContext::ResolveTexture(UE::RHICore::FResolveTextureInfo In
 void FMetalRHICommandContext::RHINextSubpass()
 {
 #if PLATFORM_MAC
-	if (RenderPassInfo.SubpassHint == ESubpassHint::DepthReadSubpass)
+	if ((RenderPassInfo.SubpassHint & ESubpassHint::DepthReadSubpass) != ESubpassHint::None)
 	{
 		FMetalRenderPass& RP = Context->GetCurrentRenderPass();
 		if (RP.GetCurrentCommandEncoder().IsRenderCommandEncoderActive())

@@ -39,11 +39,11 @@ void FetchGBuffer(in float2 UV, out half4 GBufferA, out half4 GBufferB, out half
 	GBufferD = 0;
 
 #if VULKAN_PROFILE
-	GBufferA = VulkanSubpassFetch1(); 
-	GBufferB = VulkanSubpassFetch2(); 
-	GBufferC = VulkanSubpassFetch3();
+	GBufferA = VulkanSubpassFetch1(0); 
+	GBufferB = VulkanSubpassFetch2(0); 
+	GBufferC = VulkanSubpassFetch3(0);
 	#if MOBILE_EXTENDED_GBUFFER
-		GBufferD = VulkanSubpassFetch4();
+		GBufferD = VulkanSubpassFetch4(0);
 	#endif
 	SceneDepth = ConvertFromDeviceZ(VulkanSubpassDepthFetch());
 #elif METAL_PROFILE

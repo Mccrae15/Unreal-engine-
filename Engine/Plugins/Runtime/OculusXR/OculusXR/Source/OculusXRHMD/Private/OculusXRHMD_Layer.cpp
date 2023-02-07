@@ -879,7 +879,7 @@ void FLayer::UpdatePassthroughStyle_RenderThread(const FEdgeStyleParameters& Edg
 
 	if(EdgeStyleParameters.bEnableColorMap)
 	{
-		Style.TextureColorMapType = (ovrpInsightPassthroughColorMapType)EdgeStyleParameters.ColorMapType;
+		Style.TextureColorMapType = ToOVRPColorMapType(EdgeStyleParameters.ColorMapType);
 		Style.TextureColorMapData = (uint8*)EdgeStyleParameters.ColorMapData.GetData();
 		Style.TextureColorMapDataSize = EdgeStyleParameters.ColorMapData.Num();
 	} 

@@ -1678,14 +1678,38 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 	OutGfxEntry->UseAlphaToCoverage = PSOInitializer.NumSamples > 1 && BlendState->Initializer.bUseAlphaToCoverage ? 1 : 0;
 
 	OutGfxEntry->RasterizationSamples = PSOInitializer.NumSamples;
+
+	// Rasterization Samples will be 1 for Tonemap Subpass as it applies MSAA in shader.
+	// Tonemap will be last subpass. Index depends on if DepthReadSubpass is also enabled.
+	if ((PSOInitializer.SubpassIndex == 1 && PSOInitializer.SubpassHint == ESubpassHint::MobileTonemapSubpass) ||
+		(PSOInitializer.SubpassIndex == 2 && (PSOInitializer.SubpassHint == (ESubpassHint::MobileTonemapSubpass | ESubpassHint::DepthReadSubpass))))
+	{
+		OutGfxEntry->RasterizationSamples = 1;
+	}
+
 	OutGfxEntry->Topology = (uint32)UEToVulkanTopologyType(Device, PSOInitializer.PrimitiveType, OutGfxEntry->ControlPoints);
 	uint32 NumRenderTargets = PSOInitializer.ComputeNumValidRenderTargets();
 	
-	if (PSOInitializer.SubpassHint == ESubpassHint::DeferredShadingSubpass && PSOInitializer.SubpassIndex >= 2)
+	if (((PSOInitializer.SubpassHint & ESubpassHint::DeferredShadingSubpass) != ESubpassHint::None) && PSOInitializer.SubpassIndex >= 2)
 	{
-		// GBuffer attachements are not used as output in a shading sub-pass
+		// GBuffer attachments are not used as output in a shading sub-pass
 		// Only SceneColor is used as a color attachment
 		NumRenderTargets = 1;
+	}
+
+	if ((PSOInitializer.SubpassHint & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None)
+	{
+		if (GIsEditor && PSOInitializer.SubpassIndex >= 2)
+		{
+			// Only SceneColor is used as a color attachment
+			NumRenderTargets = 1;
+		}
+
+		// tonemap subpass non-msaa uses an additional color attachment that should not be used by main and depth subpasses
+		if (PSOInitializer.NumSamples == 1)
+		{
+			NumRenderTargets = 1; // This applies to base and depth passes as well. One render target for base and depth, other for tonemap.
+		}
 	}
 
 	OutGfxEntry->ColorAttachmentStates.AddUninitialized(NumRenderTargets);

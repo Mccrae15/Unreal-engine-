@@ -28,10 +28,14 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bFocusAware = DefaultSettings.Flags.bFocusAware;
 	XrApi = DefaultSettings.XrApi;
 	ColorSpace = DefaultSettings.ColorSpace;
+	ControllerPoseAlignment = DefaultSettings.ControllerPoseAlignment;
 	bRequiresSystemKeyboard = DefaultSettings.Flags.bRequiresSystemKeyboard;
 	HandTrackingSupport = DefaultSettings.HandTrackingSupport;
 	HandTrackingFrequency = DefaultSettings.HandTrackingFrequency;
 	bInsightPassthroughEnabled = DefaultSettings.Flags.bInsightPassthroughEnabled;
+	bBodyTrackingEnabled = DefaultSettings.Flags.bBodyTrackingEnabled;
+	bEyeTrackingEnabled = DefaultSettings.Flags.bEyeTrackingEnabled;
+	bFaceTrackingEnabled = DefaultSettings.Flags.bFaceTrackingEnabled;
 	bSupportExperimentalFeatures = DefaultSettings.bSupportExperimentalFeatures;
 	bAnchorSupportEnabled = DefaultSettings.Flags.bAnchorSupportEnabled;
 
@@ -51,16 +55,21 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bFocusAware = true;
 	XrApi = EOculusXRXrApi::OVRPluginOpenXR;
 	bLateLatching = false;
-	ColorSpace = EOculusXRColorSpace::Rift_CV1;
+	ColorSpace = EOculusXRColorSpace::P3;
+	ControllerPoseAlignment = EOculusXRControllerPoseAlignment::Default;
 	bRequiresSystemKeyboard = false;
 	HandTrackingSupport = EOculusXRHandTrackingSupport::ControllersOnly;
 	HandTrackingFrequency = EOculusXRHandTrackingFrequency::Low;
 	bInsightPassthroughEnabled = false;
 	bSupportExperimentalFeatures = false;
+	bBodyTrackingEnabled = false;
+	bEyeTrackingEnabled = false;
+	bFaceTrackingEnabled = false;
 	bAnchorSupportEnabled = false;
 #endif
 
 	LoadFromIni();
+	RenameProperties();
 }
 
 #if WITH_EDITOR
@@ -158,5 +167,54 @@ void UOculusXRHMDRuntimeSettings::LoadFromIni()
 	if (GConfig->GetBool(OculusSettings, TEXT("bCompositeDepth"), v, GEngineIni))
 	{
 		bCompositesDepth = v;
+	}
+}
+
+/** This essentially acts like redirects for plugin settings saved in the engine config.
+	Anything added here should check for the current setting in the config so that if the dev changes the setting manually, we don't overwrite it with the old setting.
+	Note: Do not use UpdateSinglePropertyInConfigFile() here, since that uses a temp config to save the single property,
+	it'll get overwritten when GConfig->RemoveKey() marks the main config as dirty and it gets saved again **/
+void UOculusXRHMDRuntimeSettings::RenameProperties()
+{
+	const TCHAR* OculusSettings = TEXT("/Script/OculusXRHMD.OculusXRHMDRuntimeSettings");
+	bool v = false;
+	FString str;
+
+	// FFRLevel was renamed to FoveatedRenderingLevel
+	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingLevel), str, GetDefaultConfigFilename()) &&
+		GConfig->GetString(OculusSettings, TEXT("FFRLevel"), str, GetDefaultConfigFilename()))
+	{
+		if (str.Equals(TEXT("FFR_Off")))
+		{
+			FoveatedRenderingLevel = EOculusXRFoveatedRenderingLevel::Off;
+		}
+		else if (str.Equals(TEXT("FFR_Low")))
+		{
+			FoveatedRenderingLevel = EOculusXRFoveatedRenderingLevel::Low;
+		}
+		else if (str.Equals(TEXT("FFR_Medium")))
+		{
+			FoveatedRenderingLevel = EOculusXRFoveatedRenderingLevel::Medium;
+		}
+		else if (str.Equals(TEXT("FFR_High")))
+		{
+			FoveatedRenderingLevel = EOculusXRFoveatedRenderingLevel::High;
+		}
+		else if (str.Equals(TEXT("FFR_HighTop")))
+		{
+			FoveatedRenderingLevel = EOculusXRFoveatedRenderingLevel::HighTop;
+		}
+		// Use UEnum::GetDisplayValueAsText().ToString() here because UEnum::GetValueAsString() includes the type name as well
+		GConfig->SetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingLevel), *UEnum::GetDisplayValueAsText(FoveatedRenderingLevel).ToString(), GetDefaultConfigFilename());
+		GConfig->RemoveKey(OculusSettings, TEXT("FFRLevel"), GetDefaultConfigFilename());
+	}
+
+	// FFRDynamic was renamed to bDynamicFoveatedRendering
+	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, bDynamicFoveatedRendering), str, GetDefaultConfigFilename()) &&
+		GConfig->GetBool(OculusSettings, TEXT("FFRDynamic"), v, GetDefaultConfigFilename()))
+	{
+		bDynamicFoveatedRendering = v;
+		GConfig->SetBool(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, bDynamicFoveatedRendering), bDynamicFoveatedRendering, GetDefaultConfigFilename());
+		GConfig->RemoveKey(OculusSettings, TEXT("FFRDynamic"), GetDefaultConfigFilename());
 	}
 }

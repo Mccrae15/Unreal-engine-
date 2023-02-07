@@ -79,26 +79,7 @@ void FCustomPresent::Shutdown()
 
 bool FCustomPresent::NeedsNativePresent()
 {
-	CheckInRenderThread();
-
-	bool bNeedsNativePresent = true;
-
-	if (OculusXRHMD)
-	{
-		FGameFrame* Frame_RenderThread = OculusXRHMD->GetFrame_RenderThread();
-
-		if (Frame_RenderThread)
-		{
-			bNeedsNativePresent = Frame_RenderThread->Flags.bSpectatorScreenActive;
-		}
-	}
-
-	if (bIsStandaloneStereoDevice)
-	{
-		bNeedsNativePresent = false;
-	}
-
-	return bNeedsNativePresent;
+	return !bIsStandaloneStereoDevice;
 }
 
 
@@ -106,30 +87,18 @@ bool FCustomPresent::Present(int32& SyncInterval)
 {
 	CheckInRHIThread();
 
-	bool bNeedsNativePresent = true;
-
 	if (OculusXRHMD)
 	{
 		FGameFrame* Frame_RHIThread = OculusXRHMD->GetFrame_RHIThread();
-
 		if (Frame_RHIThread)
 		{
-			bNeedsNativePresent = Frame_RHIThread->Flags.bSpectatorScreenActive;
 			FinishRendering_RHIThread();
 		}
 	}
 
-	if (bIsStandaloneStereoDevice)
-	{
-		bNeedsNativePresent = false;
-	}
+	SyncInterval = 0; // VSync off
 
-	if (bNeedsNativePresent)
-	{
-		SyncInterval = 0; // VSync off
-	}
-
-	return bNeedsNativePresent;
+	return NeedsNativePresent();
 }
 
 

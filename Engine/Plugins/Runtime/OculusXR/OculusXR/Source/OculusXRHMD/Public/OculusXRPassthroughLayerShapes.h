@@ -2,7 +2,6 @@
 
 #include "StereoLayerShapes.h"
 #include "OculusXRPassthroughMesh.h"
-#include "OculusXRHMDPrivate.h"
 
 UENUM()
 enum EOculusXRColorMapType
@@ -69,7 +68,8 @@ struct FEdgeStyleParameters {
 	,	EdgeColor(EdgeColor)
 	,	ColorScale(ColorScale)
 	,	ColorOffset(ColorOffset)
-	,	ColorMapType(GetOVRPColorMapType(InColorMapType))
+	,	ColorMapType(InColorMapType)
+
 	{
 		ColorMapData = GenerateColorMapData(InColorMapType, InColorMapGradient);
 	};
@@ -84,7 +84,7 @@ struct FEdgeStyleParameters {
 	FLinearColor EdgeColor;
 	FLinearColor ColorScale;
 	FLinearColor ColorOffset;
-	ovrpInsightPassthroughColorMapType ColorMapType;
+	EOculusXRColorMapType ColorMapType;
 	TArray<uint8> ColorMapData;
 
 private:
@@ -100,10 +100,6 @@ private:
 
 	/** Generates a luminance based colormap from the the Brightness/Contrast */
 	TArray<uint8> GenerateBrightnessContrastSaturationColorMap();
-
-	/** Converts `EColorMapType` to `ovrpInsightPassthroughColorMapType` */
-	ovrpInsightPassthroughColorMapType GetOVRPColorMapType(EOculusXRColorMapType InColorMapType);
-
 };
 
 class OCULUSXRHMD_API FReconstructedLayer : public IStereoLayerShape

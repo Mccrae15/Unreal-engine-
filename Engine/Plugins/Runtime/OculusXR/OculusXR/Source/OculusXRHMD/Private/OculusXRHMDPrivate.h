@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "GameFramework/WorldSettings.h"
 #include "IOculusXRHMDModule.h"
 #include "OculusXRFunctionLibrary.h"
+#include "OculusXRPassthroughLayerShapes.h"
 #include "StereoRendering.h"
 #include "HAL/RunnableThread.h"
 #include "RHI.h"
@@ -239,6 +241,21 @@ namespace OculusXRHMD
 
 	bool ConvertPose_Internal(const FPose& InPose, ovrpPosef& OutPose, const FQuat BaseOrientation, const FVector BaseOffset, float WorldToMetersScale);
 
+	FORCEINLINE ovrpInsightPassthroughColorMapType ToOVRPColorMapType(EOculusXRColorMapType InColorMapType)
+	{
+		switch (InColorMapType) {
+		case ColorMapType_GrayscaleToColor:
+			return ovrpInsightPassthroughColorMapType_MonoToRgba;
+		case ColorMapType_Grayscale:
+			return ovrpInsightPassthroughColorMapType_MonoToMono;
+		case ColorMapType_ColorAdjustment:
+			return ovrpInsightPassthroughColorMapType_BrightnessContrastSaturation;
+		default:
+			return ovrpInsightPassthroughColorMapType_None;
+		}
+	}
+
+
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 
 
@@ -272,6 +289,20 @@ namespace OculusXRHMD
 #if DO_CHECK
 		check(InRHIThread());
 #endif
+	}
+
+	FORCEINLINE bool GetUnitScaleFactorFromSettings(UWorld* World, float& outWorldToMeters)
+	{
+		if (IsValid(World))
+		{
+			const auto* WorldSettings = World->GetWorldSettings();
+			if (IsValid(WorldSettings))
+			{
+				outWorldToMeters = WorldSettings->WorldToMeters;
+				return true;
+			}
+		}
+		return false;
 	}
 
 } // namespace OculusXRHMD

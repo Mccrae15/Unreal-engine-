@@ -758,6 +758,10 @@ OVRP_EXPORT ovrpResult ovrp_GetPredictedDisplayTime(int frameIndex, double* pred
 OVRP_EXPORT ovrpResult ovrp_GetHandTrackingEnabled(ovrpBool* handTrackingEnabled);
 OVRP_EXPORT ovrpResult ovrp_GetHandState(ovrpStep step, ovrpHand hand, ovrpHandState* handState);
 OVRP_EXPORT ovrpResult ovrp_GetHandState2(ovrpStep step, int frameIndex, ovrpHand hand, ovrpHandState* handState);
+
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetSkeleton2(ovrpSkeletonType skeletonType, ovrpSkeleton2* skeleton);
 OVRP_EXPORT ovrpResult ovrp_GetMesh(ovrpMeshType meshType, ovrpMesh* mesh);
 
@@ -801,6 +805,19 @@ OVRP_EXPORT ovrpResult ovrp_GetKeyboardState(ovrpStep step, int frameIndex, ovrp
 OVRP_EXPORT ovrpResult ovrp_GetSystemKeyboardDescription(
     ovrpTrackedKeyboardQueryFlags queryFlags,
     ovrpKeyboardDescription* keyboardDescription);
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -929,6 +946,30 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeGazesState(ovrpStep step, int frameIndex, ovrp
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 OVRP_EXPORT ovrpResult
 ovrp_FeatureFidelitySetFeatureEnable(ovrpFeatureType feature, ovrpFeatureEnableState featureEnableState);
 OVRP_EXPORT ovrpResult
@@ -953,11 +994,37 @@ OVRP_EXPORT ovrpResult ovrp_FeatureFidelityGetFeatureState(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetLocalDimmingSupported(ovrpBool* localDimmingSupported);
 OVRP_EXPORT ovrpResult ovrp_SetLocalDimming(ovrpBool localDimmingMode);
 OVRP_EXPORT ovrpResult ovrp_GetLocalDimming(ovrpBool* localDimmingMode);
 
 OVRP_EXPORT ovrpResult ovrp_GetCurrentInteractionProfile(ovrpHand hand, ovrpInteractionProfile* interactionProfile);
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifdef __cplusplus
 }

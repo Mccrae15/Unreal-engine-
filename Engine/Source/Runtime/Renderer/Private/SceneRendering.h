@@ -2507,6 +2507,9 @@ protected:
 	/** On chip pre-tonemap before scene color MSAA resolve (iOS only) */
 	void PreTonemapMSAA(FRHICommandListImmediate& RHICmdList, const FMinimalSceneTextures& SceneTextures);
 
+	/** Mobile Tonemap Subpass */
+	void MobileTonemapSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FIntPoint TargetSize, FRDGBuilder& GraphBuilder);
+
 	void SortMobileBasePassAfterShadowInit(FExclusiveDepthStencil::Type BasePassDepthStencilAccess, FViewVisibleCommandsPerView& ViewCommandsPerView);
 	void SetupMobileBasePassAfterShadowInit(FExclusiveDepthStencil::Type BasePassDepthStencilAccess, FViewVisibleCommandsPerView& ViewCommandsPerView, FInstanceCullingManager& InstanceCullingManager);
 
@@ -2536,6 +2539,7 @@ private:
 	const bool bGammaSpace;
 	const bool bDeferredShading;
 	const bool bUseVirtualTexturing;
+	const bool bTonemapSubpass;
 	int32 NumMSAASamples;
 	bool bRenderToSceneColor;
 	bool bRequiresMultiPass;

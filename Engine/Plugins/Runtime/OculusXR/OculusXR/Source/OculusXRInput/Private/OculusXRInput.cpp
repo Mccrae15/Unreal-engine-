@@ -22,6 +22,15 @@ static TAutoConsoleVariable<int32> CVarOculusPCMBatchDuration(
 	TEXT("The duration that each PCM haptic batch lasts in ms. Default is 36ms.\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarOculusControllerPose(
+	TEXT("r.Oculus.ControllerPose"),
+	0,
+	TEXT("0 Default controller pose.\n")
+	TEXT("1 Legacy controller pose.\n")
+	TEXT("2 Grip controller pose.\n")
+	TEXT("3 Aim controller pose.\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
 namespace OculusXRInput
 {
 
@@ -1041,7 +1050,24 @@ FName FOculusXRInput::GetMotionControllerDeviceTypeName() const
 	return DefaultName;
 }
 
-bool FOculusXRInput::GetControllerOrientationAndPosition( const int32 ControllerIndex, const EControllerHand DeviceHand, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const
+struct MotionSourceInfo
+{
+	FName MotionSource;
+	EControllerHand ControllerHand;
+	ovrpNode OvrpNode;
+};
+
+const TMap<FName, MotionSourceInfo> MotionSourceMap
+{
+	{FName("Left"), {FName("Left"), EControllerHand::Left, ovrpNode_HandLeft}},
+	{FName("Right"), {FName("Right"), EControllerHand::Right, ovrpNode_HandRight}},
+	{FName("LeftGrip"), {FName("LeftGrip"), EControllerHand::Left, ovrpNode_HandLeft}},
+	{FName("RightGrip"), {FName("RightGrip"), EControllerHand::Right, ovrpNode_HandRight}},
+	{FName("LeftAim"), {FName("LeftAim"), EControllerHand::Left, ovrpNode_HandLeft}},
+	{FName("RightAim"), {FName("RightAim"), EControllerHand::Right, ovrpNode_HandRight}}
+};
+
+bool FOculusXRInput::GetControllerOrientationAndPosition(const int32 ControllerIndex, const FName MotionSource, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const
 {
 	// Don't do renderthread pose update if MRC is active due to controller jitter issues with SceneCaptures
 	if (IsInGameThread() || !UOculusXRMRFunctionLibrary::IsMrcActive())
@@ -1050,12 +1076,12 @@ bool FOculusXRInput::GetControllerOrientationAndPosition( const int32 Controller
 		{
 			if (ControllerPair.UnrealControllerIndex == ControllerIndex)
 			{
-				if ((DeviceHand == EControllerHand::Left) || (DeviceHand == EControllerHand::Right))
+				if (MotionSourceMap.Contains(MotionSource))
 				{
 					if (IOculusXRHMDModule::IsAvailable() && FOculusXRHMDModule::GetPluginWrapper().GetInitialized())
 					{
 						OculusXRHMD::FOculusXRHMD* OculusXRHMD = static_cast<OculusXRHMD::FOculusXRHMD*>(GEngine->XRSystem->GetHMDDevice());
-						ovrpNode Node = DeviceHand == EControllerHand::Left ? ovrpNode_HandLeft : ovrpNode_HandRight;
+						ovrpNode Node = MotionSourceMap[MotionSource].OvrpNode;
 
 						ovrpBool bResult = true;
 						bool bIsPositionValid = OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNodePositionValid(Node, &bResult)) && bResult;
@@ -1082,9 +1108,52 @@ bool FOculusXRInput::GetControllerOrientationAndPosition( const int32 Controller
 								ovrpPoseStatef InPoseState;
 								OculusXRHMD::FPose OutPose;
 
+								EOculusXRControllerPoseAlignment ControllerPoseAlignment = Settings->ControllerPoseAlignment;
+								switch (CVarOculusControllerPose.GetValueOnAnyThread())
+								{
+								case 1:
+									ControllerPoseAlignment = EOculusXRControllerPoseAlignment::Default;
+									break;
+								case 2:
+									ControllerPoseAlignment = EOculusXRControllerPoseAlignment::Grip;
+									break;
+								case 3:
+									ControllerPoseAlignment = EOculusXRControllerPoseAlignment::Aim;
+									break;
+								default:
+									break;
+								}
+
 								if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, CurrentFrame ? CurrentFrame->FrameNumber : OVRP_CURRENT_FRAMEINDEX, Node, &InPoseState)) &&
 									OculusXRHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, WorldToMetersScale))
 								{
+									FName FinalMotionSource = MotionSource;
+									if (FinalMotionSource == FName("Left") || FinalMotionSource == FName("Right"))
+									{
+										switch (ControllerPoseAlignment)
+										{
+										case EOculusXRControllerPoseAlignment::Grip:
+											FinalMotionSource = FName(FinalMotionSource.ToString().Append(FString("Grip")));
+											break;
+										case EOculusXRControllerPoseAlignment::Aim:
+											FinalMotionSource = FName(FinalMotionSource.ToString().Append(FString("Aim")));
+											break;
+										case EOculusXRControllerPoseAlignment::Default:
+										default:
+											break;
+										}
+									}
+									
+									// TODO: Just pass the pose info to OVRPlugin instead of doing the conversion between poses here
+									if (FinalMotionSource == FName("LeftGrip") || FinalMotionSource == FName("RightGrip"))
+									{
+										OutPose = OutPose * OculusXRHMD::FPose(FQuat(FVector(0, 1, 0), -FMath::DegreesToRadians(double(60))), FVector(-0.04, 0, -0.03) * WorldToMetersScale);
+									}
+									else if (FinalMotionSource == FName("LeftAim") || FinalMotionSource == FName("RightAim"))
+									{
+										OutPose = OutPose * OculusXRHMD::FPose(FQuat::Identity, FVector(0.055, 0, 0) * WorldToMetersScale);
+									}
+
 									if (bIsPositionValid)
 									{
 										OutPosition = OutPose.Position;
@@ -1097,7 +1166,7 @@ bool FOculusXRInput::GetControllerOrientationAndPosition( const int32 Controller
 
 									auto bSuccess = true;
 									UOculusXRInputFunctionLibrary::HandMovementFilter.Broadcast(
-										DeviceHand,
+										MotionSourceMap[FinalMotionSource].ControllerHand,
 										&OutPosition,
 										&OutOrientation,
 										&bSuccess);
@@ -1115,12 +1184,34 @@ bool FOculusXRInput::GetControllerOrientationAndPosition( const int32 Controller
 	}
 
 	auto bSuccess = false;
-	UOculusXRInputFunctionLibrary::HandMovementFilter.Broadcast(
-		DeviceHand,
-		&OutPosition,
-		&OutOrientation,
-		&bSuccess);
+	EControllerHand ControllerHand;
+	if (GetHandEnumForSourceName(MotionSource, ControllerHand))
+	{
+		UOculusXRInputFunctionLibrary::HandMovementFilter.Broadcast(
+			ControllerHand,
+			&OutPosition,
+			&OutOrientation,
+			&bSuccess);
+	}
 	return bSuccess;
+}
+
+bool FOculusXRInput::GetControllerOrientationAndPosition(const int32 ControllerIndex, const EControllerHand DeviceHand, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const
+{
+	FName MotionSource;
+	switch (DeviceHand)
+	{
+	case EControllerHand::Left:
+		MotionSource = FName("Left");
+		break;
+	case EControllerHand::Right:
+		MotionSource = FName("Right");
+		break;
+	default:
+		MotionSource = FName("Unknown");
+		break;
+	}
+	return GetControllerOrientationAndPosition(ControllerIndex, MotionSource, OutOrientation, OutPosition, WorldToMetersScale);
 }
 
 ETrackingStatus FOculusXRInput::GetControllerTrackingStatus(const int32 ControllerIndex, const EControllerHand DeviceHand) const
@@ -1278,7 +1369,7 @@ void FOculusXRInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, con
 									{
 										float Amplitude = ((uint8_t*)OvrpHapticsBuffer.Samples)[i] / 255.0f;
 										Amplitude = FMath::Min(1.0f, Amplitude);
-										Amplitude = FMath::Max(0.0f, Amplitude);
+										Amplitude = FMath::Max(-1.0f, Amplitude);
 										PCMBuffer[i] = Amplitude;
 									}
 									HapticsVibration.Buffer = PCMBuffer;

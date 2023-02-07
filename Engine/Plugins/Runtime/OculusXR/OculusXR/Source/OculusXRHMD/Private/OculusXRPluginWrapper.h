@@ -268,6 +268,23 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceBoundary2D);
 	OCULUS_DECLARE_ENTRY_POINT(RequestSceneCapture);
 
+	// MovementSDK
+	OCULUS_DECLARE_ENTRY_POINT(GetBodyState);
+	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingEnabled);
+	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingSupported);
+	OCULUS_DECLARE_ENTRY_POINT(StartBodyTracking);
+	OCULUS_DECLARE_ENTRY_POINT(StopBodyTracking);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingEnabled);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingSupported);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceState);
+	OCULUS_DECLARE_ENTRY_POINT(StartFaceTracking);
+	OCULUS_DECLARE_ENTRY_POINT(StopFaceTracking);
+	OCULUS_DECLARE_ENTRY_POINT(GetEyeTrackingEnabled);
+	OCULUS_DECLARE_ENTRY_POINT(GetEyeTrackingSupported);
+	OCULUS_DECLARE_ENTRY_POINT(GetEyeGazesState);
+	OCULUS_DECLARE_ENTRY_POINT(StartEyeTracking);
+	OCULUS_DECLARE_ENTRY_POINT(StopEyeTracking);
+
 	//OVR_Plugin_Insight.h
 	OCULUS_DECLARE_ENTRY_POINT(InitializeInsightPassthrough);
 	OCULUS_DECLARE_ENTRY_POINT(ShutdownInsightPassthrough);

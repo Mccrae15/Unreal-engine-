@@ -24,12 +24,12 @@ void FOculusXRAnchorsModule::StartupModule()
 		return;
 	}
 
-	if (!GEngine->XRSystem.IsValid())
+	if (!GEngine->XRSystem.IsValid() || GEngine->XRSystem->GetSystemName() != OculusXRHMD::FOculusXRHMD::OculusSystemName)
 	{
 		return;
 	}
 
-	OculusXRHMD::FOculusXRHMD* HMD = (OculusXRHMD::FOculusXRHMD*)(GEngine->XRSystem->GetHMDDevice());
+	OculusXRHMD::FOculusXRHMD* HMD = OculusXRHMD::FOculusXRHMD::GetOculusXRHMD();
 	if (!HMD)
 	{
 		UE_LOG(LogOculusXRAnchors, Warning, TEXT("Unable to retrieve OculusXRHMD, cannot add event polling delegates."));

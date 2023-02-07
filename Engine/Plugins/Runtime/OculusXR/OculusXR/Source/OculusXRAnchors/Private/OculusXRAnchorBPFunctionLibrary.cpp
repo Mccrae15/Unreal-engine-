@@ -86,7 +86,7 @@ bool UOculusXRAnchorBPFunctionLibrary::GetAnchorComponentStatus(AActor* TargetAc
 
 bool UOculusXRAnchorBPFunctionLibrary::GetAnchorTransformByHandle(const FOculusXRUInt64& Handle, FTransform& OutTransform)
 {
-	OculusXRHMD::FOculusXRHMD* OutHMD = GEngine->XRSystem.IsValid() ? (OculusXRHMD::FOculusXRHMD*)(GEngine->XRSystem->GetHMDDevice()) : nullptr;
+	OculusXRHMD::FOculusXRHMD* OutHMD = OculusXRHMD::FOculusXRHMD::GetOculusXRHMD();
 	if (!OutHMD)
 	{
 		UE_LOG(LogOculusXRAnchors, Warning, TEXT("Unable to retrieve OculusXRHMD, cannot calculate anchor transform."));

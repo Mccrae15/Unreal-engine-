@@ -366,11 +366,15 @@ public:
 		uint32 NumSubpasses = 0;
 		uint32 NumDependencies = 0;
 
+		uint32_t SrcSubpass = 0;
+		uint32_t DstSubpass = 1;
+
 		//0b11 for 2, 0b1111 for 4, and so on
 		uint32 MultiviewMask = (0b1 << RTLayout.GetMultiViewCount()) - 1;
 
-		const bool bDeferredShadingSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DeferredShadingSubpass;
-		const bool bDepthReadSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DepthReadSubpass;
+		const bool bDeferredShadingSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::DeferredShadingSubpass) != ESubpassHint::None;
+		const bool bDepthReadSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::DepthReadSubpass) != ESubpassHint::None;
+		const bool bMobileTonemapSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None;
 		const bool bApplyFragmentShadingRate =
 			Device.GetOptionalExtensions().HasKHRFragmentShadingRate &&
 			GRHISupportsAttachmentVariableRateShading &&
@@ -388,13 +392,19 @@ public:
 #endif
 
 		// Grab (and optionally convert) attachment references.
-		for (uint32 ColorAttachment = 0; ColorAttachment < RTLayout.GetNumColorAttachments(); ++ColorAttachment)
+		uint32 NumColorAttachments = RTLayout.GetNumColorAttachments();
+		for (uint32 ColorAttachment = 0; ColorAttachment < NumColorAttachments; ++ColorAttachment)
 		{
 			ColorAttachmentReferences.Add(TAttachmentReferenceClass(RTLayout.GetColorAttachmentReferences()[ColorAttachment], 0));
 			if (RTLayout.GetResolveAttachmentReferences() != nullptr)
 			{
 				ResolveAttachmentReferences.Add(TAttachmentReferenceClass(RTLayout.GetResolveAttachmentReferences()[ColorAttachment], 0));
 			}
+		}
+
+		if (bMobileTonemapSubpass && (NumColorAttachments > 1))
+		{
+			NumColorAttachments--;
 		}
 
 		if (RTLayout.GetDepthStencilAttachmentReference() != nullptr)
@@ -406,8 +416,8 @@ public:
 		{
 			TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 
-			SubpassDesc.SetColorAttachments(ColorAttachmentReferences);
-			if (!bDepthReadSubpass)
+			SubpassDesc.SetColorAttachments(ColorAttachmentReferences, NumColorAttachments);
+			if (!bDepthReadSubpass && !bMobileTonemapSubpass)
 			{
 				// only set resolve attachment on the last subpass
 				SubpassDesc.SetResolveAttachments(ResolveAttachmentReferences);
@@ -432,8 +442,11 @@ public:
 			DepthStencilAttachmentOG.SetAttachment(*RTLayout.GetDepthStencilAttachmentReference(), VK_IMAGE_ASPECT_DEPTH_BIT);
 			TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 
-			SubpassDesc.SetColorAttachments(ColorAttachmentReferences);
-			SubpassDesc.SetResolveAttachments(ResolveAttachmentReferences);
+			SubpassDesc.SetColorAttachments(ColorAttachmentReferences, NumColorAttachments);
+			if (!bMobileTonemapSubpass)
+			{
+				SubpassDesc.SetResolveAttachments(ResolveAttachmentReferences);
+			}
 
 			check(RTLayout.GetDepthStencilAttachmentReference());
 
@@ -454,8 +467,8 @@ public:
 #endif
 
 			TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
-			SubpassDep.srcSubpass = 0;
-			SubpassDep.dstSubpass = 1;
+			SubpassDep.srcSubpass = SrcSubpass++;
+			SubpassDep.dstSubpass = DstSubpass++;
 			SubpassDep.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 			SubpassDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			SubpassDep.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -464,7 +477,7 @@ public:
 		}
 
 		// Two subpasses for deferred shading
-		if (bDeferredShadingSubpass)
+		if (bDeferredShadingSubpass || (GIsEditor && bMobileTonemapSubpass))
 		{
 			// both sub-passes only test DepthStencil
 			DepthStencilAttachment.attachment = RTLayout.GetDepthStencilAttachmentReference()->attachment;
@@ -492,8 +505,8 @@ public:
 
 				// Depth as Input0
 				TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
-				SubpassDep.srcSubpass = 0;
-				SubpassDep.dstSubpass = 1;
+				SubpassDep.srcSubpass = SrcSubpass++;
+				SubpassDep.dstSubpass = DstSubpass++;
 				SubpassDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 				SubpassDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 				SubpassDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -502,6 +515,7 @@ public:
 			}
 
 			// 2. Write to SceneColor, input GBuffer and DepthStencil
+			if (bDeferredShadingSubpass)
 			{
 				TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 				SubpassDesc.SetColorAttachments(ColorAttachmentReferences, 1); // SceneColor only
@@ -536,8 +550,8 @@ public:
 #endif
 
 				TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
-				SubpassDep.srcSubpass = 1;
-				SubpassDep.dstSubpass = 2;
+				SubpassDep.srcSubpass = SrcSubpass++;
+				SubpassDep.dstSubpass = DstSubpass++;
 				SubpassDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 				SubpassDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 				SubpassDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -550,6 +564,63 @@ public:
 				SubpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 			}
 		}
+
+		// Tone Mapping Subpass
+		if (bMobileTonemapSubpass)
+		{
+			TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
+
+			InputAttachments3[0].attachment = VK_ATTACHMENT_UNUSED; // The subpass fetch logic expects depth in first attachment.
+			InputAttachments3[0].layout = VK_IMAGE_LAYOUT_UNDEFINED;
+			InputAttachments3[0].SetAspect(0);
+
+			InputAttachments3[1].attachment = ColorAttachmentReferences[0].attachment;
+			InputAttachments3[1].layout = VK_IMAGE_LAYOUT_GENERAL;
+			InputAttachments3[1].SetAspect(VK_IMAGE_ASPECT_COLOR_BIT);
+
+			if (RTLayout.GetHasResolveAttachments())
+			{
+				// MSAA or editor
+				ColorAttachments3[0].attachment = ResolveAttachmentReferences[0].attachment;
+			}
+			else
+			{
+				// non-MSAA on device
+				ColorAttachments3[0].attachment = ColorAttachmentReferences[1].attachment;
+			}
+
+			ColorAttachments3[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			ColorAttachments3[0].SetAspect(VK_IMAGE_ASPECT_COLOR_BIT);
+
+			SubpassDesc.SetInputAttachments(InputAttachments3, 2);
+			SubpassDesc.colorAttachmentCount = 1;
+			SubpassDesc.pColorAttachments = ColorAttachments3;
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+			if (bApplyFragmentShadingRate)
+			{
+				SubpassDesc.SetShadingRateAttachment(&FragmentShadingRateAttachmentInfo);
+			}
+			SubpassDesc.SetMultiViewMask(MultiviewMask);
+#endif
+
+			// Combine the last Render and Store operations if possible
+			if (!GIsEditor && Device.GetOptionalExtensions().HasQcomRenderPassShaderResolve && RTLayout.GetHasResolveAttachments())
+			{
+				SubpassDesc.flags |= VK_SUBPASS_DESCRIPTION_SHADER_RESOLVE_BIT_QCOM;
+			}
+
+			TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
+			SubpassDep.srcSubpass = SrcSubpass++;
+			SubpassDep.dstSubpass = DstSubpass++;
+			SubpassDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			SubpassDep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			SubpassDep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			SubpassDep.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+			SubpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+		}
+
+		ensure(DstSubpass == NumSubpasses);
 
 		for (uint32 Attachment = 0; Attachment < RTLayout.GetNumAttachmentDescriptions(); ++Attachment)
 		{
@@ -648,6 +719,10 @@ private:
 
 	TAttachmentReferenceClass DepthStencilAttachmentReference;
 	TArray<TAttachmentDescriptionClass> AttachmentDescriptions;
+
+	// Tonemap subpass
+	TAttachmentReferenceClass InputAttachments3[MaxSimultaneousRenderTargets + 1];
+	TAttachmentReferenceClass ColorAttachments3[MaxSimultaneousRenderTargets + 1];
 
 #if VULKAN_SUPPORTS_RENDERPASS2
 	FVulkanAttachmentReference<VkAttachmentReference2> ShadingRateAttachmentReference;
