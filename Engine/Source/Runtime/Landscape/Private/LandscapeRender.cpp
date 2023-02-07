@@ -44,6 +44,8 @@ LandscapeRender.cpp: New terrain rendering
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "StaticMeshResources.h"
 #include "NaniteSceneProxy.h"
+#include "Rendering/Texture2DResource.h"
+
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, "LandscapeParameters");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, "LandscapeFixedGrid");
@@ -1554,7 +1556,8 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 		0
 	);
 
-	if (HeightmapTexture)
+	FTextureResource* HeightmapResource = HeightmapTexture ? HeightmapTexture->GetResource() : nullptr;
+	if (HeightmapResource)
 	{
 		LandscapeParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
@@ -1569,7 +1572,8 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 		LandscapeParams.NormalmapTextureSampler = GBlackTexture->SamplerStateRHI;
 	}
 
-	if (XYOffsetmapTexture)
+	FTextureResource* XYOffsetmapResource = XYOffsetmapTexture ? XYOffsetmapTexture->GetResource() : nullptr;
+	if (XYOffsetmapResource)
 	{
 		LandscapeParams.XYOffsetmapTexture = XYOffsetmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.XYOffsetmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
@@ -3534,22 +3538,30 @@ void FLandscapeComponentSceneProxy::ChangeComponentScreenSizeToUseSubSections_Re
 bool FLandscapeComponentSceneProxy::HeightfieldHasPendingStreaming() const
 {
 	bool bHeightmapTextureStreaming = false;
-
 	if (HeightmapTexture)
 	{
+		// this is technically a game thread value and not render-thread safe, but it shouldn't ever crash, may just be out of date.
+		// there doesn't appear to be any render thread equivalent, the render thread is ignorant of streaming state.
+		// in general, HeightfieldHasPendingStreaming() should only be used if the code is ok with a slightly out of date value being returned.
 		bHeightmapTextureStreaming |= HeightmapTexture->bHasStreamingUpdatePending;
 #if WITH_EDITOR
-		bHeightmapTextureStreaming |= HeightmapTexture->IsCompiling();
+		if (const FTexture2DResource* HeightmapTextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
+		{
+			bHeightmapTextureStreaming |= HeightmapTextureResource->IsProxy();
+		}
 #endif
 	}
 
 	bool bVisibilityTextureStreaming = false;
-
 	if (VisibilityWeightmapTexture)
 	{
+		// again, not render thread safe (see above)
 		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->bHasStreamingUpdatePending;
 #if WITH_EDITOR
-		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->IsCompiling();
+		if (const FTexture2DResource* VisibilityTextureResource = (const FTexture2DResource*)VisibilityWeightmapTexture->GetResource())
+		{
+			bVisibilityTextureStreaming |= VisibilityTextureResource->IsProxy();
+		}
 #endif
 	}
 
@@ -3631,7 +3643,7 @@ float FLandscapeComponentSceneProxy::ComputeLODBias() const
 	{
 		if (const FTexture2DResource* TextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
 		{
-			ComputedLODBias = HeightmapTexture->GetNumMips() - HeightmapTexture->GetNumResidentMips();
+			ComputedLODBias = TextureResource->GetCurrentFirstMip();
 		}
 	}
 

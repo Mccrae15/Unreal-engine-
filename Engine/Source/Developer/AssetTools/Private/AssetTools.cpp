@@ -264,6 +264,25 @@ namespace UE::AssetTools::Private
 			return Asset;
 		};
 
+		static bool CanSavePackageToFile(const FString& DestinationFile, const FStringView PackageName, FPackageMigrationContext* OptionalPackageMigrationContext)
+		{
+			// Don't try to migrate the package if the destination is read only
+			if (IFileManager::Get().IsReadOnly(*DestinationFile))
+			{
+				if (OptionalPackageMigrationContext)
+				{
+					OptionalPackageMigrationContext->AddErrorMigrationMessage(FText::Format(LOCTEXT("MigratePackages_SaveFailedReadOnly", "Couldn't migrate package ({0}) because the destination file is read only. Destination File ({1})")
+						, FText::FromStringView(PackageName)
+						, FText::FromString(DestinationFile)
+						));
+				}
+
+				return false;
+			}
+
+			return true;
+		}
+
 		// Prepare the MigrationPackagesData in the migration context and log any info about the package that will be renamed
 		static void SetupPublicAssetPackagesMigrationData(const TSharedPtr<TArray<ReportPackageData>>& PackageDataToMigrate
 			, TArray<TPair<const ReportPackageData*, const FAssetData>>& ExternalPackageDatas
@@ -368,30 +387,36 @@ namespace UE::AssetTools::Private
 				// Ask the user what to do if an asset already exist in the destination
 				if (bIsNameChangeCausedByExistingAssetInDestination)
 				{
-					// Handle name collision in the destination project. Post 5.1 should expose the possibility to rename the migrated package.
-
-					EAppReturnType::Type Response;
-					if (FApp::IsUnattended() || !PackageMigrationImplContext.Options.bPrompt || LastResponse == EAppReturnType::YesAll || LastResponse == EAppReturnType::NoAll)
-					{
-						Response = LastResponse;
-					}
-					else
-					{
-						const FText Message = FText::Format(LOCTEXT("MigratePackages_AlreadyExists", "An asset already exists at location {0} would you like to overwrite it?"), FText::FromString(NewPackageFilename));
-						Response = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAllCancel, Message);
-						LastResponse = Response;
-					}
-
-					if (Response == EAppReturnType::Cancel)
-					{
-						// The user chose to cancel mid-operation. Break out.
-						PackageMigrationImplContext.bWasCanceled = true;
-						break;
-					}
-
-					if (Response == EAppReturnType::No || Response == EAppReturnType::NoAll)
+					if (!CanSavePackageToFile(NewPackageFilename, PackageData.Name, &PackageMigrationContext))
 					{
 						bShouldMigrate = false;
+					}
+					else
+					{ 
+						// Handle name collision in the destination project. Post 5.1 should expose the possibility to rename the migrated package
+						EAppReturnType::Type Response;
+						if (FApp::IsUnattended() || !PackageMigrationImplContext.Options.bPrompt || LastResponse == EAppReturnType::YesAll || LastResponse == EAppReturnType::NoAll)
+						{
+							Response = LastResponse;
+						}
+						else
+						{
+							const FText Message = FText::Format(LOCTEXT("MigratePackages_AlreadyExists", "An asset already exists at location {0} would you like to overwrite it?"), FText::FromString(NewPackageFilename));
+							Response = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAllCancel, Message);
+							LastResponse = Response;
+						}
+
+						if (Response == EAppReturnType::Cancel)
+						{
+							// The user chose to cancel mid-operation. Break out.
+							PackageMigrationImplContext.bWasCanceled = true;
+							break;
+						}
+
+						if (Response == EAppReturnType::No || Response == EAppReturnType::NoAll)
+						{
+							bShouldMigrate = false;
+						}
 					}
 				}
 
@@ -652,7 +677,12 @@ namespace UE::AssetTools::Private
 		static void SaveInstancedPackagesIntoDestination(FPackageMigrationContext& PackageMigrationContext, FPackageMigrationImplContext& MigrationImplContext)
 		{
 			FSavePackageArgs SaveArgs;
-			SaveArgs.SaveFlags |= SAVE_RehydratePayloads | SAVE_Async;
+			SaveArgs.TopLevelFlags = RF_Standalone;
+			SaveArgs.SaveFlags |= SAVE_RehydratePayloads;
+
+			// We should look into creating our own log to report the save erros to the user.
+			SaveArgs.Error = GWarn;
+
 
 			uint32 ProgressCount = 0;
 
@@ -724,6 +754,9 @@ namespace UE::AssetTools::Private
 
 		static void CleanInstancedPackages(const TArray<TWeakObjectPtr<UPackage>>& PackagesToClean)
 		{
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+			IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
 			TSharedRef<TFunction<void(UObject*)>> PurgeObject = MakeShared<TFunction<void(UObject*)>>();
 			PurgeObject.Get() = [PurgeObject](UObject* Object)
 			{
@@ -752,18 +785,26 @@ namespace UE::AssetTools::Private
 			FGlobalComponentReregisterContext ComponentContext;
 
 			TArray<UObject*> ReferenceToNull;
+
+			// We do the clean pass of the packages in two loop because the PurgeObject can affect the ability to get the main object from another package.
+			for (const TWeakObjectPtr<UPackage>& WeakPackage : PackagesToClean)
+			{
+				if (UPackage* Package = WeakPackage.Get())
+				{
+					if (UObject* Asset = FPackageMigrationImpl::FindAssetInPackage(Package))
+					{
+						AssetRegistry.AssetDeleted(Asset);
+						ReferenceToNull.Add(Asset);
+					}
+				}
+			}
+
 			for (const TWeakObjectPtr<UPackage>& WeakPackage : PackagesToClean)
 			{
 				if (UPackage* Package = WeakPackage.Get())
 				{
 					const ERenameFlags PkgRenameFlags = REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional | REN_SkipGeneratedClasses;
 					check(Package->Rename(*MakeUniqueObjectName(nullptr, UPackage::StaticClass(), *FString::Printf(TEXT("%s_DEADFROMMIGRATION"), *Package->GetName())).ToString(), nullptr, PkgRenameFlags));
-
-					if (UObject* Asset = FPackageMigrationImpl::FindAssetInPackage(Package))
-					{
-						ReferenceToNull.Add(Asset);
-					}
-
 					(*PurgeObject)(Package);
 					ForEachObjectWithOuter(Package, *PurgeObject);
 				}
@@ -3706,44 +3747,57 @@ void UAssetToolsImpl::PerformMigratePackages(TArray<FName> PackageNamesToMigrate
 
 		for (const FName& PackageName : AllPackageNamesToMove)
 		{
-			 FName PackageMountPoint = FPackageName::GetPackageMountPoint(PackageName.ToString(), false);
-			 EPluginLoadedFrom* Found = EnabledPluginToLoadedFrom.Find(PackageMountPoint);
+			FName PackageMountPoint = FPackageName::GetPackageMountPoint(PackageName.ToString(), false);
+			EPluginLoadedFrom* Found = EnabledPluginToLoadedFrom.Find(PackageMountPoint);
 
-			 bool bShouldMigratePackage = true;
-			 if (Found)
+			bool bShouldMigratePackage = true;
+			if (Found)
 			 {
-				 // plugin content, decide if it's appropriate to migrate
-				 switch (*Found)
-				 {
-				 case EPluginLoadedFrom::Engine:
-					 if (!bShouldShowEngineContent)
-					 {
-						 continue;
-					 }
-					 bShouldMigratePackage = false;
-					 break;
+				// plugin content, decide if it's appropriate to migrate
+				switch (*Found)
+				{
+				case EPluginLoadedFrom::Engine:
+					if (!bShouldShowEngineContent)
+					{
+						continue;
+					}
+					bShouldMigratePackage = false;
+					break;
 
-				 case EPluginLoadedFrom::Project:
-					 bShouldMigratePackage = true;
-					 break;
+				case EPluginLoadedFrom::Project:
+					bShouldMigratePackage = true;
+					break;
 				 
-				 default:
-					 bShouldMigratePackage = false;
-					 break;
+				default:
+					bShouldMigratePackage = false;
+					break;
 				 }
 			 }
 			 else
 			 {
-				 // this is not plugin content
-				 bShouldMigratePackage = true;
-			 }
+				// this is not plugin content
+				if (PackageName.ToString().StartsWith(TEXT("/Engine")))
+				{
+					// Engine content
+					if (!bShouldShowEngineContent)
+					{
+						continue;
+					}
+					bShouldMigratePackage = false;
+				}
+				else
+				{
+					// Game content
+					bShouldMigratePackage = true;
+				}
+			}
 
-			 FilteredPackageNamesToMove.Add(PackageName);
+			FilteredPackageNamesToMove.Add(PackageName);
 
-			 if (bShouldMigratePackage)
-			 {
-				 ShouldMigratePackage.Add(PackageName);
-			 }
+			if (bShouldMigratePackage)
+			{
+				ShouldMigratePackage.Add(PackageName);
+			}
 		}
 
 		AllPackageNamesToMove = FilteredPackageNamesToMove;
@@ -4547,13 +4601,12 @@ void UAssetToolsImpl::RecursiveGetDependencies(const FName& PackageName, TSet<FN
 	{
 		FString DependencyName = (*DependsIt).ToString();
 
-		const bool bIsEnginePackage = DependencyName.StartsWith(TEXT("/Engine"));
 		const bool bIsScriptPackage = DependencyName.StartsWith(TEXT("/Script"));
 
 		// The asset registry can give some reference to some deleted assets. We don't want to migrate these.
 		const bool bAssetExist = AssetRegistry.GetAssetPackageDataCopy(*DependsIt).IsSet();
 
-		if ( !bIsEnginePackage && !bIsScriptPackage && bAssetExist)
+		if (!bIsScriptPackage && bAssetExist)
 		{
 			if (!AllDependencies.Contains(*DependsIt))
 			{

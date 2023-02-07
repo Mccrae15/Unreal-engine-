@@ -1310,7 +1310,14 @@ namespace EpicGames.UHT.Utils
 					}
 					if (type is UhtClass)
 					{
-						return FindTypeInternal(startingType, UhtFindOptions.DelegateFunction | UhtFindOptions.NoParents | (options & ~UhtFindOptions.TypesMask), secondName);
+						//TODO - Old UHT compatibility.  In UWidget, it references USlateAccessibleWidgetData::FGetText.  However, since UWidget has a FGetText, that 
+						// is returned first.
+						UhtType? compatType = FindTypeInternal(startingType, UhtFindOptions.DelegateFunction | UhtFindOptions.NoParents | (options & ~UhtFindOptions.TypesMask), secondName);
+						if (compatType != null)
+						{
+							return compatType;
+						}
+						return FindTypeInternal(type, UhtFindOptions.DelegateFunction | UhtFindOptions.NoParents | (options & ~UhtFindOptions.TypesMask), secondName);
 					}
 				}
 
@@ -1457,7 +1464,7 @@ namespace EpicGames.UHT.Utils
 
 				// If we aren't caching messages and this is the first message,
 				// start a task to flush the messages.
-				if (!CacheMessages && _messages.Count == 1)
+				if (!CacheMessages && _messageTask == null)
 				{
 					_messageTask = Task.Factory.StartNew(() => FlushMessages(), CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
 				}
@@ -1490,9 +1497,14 @@ namespace EpicGames.UHT.Utils
 		/// </summary>
 		public void LogMessages()
 		{
-			if (_messageTask != null)
+			Task? messageTask = null;
+			lock (_messages)
 			{
-				_messageTask.Wait();
+				messageTask = _messageTask;
+			}
+			if (messageTask != null)
+			{
+				messageTask.Wait();
 			}
 
 			foreach (UhtMessage message in FetchOrderedMessages())
@@ -1506,16 +1518,24 @@ namespace EpicGames.UHT.Utils
 		/// </summary>
 		private void FlushMessages()
 		{
-			UhtMessage[]? messageArray = null;
-			lock (_messages)
+			while (true)
 			{
-				messageArray = _messages.ToArray();
-				_messages.Clear();
-			}
+				UhtMessage[]? messageArray = null;
+				lock (_messages)
+				{
+					messageArray = _messages.ToArray();
+					_messages.Clear();
+					if (messageArray.Length == 0)
+					{
+						_messageTask = null;
+						return;
+					}
+				}
 
-			foreach (UhtMessage message in messageArray)
-			{
-				LogMessage(message);
+				foreach (UhtMessage message in messageArray)
+				{
+					LogMessage(message);
+				}
 			}
 		}
 
@@ -1588,6 +1608,19 @@ namespace EpicGames.UHT.Utils
 			if (oldType.EngineType.HasEngineName())
 			{
 				_engineNameSymbolTable.Replace(oldType, newType, oldType.EngineName);
+			}
+		}
+
+		/// <summary>
+		/// Hide the given type in the symbol table
+		/// </summary>
+		/// <param name="typeToHide"></param>
+		public void HideTypeInSymbolTable(UhtType typeToHide)
+		{
+			_sourceNameSymbolTable.Hide(typeToHide, typeToHide.SourceName);
+			if (typeToHide.EngineType.HasEngineName())
+			{
+				_engineNameSymbolTable.Hide(typeToHide, typeToHide.EngineName);
 			}
 		}
 
@@ -2102,13 +2135,10 @@ namespace EpicGames.UHT.Utils
 					}
 				}
 
-				if (type.VisibleType)
+				_sourceNameSymbolTable.Add(type, type.SourceName);
+				if (engineExtendedType.HasEngineName())
 				{
-					_sourceNameSymbolTable.Add(type, type.SourceName);
-					if (engineExtendedType.HasEngineName())
-					{
-						_engineNameSymbolTable.Add(type, type.EngineName);
-					}
+					_engineNameSymbolTable.Add(type, type.EngineName);
 				}
 			}
 
@@ -2130,52 +2160,47 @@ namespace EpicGames.UHT.Utils
 			Permanent,
 		}
 
-		private void TopologicalRecursion(List<TopologicalState> states, UhtHeaderFile first, UhtHeaderFile visit)
+		private void TopologicalVisit(List<TopologicalState> states, UhtHeaderFile visit, List<UhtHeaderFile> headerStack)
 		{
-			foreach (UhtHeaderFile referenced in visit.ReferencedHeadersNoLock)
-			{
-				if (states[referenced.HeaderFileTypeIndex] == TopologicalState.Temporary)
-				{
-					first.LogError($"'{visit.FilePath}' includes/requires '{referenced.FilePath}'");
-					if (first != referenced)
-					{
-						TopologicalRecursion(states, first, referenced);
-					}
-					break;
-				}
-			}
-		}
-
-		private UhtHeaderFile? TopologicalVisit(List<TopologicalState> states, UhtHeaderFile visit)
-		{
+			headerStack.Add(visit);
 			switch (states[visit.HeaderFileTypeIndex])
 			{
 				case TopologicalState.Unmarked:
 					states[visit.HeaderFileTypeIndex] = TopologicalState.Temporary;
 					foreach (UhtHeaderFile referenced in visit.ReferencedHeadersNoLock)
 					{
-						if (visit != referenced)
-						{
-							UhtHeaderFile? recursion = TopologicalVisit(states, referenced);
-							if (recursion != null)
-							{
-								return recursion;
-							}
-						}
+						TopologicalVisit(states, referenced, headerStack);
 					}
 					states[visit.HeaderFileTypeIndex] = TopologicalState.Permanent;
 					_sortedHeaderFiles.Add(visit);
-					return null;
+					break;
 
 				case TopologicalState.Temporary:
-					return visit;
+					{
+						int index = headerStack.IndexOf(visit);
+						if (index == -1 || index == headerStack.Count - 1)
+						{
+							throw new UhtIceException("Error locating include file loop");
+						}
+						index++;
+						visit.LogError("Circular dependency detected:");
+						UhtHeaderFile previous = visit;
+						for (int loopIndex = index; loopIndex < headerStack.Count; loopIndex++)
+						{
+							UhtHeaderFile next = headerStack[loopIndex];
+							previous.LogError($"includes/requires '{next.FilePath}'");
+							previous = next;
+						}
+					}
+					break;
 
 				case TopologicalState.Permanent:
-					return null;
+					break;
 
 				default:
 					throw new UhtIceException("Unknown topological state");
 			}
+			headerStack.RemoveAt(headerStack.Count - 1);
 		}
 
 		private void TopologicalSortHeaderFiles()
@@ -2192,17 +2217,12 @@ namespace EpicGames.UHT.Utils
 					states.Add(TopologicalState.Unmarked);
 				}
 
+				List<UhtHeaderFile> headerStack = new(32); // arbitrary capacity
 				foreach (UhtHeaderFile headerFile in HeaderFiles)
 				{
 					if (states[headerFile.HeaderFileTypeIndex] == TopologicalState.Unmarked)
 					{
-						UhtHeaderFile? recursion = TopologicalVisit(states, headerFile);
-						if (recursion != null)
-						{
-							headerFile.LogError("Circular dependency detected:");
-							TopologicalRecursion(states, recursion, recursion);
-							return;
-						}
+						TopologicalVisit(states, headerFile, headerStack);
 					}
 				}
 			});

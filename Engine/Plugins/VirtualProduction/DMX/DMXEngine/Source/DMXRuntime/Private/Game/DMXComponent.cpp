@@ -60,6 +60,13 @@ void UDMXComponent::SetReceiveDMXFromPatch(bool bReceive)
 
 void UDMXComponent::OnFixturePatchReceivedDMX(UDMXEntityFixturePatch* FixturePatch, const FDMXNormalizedAttributeValueMap& NormalizedValuePerAttribute)
 {
+	// Hotfix 5.1 - Old bindings are not properly removed when duplicating Actors that use this component @todo.
+	if (FixturePatch != GetFixturePatch())
+	{
+		FixturePatch->OnFixturePatchReceivedDMX.RemoveAll(this);
+		return;
+	}
+
 	if (OnFixturePatchReceived.IsBound())
 	{
 		FEditorScriptExecutionGuard ScriptGuard;
@@ -222,9 +229,18 @@ void UDMXComponent::OnAllFixturePatchesReceiveDMXInEditorEnabled(bool bEnabled)
 
 #if WITH_EDITOR
 void UDMXComponent::OnFixturePatchPropertiesChanged(const UDMXEntityFixturePatch* FixturePatch)
-{
+{	
+	// Look up the global setting first, which is on in most cases.
+	// This is faster as GetFixturePatch can be slow.
+	const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>();
+	if (ProtocolSettings->ShouldAllFixturePatchesReceiveDMXInEditor() && IsComponentTickEnabled())
+	{
+		return;
+	}
+
 	if (FixturePatch == GetFixturePatch())
 	{
+		SetupReceiveDMXBinding();
 		UpdateTickEnabled();
 	}
 }

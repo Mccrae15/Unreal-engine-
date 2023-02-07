@@ -477,6 +477,15 @@ void FDisplayClusterLightCardEditorViewportClient::Draw(const FSceneView* View, 
 			{
 				continue;
 			}
+
+			if (const IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(BillboardComponent->GetOwner()))
+			{
+				if ((bIsUVProjection && !StageActor->IsUVActor()) || (!bIsUVProjection && StageActor->IsUVActor()))
+				{
+					continue;
+				}
+			}
+			
 			FSpriteProxy SpriteProxy = FSpriteProxy::FromBillboard(BillboardComponent.Get());
 		
 			FVector ProjectedLocation = ProjectWorldPosition(SpriteProxy.WorldPosition, BillboardViewMatrices);
@@ -1084,12 +1093,12 @@ const FDisplayClusterLightCardEditorViewportClient::FActorProxy* FDisplayCluster
 	});
 }
 
-void FDisplayClusterLightCardEditorViewportClient::CreateStageActorProxy(AActor* InLevelInstance)
+AActor* FDisplayClusterLightCardEditorViewportClient::CreateStageActorProxy(AActor* InLevelInstance)
 {
 	if (!IsValid(InLevelInstance))
 	{
 		// Can happen if the level actor was destroyed the tick prior to proxy creation.
-		return;
+		return nullptr;
 	}
 	
 	const FTransform RALevelTransformNoScale(RootActorLevelInstance->GetActorRotation(), RootActorLevelInstance->GetActorLocation(), FVector::OneVector);
@@ -1148,13 +1157,15 @@ void FDisplayClusterLightCardEditorViewportClient::CreateStageActorProxy(AActor*
 	ProjectionHelper->VerifyAndFixActorOrigin(ActorProxy);
 
 	UpdateProxyTransforms(ActorProxyStruct);
+
+	return ActorProxy;
 }
 
 void FDisplayClusterLightCardEditorViewportClient::UpdateProxyTransforms(const FActorProxy& InActorProxy)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FDisplayClusterLightCardEditorViewportClient::UpdateProxyTransforms"), STAT_UpdateProxyTransforms, STATGROUP_NDisplayLightCardEditor);
 	
-	if (InActorProxy.LevelInstance.IsValid() && InActorProxy.Proxy.IsValid())
+	if (RootActorLevelInstance.IsValid() && InActorProxy.LevelInstance.IsValid() && InActorProxy.Proxy.IsValid())
 	{
 		const FTransform RALevelTransformNoScale(RootActorLevelInstance->GetActorRotation(), RootActorLevelInstance->GetActorLocation(), FVector::OneVector);
 		const FTransform LCLevelRelativeToRALevel = InActorProxy.LevelInstance.AsActorChecked()->GetTransform().GetRelativeTransform(RALevelTransformNoScale);
@@ -1207,24 +1218,33 @@ void FDisplayClusterLightCardEditorViewportClient::ProcessClick(FSceneView& View
 
 	if (HitProxy)
 	{
+		const HHitProxy* HitProxyTest = Viewport->GetHitProxy(HitX, HitY);
+		if (!ensure(HitProxyTest == HitProxy))
+		{
+			// Speculative work around for invalid hit proxy. The HitProxy passed to ProcessClick may have been deleted,
+			// but since we're dealing with a raw ptr we can't check that. This is so we can possibly hit it and debug.
+			return;
+		}
+		
 		if (HitProxy->IsA(HActor::StaticGetType()))
 		{
 			HActor* ActorHitProxy = static_cast<HActor*>(HitProxy);
-			if (ActorHitProxy->Actor == RootActorProxy.Get())
+
+			// Only perform the ray trace when not in UV mode, as it doesn't make sense to ray trace against UV space
+			if (ActorHitProxy->Actor == RootActorProxy.Get() && ProjectionMode != EDisplayClusterMeshProjectionType::UV)
 			{
 				if (ActorHitProxy->PrimComponent && ActorHitProxy->PrimComponent->IsA<UStaticMeshComponent>())
 				{
-					ADisplayClusterLightCardActor* TracedLightCard = TraceScreenForLightCard(View, HitX, HitY);
-					SelectActor(TracedLightCard, bMultiSelect);
+					AActor* TracedActor = TraceScreenForActor(View, HitX, HitY);
+					SelectActor(TracedActor, bMultiSelect);
 				}
 			}
-			else if (UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(ActorHitProxy->Actor) && ActorProxies.Contains(ActorHitProxy->Actor))
+			else if (ActorProxies.Contains(ActorHitProxy->Actor) && UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(ActorHitProxy->Actor))
 			{
 				SelectActor(ActorHitProxy->Actor, bMultiSelect);
 			}
 			else if (!bMultiSelect)
 			{
-
 				// Unless a right click is being performed, clear the selection if no geometry was clicked
 				if (!bIsRightClickSelection)
 				{
@@ -1338,8 +1358,7 @@ EMouseCursor::Type FDisplayClusterLightCardEditorViewportClient::GetCursor(FView
 							.SetRealtimeUpdate(IsRealtime()));
 						FSceneView* View = CalcSceneView(&ViewFamily);
 
-						ADisplayClusterLightCardActor* TracedLightCard = TraceScreenForLightCard(*View, X, Y);
-						if (TracedLightCard)
+						if (const AActor* TracedActor = TraceScreenForActor(*View, X, Y))
 						{
 							MouseCursor = EMouseCursor::Crosshairs;
 						}
@@ -1494,7 +1513,16 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 		return;
 	}
 
-	if (!StageActor)
+	if (StageActor && ActorsRefreshing.Contains(StageActor))
+	{
+		return;
+	}
+
+	if (StageActor)
+	{
+		ActorsRefreshing.Add(StageActor);
+	}
+	else
 	{
 		ProxyTypesRefreshing.Add(ProxyType);
 	}
@@ -1542,6 +1570,7 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 
 			if (StageActor)
 			{
+				ActorsRefreshing.Remove(StageActor);
 				DestroyProxy(StageActor);
 			}
 			else
@@ -1563,6 +1592,8 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 			RootActorLevelInstance = RootActorPtr;
 
 			SubscribeToRootActor();
+
+			TArray<TObjectPtr<AActor>> ActorProxiesCreated;
 			
 			if (ProxyType == EDisplayClusterLightCardEditorProxyType::All ||
 				ProxyType == EDisplayClusterLightCardEditorProxyType::RootActor)
@@ -1597,6 +1628,12 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 
 				FBox BoundingBox = RootActorProxy->GetComponentsBoundingBox();
 				RootActorBoundingRadius = FMath::Max(BoundingBox.Min.Length(), BoundingBox.Max.Length());
+
+				// Set translucency sort priority of root actor proxy primitive components so that actors that are flush with screens are rendered on top of them
+				RootActorProxy->ForEachComponent<UPrimitiveComponent>(false, [](UPrimitiveComponent* InPrimitiveComponent)
+				{
+					InPrimitiveComponent->SetTranslucentSortPriority(-10);
+				});
 			}
 
 			// Filter out any primitives hidden in game except screen components
@@ -1611,14 +1648,20 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 				{
 					if (StageActor)
 					{
-						CreateStageActorProxy(StageActor);
+						if (AActor* ActorProxy = CreateStageActorProxy(StageActor))
+						{
+							ActorProxiesCreated.Add(ActorProxy);
+						}
 					}
 					else
 					{
 						TArray<AActor*> ManagedActors = LightCardEditorPtr.Pin()->FindAllManagedActors();
 						for (AActor* Actor : ManagedActors)
 						{
-							CreateStageActorProxy(Actor);
+							if (AActor* ActorProxy = CreateStageActorProxy(Actor))
+							{
+								ActorProxiesCreated.Add(ActorProxy);
+							}
 						}
 					}
 				}
@@ -1634,14 +1677,25 @@ void FDisplayClusterLightCardEditorViewportClient::UpdatePreviewActor(ADisplayCl
 			}
 
 			// Make sure proxies are added to the renderer. Necessary for selections to render even if stage actors were not modified but root actor was updated
-			for (const FActorProxy& ActorProxy : ActorProxies)
+			for (const TObjectPtr<AActor>& ActorProxy : ActorProxiesCreated)
 			{
-				IDisplayClusterScenePreview::Get().AddActorToRenderer(PreviewRendererId, ActorProxy.Proxy.AsActor(), [this, ActorProxy](const UPrimitiveComponent* PrimitiveComponent)
+				// Hack - CL 23230783 sets CCW meshes to hidden which causes problems with selection, so always add CCWs to the renderer.
+				bool bIsCCW = false;
+				for (const UClass* Class = ActorProxy->GetClass(); Class && (UObject::StaticClass() != Class); Class = Class->GetSuperClass())
+				{
+					if (Class->GetName() == TEXT("ColorCorrectionWindow"))
+					{
+						bIsCCW = true;
+						break;
+					}
+				}
+				
+				IDisplayClusterScenePreview::Get().AddActorToRenderer(PreviewRendererId, ActorProxy, [this, ActorProxy, bIsCCW](const UPrimitiveComponent* PrimitiveComponent)
 				{
 					// Always add the light card mesh component to the renderer's scene even if it is marked hidden in game, since UV light cards will purposefully
 					// hide the light card mesh since it isn't supposed to exist in 3D space. The light card mesh will be appropriately filtered when the scene is
 					// rendered based on the projection mode
-					if (PrimitiveComponent->GetFName() == TEXT("LightCard"))
+					if (PrimitiveComponent->GetFName() == TEXT("LightCard") || bIsCCW)
 					{
 						return true;
 					}
@@ -2560,7 +2614,7 @@ double FDisplayClusterLightCardEditorViewportClient::GetActorSpinDelta(FViewport
 	return FMath::RadiansToDegrees(Theta - LastTheta);
 }
 
-ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::TraceScreenForLightCard(const FSceneView& View, int32 HitX, int32 HitY)
+AActor* FDisplayClusterLightCardEditorViewportClient::TraceScreenForActor(const FSceneView& View, int32 HitX, int32 HitY)
 {
 	UWorld* PreviewWorld = PreviewScene->GetWorld();
 	check(PreviewWorld);
@@ -2574,7 +2628,18 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 
 	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(LightCardTrace), true);
 
-	bool bHitLightCard = false;
+	const bool bInUVMode = ProjectionMode == EDisplayClusterMeshProjectionType::UV;
+	auto IsValidActor = [&](AActor* InActor)
+	{
+		bool bValidForUV = true;
+		if (const IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(InActor))
+		{
+			// Ignore actors not supporting the current UV mode
+			bValidForUV = (bInUVMode && StageActor->IsUVActor()) || (!bInUVMode && !StageActor->IsUVActor());
+		}
+		return bValidForUV && UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(InActor) && ActorProxies.Contains(InActor);
+	};
+	
 	FHitResult ScreenHitResult;
 	if (PreviewWorld->LineTraceSingleByObjectType(ScreenHitResult, CursorRayStart, CursorRayEnd, FCollisionObjectQueryParams(FCollisionObjectQueryParams::InitType::AllObjects), TraceParams))
 	{
@@ -2607,11 +2672,11 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 						{
 							for (FHitResult& HitResult : HitResults)
 							{
-								if (ADisplayClusterLightCardActor* LightCardActor = Cast<ADisplayClusterLightCardActor>(HitResult.GetActor()))
+								if (AActor* HitStageActor = HitResult.GetActor())
 								{
-									if (ActorProxies.Contains(LightCardActor))
+									if (IsValidActor(HitStageActor))
 									{
-										return LightCardActor;
+										return HitStageActor;
 									}
 								}
 							}
@@ -2619,9 +2684,9 @@ ADisplayClusterLightCardActor* FDisplayClusterLightCardEditorViewportClient::Tra
 					}
 				}
 			}
-			else if (UE::DisplayClusterLightCardEditorUtils::IsProxySelectable(HitActor) && ActorProxies.Contains(HitActor))
+			else if (IsValidActor(HitActor))
 			{
-				return Cast<ADisplayClusterLightCardActor>(HitActor);
+				return HitActor;
 			}
 		}
 	}

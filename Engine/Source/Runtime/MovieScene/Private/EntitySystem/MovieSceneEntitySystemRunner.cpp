@@ -205,6 +205,33 @@ bool FMovieSceneEntitySystemRunner::QueueFinalUpdateAndDestroy(FInstanceHandle I
 	return QueueFinalUpdateImpl(InInstanceHandle, FSimpleDelegate(), true);
 }
 
+bool CanFinishImmediately(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FInstanceHandle InstanceHandle)
+{
+	using namespace UE::MovieScene;
+
+	const UE::MovieScene::FInstanceRegistry* Registry = Linker->GetInstanceRegistry();
+	const FSequenceInstance& Instance = Registry->GetInstance(InstanceHandle);
+
+	ensure(Instance.IsRootSequence());
+
+	if (!Registry->GetInstance(InstanceHandle).Ledger.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const FSequenceInstance& OtherInstance : Registry->GetSparseInstances())
+	{
+		if (OtherInstance.GetRootInstanceHandle() == Instance.GetRootInstanceHandle())
+		{
+			if (!OtherInstance.Ledger.IsEmpty())
+			{
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
 
 bool FMovieSceneEntitySystemRunner::QueueFinalUpdateImpl(FInstanceHandle InInstanceHandle, FSimpleDelegate&& InOnLastFlushDelegate, bool bDestroyInstance)
 {
@@ -230,10 +257,11 @@ bool FMovieSceneEntitySystemRunner::QueueFinalUpdateImpl(FInstanceHandle InInsta
 	// 2. we're not in the middle of an update loop 
 	// 3. the instance has no current updates
 	//
-	const bool bHasAnyEntities = !Instance.Ledger.IsEmpty();
+	const bool bCanFinishImmediately = CanFinishImmediately(Linker, InInstanceHandle);
+	
 	const ERunnerFlushState UnsafeDestroyMask = ERunnerFlushState::Everything & ~(ERunnerFlushState::PostEvaluation | ERunnerFlushState::End);
 	const bool bSafeToDestroyNow = !EnumHasAnyFlags(FlushState, UnsafeDestroyMask);
-	if (!bHasAnyEntities && bSafeToDestroyNow && !HasQueuedUpdates(InInstanceHandle))
+	if (bCanFinishImmediately && bSafeToDestroyNow && !HasQueuedUpdates(InInstanceHandle))
 	{
 		Instance.Finish(Linker);
 		Instance.PostEvaluation(Linker);

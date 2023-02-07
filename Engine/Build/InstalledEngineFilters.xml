@@ -248,6 +248,19 @@
 
 
 	<!-- Win64 editor specific dependencies -->
+	<Property Name="ExtraSignFilesWin64">
+		<!-- CsvTools binaries which are manually updated in P4 -->
+		Engine/Binaries/DotNET/CsvTools/...
+		Engine/Binaries/ThirdParty/DotNet/6.0.302/windows/...
+		Engine/Binaries/ThirdParty/Python3/...
+		Engine/Binaries/ThirdParty/PresentMon/Win64/PresentMon64-1.5.2.exe
+		Engine/Binaries/ThirdParty/svn/Win64/...
+		Engine/Binaries/Win64/UnrealTraceServer.exe
+		Engine/Binaries/Win64/EpicWebHelper.exe
+		Engine/Binaries/Win64/embree.dll
+		Engine/Build/Windows/cl-filter/...
+		Engine/Extras/ThirdPartyNotUE/cwrsync/bin/...
+	</Property>
 	
 	<Property Name="CopyEditorFilterWin64" Value="$(CopyEditorFilter)">
 		<!-- Build batch files -->
@@ -275,6 +288,7 @@
 		Engine/Extras/MayaVelocityGridExporter/...
 		Engine/Extras/UnrealVS/...
 		Engine/Extras/Redist/en-us/*
+		Engine/Extras/VirtualProduction/TextureShare/...
 
 		<!-- Virtual Production Templates -->
 		Templates/TP_nDisplayBP/...
@@ -298,6 +312,7 @@
 
 		<!-- Used by Switchboard application, and by iOS/tvOS build automation -->
 		Engine/Extras/ThirdPartyNotUE/cwrsync/...
+		Engine/Binaries/ThirdParty/PresentMon/Win64/PresentMon64-1.5.2.exe
 	</Property>
 
 	<Property Name="CopyEditorExceptionsWin64" Value="$(CopyEditorExceptions)">
@@ -460,6 +475,10 @@
 	</Property>
 
 	<!-- Android -->
+	<Property Name="ExtraSignFilesAndroid">
+		Engine/Binaries/DotNET/Android/...
+	</Property>
+
 	<Property Name="CopyAndroidFilter">
 		<!-- Build Files -->
 		Engine/Binaries/DotNET/Android/...
@@ -500,6 +519,13 @@
 	</Property>
 
 	<!-- IOS -->
+	<Property Name="ExtraSignFilesIOS">
+		Engine/Binaries/ThirdParty/DotNet/6.0.302/mac-arm64/...
+		Engine/Binaries/ThirdParty/DotNet/6.0.302/mac-x64/...
+		Engine/Binaries/ThirdParty/Mono/Mac/...
+		Engine/Extras/ThirdPartyNotUE/libimobiledevice/x64/...
+	</Property>
+
 	<Property Name="CopyIOSFilter" Value="$(MacBuildFiles)">
 		<!-- Build Files -->
 		Engine/Build/IOS/...
@@ -532,6 +558,13 @@
 	</Property>
 
 	<!-- TVOS -->
+	<Property Name="ExtraSignFilesTVOS">
+		Engine/Binaries/ThirdParty/DotNet/6.0.302/mac-arm64/...
+		Engine/Binaries/ThirdParty/DotNet/6.0.302/mac-x64/...
+		Engine/Binaries/ThirdParty/Mono/Mac/...
+		Engine/Extras/ThirdPartyNotUE/libimobiledevice/x64/...
+	</Property>
+
 	<Property Name="CopyTVOSFilter" Value="$(MacBuildFiles)">
 		<!-- Build Files -->
 		Engine/Build/TVOS/...
@@ -552,6 +585,14 @@
 	</Property>
 
 	<!-- Linux -->
+	<Property Name="ExtraSignFilesLinux">
+		<!-- Linux cross build Debug tools -->
+		Engine/Binaries/Linux/AgentInterface.dll
+		Engine/Binaries/Linux/dump_syms.exe
+		Engine/Binaries/Linux/BreakpadSymbolEncoder.exe
+		Engine/Binaries/ThirdParty/Mono/Linux/...
+	</Property>
+
 	<Property Name="CopyLinuxFilter">
 		Engine/Binaries/ThirdParty/OpenAL/...
 		Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Unix/x86_64-unknown-linux-gnu/*.so

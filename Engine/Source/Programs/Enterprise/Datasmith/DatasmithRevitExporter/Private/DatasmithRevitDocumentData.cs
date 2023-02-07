@@ -299,6 +299,8 @@ namespace DatasmithRevitExporter
 
 			public FBaseElementData			Parent = null;
 
+			public bool bOwnedByParent = false; // Lifetime is controlled by parent Element
+
 			public FBaseElementData(
 				ElementType InElementType, FDocumentData InDocumentData
 			)
@@ -312,20 +314,6 @@ namespace DatasmithRevitExporter
 				ElementActor = InElementActor;
 				ElementMetaData = InElementMetaData;
 				DocumentData = InDocumentData;
-			}
-
-			public bool IsSimpleActor()
-			{
-				FDatasmithFacadeActorMesh MeshActor = ElementActor as FDatasmithFacadeActorMesh;
-
-				if (MeshActor != null && MeshActor.GetMeshName().Length == 0)
-				{
-					ElementActor = new FDatasmithFacadeActor(MeshActor.GetName());
-					CopyActorData(MeshActor, ElementActor);
-					return true;
-				}
-
-				return !(ElementActor is FDatasmithFacadeActorMesh || ElementActor is FDatasmithFacadeActorLight || ElementActor is FDatasmithFacadeActorCamera);
 			}
 
 			void CopyActorData(FDatasmithFacadeActor InFromActor, FDatasmithFacadeActor InToActor)
@@ -358,9 +346,16 @@ namespace DatasmithRevitExporter
 				ElementMetaData?.SetAssociatedElement(InToActor);
 			}
 
+			// Return element when this 'ElementData' is associated with an Element
+			// todo: Probably worth separating FBaseElementData into different entity, calling it now "Element" data is confusing as it's also used to hold for non-Element datasmith actors
+			protected virtual Element GetElement()
+			{
+				return null;
+			}
+
 			public void AddToScene(FDatasmithFacadeScene InScene, FBaseElementData InParent, bool bInSkipChildren, bool bInForceAdd = false)
 			{
-				Element ThisElement = (this as FElementData)?.CurrentElement;
+				Element ThisElement = GetElement();
 
 				if (!bInSkipChildren)
 				{
@@ -421,25 +416,24 @@ namespace DatasmithRevitExporter
 				bIsModified = false;
 			}
 
+			// Returns true if element's actor is simple(plain actor without descendants)
 			public bool Optimize()
 			{
-				bool bIsSimpleActor = IsSimpleActor();
-
-				List<FBaseElementData> ChildrenToRemove = new List<FBaseElementData>();
-
-				foreach (FBaseElementData CurrentChild in ChildElements)
+				// Replace MeshActor without geometry by a dummy Actor
+				if (ElementActor is FDatasmithFacadeActorMesh MeshActor && MeshActor.GetMeshName().Length == 0)
 				{
-					if (CurrentChild.Optimize())
-					{
-						ChildrenToRemove.Add(CurrentChild);
-					}
+					ElementActor = new FDatasmithFacadeActor(MeshActor.GetName());
+					CopyActorData(MeshActor, ElementActor);
 				}
 
-				foreach (FBaseElementData Child in ChildrenToRemove)
+				// Optimize and remove children whose actors are simple
+				List<FBaseElementData> SimpleChildren = ChildElements.Where(Child => Child.Optimize()).ToList(); // Build a list of elements to remove after enumeration
+				foreach (FBaseElementData Child in SimpleChildren)
 				{
 					ChildElements.Remove(Child);
 				}
 
+				bool bIsSimpleActor = !(ElementActor is FDatasmithFacadeActorMesh || ElementActor is FDatasmithFacadeActorLight || ElementActor is FDatasmithFacadeActorCamera);
 				return bIsSimpleActor && (ChildElements.Count == 0) && bOptimizeHierarchy;
 			}
 
@@ -463,7 +457,7 @@ namespace DatasmithRevitExporter
 			public Element		CurrentElement = null;
 			public Transform	MeshPointsTransform = null;
 
-			private Stack<FBaseElementData> InstanceDataStack = new Stack<FBaseElementData>();
+			public Stack<FBaseElementData> InstanceDataStack = new Stack<FBaseElementData>();
 
 			public FElementData(
 				Element InElement,
@@ -473,11 +467,11 @@ namespace DatasmithRevitExporter
 				: base(InElement.Document.GetElement(InElement.GetTypeId()) as ElementType, InDocumentData)
 			{
 				CurrentElement = InElement;
+			}
 
-				InitializePivotPlacement(ref InWorldTransform);
-
-				// Create a new Datasmith mesh actor.
-				InitializeElement(InWorldTransform, this);
+			protected override Element GetElement() 
+			{
+				return CurrentElement;
 			}
 
 			public void InitializePivotPlacement(ref Transform InOutWorldTransform)
@@ -718,6 +712,7 @@ namespace DatasmithRevitExporter
 			)
 			{
 				FBaseElementData InstanceData = new FBaseElementData(InInstanceType, DocumentData);
+				InstanceData.bOwnedByParent = true;
 
 				FamilyInstance CurrentFamilyInstance = CurrentElement as FamilyInstance;
 				if (CurrentFamilyInstance != null && CurrentFamilyInstance.HasModifiedGeometry())
@@ -787,7 +782,7 @@ namespace DatasmithRevitExporter
 				FDatasmithRevitLight.SetLightProperties(InLightAsset, CurrentElement, LightActor);
 
 				// Add the light actor to the Datasmith actor hierarchy.
-				AddChildActor(LightActor, LightMetaData, false);
+				AddChildActor(LightActor, LightMetaData, false, true);
 			}
 
 			public bool AddRPCActor(
@@ -943,7 +938,7 @@ namespace DatasmithRevitExporter
 				}
 
 				// Add the RPC mesh actor to the Datasmith actor hierarchy.
-				AddChildActor(FacadeActor, ElementMetaData, false);
+				AddChildActor(FacadeActor, ElementMetaData, false, true);
 
 				return OutDatasmithMesh != null;
 			}
@@ -961,7 +956,8 @@ namespace DatasmithRevitExporter
 			public void AddChildActor(
 				FDatasmithFacadeActor ChildActor,
 				FDatasmithFacadeMetaData MetaData,
-				bool bOptimizeHierarchy
+				bool bOptimizeHierarchy,
+				bool bOwned // Make its lifetime controlled by this ElementData
 			)
 			{
 				FBaseElementData ElementData = new FBaseElementData(ChildActor, MetaData, DocumentData);
@@ -971,6 +967,7 @@ namespace DatasmithRevitExporter
 
 				Parent.ChildElements.Add(ElementData);
 				ElementData.Parent = Parent;
+				ElementData.bOwnedByParent = bOwned;
 			}
 
 			public void InitializeElement(
@@ -1086,26 +1083,10 @@ namespace DatasmithRevitExporter
 
 			private string GetActorName(bool bEnsureUnique)
 			{
-				string ActorName;
-
-				if (InstanceDataStack.Count == 0)
-				{
-					ActorName = $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}";
-				}
-				else
-				{
-					ActorName = GenerateUniqueInstanceName();
-				}
-
-				if (bEnsureUnique && DocumentData.DirectLink != null)
-				{
-					ActorName = DocumentData.DirectLink.EnsureUniqueActorName(ActorName);
-				}
-
-				return ActorName;
+				return DocumentData.GetActorName(this);
 			}
 
-			private string GenerateUniqueInstanceName()
+			public string GenerateUniqueInstanceNameSuffix()
 			{
 				// GenerateUniqueInstanceName is being called when generating a name for instance.
 				// After the call, the intance is added as a child to its parent.
@@ -1113,7 +1094,7 @@ namespace DatasmithRevitExporter
 
 				// To add uniqueness to the generated name, we construct a string with child counts from
 				// current parent instance, up to the root:
-				// Elem->Instance->Instance->Instace can produce something like: "1:5:3" for example.
+				// Elem->Instance->Instance->Instance can produce something like: "1:5:3" for example.
 				// However, this is not enough because elsewhere we might encounter the same sequence in terms of child counts,
 				// but adding the CurrentElement unique id ensures we get unique name string in the end.
 
@@ -1128,8 +1109,7 @@ namespace DatasmithRevitExporter
 				// Add child count for the root element (parent of all instances)
 				ChildCounts.AppendFormat(":{0}", ChildElements.Count);
 
-				FBaseElementData Instance = InstanceDataStack.Peek();
-				return $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}:{Instance.BaseElementType.UniqueId}{ChildCounts.ToString()}";
+				return $"I:{ChildCounts}";
 			}
 
 			private string GetMeshName()
@@ -1138,20 +1118,16 @@ namespace DatasmithRevitExporter
 				{
 					return $"{DocumentData.DocumentId}:{CurrentElement.UniqueId}";
 				}
-				else
-				{
-					FBaseElementData Instance = InstanceDataStack.Peek();
 
-					if (!Instance.bAllowMeshInstancing)
-					{
-						return GenerateUniqueInstanceName();
-					}
-					else
-					{
-						// Generate instanced mesh name
-						return $"{DocumentData.DocumentId}:{Instance.BaseElementType.UniqueId}";
-					}
+				FBaseElementData Instance = InstanceDataStack.Peek();
+
+				if (Instance.bAllowMeshInstancing)
+				{
+					// Generate instanced mesh name using Instance geometry UniqueId
+					return $"{DocumentData.DocumentId}:{Instance.BaseElementType.UniqueId}";
 				}
+
+				return GetActorName(true);  // Use unique element's actor name to base mesh name on
 			}
 
 			private string GetActorLabel()
@@ -1248,6 +1224,26 @@ namespace DatasmithRevitExporter
 			}
 		}
 
+		private string GetActorName(FElementData InElementData)
+		{
+			// GetActorName should be called only for the current processed element
+			// so InElementData serves internally the only purpose to validate the call
+			Debug.Assert(InElementData == ElementDataStack.Peek());
+
+			string ActorName = Context.GetActorName(this);
+			if (InElementData.InstanceDataStack.Count == 0)
+			{
+				return ActorName;
+			}
+
+			
+			// Instance actor name (when InstanceDataStack is not empty), using current element's encountered instance count as instance's identification
+			// (to to OnElementBegin could follow multiple OnInstanceBegin/End calls, meaning an element can have multiple instances nested right under it)
+			// And each instance should have a separate unique name name identified by element path from root plus instances index(calling GetActorName for next
+			// instance in the same element will have InstanceDataStack.Count increased)
+			return ActorName + InElementData.GenerateUniqueInstanceNameSuffix();
+		}
+
 		public Dictionary<string, Tuple<FDatasmithFacadeMeshElement, Task<bool>>>
 														MeshMap = new Dictionary<string, Tuple<FDatasmithFacadeMeshElement, Task<bool>>>();
 		public Dictionary<ElementId, FBaseElementData>	ActorMap = new Dictionary<ElementId, FDocumentData.FBaseElementData>();
@@ -1269,6 +1265,8 @@ namespace DatasmithRevitExporter
 		private XYZ										ProjectSurveyPoint = null;
 		private XYZ										ProjectBasePoint = null;
 
+		public FDatasmithRevitExportContext				Context = null;
+
 		public string									DocumentId { get; private set; } = "";
 
 		public bool										bSkipMetadataExport { get; private set; } = false;
@@ -1283,17 +1281,41 @@ namespace DatasmithRevitExporter
 			FSettings InSettings,
 			ref List<string> InMessageList,
 			FDirectLink InDirectLink,
-			string InLinkedDocumentId
+			string InDocumentId
 		)
 		{
-			InsertionPoint = InSettings?.InsertionPoint ?? FSettings.EInsertionPoint.Default;
-
+			
 			CurrentSettings = InSettings;
 			DirectLink = InDirectLink;
 			CurrentDocument = InDocument;
 			MessageList = InMessageList;
 			// With DirectLink, we delay export of metadata for a faster initial export.
 			bSkipMetadataExport = (DirectLink != null);
+
+
+			DocumentId = InDocumentId;
+		}
+
+		public void Reset(FDatasmithRevitExportContext InContext)
+		{
+			Context = InContext; // Make currently processing document aware of the current export context (currently context is recreated on each Sync)
+			MeshMap = new Dictionary<string, Tuple<FDatasmithFacadeMeshElement, Task<bool>>>();
+			ActorMap = new Dictionary<ElementId, FBaseElementData>();
+			MaterialDataMap = null;
+			NewMaterialsMap = new Dictionary<string, FMaterialData>();
+			DecalElementsMap = new Dictionary<ElementId, FElementData>();
+			DecalMaterialsMap = new Dictionary<ElementId, FDecalMaterial>();
+
+			ElementDataStack = new Stack<FElementData>();
+			CurrentMaterialName = null;
+
+			InsertionPoint = FSettings.EInsertionPoint.Default;
+
+			ProjectSurveyPoint = null;
+			ProjectBasePoint = null;
+
+			SectionBoxOutline = null;
+			SectionBox = null;
 
 			if (DirectLink != null)
 			{
@@ -1303,6 +1325,8 @@ namespace DatasmithRevitExporter
 			{
 				MaterialDataMap = new Dictionary<string, FMaterialData>();
 			}
+
+			InsertionPoint = CurrentSettings?.InsertionPoint ?? FSettings.EInsertionPoint.Default;
 
 			// Cache document section boxes
 			if (CurrentDocument.ActiveView != null)
@@ -1335,11 +1359,6 @@ namespace DatasmithRevitExporter
 					}
 				}
 			}
-
-			if (InLinkedDocumentId != null)
-			{
-				DocumentId = InLinkedDocumentId;
-			}
 		}
 
 		public Element GetElement(
@@ -1359,6 +1378,27 @@ namespace DatasmithRevitExporter
 			Transform InWorldTransform
 		)
 		{
+#if REVIT_API_2023
+			if (DirectLink != null && InElement.Category != null && InElement.Category.BuiltInCategory != BuiltInCategory.OST_Levels)
+#else
+			if (DirectLink != null && InElement.Category != null && (BuiltInCategory)InElement.Category.Id.IntegerValue != BuiltInCategory.OST_Levels)
+#endif
+			{
+				//Check if any of its children is Decal:
+				//If so track them, so that we can use the owner object elementId to update the Decals (when modified, for ep: changing its location)
+				IList<ElementId> DependentElements = InElement.GetDependentElements(null);
+				foreach (ElementId DependentElementId in DependentElements)
+				{
+					if (FUtils.IsElementIdDecal(InElement.Document, DependentElementId))
+					{
+						if (DependentElementId != InElement.Id && !DirectLink.DecalIdToOwnerObjectIdMap.ContainsKey(DependentElementId))
+						{
+							DirectLink.DecalIdToOwnerObjectIdMap.Add(DependentElementId, InElement.Id);
+						}
+					}
+				}
+			}
+
 			DirectLink?.MarkForExport(InElement);
 
 			FElementData ElementData = null;
@@ -1420,9 +1460,15 @@ namespace DatasmithRevitExporter
 
 						ElementData.BaseElementType = InElement.Document.GetElement(InElement.GetTypeId()) as ElementType;
 						ElementData.CurrentElement = InElement;
-						ElementData.InitializePivotPlacement(ref InWorldTransform);
-						ElementData.InitializeElement(InWorldTransform, ElementData);
 						ElementData.MeshMaterialsMap.Clear();
+
+						if (ElementData.bIsDecalElement)
+						{
+							if (!DecalElementsMap.ContainsKey(InElement.Id))
+							{
+								DecalElementsMap.Add(InElement.Id, ElementData);
+							}
+						}
 					}
 					else
 					{
@@ -1439,9 +1485,19 @@ namespace DatasmithRevitExporter
 						DecalElementsMap.Add(InElement.Id, ElementData);
 					}
 				}
+
+				ElementDataStack.Push(ElementData);
+
+				// Initialize element after pushing it on the stack(to unify this with other calls to element's methods)
+				// GetActorName depends on this 
+				ElementData.InitializePivotPlacement(ref InWorldTransform);
+				ElementData.InitializeElement(InWorldTransform, ElementData);
+			}
+			else
+			{
+				ElementDataStack.Push(ElementData);
 			}
 
-			ElementDataStack.Push(ElementData);
 			ElementDataStack.Peek().ElementActor.AddTag("IsElement");
 
 			return true;
@@ -2586,5 +2642,14 @@ namespace DatasmithRevitExporter
 			// Set the world transform of the Datasmith actor.
 			IOActor.SetWorldTransform(worldMatrix);
 		}
+
+		/// <summary>
+		/// Combine whole element stack in the document hierarchy to build unique path to the element in the document
+		/// </summary>
+		public string GetElementStackName()
+		{
+			return string.Join(", ", ElementDataStack.Select(Data => $"{Data.CurrentElement.UniqueId}"));
+		}
+
 	}
 }

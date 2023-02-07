@@ -752,11 +752,14 @@ namespace EpicGames.UHT.Types
 							this.LogError($"Can't override delegate signature function '{SourceName}'");
 						}
 					}
+
+					// Disable shadow checks for delegates
+					options &= ~UhtValidationOptions.Shadowing;
 					break;
 			}
 
 			// Make sure this isn't a duplicate type.  In some ways this has already been check above
-			UhtType? existingType = Outer!.FindType(UhtFindOptions.PropertyOrFunction | UhtFindOptions.EngineName | UhtFindOptions.SelfOnly, EngineName);
+			UhtType? existingType = Outer!.FindType(UhtFindOptions.Function | UhtFindOptions.EngineName | UhtFindOptions.SelfOnly, EngineName);
 			if (existingType != null && existingType != this)
 			{
 				this.LogError($"'{EngineName}' conflicts with '{existingType.FullName}'");

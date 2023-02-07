@@ -254,7 +254,7 @@ static FFogPassParameters* CreateDefaultFogPassParameters(
 	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformbuffer,
 	TRDGUniformBufferRef<FFogUniformParameters>& FogUniformBuffer,
 	FRDGTextureRef LightShaftOcclusionTexture,
-	const FScreenPassTextureViewportParameters LightShaftParameters)
+	const FScreenPassTextureViewportParameters& LightShaftParameters)
 {
 	extern int32 GVolumetricFogGridPixelSize;
 
@@ -429,7 +429,7 @@ void FDeferredShadingSceneRenderer::RenderUnderWaterFog(
 
 				// TODO add support for occlusion texture on water
 				FRDGTextureRef LightShaftOcclusionTexture = nullptr;	
-				FScreenPassTextureViewportParameters LightShaftParameters = FScreenPassTextureViewportParameters();
+				FScreenPassTextureViewportParameters LightShaftParameters = GetScreenPassTextureViewportParameters(FScreenPassTextureViewport(FIntRect(0, 0, 1, 1)));
 
 				FFogPassParameters* PassParameters = CreateDefaultFogPassParameters(GraphBuilder, View, SceneTexturesWithDepth, FogUniformBuffer, LightShaftOcclusionTexture, LightShaftParameters);
 				PassParameters->PS.WaterDepthTexture = WaterDepthTexture;

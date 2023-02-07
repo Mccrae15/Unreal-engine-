@@ -856,6 +856,8 @@ void UAnimGraphNode_LinkedAnimLayer::SetLayerName(FName InName)
 
 	if(UClass* TargetClass = GetTargetClass())
 	{
+		FGuid FunctionGuid;
+		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(TargetClass), InName, FunctionGuid);
 		FunctionReference.SetExternalMember(InName, TargetClass);
 	}
 	else
@@ -894,6 +896,18 @@ void UAnimGraphNode_LinkedAnimLayer::OnLayerChanged(IDetailLayoutBuilder* Detail
 {
 	OnStructuralPropertyChanged(DetailBuilder);
 
+	UClass* TargetClass = GetTargetClass();
+	if(TargetClass)
+	{
+		FGuid FunctionGuid;
+		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(TargetClass), Node.Layer, FunctionGuid);	
+		FunctionReference.SetExternalMember(Node.Layer, TargetClass);
+	}
+	else
+	{
+		FunctionReference.SetSelfMember(Node.Layer);
+	}
+	
 	// Get the interface for this layer. If null, then we are using a 'self' layer.
 	Node.Interface = GetInterfaceForLayer();
 
@@ -972,7 +986,11 @@ void UAnimGraphNode_LinkedAnimLayer::HandleInstanceChanged()
 void UAnimGraphNode_LinkedAnimLayer::SetupFromLayerId(FName InLayer)
 {
 	Node.Layer = InLayer;
-	
+
+	// Set to self member first, so we have a valid name in the member reference (otherwise GetInterfaceForLayer will fail)
+	// We will override this below
+	FunctionReference.SetSelfMember(InLayer);
+
 	// Get the interface for this layer. If null, then we are using a 'self' layer.
 	Node.Interface = GetInterfaceForLayer();
 
@@ -989,7 +1007,9 @@ void UAnimGraphNode_LinkedAnimLayer::SetupFromLayerId(FName InLayer)
 	UClass* TargetClass = GetTargetClass();
 	if(TargetClass)
 	{
-		FunctionReference.SetExternalMember(InLayer, TargetClass);
+		FGuid FunctionGuid;
+		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(TargetClass), InLayer, FunctionGuid);
+		FunctionReference.SetExternalMember(InLayer, TargetClass, FunctionGuid);
 	}
 	else
 	{

@@ -104,7 +104,6 @@ void FMediaPlateEditorModule::Tick(float DeltaTime)
 			if (MediaPlate->IsMediaPlatePlaying())
 			{
 				bIsMediaPlatePlaying = true;
-				break;
 			}
 		}
 
@@ -124,7 +123,7 @@ void FMediaPlateEditorModule::MediaPlateStartedPlayback(TObjectPtr<UMediaPlateCo
 {
 	if (MediaPlate != nullptr)
 	{
-		ActiveMediaPlates.Add(MediaPlate);
+		ActiveMediaPlates.AddUnique(MediaPlate);
 	}
 }
 

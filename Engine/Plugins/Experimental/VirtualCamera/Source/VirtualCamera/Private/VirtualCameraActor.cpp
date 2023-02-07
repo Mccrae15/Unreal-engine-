@@ -326,7 +326,7 @@ void AVirtualCameraActor::BeginPlay()
 	Super::BeginPlay();
 
 	UVirtualCameraSubsystem* SubSystem = GEngine->GetEngineSubsystem<UVirtualCameraSubsystem>();
-	if (!SubSystem->GetVirtualCameraController())
+	if (SubSystem && !SubSystem->GetVirtualCameraController())
 	{
 		SubSystem->SetVirtualCameraController(this);
 	}

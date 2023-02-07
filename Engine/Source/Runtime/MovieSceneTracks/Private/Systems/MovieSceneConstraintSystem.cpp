@@ -116,12 +116,24 @@ void UMovieSceneConstraintSystem::OnRun(FSystemTaskPrerequisites& InPrerequisite
 			{
 				const FSequenceInstance& TargetInstance = InstanceRegistry->GetInstance(InstanceHandle);
 
+				if (ConstraintChannel.ConstraintAndActiveChannel->Constraint.IsPending())
+				{
+					ConstraintChannel.ConstraintAndActiveChannel->Constraint.LoadSynchronous();
+				}
 				UTickableConstraint* Constraint = ConstraintChannel.ConstraintAndActiveChannel->Constraint.Get();
-				if (!Constraint)
+				if (!Constraint) //if constraint doesn't exist it probably got unspawned so recreate it and add it
 				{
 					UTickableConstraint* NewOne = Controller->AddConstraintFromCopy(ConstraintChannel.ConstraintAndActiveChannel->ConstraintCopyToSpawn);
 					Constraint = Controller->GetConstraint(ConstraintChannel.ConstraintName);
 					ConstraintChannel.Section->ReplaceConstraint(ConstraintChannel.ConstraintName, Constraint);
+				}
+				else // it's possible that we have it but it's not in the manager, due to manager not being saved with it (due to spawning or undo/redo).
+				{
+					const TArray< TObjectPtr<UTickableConstraint>>& ConstraintsArray = Controller->GetConstraintsArray();
+					if(ConstraintsArray.Find(Constraint) == INDEX_NONE)
+					{
+						Controller->AddConstraint(Constraint);
+					}
 				}
 				if (Constraint)
 				{
@@ -148,11 +160,11 @@ void UMovieSceneConstraintSystem::OnRun(FSystemTaskPrerequisites& InPrerequisite
 
 		// Set up new constraints
 		FEntityTaskBuilder()
-			.SetDesiredThread(Linker->EntityManager.GetGatherThread())
 			.Read(BuiltInComponents->BoundObject)
 			.Read(BuiltInComponents->InstanceHandle)
 			.Read(TracksComponents->ConstraintChannel)
 			.Read(BuiltInComponents->EvalTime)
+			.SetDesiredThread(Linker->EntityManager.GetGatherThread())
 			.Dispatch_PerEntity<FEvaluateConstraintChannels>(&Linker->EntityManager, InPrerequisites, &Subsequents, Linker->GetInstanceRegistry(), &Controller, this);
 	}
 	else if (CurrentPhase == ESystemPhase::Finalization)

@@ -937,7 +937,9 @@ void UInterchangeManager::StartQueuedTasks(bool bCancelAllTasks /*= false*/)
 
 bool UInterchangeManager::ImportAsset(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters)
 {
-	return ImportAssetAsync( ContentPath, SourceData, ImportAssetParameters )->IsValid();
+	UE::Interchange::FAssetImportResultRef InterchangeResult = ImportAssetAsync(ContentPath, SourceData, ImportAssetParameters);
+	InterchangeResult->WaitUntilDone();
+	return InterchangeResult->IsValid();
 }
 
 UE::Interchange::FAssetImportResultRef UInterchangeManager::ImportAssetAsync(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters)
@@ -949,6 +951,9 @@ bool UInterchangeManager::ImportScene(const FString& ContentPath, const UInterch
 {
 	using namespace UE::Interchange;
 	TTuple<FAssetImportResultRef, FSceneImportResultRef> ImportResults = ImportInternal(ContentPath, SourceData, ImportAssetParameters, UE::Interchange::EImportType::ImportType_Scene);
+	
+	ImportResults.Get<0>()->WaitUntilDone();
+	ImportResults.Get<1>()->WaitUntilDone();
 
 	return ImportResults.Get<0>()->IsValid() && ImportResults.Get<1>()->IsValid();
 }

@@ -155,6 +155,7 @@ TSharedPtr<FStructOnScope> FSequencerKeyStructGenerator::CreateInitialStructInst
 	}
 
 	// Copy the initial value into the struct
+	if (GeneratedStructType->SourceValuesProperty->Inner->GetSize() == GeneratedStructType->DestValueProperty->GetSize())
 	{
 		const uint8* SrcValueData  = GeneratedStructType->SourceValuesProperty->ContainerPtrToValuePtr<uint8>(SourceChannel);
 		uint8*       DestValueData = GeneratedStructType->DestValueProperty->ContainerPtrToValuePtr<uint8>(StructPtr);

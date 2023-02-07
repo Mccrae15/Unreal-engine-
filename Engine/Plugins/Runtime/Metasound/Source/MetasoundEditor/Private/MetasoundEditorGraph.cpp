@@ -24,9 +24,10 @@
 
 #define LOCTEXT_NAMESPACE "MetaSoundEditor"
 
-// Parameter names do not support '/' in addition to standard
-// name characters As analyzers use this to pack data into address.
-#define INVALID_PARAMETER_NAME_CHARACTERS INVALID_NAME_CHARACTERS METASOUND_ANALYZER_PATH_SEPARATOR
+// Parameter names do not support analyzer path separator, but do support
+// spaces (to be as consistent as possible with other systems such as Blueprint)
+#define INVALID_PARAMETER_NAME_CHARACTERS TEXT("\"',\n\r\t") METASOUND_ANALYZER_PATH_SEPARATOR
+
 
 namespace Metasound
 {
@@ -1932,7 +1933,7 @@ void UMetasoundEditorGraph::ValidateInternal(Metasound::Editor::FGraphValidation
 		// Validate there is only 1 editor node per guid 
 		// Input nodes are currently not 1:1 with their frontend representation
 		// but when they are, they can be validated here as well 
-		if (!Node->IsA<UMetasoundEditorGraphInputNode>())
+		if (!Node->IsA<UMetasoundEditorGraphInputNode>() && !Node->IsA<UMetasoundEditorGraphVariableNode>())
 		{
 			NodeGuids.Add(Node->GetNodeID(), &bNodeIdFound);
 			if (bNodeIdFound)

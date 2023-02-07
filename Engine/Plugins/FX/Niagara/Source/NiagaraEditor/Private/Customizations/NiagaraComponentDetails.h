@@ -10,6 +10,7 @@
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "ViewModels/HierarchyEditor/NiagaraHierarchyViewModelBase.h"
 #include "ViewModels/HierarchyEditor/NiagaraUserParametersHierarchyViewModel.h"
+#include "NiagaraComponentDetails.generated.h"
 
 class IDetailLayoutBuilder;
 class IPropertyHandle;
@@ -18,6 +19,15 @@ class INiagaraParameterViewModel;
 class SNiagaraParameterEditor;
 class FNiagaraParameterViewModelCustomDetails;
 class UNiagaraSystem;
+
+USTRUCT()
+struct FNiagaraEnumToByteHelper
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Parameters)
+	uint8 Value = 0;
+};
 
 class FNiagaraComponentDetails : public IDetailCustomization
 {
@@ -104,7 +114,7 @@ protected:
 	TArray<TSharedPtr<IPropertyHandle>> OverridePropertyHandles;
 	FSimpleDelegate OnRebuildChildren;
 	TArray<TSharedPtr<class FNiagaraParameterProxy>> ParameterProxies;
-	TMap<FName, TWeakPtr<FStructOnScope>> ParameterNameToDisplayStruct;
+	TMap<FNiagaraVariableBase, TWeakPtr<FStructOnScope>> ParameterToDisplayStruct;
 	FName CustomBuilderRowName;
 	const UNiagaraHierarchySection* ActiveSection = nullptr;
 	TArray<UNiagaraHierarchySection*> AvailableSections;

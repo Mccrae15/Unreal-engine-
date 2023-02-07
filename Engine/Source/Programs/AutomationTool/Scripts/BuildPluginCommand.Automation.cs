@@ -369,7 +369,7 @@ public sealed class BuildPlugin : BuildCommand
 				}
 				else if (Platform == UnrealTargetPlatform.Android)
 				{
-					Arguments += String.Format(" -architecture={0}", AndroidArchitectures);
+					Arguments += String.Format(" -architectures={0}", AndroidArchitectures);
 				}
 
 				if (!String.IsNullOrEmpty(InAdditionalArgs))

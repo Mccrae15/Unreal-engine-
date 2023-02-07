@@ -1628,7 +1628,19 @@ void FTriangleMeshImplicitObject::RebuildBVImp(const TArray<TVec3<IdxType>>& Ele
 	{
 		BVEntries.Add({this, Tri});
 	}
-	TreeBVH.Reinitialize(BVEntries, 22);
+
+	// Override some parameters for the internal triangle mesh acceleration
+	//
+	// Children in leaf - update to tested value with higher perf for this application
+	// Tree depth - default for the tree type
+	// Max element bounds - as we use a faster tree derived from this that has no global item support
+	//						all elements must be fully placed in the tree to be picked up when we translate
+	//						them over to the fast bvh
+	constexpr static int32 MaxChildrenInLeaf = 22;
+	constexpr static int32 MaxTreeDepth = BVHType::DefaultMaxTreeDepth;
+	constexpr static Chaos::FRealSingle MaxElementBounds = std::numeric_limits<Chaos::FRealSingle>::max();
+
+	TreeBVH.Reinitialize(BVEntries, MaxChildrenInLeaf, MaxTreeDepth, MaxElementBounds);
 }
 
 FTriangleMeshImplicitObject::~FTriangleMeshImplicitObject() = default;
@@ -1707,6 +1719,8 @@ void FTriangleMeshImplicitObject::RebuildFastBVHFromTree(const BVHType& TreeBVH)
 	int32 FaceNum = 0;
 	TArray<TVec3<FTrimeshIndexBuffer::LargeIdxType>> LargeIndices;
 	TArray<TVec3<FTrimeshIndexBuffer::SmallIdxType>> SmallIndices;
+	
+	TArray<uint16> OldMaterialIndices;
 	TArray<int32> OldFaceIndexMap;
 
 	if (ExternalFaceIndexMap.IsValid())
@@ -1714,6 +1728,9 @@ void FTriangleMeshImplicitObject::RebuildFastBVHFromTree(const BVHType& TreeBVH)
 		OldFaceIndexMap = MoveTemp(*ExternalFaceIndexMap.Get());
 		ExternalFaceIndexMap->Reserve(OldFaceIndexMap.Num());
 	}
+
+	OldMaterialIndices = MoveTemp(MaterialIndices);
+	MaterialIndices.Reserve(OldMaterialIndices.Num());
 
 	// since we do skip leaf nodes, we need to handle the case where we have only one node that will be a leaf by default
 	if (Nodes.Num() == 1)
@@ -1745,6 +1762,12 @@ void FTriangleMeshImplicitObject::RebuildFastBVHFromTree(const BVHType& TreeBVH)
 			if (ExternalFaceIndexMap.IsValid() && !OldFaceIndexMap.IsEmpty())
 			{
 				ExternalFaceIndexMap->Add(OldFaceIndexMap[LeafPayload.Payload]);
+			}
+
+			// If we have materials - add the index to the remapped list
+			if(OldMaterialIndices.IsValidIndex(LeafPayload.Payload))
+			{
+				MaterialIndices.Add(OldMaterialIndices[LeafPayload.Payload]);
 			}
 		}
 		if (MElements.RequiresLargeIndices())
@@ -1827,6 +1850,13 @@ void FTriangleMeshImplicitObject::RebuildFastBVHFromTree(const BVHType& TreeBVH)
 							{
 								ExternalFaceIndexMap->Add(OldFaceIndexMap[LeafPayload.Payload]);
 							}
+
+							// If we have materials - add the index to the remapped list
+							if(OldMaterialIndices.IsValidIndex(LeafPayload.Payload))
+							{
+								MaterialIndices.Add(OldMaterialIndices[LeafPayload.Payload]);
+							}
+
 							FaceNum++;
 						}
 					}

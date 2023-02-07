@@ -172,6 +172,8 @@ extern RENDERER_API FTAAOutputs AddTemporalAAPass(
 	const FTemporalAAHistory& InputHistory,
 	FTemporalAAHistory* OutputHistory);
 
+extern RENDERER_API FScreenPassTexture AddTSRComputeMoireLuma(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FScreenPassTexture SceneColor);
+
 /** Interface for the main temporal upscaling algorithm. */
 class RENDERER_API ITemporalUpscaler : public ISceneViewFamilyExtention
 {
@@ -179,7 +181,8 @@ public:
 
 	struct FPassInputs
 	{
-		bool bAllowDownsampleSceneColor = false;
+		bool bGenerateSceneColorHalfRes = false;
+		bool bGenerateSceneColorQuarterRes = false;
 		bool bGenerateOutputMip1 = false;
 		bool bGenerateVelocityFlattenTextures = false;
 		EPixelFormat DownsampleOverrideFormat;
@@ -187,12 +190,14 @@ public:
 		FRDGTextureRef SceneDepthTexture = nullptr;
 		FRDGTextureRef SceneVelocityTexture = nullptr;
 		FTranslucencyPassResources PostDOFTranslucencyResources;
+		FScreenPassTexture MoireInputTexture;
 	};
 
 	struct FOutputs
 	{
 		FScreenPassTexture FullRes;
 		FScreenPassTexture HalfRes;
+		FScreenPassTexture QuarterRes;
 		FVelocityFlattenTextures VelocityFlattenTextures;
 	};
 

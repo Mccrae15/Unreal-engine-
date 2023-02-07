@@ -73,7 +73,6 @@ void FTechSoftFileParserCADKernelTessellator::SewAndGenerateBodyMeshes()
 	{
 		SewAndMesh(Representations.Value);
 	}
-
 }
 
 void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentationItem*>& Representations)
@@ -194,7 +193,15 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 			FCadId ArchiveBodyId = ArchiveBodyIdOfDeletedRepresentation[Index++];
 			FArchiveBody& ArchiveBody = SceneGraph.GetBody(ArchiveBodyId);
 			ArchiveBody.Delete();
+		}
+	}
 
+	// Delete unused ArchiveBody
+	for (FArchiveBody& ArchiveBody : SceneGraph.Bodies)
+	{
+		if (ArchiveBody.MeshActorUId == 0)
+		{
+			ArchiveBody.Delete();
 		}
 	}
 }
@@ -213,6 +220,7 @@ void FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh(A3DRiRepresentati
 	FBody* CADKernelBody = TechSoftBridge.AddBody(Representation, ArchiveBody.MetaData, ArchiveBody.Unit);
 	if (CADKernelBody == nullptr)
 	{
+		ArchiveBody.Delete();
 		return;
 	}
 
@@ -254,6 +262,10 @@ void FTechSoftFileParserCADKernelTessellator::MeshAndGetTessellation(UE::CADKern
 	Mesher.MeshEntity(CADKernelBody);
 
 	FCADKernelTools::GetBodyTessellation(*CADKernelModelMesh, CADKernelBody, BodyMesh);
+	if (BodyMesh.Faces.Num() == 0)
+	{
+		ArchiveBody.Delete();
+	}
 
 	ArchiveBody.ColorFaceSet = BodyMesh.ColorSet;
 	ArchiveBody.MaterialFaceSet = BodyMesh.MaterialSet;

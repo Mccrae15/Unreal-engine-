@@ -151,6 +151,7 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 	MotionControllerData.DeviceVisualType = EXRVisualType::Controller;
 	MotionControllerData.TrackingStatus = ETrackingStatus::NotTracked;
 	MotionControllerData.HandIndex = Hand;
+	MotionControllerData.bValid = false;
 
 	TArray<int32> Devices;
 	if (EnumerateTrackedDevices(Devices, EXRTrackedDeviceType::Controller) && Devices.IsValidIndex((int32)Hand))
@@ -179,53 +180,57 @@ void FOpenXRHMD::GetMotionControllerData(UObject* WorldContext, const EControlle
 		}
 	}
 
-	FName MotionControllerName("OpenXR");
-	TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
-	IMotionController* MotionController = nullptr;
-	for (auto Itr : MotionControllers)
+	if ((Hand == EControllerHand::Left) || (Hand == EControllerHand::Right))
 	{
-		if (Itr->GetMotionControllerDeviceTypeName() == MotionControllerName)
+		FName MotionControllerName("OpenXR");
+		TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+		IMotionController* MotionController = nullptr;
+		for (auto Itr : MotionControllers)
 		{
-			MotionController = Itr;
-			break;
+			if (Itr->GetMotionControllerDeviceTypeName() == MotionControllerName)
+			{
+				MotionController = Itr;
+				break;
+			}
 		}
-	}
 
-	if (MotionController)
-	{
-		const float WorldToMeters = GetWorldToMetersScale();
-
-		bool bSuccess = false;
-		FVector Position = FVector::ZeroVector;
-		FRotator Rotation = FRotator::ZeroRotator;
-		FTransform trackingToWorld = GetTrackingToWorldTransform();
-		FName AimSource = Hand == EControllerHand::Left ? FName("LeftAim") : FName("RightAim");
-		bSuccess = MotionController->GetControllerOrientationAndPosition(0, AimSource, Rotation, Position, WorldToMeters);
-		if (bSuccess)
+		if (MotionController)
 		{
-			MotionControllerData.AimPosition = trackingToWorld.TransformPosition(Position);
-			MotionControllerData.AimRotation = trackingToWorld.TransformRotation(FQuat(Rotation));
-		}
-		MotionControllerData.bValid |= bSuccess;
+			const float WorldToMeters = GetWorldToMetersScale();
 
-		FName GripSource = Hand == EControllerHand::Left ? FName("LeftGrip") : FName("RightGrip");
-		bSuccess = MotionController->GetControllerOrientationAndPosition(0, GripSource, Rotation, Position, WorldToMeters);
-		if (bSuccess)
+			bool bSuccess = false;
+			FVector Position = FVector::ZeroVector;
+			FRotator Rotation = FRotator::ZeroRotator;
+			FTransform trackingToWorld = GetTrackingToWorldTransform();
+			FName AimSource = Hand == EControllerHand::Left ? FName("LeftAim") : FName("RightAim");
+			bSuccess = MotionController->GetControllerOrientationAndPosition(0, AimSource, Rotation, Position, WorldToMeters);
+			if (bSuccess)
+			{
+				MotionControllerData.AimPosition = trackingToWorld.TransformPosition(Position);
+				MotionControllerData.AimRotation = trackingToWorld.TransformRotation(FQuat(Rotation));
+			}
+			MotionControllerData.bValid |= bSuccess;
+
+			FName GripSource = Hand == EControllerHand::Left ? FName("LeftGrip") : FName("RightGrip");
+			bSuccess = MotionController->GetControllerOrientationAndPosition(0, GripSource, Rotation, Position, WorldToMeters);
+			if (bSuccess)
+			{
+				MotionControllerData.GripPosition = trackingToWorld.TransformPosition(Position);
+				MotionControllerData.GripRotation = trackingToWorld.TransformRotation(FQuat(Rotation));
+			}
+			MotionControllerData.bValid |= bSuccess;
+
+			MotionControllerData.TrackingStatus = MotionController->GetControllerTrackingStatus(0, GripSource);
+		}
+
+
+		if (HandTracker && HandTracker->IsHandTrackingStateValid())
 		{
-			MotionControllerData.GripPosition = trackingToWorld.TransformPosition(Position);
-			MotionControllerData.GripRotation = trackingToWorld.TransformRotation(FQuat(Rotation));
-		}
-		MotionControllerData.bValid |= bSuccess;
+			MotionControllerData.DeviceVisualType = EXRVisualType::Hand;
 
-		MotionControllerData.TrackingStatus = MotionController->GetControllerTrackingStatus(0, GripSource);
-	}
-
-	if (HandTracker && HandTracker->IsHandTrackingStateValid())
-	{
-		MotionControllerData.DeviceVisualType = EXRVisualType::Hand;
-
-		MotionControllerData.bValid = HandTracker->GetAllKeypointStates(Hand, MotionControllerData.HandKeyPositions, MotionControllerData.HandKeyRotations, MotionControllerData.HandKeyRadii);
-		check(!MotionControllerData.bValid || (MotionControllerData.HandKeyPositions.Num() == EHandKeypointCount && MotionControllerData.HandKeyRotations.Num() == EHandKeypointCount && MotionControllerData.HandKeyRadii.Num() == EHandKeypointCount));
+			MotionControllerData.bValid = HandTracker->GetAllKeypointStates(Hand, MotionControllerData.HandKeyPositions, MotionControllerData.HandKeyRotations, MotionControllerData.HandKeyRadii);
+			check(!MotionControllerData.bValid || (MotionControllerData.HandKeyPositions.Num() == EHandKeypointCount && MotionControllerData.HandKeyRotations.Num() == EHandKeypointCount && MotionControllerData.HandKeyRadii.Num() == EHandKeypointCount));
+		}	
 	}
 
 	//TODO: this is reportedly a wmr specific convenience function for rapid prototyping.  Not sure it is useful for openxr.
@@ -2400,7 +2405,7 @@ void FOpenXRHMD::DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, 
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("EmulatedStereoLayerRender"));
 		RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
 
-		if (bSplashIsShown || !IsBackgroundLayerVisible())
+		if (bSplashIsShown || !PipelinedLayerStateRendering.bBackgroundLayerVisible)
 		{
 			DrawClearQuad(RHICmdList, FLinearColor::Black);
 		}
@@ -2464,13 +2469,13 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 
 		SCOPED_NAMED_EVENT(EnqueueFrame, FColor::Red);
 
-		// Reset the update flag on all layers
-		ForEachLayer([&](uint32 /* unused */, FOpenXRLayer& Layer)
+		// Reset the update flag on native quad layers
+		for (FOpenXRLayer& NativeQuadLayer : NativeQuadLayers)
 		{
-			const bool bUpdateTexture = Layer.Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE;
-			Layer.RightEye.bUpdateTexture = bUpdateTexture;
-			Layer.LeftEye.bUpdateTexture = bUpdateTexture;
-		}, false);
+			const bool bUpdateTexture = NativeQuadLayer.Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE;
+			NativeQuadLayer.RightEye.bUpdateTexture = bUpdateTexture;
+			NativeQuadLayer.LeftEye.bUpdateTexture = bUpdateTexture;
+		}
 
 		FXRSwapChainPtr ColorSwapchain = PipelinedLayerStateRendering.ColorSwapchain;
 		FXRSwapChainPtr DepthSwapchain = PipelinedLayerStateRendering.DepthSwapchain;
@@ -2478,6 +2483,10 @@ void FOpenXRHMD::OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdL
 		{
 			OnBeginRendering_RHIThread(FrameState, ColorSwapchain, DepthSwapchain);
 		});
+
+		// We need to sync with the RHI thread to ensure we've acquired the next swapchain image.
+		// TODO: The acquire needs to be moved to the Render thread as soon as it's allowed by the spec.
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 	}
 
 	// Snapshot new poses for late update.
@@ -2551,12 +2560,16 @@ void FOpenXRHMD::OnBeginRendering_GameThread()
 	bShouldWait = true;
 
 	ENQUEUE_RENDER_COMMAND(TransferFrameStateToRenderingThread)(
-		[this, GameFrameState = PipelinedFrameStateGame](FRHICommandListImmediate& RHICmdList) mutable
+		[this, GameFrameState = PipelinedFrameStateGame, bBackgroundLayerVisible = IsBackgroundLayerVisible()](FRHICommandListImmediate& RHICmdList) mutable
 		{
 			UE_CLOG(PipelinedFrameStateRendering.FrameState.predictedDisplayTime >= GameFrameState.FrameState.predictedDisplayTime,
 				LogHMD, VeryVerbose, TEXT("Predicted display time went backwards from %lld to %lld"), PipelinedFrameStateRendering.FrameState.predictedDisplayTime, GameFrameState.FrameState.predictedDisplayTime);
 
 			PipelinedFrameStateRendering = GameFrameState;
+
+			// If we are emulating layers, we still need to submit background layer since we composite into it
+			PipelinedLayerStateRendering.bBackgroundLayerVisible = bBackgroundLayerVisible;
+			PipelinedLayerStateRendering.bSubmitBackgroundLayer = bBackgroundLayerVisible || !bNativeWorldQuadLayerSupport;
 		});
 }
 
@@ -2883,7 +2896,7 @@ void FOpenXRHMD::OnFinishRendering_RHIThread()
 	{
 		TArray<const XrCompositionLayerBaseHeader*> Headers;
 		XrCompositionLayerProjection Layer = {};
-		if (IsBackgroundLayerVisible())
+		if (PipelinedLayerStateRHI.bSubmitBackgroundLayer)
 		{
 			Layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
 			Layer.next = nullptr;
@@ -3370,6 +3383,30 @@ void FOpenXRHMD::DrawVisibleAreaMesh(class FRHICommandList& RHICmdList, int32 Vi
 	{
 		// Invalid mesh means that entire area is visible, draw a fullscreen quad to simulate
 		FPixelShaderUtils::DrawFullscreenQuad(RHICmdList, 1);
+	}
+}
+
+void FOpenXRHMD::UpdateLayer(FOpenXRLayer& ManagerLayer, uint32 LayerId, bool bIsValid)
+{
+	for (FOpenXRLayer& NativeLayer : NativeQuadLayers)
+	{
+		if (NativeLayer.GetLayerId() == LayerId)
+		{
+			const bool bStaticSwapchain = !(ManagerLayer.Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE);
+			NativeLayer.RightEye.bUpdateTexture = ManagerLayer.RightEye.bUpdateTexture;
+			NativeLayer.LeftEye.bUpdateTexture = ManagerLayer.LeftEye.bUpdateTexture;
+			if (bStaticSwapchain)
+			{
+				if (NativeLayer.RightEye.bUpdateTexture) 
+				{
+					NativeLayer.RightEye.Swapchain.Reset();
+				}
+				if (NativeLayer.LeftEye.bUpdateTexture)
+				{
+					NativeLayer.LeftEye.Swapchain.Reset();
+				}
+			}
+		}
 	}
 }
 

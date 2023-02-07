@@ -124,7 +124,7 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 		if (CVarMobileCustomDepthForTranslucency.GetValueOnAnyThread() != 0)
 		{
 			CustomDepthStencilUsage.bUsesCustomDepthStencil = View.bUsesCustomDepth || View.bUsesCustomStencil;
-			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomDepth && View.bUsesCustomStencil;
+			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomStencil;
 		}
 
 		if (!CustomDepthStencilUsage.bSamplesCustomDepthAndStencil)
@@ -148,7 +148,7 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 						CustomDepthStencilUsage.bUsesCustomDepthStencil |= true;
 					}
 
-					if (bUsesCustomDepth && bUsesCustomStencil)
+					if (bUsesCustomStencil)
 					{
 						CustomDepthStencilUsage.bSamplesCustomDepthAndStencil |= true;
 						break;
@@ -859,7 +859,7 @@ void FMobileSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	// Important that this uses consistent logic throughout the frame, so evaluate once and pass in the flag from here
 	// NOTE: Must be done after  system texture initialization
 	// TODO: This doesn't take into account the potential for split screen views with separate shadow caches
-	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel));
+	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel), Views[0].bIsSceneCapture);
 
 	GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLMM_InitViews));
 

@@ -6,6 +6,7 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/Selection.h"
 #if WITH_EDITOR
 #include "Editor.h"
@@ -41,7 +42,23 @@ const UStaticMesh* FGLTFExporterUtility::GetPreviewMesh(const UMaterialInterface
 	} while (Material != nullptr);
 #endif
 
-	return nullptr;
+	static const UStaticMesh* DefaultPreviewMesh = GetSphereMesh();
+	return DefaultPreviewMesh;
+}
+
+const UStaticMesh* FGLTFExporterUtility::GetSphereMesh()
+{
+	const UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EditorMeshes/EditorSphere.EditorSphere"));
+	if (SphereMesh == nullptr)
+	{
+		SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		if (SphereMesh == nullptr)
+		{
+			SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineMeshes/Sphere.Sphere"));
+		}
+	}
+
+	return SphereMesh;
 }
 
 const USkeletalMesh* FGLTFExporterUtility::GetPreviewMesh(const UAnimSequence* AnimSequence)

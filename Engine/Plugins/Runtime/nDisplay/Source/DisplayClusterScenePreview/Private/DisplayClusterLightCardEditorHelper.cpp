@@ -462,6 +462,8 @@ void FDisplayClusterLightCardEditorHelper::MoveActorsToPixel(
 		{
 			if (Actor.IsValid())
 			{
+				VerifyAndFixActorOrigin(Actor);
+
 				const FSphericalCoordinates ActorCoords = GetActorCoordinates(Actor);
 
 				AverageCoords = AverageCoords + ActorCoords;
@@ -819,8 +821,8 @@ void FDisplayClusterLightCardEditorHelper::GetSceneViewInitOptions(
 
 	if (bIsOrthographic)
 	{
-		const float ZScale = 0.5f / HALF_WORLD_MAX;
-		const float ZOffset = HALF_WORLD_MAX;
+		const float ZScale = 0.5f / UE_OLD_HALF_WORLD_MAX;
+		const float ZOffset = UE_OLD_HALF_WORLD_MAX;
 
 		const float FOVScale = FMath::Tan(HalfFOV) / InDPIScale;
 
@@ -921,10 +923,10 @@ FDisplayClusterMeshProjectionPrimitiveFilter::FPrimitiveFilter FDisplayClusterLi
 	// Create a lambda function so that it's safe to access even if this helper is destroyed
 	return FDisplayClusterMeshProjectionPrimitiveFilter::FPrimitiveFilter::CreateLambda([bIsUVProjection](const UPrimitiveComponent* PrimitiveComponent)
 		{
-			if (ADisplayClusterLightCardActor* LightCard = Cast<ADisplayClusterLightCardActor>(PrimitiveComponent->GetOwner()))
+			if (IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(PrimitiveComponent->GetOwner()))
 			{
-				// Only render the UV light cards when in UV projection mode, and only render non-UV light cards in any other projection mode
-				return bIsUVProjection ? LightCard->bIsUVLightCard : !LightCard->bIsUVLightCard;
+				// Only render the UV actors when in UV projection mode, and only render non-UV actors in any other projection mode
+				return bIsUVProjection ? StageActor->IsUVActor() : !StageActor->IsUVActor();
 			}
 
 			return true;
@@ -938,10 +940,10 @@ FDisplayClusterMeshProjectionPrimitiveFilter::FPrimitiveFilter FDisplayClusterLi
 	// Create a lambda function so that it's safe to access even if this helper is destroyed
 	return FDisplayClusterMeshProjectionPrimitiveFilter::FPrimitiveFilter::CreateLambda([bIsUVProjection](const UPrimitiveComponent* PrimitiveComponent)
 		{
-			if (ADisplayClusterLightCardActor* LightCard = Cast<ADisplayClusterLightCardActor>(PrimitiveComponent->GetOwner()))
+			if (IDisplayClusterStageActor* StageActor = Cast<IDisplayClusterStageActor>(PrimitiveComponent->GetOwner()))
 			{
-				// When in UV projection mode, don't render the UV light cards using the UV projection, render them linearly
-				if (bIsUVProjection && LightCard->bIsUVLightCard)
+				// When in UV projection mode, don't render the UV actors using the UV projection, render them linearly
+				if (bIsUVProjection && StageActor->IsUVActor())
 				{
 					return false;
 				}
@@ -1654,6 +1656,14 @@ FVector FDisplayClusterLightCardEditorHelper::TraceScreenRay(const FVector& Orth
 
 				Direction = (ClosestPoint - ViewOrigin).GetSafeNormal();
 			}
+		}
+
+		ADisplayClusterRootActor* RootActor = UpdateRootActor();
+		if (RootActor)
+		{
+			// Rotate direction back into local space
+			const FQuat RootRotation = RootActor->GetTransform().GetRotation().Inverse();
+			Direction = RootRotation.RotateVector(Direction);
 		}
 	}
 

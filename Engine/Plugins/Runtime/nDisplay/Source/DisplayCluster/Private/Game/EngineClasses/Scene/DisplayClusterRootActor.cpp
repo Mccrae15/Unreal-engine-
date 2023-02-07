@@ -682,6 +682,7 @@ void ADisplayClusterRootActor::UpdateLightCardPositions()
 					{
 						if (LightCardActor->Layers.Contains(ActorLayer.Name))
 						{
+							LightCardActor->SetRootActorOwner(this);
 							if (LightCardActor->bLockToOwningRootActor)
 							{
 								LightCardActor->SetActorLocation(Location);

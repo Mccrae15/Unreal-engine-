@@ -21,12 +21,12 @@ bool UDataInterface_Float_Multiply::GetDataImpl(const UE::DataInterface::FContex
 	{
 		bResult &= UE::DataInterface::GetDataSafe(Input, Context, IntermediateParam);
 
-		FKernel::Run(Context,
-			[](float& OutResult, float InIntermediate)
-			{
-				OutResult *= InIntermediate;
-			},
-			Result, IntermediateParam);
+		//FKernel::Run(Context,
+		//	[](float& OutResult, float InIntermediate)
+		//	{
+		//		OutResult *= InIntermediate;
+		//	},
+		//	Result, IntermediateParam);
 	}
 
 	return bResult;
@@ -48,12 +48,12 @@ bool UDataInterface_Float_InterpTo::GetDataImpl(const UE::DataInterface::FContex
 	TAllocParam<float> SpeedValue(Context);
 	bResult &= UE::DataInterface::GetDataSafe(Speed, Context, SpeedValue);
 
-	FKernel::Run(Context,
-		[DeltaTime](float& OutResult, float InCurrent, float InTarget, float InSpeed)
-		{
-			OutResult = FMath::FInterpConstantTo(InCurrent, InTarget, DeltaTime, InSpeed);
-		},
-		Result, CurrentValue, TargetValue, SpeedValue);
+	//FKernel::Run(Context,
+	//	[DeltaTime](float& OutResult, float InCurrent, float InTarget, float InSpeed)
+	//	{
+	//		OutResult = FMath::FInterpConstantTo(InCurrent, InTarget, DeltaTime, InSpeed);
+	//	},
+	//	Result, CurrentValue, TargetValue, SpeedValue);
 
 	return bResult;
 }
@@ -85,23 +85,23 @@ bool UDataInterface_Float_SpringInterp::GetDataImpl(const UE::DataInterface::FCo
 	TAllocParam<float> DampingRatioParam(Context);
 	bResult &= UE::DataInterface::GetDataSafe(DampingRatio, Context, DampingRatioParam);
 
-	FKernel::Run(Context,
-	[DeltaTime](FSpringInterpState& InOutState,
-					float InTargetValue,
-					float InTargetValueRate,
-					float InSmoothingTime,
-					float InDampingRatio)
-		{
-			FMath::SpringDamperSmoothing(
-				InOutState.Value,
-				InOutState.ValueRate,
-				InTargetValue,
-				InTargetValueRate,
-				DeltaTime,
-				InSmoothingTime,
-				InDampingRatio);
-		},
-		State, TargetValueParam, TargetValueRateParam, SmoothingTimeParam, DampingRatioParam);
+	//FKernel::Run(Context,
+	//[DeltaTime](FSpringInterpState& InOutState,
+	//				float InTargetValue,
+	//				float InTargetValueRate,
+	//				float InSmoothingTime,
+	//				float InDampingRatio)
+	//	{
+	//		FMath::SpringDamperSmoothing(
+	//			InOutState.Value,
+	//			InOutState.ValueRate,
+	//			InTargetValue,
+	//			InTargetValueRate,
+	//			DeltaTime,
+	//			InSmoothingTime,
+	//			InDampingRatio);
+	//	},
+	//	State, TargetValueParam, TargetValueRateParam, SmoothingTimeParam, DampingRatioParam);
 
 	return bResult;
 }

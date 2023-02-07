@@ -2147,7 +2147,7 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 			// Setup packed view
 			TArray<Nanite::FPackedView, SceneRenderingAllocator> PackedViews;
 			{
-				Nanite::FPackedViewParams Params;
+				Nanite::FPackedViewParams Params{};
 				Params.ViewMatrices = GetShadowDepthRenderingViewMatrices(CubemapFaceIndex);
 				// TODO: Real prev frame matrices
 				Params.PrevViewMatrices = Params.ViewMatrices;	
@@ -2160,7 +2160,7 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 	else if (VirtualShadowMapClipmap.IsValid())
 	{
 		// TODO: Register view per clip level such that they are culled early (?)
-		Nanite::FPackedViewParams Params;
+		Nanite::FPackedViewParams Params{};
 		// Note: To ensure conservative culling, we get the coarsest clip-level view since it covers the finer ones.
 		Params.ViewMatrices = VirtualShadowMapClipmap->GetViewMatrices(VirtualShadowMapClipmap->GetLevelCount() - 1);
 		// TODO: Real prev frame matrices
@@ -2171,12 +2171,16 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 	}
 	else
 	{
-		Nanite::FPackedViewParams Params;
+		Nanite::FPackedViewParams Params{};
 		Params.ViewMatrices = GetShadowDepthRenderingViewMatrices();
 		// TODO: Real prev frame matrices
 		Params.PrevViewMatrices = Params.ViewMatrices;
 		Params.ViewRect = GetInnerViewRect();
 		Params.RasterContextSize = FIntPoint(ResolutionX, ResolutionY);
+		if (IsWholeSceneDirectionalShadow())
+		{
+			Params.Flags &= ~NANITE_VIEW_FLAG_NEAR_CLIP;
+		}
 		ViewIds.Add(InstanceCullingManager.RegisterView(Params));
 	}
 	// GPUCULL_TODO: Pass along any custom culling planes or whatever here (e.g., cacade bounds):
@@ -2383,8 +2387,8 @@ void FProjectedShadowInfo::GatherDynamicMeshElements(FSceneRenderer& Renderer, F
 		Renderer.MeshCollector.ProcessTasks();
 	}
 
-	SetupMeshDrawCommandsForShadowDepth(Renderer, InstanceCullingManager);
 	SetupMeshDrawCommandsForProjectionStenciling(Renderer, InstanceCullingManager);
+	SetupMeshDrawCommandsForShadowDepth(Renderer, InstanceCullingManager);
 }
 
 void FProjectedShadowInfo::GatherDynamicMeshElementsArray(
@@ -5363,6 +5367,38 @@ void FSceneRenderer::AllocateAtlasedShadowDepthTargets(
 	}
 }
 
+/**
+* Helper class to get the name of an indexed rendertarget, keeping the pointers around (this is required by the rendertarget pool)
+*/
+class RenderTargetNameSet
+{
+private:
+	FString Prefix;
+	TArray<FString> Names;
+
+public:
+	RenderTargetNameSet(const TCHAR* Prefix)
+		: Prefix(Prefix), Names()
+	{ }
+
+	const TCHAR* Get(const int32 Index)
+	{
+		const int32 Count = Index + 1;
+		while (Names.Num() < Count)
+		{
+			if (Index == 0)
+			{
+				Names.Add(Prefix);
+			}
+			else
+			{
+				Names.Emplace(FString::Printf(TEXT("%s%d"), *Prefix, Names.Num()));
+			}
+		}
+		return *Names[Index];
+	}
+};
+
 void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& RHICmdList, TArray<FProjectedShadowInfo*, SceneRenderingAllocator>& CachedShadows)
 {
 	for (int32 ShadowIndex = 0; ShadowIndex < CachedShadows.Num(); ShadowIndex++)
@@ -5376,7 +5412,9 @@ void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& 
 
 		FIntPoint ShadowResolution(ProjectedShadowInfo->ResolutionX + ProjectedShadowInfo->BorderSize * 2, ProjectedShadowInfo->ResolutionY + ProjectedShadowInfo->BorderSize * 2);
 		FPooledRenderTargetDesc ShadowMapDesc2D = FPooledRenderTargetDesc::Create2DDesc(ShadowResolution, PF_ShadowDepth, FClearValueBinding::DepthOne, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false, 1, false);
-		GRenderTargetPool.FindFreeElement(RHICmdList, ShadowMapDesc2D, ShadowMap.RenderTargets.DepthTarget, bIsWholeSceneDirectionalShadow ? *FString::Printf(TEXT("CachedShadowDepthMap_Split%d"), ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex) : TEXT("CachedShadowDepthMap"));
+		static RenderTargetNameSet CachedSplitDepthRTNames(TEXT("CachedShadowDepthMap_Split"));
+		const TCHAR* RTDebugName = bIsWholeSceneDirectionalShadow ? CachedSplitDepthRTNames.Get(ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex) : TEXT("CachedShadowDepthMap");
+		GRenderTargetPool.FindFreeElement(RHICmdList, ShadowMapDesc2D, ShadowMap.RenderTargets.DepthTarget, RTDebugName);
 
 		check(ProjectedShadowInfo->CacheMode == SDCM_StaticPrimitivesOnly);
 		FCachedShadowMapData& CachedShadowMapData = Scene->GetCachedShadowMapDataRef(ProjectedShadowInfo->GetLightSceneInfo().Id, FMath::Max(ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex, 0));
@@ -5389,28 +5427,6 @@ void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& 
 		ProjectedShadowInfo->SetupShadowDepthView(this);
 		ShadowMap.Shadows.Add(ProjectedShadowInfo);
 	}
-}
-
-/**
-* Helper function to get the name of a CSM rendertarget, keeping the pointers around (this is required by the rendertarget pool)
-* @param ShadowMapIndex - the index of the shadow map cascade
-*/
-const TCHAR* GetCSMRenderTargetName(int32 ShadowMapIndex)
-{
-	// Render target names require string pointers not to be released, so we cache them in a static array and grow as necessary
-	static TArray<FString*> ShadowmapNames;
-	while (ShadowmapNames.Num() < ShadowMapIndex + 1)
-	{
-		if (ShadowMapIndex == 0)
-		{
-			ShadowmapNames.Add(new FString(TEXT("WholeSceneShadowmap")));
-		}
-		else
-		{
-			ShadowmapNames.Add(new FString(FString::Printf(TEXT("WholeSceneShadowmap%d"), ShadowmapNames.Num())));
-		}
-	}
-	return **ShadowmapNames[ShadowMapIndex];
 }
 
 void FSceneRenderer::AllocateCSMDepthTargets(
@@ -5461,7 +5477,8 @@ void FSceneRenderer::AllocateCSMDepthTargets(
 			FIntPoint WholeSceneAtlasSize(CurrentLayout.TextureLayout.GetSizeX(), CurrentLayout.TextureLayout.GetSizeY());
 			FPooledRenderTargetDesc WholeSceneShadowMapDesc2D(FPooledRenderTargetDesc::Create2DDesc(WholeSceneAtlasSize, PF_ShadowDepth, FClearValueBinding::DepthOne, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false));
 			WholeSceneShadowMapDesc2D.Flags |= GFastVRamConfig.ShadowCSM;
-			GRenderTargetPool.FindFreeElement(RHICmdList, WholeSceneShadowMapDesc2D, ShadowMapAtlas.RenderTargets.DepthTarget, GetCSMRenderTargetName(LayoutIndex));
+			static RenderTargetNameSet CsmRtNames(TEXT("WholeSceneShadowmap"));
+			GRenderTargetPool.FindFreeElement(RHICmdList, WholeSceneShadowMapDesc2D, ShadowMapAtlas.RenderTargets.DepthTarget, CsmRtNames.Get(LayoutIndex));
 
 			for (FProjectedShadowInfo* ProjectedShadowInfo : CurrentLayout.Shadows)
 			{

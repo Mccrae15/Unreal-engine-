@@ -1758,13 +1758,18 @@ bool FDeferredShadingSceneRenderer::DispatchRayTracingWorldUpdates(FRDGBuilder& 
 {
 	OutDynamicGeometryScratchBuffer = nullptr;
 
-	if (!IsRayTracingEnabled() || !bAnyRayTracingPassEnabled || Views.Num() == 0)
+	// We only need to update ray tracing scene for the first view family, if multiple are rendered in a single scene render call.
+	if (!bShouldUpdateRayTracingScene)
 	{
 		// This needs to happen even when ray tracing is not enabled
-		// because importers might batch BVH creation requests that need to be resolved in any case
+		// - importers might batch BVH creation requests that need to be resolved in any case
 		GRayTracingGeometryManager.ProcessBuildRequests(GraphBuilder.RHICmdList);
+		// - Nanite ray tracing instances are already pointing at the new BLASes and RayTracingDataOffsets in GPUScene have been updated
+		Nanite::GRayTracingManager.ProcessBuildRequests(GraphBuilder);
 		return false;
 	}
+
+	check(IsRayTracingEnabled() && bAnyRayTracingPassEnabled && !Views.IsEmpty());
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDeferredShadingSceneRenderer::DispatchRayTracingWorldUpdates);
 
@@ -1798,10 +1803,13 @@ bool FDeferredShadingSceneRenderer::DispatchRayTracingWorldUpdates(FRDGBuilder& 
 		const bool bAnyBlasRebuilt = Nanite::GRayTracingManager.ProcessBuildRequests(GraphBuilder);
 		if (bAnyBlasRebuilt)
 		{
-			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			for (FViewInfo& View : Views)
 			{
-				FViewInfo& View = Views[ViewIndex];
-				View.ViewState->PathTracingInvalidate();
+				if (View.ViewState != nullptr && !View.bIsOfflineRender)
+				{
+					// don't invalidate in the offline case because we only get one attempt at rendering each sample
+					View.ViewState->PathTracingInvalidate();
+				}
 			}
 		}
 	}
@@ -1924,10 +1932,7 @@ static void ReleaseRaytracingResources(FRDGBuilder& GraphBuilder, TArrayView<FVi
 
 void FDeferredShadingSceneRenderer::WaitForRayTracingScene(FRDGBuilder& GraphBuilder, FRDGBufferRef DynamicGeometryScratchBuffer)
 {
-	if (!bAnyRayTracingPassEnabled)
-	{
-		return;
-	}
+	check(bAnyRayTracingPassEnabled);
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDeferredShadingSceneRenderer::WaitForRayTracingScene);
 
@@ -2196,10 +2201,13 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 		if (bNaniteRayTracingModeChanged)
 		{
-			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			for (FViewInfo& View : Views)
 			{
-				FViewInfo& View = Views[ViewIndex];
-				View.ViewState->PathTracingInvalidate();
+				if (View.ViewState != nullptr && !View.bIsOfflineRender)
+				{
+					// don't invalidate in the offline case because we only get one attempt at rendering each sample
+					View.ViewState->PathTracingInvalidate();
+				}
 			}
 		}
 	}
@@ -2334,7 +2342,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	// Important that this uses consistent logic throughout the frame, so evaluate once and pass in the flag from here
 	// NOTE: Must be done after  system texture initialization
 	// TODO: This doesn't take into account the potential for split screen views with separate shadow caches
-	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel));
+	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel), Views[0].bIsSceneCapture);
 
 	// if DDM_AllOpaqueNoVelocity was used, then velocity should have already been rendered as well
 	const bool bIsEarlyDepthComplete = (DepthPass.EarlyZPassMode == DDM_AllOpaque || DepthPass.EarlyZPassMode == DDM_AllOpaqueNoVelocity);
@@ -2426,6 +2434,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	if (IsRayTracingEnabled() && RHISupportsRayTracingShaders(ViewFamily.GetShaderPlatform()))
 	{
+		// Nanite raytracing manager update must run before GPUScene update since it can modify primitive data
 		Nanite::GRayTracingManager.Update();
 
 		if (!ViewFamily.EngineShowFlags.PathTracing)
@@ -2930,8 +2939,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	// Early occlusion queries
 	const bool bOcclusionBeforeBasePass = ((DepthPass.EarlyZPassMode == EDepthDrawingMode::DDM_AllOccluders) || bIsEarlyDepthComplete);
 
-	bool bRayTracingSceneReady = false;
-
 	if (bOcclusionBeforeBasePass)
 	{
 		RenderOcclusionLambda();
@@ -2940,9 +2947,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	// End early occlusion queries
 
 	BeginAsyncDistanceFieldShadowProjections(GraphBuilder, SceneTextures);
-
-
-	
 
 	if (bShouldRenderVolumetricCloudBase)
 	{
@@ -3036,16 +3040,8 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	FRDGBufferRef DynamicGeometryScratchBuffer = nullptr;
 #if RHI_RAYTRACING
-	// Async AS builds can potentially overlap with BasePass.  We only need to update ray tracing scene for the first view family,
-	// if multiple are rendered in a single scene render call.
-	if (bShouldUpdateRayTracingScene)
-	{
-		DispatchRayTracingWorldUpdates(GraphBuilder, DynamicGeometryScratchBuffer);
-	}
-	else
-	{
-		bRayTracingSceneReady = true;
-	}
+	// Async AS builds can potentially overlap with BasePass.
+	bool bNeedToWaitForRayTracingScene = DispatchRayTracingWorldUpdates(GraphBuilder, DynamicGeometryScratchBuffer);
 
 	/** Should be called somewhere before "WaitForRayTracingScene" */
 	SetupRayTracingLightDataForViews(GraphBuilder);
@@ -3055,10 +3051,10 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	{
 #if RHI_RAYTRACING
 		// Lumen scene lighting requires ray tracing scene to be ready if HWRT shadows are desired
-		if (!bRayTracingSceneReady && Lumen::UseHardwareRayTracedSceneLighting(ViewFamily))
+		if (bNeedToWaitForRayTracingScene && Lumen::UseHardwareRayTracedSceneLighting(ViewFamily))
 		{
 			WaitForRayTracingScene(GraphBuilder, DynamicGeometryScratchBuffer);
-			bRayTracingSceneReady = true;
+			bNeedToWaitForRayTracingScene = false;
 		}
 #endif
 
@@ -3164,6 +3160,10 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	// Rebuild scene textures to include GBuffers.
 	SceneTextures.SetupMode |= ESceneTextureSetupMode::GBuffers;
+	if (bShouldRenderVelocities && (bBasePassCanOutputVelocity || Scene->EarlyZPassMode == DDM_AllOpaqueNoVelocity))
+	{
+		SceneTextures.SetupMode |= ESceneTextureSetupMode::SceneVelocity;
+	}
 	SceneTextures.UniformBuffer = CreateSceneTextureUniformBuffer(GraphBuilder, &SceneTextures, FeatureLevel, SceneTextures.SetupMode);
 
 	if (bRealTimeSkyCaptureEnabled)
@@ -3244,10 +3244,10 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 #if RHI_RAYTRACING
 		// Lumen scene lighting requires ray tracing scene to be ready if HWRT shadows are desired
-		if (!bRayTracingSceneReady && Lumen::UseHardwareRayTracedSceneLighting(ViewFamily))
+		if (bNeedToWaitForRayTracingScene && Lumen::UseHardwareRayTracedSceneLighting(ViewFamily))
 		{
 			WaitForRayTracingScene(GraphBuilder, DynamicGeometryScratchBuffer);
-			bRayTracingSceneReady = true;
+			bNeedToWaitForRayTracingScene = false;
 		}
 #endif // RHI_RAYTRACING
 
@@ -3345,10 +3345,10 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 #if RHI_RAYTRACING
 	// If Lumen did not force an earlier ray tracing scene sync, we must wait for it here.
-	if (!bRayTracingSceneReady)
+	if (bNeedToWaitForRayTracingScene)
 	{
 		WaitForRayTracingScene(GraphBuilder, DynamicGeometryScratchBuffer);
-		bRayTracingSceneReady = true;
+		bNeedToWaitForRayTracingScene = false;
 	}
 #endif // RHI_RAYTRACING
 
@@ -3568,6 +3568,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	}
 
 	// Draw translucency.
+	TArray<FScreenPassTexture> TSRMoireInputTextures;
 	if (!bHasRayTracedOverlay && TranslucencyViewsToRender != ETranslucencyView::None)
 	{
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, RenderTranslucency);
@@ -3591,6 +3592,21 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 			if (GetViewPipelineState(View).ReflectionsMethod == EReflectionsMethod::Lumen)
 			{
 				RenderLumenFrontLayerTranslucencyReflections(GraphBuilder, View, SceneTextures, LumenFrameTemporaries);
+			}
+		}
+
+		// Extract TSR's moire heuristic luminance before renderering translucency into the scene color.
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+		{
+			FViewInfo& View = Views[ViewIndex];
+			if (ITemporalUpscaler::GetMainTAAPassConfig(View) == EMainTAAPassConfig::TSR)
+			{
+				if (TSRMoireInputTextures.Num() == 0)
+				{
+					TSRMoireInputTextures.SetNum(Views.Num());
+				}
+
+				TSRMoireInputTextures[ViewIndex] = AddTSRComputeMoireLuma(GraphBuilder, View.ShaderMap, FScreenPassTexture(SceneTextures.Color.Target, View.ViewRect));
 			}
 		}
 
@@ -3624,7 +3640,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 		if (bShouldRenderVelocities)
 		{
-			const bool bRecreateSceneTextures = !SceneTextures.Velocity;
+			const bool bRecreateSceneTextures = !HasBeenProduced(SceneTextures.Velocity);
 
 			GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLM_TranslucentVelocity));
 			RenderVelocities(GraphBuilder, SceneTextures, EVelocityPass::Translucent, false);
@@ -3864,7 +3880,24 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 					const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
 					const bool bAnyLumenActive = ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen;
 
-					AddPostProcessingPasses(GraphBuilder, View, ViewIndex, bAnyLumenActive, ViewPipelineState.ReflectionsMethod, PostProcessingInputs, NaniteResults, InstanceCullingManager, &VirtualShadowMapArray, LumenFrameTemporaries, SceneWithoutWaterTextures);
+					FScreenPassTexture TSRMoireInput;
+					if (ViewIndex < TSRMoireInputTextures.Num())
+					{
+						TSRMoireInput = TSRMoireInputTextures[ViewIndex];
+					}
+
+					AddPostProcessingPasses(
+						GraphBuilder,
+						View, ViewIndex,
+						bAnyLumenActive,
+						ViewPipelineState.ReflectionsMethod,
+						PostProcessingInputs,
+						NaniteResults,
+						InstanceCullingManager,
+						&VirtualShadowMapArray,
+						LumenFrameTemporaries,
+						SceneWithoutWaterTextures,
+						TSRMoireInput);
 				}
 			}
 		}

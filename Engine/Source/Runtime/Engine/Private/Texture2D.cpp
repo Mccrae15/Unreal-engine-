@@ -71,9 +71,13 @@ UTexture2D::UTexture2D(const FObjectInitializer& ObjectInitializer)
 		[this]()-> FTexturePlatformData* { return GetPlatformData(); },
 		[this](FTexturePlatformData* InPlatformData) { SetPlatformData(InPlatformData); })
 #endif
+	, ResourceMem(nullptr)
 {
 	PendingUpdate = nullptr;
 	SRGB = true;
+
+	// AddressX is default-constructed by Uproperty to enum value 0 which is TA_Wrap
+	check( AddressX == TA_Wrap );
 }
 
 /*-----------------------------------------------------------------------------
@@ -1246,6 +1250,7 @@ FVirtualTexture2DResource::FVirtualTexture2DResource(const UTexture2D* InOwner, 
 	FirstMipToUse = FMath::Min((int32)MaxMip, InFirstMipToUse);
 
 	bSRGB = InOwner->SRGB;
+	bGreyScaleFormat = ( InOwner->CompressionSettings == TC_Grayscale || InOwner->CompressionSettings == TC_Alpha );
 
 	// Initialize this resource FeatureLevel, so it gets re-created on FeatureLevel changes
 	SetFeatureLevel(GMaxRHIFeatureLevel);

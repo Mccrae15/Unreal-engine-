@@ -2926,7 +2926,12 @@ void FSceneRenderer::ComputeGPUMasks(FRHICommandListImmediate* RHICmdList)
 
 	RenderTargetGPUMask = FRHIGPUMask::GPU0();
 	
-	if ((GNumExplicitGPUsForRendering > 1) && (GNumAlternateFrameRenderingGroups > 1) && ViewFamily.RenderTarget)
+	// Scene capture render targets should be propagated to all GPUs the render target exists on.  For other render targets
+	// (like nDisplay outputs), we default them to only be copied to GPU0, for performance.
+	//
+	// TODO:  we should remove this conditional, and set the GPU mask for the source render targets, but the goal is to have
+	// a minimal scope CL for the 5.1.1 hot fix.  This effectively reverts the change from CL 20540730, just for scene captures.
+	if ((GNumExplicitGPUsForRendering > 1) && ViewFamily.RenderTarget && ((GNumAlternateFrameRenderingGroups > 1) || Views[0].bIsSceneCapture))
 	{
 		// Get render target GPU mask, taking into account AFR
 		check(RHICmdList);
@@ -4648,8 +4653,20 @@ void FRendererModule::BeginRenderingViewFamilies(FCanvas* Canvas, TArrayView<FSc
 				uint64 SceneRenderStart = FPlatformTime::Cycles64();
 				const float StartDelayMillisec = FPlatformTime::ToMilliseconds64(SceneRenderStart - DrawSceneEnqueue);
 				CSV_CUSTOM_STAT_GLOBAL(DrawSceneCommand_StartDelay, StartDelayMillisec, ECsvCustomStatOp::Set);
-				RenderViewFamilies_RenderThread(RHICmdList, LocalSceneRenderers);
-				FlushPendingDeleteRHIResources_RenderThread();
+
+				// TODO:  There were some random uniform buffer crashes that resulted when rendering multiple view families
+				// in the function below.  Pass one at a time for now as a workaround (matches original Release 5.0 behavior),
+				// while we investigate.  The theory is that something in FSceneRenderer::RenderThreadBegin/End needs to run
+				// between scene renders to reset some state, but we don't know what.
+				TArray<FSceneRenderer*> SingleSceneRenderer;
+				SingleSceneRenderer.AddZeroed(1);
+
+				for (FSceneRenderer* SceneRenderer : LocalSceneRenderers)
+				{
+					SingleSceneRenderer[0] = SceneRenderer;
+					RenderViewFamilies_RenderThread(RHICmdList, SingleSceneRenderer);
+					FlushPendingDeleteRHIResources_RenderThread();
+				}
 			});
 
 		// Force kick the RT if we've got RT polling on.
@@ -5010,17 +5027,17 @@ static void DisplayInternals(FRDGBuilder& GraphBuilder, FViewInfo& InView)
 	// if r.DisplayInternals != 0
 	if(Family->EngineShowFlags.OnScreenDebug && Family->DisplayInternalsData.IsValid())
 	{
-		AddPass(GraphBuilder, RDG_EVENT_NAME("DisplayInternals"), [Family, &InView] (FRHICommandListImmediate& RHICmdList)
+		FRDGTextureRef OutputTexture = GraphBuilder.FindExternalTexture(Family->RenderTarget->GetRenderTargetTexture());
+		FScreenPassRenderTarget Output = FScreenPassRenderTarget::CreateViewFamilyOutput(OutputTexture, InView);
+		AddDrawCanvasPass(GraphBuilder, RDG_EVENT_NAME("DisplayInternals"), InView, Output, [Family, &InView](FCanvas& Canvas)
 		{
 			// could be 0
 			auto State = InView.ViewState;
 
-			FCanvas Canvas((FRenderTarget*)Family->RenderTarget, NULL, Family->Time, InView.GetFeatureLevel());
 			Canvas.SetRenderTargetRect(FIntRect(0, 0, Family->RenderTarget->GetSizeXY().X, Family->RenderTarget->GetSizeXY().Y));
 
 
 			FRHIRenderPassInfo RenderPassInfo(Family->RenderTarget->GetRenderTargetTexture(), ERenderTargetActions::Load_Store);
-			RHICmdList.BeginRenderPass(RenderPassInfo, TEXT("DisplayInternalsRenderPass"));
 
 			// further down to not intersect with "LIGHTING NEEDS TO BE REBUILT"
 			FVector2D Pos(30, 140);
@@ -5105,9 +5122,6 @@ static void DisplayInternals(FRDGBuilder& GraphBuilder, FViewInfo& InView)
 
 	#undef CANVAS_LINE
 	#undef CANVAS_HEADER
-
-			RHICmdList.EndRenderPass();
-			Canvas.Flush_RenderThread(RHICmdList);
 		});
 	}
 #endif

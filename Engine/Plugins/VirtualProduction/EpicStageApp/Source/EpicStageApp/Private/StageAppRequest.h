@@ -365,7 +365,9 @@ struct FRCWebSocketNDisplayPreviewActorCreateBody : public FRCRequest
 	FString ActorClass = "";
 
 	/**
-	 * The path of the template to use for the lightcard. If empty, a lightcard will be created with default settings.
+	 * The path of the template to use for the lightcard.
+	 * If empty, a lightcard will be created using the default template.
+	 * If "None", a lightcard will be created with default settings regardless of whether there's a default template.
 	 */
 	UPROPERTY()
 	FString TemplatePath = "";
@@ -385,6 +387,19 @@ struct FRCWebSocketNDisplayPreviewActorCreateBody : public FRCRequest
 	FVector2D Position = FVector2D::ZeroVector;
 
 	/**
+	 * If true, override the default/template color for the actor if it's a lightcard.
+	 */
+	UPROPERTY()
+	bool OverrideColor = false;
+
+	/**
+	 * If OverrideColor is true and PreviewRendererId points to a valid preview renderer, use this color when creating
+	 * a lightcard.
+	 */
+	UPROPERTY()
+	FLinearColor Color = FLinearColor::White;
+
+	/**
 	 * An optional number that will be passed back in the RequestedActorsCreated response to tell apart
 	 * the results of multiple requests.
 	 */
@@ -392,3 +407,34 @@ struct FRCWebSocketNDisplayPreviewActorCreateBody : public FRCRequest
 	int32 RequestId = -1;
 };
 
+/**
+ * Holds a request made via websocket to duplicate one or more actors.
+ */
+USTRUCT()
+struct FRCWebSocketNDisplayActorDuplicateBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketNDisplayActorDuplicateBody()
+	{
+		AddStructParameter(ParametersFieldLabel());
+	}
+
+	/**
+	 * Get the label for the property value struct.
+	 */
+	static FString ParametersFieldLabel() { return TEXT("Parameters"); }
+
+	/**
+	 * The list of paths of actors to duplicate.
+	 */
+	UPROPERTY()
+	TArray<FString> Actors;
+
+	/**
+	 * An optional number that will be passed back in the RequestedActorsCreated response to tell apart
+	 * the results of multiple requests.
+	 */
+	UPROPERTY()
+	int32 RequestId = -1;
+};
