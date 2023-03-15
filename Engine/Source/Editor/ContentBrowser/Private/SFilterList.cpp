@@ -441,7 +441,7 @@ void SFilterList::OnDeleteCustomTextFilter(const TSharedPtr<ICustomTextFilter<FA
 	}
 }
 
-void SFilterList::RestoreCustomTextFilterState(const FCustomTextFilterState& InFilterState)
+bool SFilterList::RestoreCustomTextFilterState(const FCustomTextFilterState& InFilterState)
 {
 	// Find the filter associated with the current instance data from our list of custom text filters
 	TSharedRef< ICustomTextFilter<FAssetFilterType> >* Filter =
@@ -450,8 +450,11 @@ void SFilterList::RestoreCustomTextFilterState(const FCustomTextFilterState& InF
 		return Element->CreateCustomTextFilterData().FilterLabel.EqualTo(InFilterState.FilterData.FilterLabel);
 	});
 
-	// InFilterState should always be a filter that already exists!
-	check(Filter);
+	// Return if we couldn't find the filter we are trying to restore
+	if(!Filter)
+	{
+		return false;
+	}
 
 	// Get the actual FFilterBase
 	TSharedRef<FFilterBase<FAssetFilterType>> ActualFilter = Filter->Get().GetFilter().ToSharedRef();
@@ -462,6 +465,8 @@ void SFilterList::RestoreCustomTextFilterState(const FCustomTextFilterState& InF
 	// Set the filter as active if it was previously
 	AddedFilter->SetEnabled(InFilterState.bIsActive, false);
 	this->SetFrontendFilterActive(ActualFilter, InFilterState.bIsActive);
+
+	return true;
 }
 
 void SFilterList::OnExternalCustomTextFilterCreated(TSharedPtr<SWidget> BroadcastingFilterList)
@@ -494,7 +499,7 @@ void SFilterList::OnExternalCustomTextFilterCreated(TSharedPtr<SWidget> Broadcas
 		if(bIsChecked)
 		{
 			/* Remove the filter from the list (calling SBasicFilterBar::RemoveFilter because we get a compiler error
-			*  due to SAssetFilterBar overriding RemoveFilter that takes in an SFilter that hides the parent class function
+			*  due to SAssetFilterBar overriding RemoveFilter that takes in an SFilter that hides the parent class function)
 			*/
 			SBasicFilterBar<FAssetFilterType>::RemoveFilter(CustomFilter, false);
 			
@@ -611,6 +616,41 @@ void SFilterList::SaveSettings()
 	SaveConfig();
 }
 
+void SFilterList::SaveSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString)
+{
+	// Workaround for backwards compatibility with filters that save settings until they are ported to EditorConfig
+	for ( const TSharedPtr<SFilter> Filter : this->Filters )
+	{
+		const FString FilterName = Filter->GetFilterName();
+
+		// If it is a FrontendFilter
+		if ( Filter->GetFrontendFilter().IsValid() )
+		{
+			const TSharedPtr<FFilterBase<FAssetFilterType>>& FrontendFilter = Filter->GetFrontendFilter();
+			const FString CustomSettingsString = FString::Printf(TEXT("%s.CustomSettings.%s"), *SettingsString, *FilterName);
+			FrontendFilter->SaveSettings(IniFilename, IniSection, CustomSettingsString);
+		}
+	}
+	
+	SaveSettings();
+}
+
+void SFilterList::LoadSettings(const FName& InInstanceName, const FString& IniFilename, const FString& IniSection, const FString& SettingsString)
+{
+	// Workaround for backwards compatibility with filters that save settings until they are ported to EditorConfig
+	for ( auto FrontendFilterIt = this->AllFrontendFilters.CreateIterator(); FrontendFilterIt; ++FrontendFilterIt )
+	{
+		TSharedRef<FFilterBase<FAssetFilterType>>& FrontendFilter = *FrontendFilterIt;
+		const FString& FilterName = FrontendFilter->GetName();
+
+		const FString CustomSettingsString = FString::Printf(TEXT("%s.CustomSettings.%s"), *SettingsString, *FilterName);
+		FrontendFilter->LoadSettings(IniFilename, IniSection, CustomSettingsString);
+	}
+	
+	LoadSettings(InInstanceName);
+}
+
+
 void SFilterList::LoadSettings(const FName& InInstanceName)
 {
 	// If this instance doesn't want to use the shared settings, load the settings normally
@@ -639,7 +679,10 @@ void SFilterList::LoadSettings(const FName& InInstanceName)
 	// From the instance settings, get each checked filter and set the checked and active state
 	for(const FCustomTextFilterState& FilterState : InstanceSettings->CustomTextFilters)
 	{
-		RestoreCustomTextFilterState(FilterState);
+		if(!RestoreCustomTextFilterState(FilterState))
+		{
+			UE_LOG(LogSlate, Warning, TEXT("SFilterList was unable to load the following custom text filter: %s"), *FilterState.FilterData.FilterLabel.ToString());
+		}
 	}
 
 	if(InstanceSettings->bIsLayoutSaved)

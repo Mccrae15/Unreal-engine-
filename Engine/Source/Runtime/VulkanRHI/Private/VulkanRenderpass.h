@@ -308,6 +308,7 @@ struct FVulkanRenderPassFragmentDensityMapCreateInfoEXT
 	}
 };
 
+
 #if VULKAN_SUPPORTS_RENDERPASS2
 template<>
 struct FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>
@@ -402,6 +403,7 @@ public:
 			}
 		}
 
+		// tonemap subpass non-msaa uses an additional color attachment that should not be used by main and depth subpasses
 		if (bMobileTonemapSubpass && (NumColorAttachments > 1))
 		{
 			NumColorAttachments--;
@@ -445,7 +447,7 @@ public:
 			SubpassDesc.SetColorAttachments(ColorAttachmentReferences, NumColorAttachments);
 			if (!bMobileTonemapSubpass)
 			{
-				SubpassDesc.SetResolveAttachments(ResolveAttachmentReferences);
+			SubpassDesc.SetResolveAttachments(ResolveAttachmentReferences);
 			}
 
 			check(RTLayout.GetDepthStencilAttachmentReference());
@@ -477,7 +479,7 @@ public:
 		}
 
 		// Two subpasses for deferred shading
-		if (bDeferredShadingSubpass || (GIsEditor && bMobileTonemapSubpass))
+		if (bDeferredShadingSubpass)
 		{
 			// both sub-passes only test DepthStencil
 			DepthStencilAttachment.attachment = RTLayout.GetDepthStencilAttachmentReference()->attachment;
@@ -515,7 +517,6 @@ public:
 			}
 
 			// 2. Write to SceneColor, input GBuffer and DepthStencil
-			if (bDeferredShadingSubpass)
 			{
 				TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 				SubpassDesc.SetColorAttachments(ColorAttachmentReferences, 1); // SceneColor only
@@ -604,11 +605,13 @@ public:
 			SubpassDesc.SetMultiViewMask(MultiviewMask);
 #endif
 
+#if VULKAN_SUPPORTS_QCOM_RENDERPASS_SHADER_RESOLVE
 			// Combine the last Render and Store operations if possible
-			if (!GIsEditor && Device.GetOptionalExtensions().HasQcomRenderPassShaderResolve && RTLayout.GetHasResolveAttachments())
+			if (Device.GetOptionalExtensions().HasQcomRenderPassShaderResolve && RTLayout.GetHasResolveAttachments())
 			{
 				SubpassDesc.flags |= VK_SUBPASS_DESCRIPTION_SHADER_RESOLVE_BIT_QCOM;
 			}
+#endif
 
 			TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
 			SubpassDep.srcSubpass = SrcSubpass++;
@@ -732,6 +735,7 @@ private:
 
 	TRenderPassCreateInfoClass CreateInfo;
 	FVulkanDevice& Device;
+
 	uint32_t CorrelationMask;
 };
 

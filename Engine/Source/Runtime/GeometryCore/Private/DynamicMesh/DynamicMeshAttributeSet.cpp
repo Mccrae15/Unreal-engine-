@@ -5,6 +5,7 @@
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
 #include "IndexTypes.h"
 #include "Async/Async.h"
+#include "Serialization/NameAsStringProxyArchive.h"
 
 
 using namespace UE::Geometry;
@@ -1224,7 +1225,8 @@ void FDynamicMeshAttributeSet::Serialize(FArchive& Ar, const FCompactMaps* Compa
 			for (int32 i = 0; i < NumSkinWeightAttributes; ++i)
 			{
 				FName Key;
-				Ar << Key;
+				FNameAsStringProxyArchive ProxyArchive(Ar);
+				ProxyArchive << Key;
 
 				TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>& Value = SkinWeightAttributes.Emplace(Key, nullptr);
 				bool IsValid;
@@ -1240,7 +1242,8 @@ void FDynamicMeshAttributeSet::Serialize(FArchive& Ar, const FCompactMaps* Compa
 		{
 			for (SkinWeightAttributesMap::TIterator It(SkinWeightAttributes); It; ++It)
 			{
-				Ar << It.Key();
+				FNameAsStringProxyArchive ProxyArchive(Ar);
+				ProxyArchive << It.Key();
 
 				const TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>& Value = It.Value();
 				bool bIsValid = Value.IsValid();

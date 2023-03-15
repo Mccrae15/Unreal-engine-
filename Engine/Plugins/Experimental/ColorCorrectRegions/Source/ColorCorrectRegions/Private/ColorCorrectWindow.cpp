@@ -42,6 +42,7 @@ AColorCorrectionWindow::AColorCorrectionWindow(const FObjectInitializer& ObjectI
 		MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 		MeshComponent->SetCollisionProfileName(TEXT("OverlapAll"));
 		MeshComponent->CastShadow = false;
+		MeshComponent->SetHiddenInGame(true);
 	}
 	SetMeshVisibilityForWindowType();
 

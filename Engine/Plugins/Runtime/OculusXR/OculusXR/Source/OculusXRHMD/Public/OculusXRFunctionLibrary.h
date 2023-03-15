@@ -127,6 +127,10 @@ enum class EOculusXRColorSpace : uint8
 	Adobe_RGB = 8,
 };
 
+/*
+* Hand tracking settings. Please check https://developer.oculus.com/documentation/unreal/unreal-hand-tracking/
+* for detailed information.
+*/
 UENUM(BlueprintType)
 enum class EOculusXRHandTrackingSupport : uint8
 {
@@ -141,6 +145,14 @@ enum class EOculusXRHandTrackingFrequency : uint8
 	LOW,
 	HIGH,
 	MAX,
+};
+
+UENUM(BlueprintType)
+enum class EOculusXRHandTrackingVersion : uint8
+{
+	Default,
+	V1,
+	V2,
 };
 
 UENUM(BlueprintType)

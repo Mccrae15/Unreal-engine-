@@ -9,7 +9,6 @@ typedef enum ovrLeaderboardFilterType_ {
   ovrLeaderboard_FilterNone,
   ovrLeaderboard_FilterFriends,
   ovrLeaderboard_FilterUnknown,
-  ovrLeaderboard_FilterUserIds,
 } ovrLeaderboardFilterType;
 
 /// Converts an ovrLeaderboardFilterType enum value to a string

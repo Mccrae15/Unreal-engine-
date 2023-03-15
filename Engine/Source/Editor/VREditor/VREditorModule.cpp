@@ -64,10 +64,10 @@ public:
 	static void ToggleForceVRMode();
 
 	/** Return a multicast delegate which is executed when VR mode starts. */
-	virtual FOnVREditingModeEnter& OnVREditingModeEnter() override { return ModeManager.OnVREditingModeEnter(); }
+	virtual FOnVREditingModeEnter& OnVREditingModeEnter() override { return ModeManager->OnVREditingModeEnter(); }
 
 	/** Return a multicast delegate which is executed when VR mode stops. */
-	virtual FOnVREditingModeExit& OnVREditingModeExit() override { return ModeManager.OnVREditingModeExit(); }
+	virtual FOnVREditingModeExit& OnVREditingModeExit() override { return ModeManager->OnVREditingModeExit(); }
 
 private:
 	void ExtendToolbarMenu();
@@ -78,7 +78,7 @@ private:
 	TSharedPtr<class FExtender> RadialMenuExtender;
 
 	/** Handles turning VR Editor mode on and off */
-	FVREditorModeManager ModeManager;
+	TUniquePtr<FVREditorModeManager> ModeManager;
 
 	FDelegateHandle DeferredInitDelegate;
 
@@ -96,7 +96,8 @@ void FVREditorModule::StartupModule()
 
 	RadialMenuExtender = MakeShareable(new FExtender());
 
-	ModeManager.OnModeClassAdded.AddRaw(this, &FVREditorModule::HandleModeClassAdded);
+	ModeManager = MakeUnique<FVREditorModeManager>();
+	ModeManager->OnModeClassAdded.AddRaw(this, &FVREditorModule::HandleModeClassAdded);
 
 	// UToolMenus::RegisterStartupCallback is still too early.
 	DeferredInitDelegate = FCoreDelegates::OnBeginFrame.AddLambda(
@@ -128,6 +129,8 @@ void FVREditorModule::ShutdownModule()
 	{
 		FVREditorStyle::Shutdown();
 	}
+
+	ModeManager.Release();
 }
 
 void FVREditorModule::PostLoadCallback()
@@ -136,32 +139,32 @@ void FVREditorModule::PostLoadCallback()
 
 bool FVREditorModule::IsVREditorEnabled() const
 {
-	return ModeManager.IsVREditorActive();
+	return ModeManager->IsVREditorActive();
 }
 
 bool FVREditorModule::IsVREditorAvailable() const
 {
-	return ModeManager.IsVREditorAvailable();
+	return ModeManager->IsVREditorAvailable();
 }
 
 bool FVREditorModule::IsVREditorButtonActive() const
 {
-	return ModeManager.IsVREditorButtonActive();
+	return ModeManager->IsVREditorButtonActive();
 }
 
 void FVREditorModule::EnableVREditor( const bool bEnable, const bool bForceWithoutHMD )
 {
-	ModeManager.EnableVREditor( bEnable, bForceWithoutHMD );
+	ModeManager->EnableVREditor( bEnable, bForceWithoutHMD );
 }
 
 bool FVREditorModule::IsVREditorModeActive()
 {
-	return ModeManager.IsVREditorActive();
+	return ModeManager->IsVREditorActive();
 }
 
 UVREditorMode* FVREditorModule::GetVRMode()
 {
-	return ModeManager.GetCurrentVREditorMode();
+	return ModeManager->GetCurrentVREditorMode();
 }
 
 void FVREditorModule::UpdateActorPreview(TSharedRef<SWidget> InWidget, int32 Index, AActor* Actor, bool bIsPanelDetached)
@@ -263,7 +266,7 @@ void FVREditorModule::ExtendToolbarMenu()
 			UClass* CurrentModeClass = CurrentModeClassSoft.LoadSynchronous();
 
 			TArray<UClass*> ModeClasses;
-			ModeManager.GetConcreteModeClasses(ModeClasses);
+			ModeManager->GetConcreteModeClasses(ModeClasses);
 
 			Algo::Sort(ModeClasses,
 				[](const UClass* Lhs, const UClass* Rhs)

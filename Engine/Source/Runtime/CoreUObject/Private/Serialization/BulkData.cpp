@@ -1407,6 +1407,13 @@ void FBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAttemptFileMapping
 			{
 				checkf(bAttemptFileMapping == false || bIsUsingIoDispatcher == false, TEXT("Trying to memory map inline bulk data '%s' which is not supported when loading from I/O store"), *Owner->GetPackage()->GetFName().ToString());
 
+				if (LinkerLoad && Ar.IsLoadingFromCookedPackage())
+				{
+					// Cooked packages are split into .uasset/.exp files and the offset needs to be adjusted accordingly.
+					const int64 PackageHeaderSize = IPackageResourceManager::Get().FileSize(LinkerLoad->GetPackagePath(), EPackageSegment::Header);
+					BulkMeta.SetOffset(BulkMeta.GetOffset() - PackageHeaderSize);
+				}
+
 				const int64 BulkDataSize = GetBulkDataSize();
 				void* DataBuffer = ReallocateData(BulkDataSize);
 				SerializeBulkData(Ar, DataBuffer, BulkDataSize, BulkMeta.GetFlags());

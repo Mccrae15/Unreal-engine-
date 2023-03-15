@@ -1281,7 +1281,8 @@ void FOpenGLDynamicRHI::RHINextSubpass()
 {
 	IRHICommandContext::RHINextSubpass();
 	
-	if ((RenderPassInfo.SubpassHint & (ESubpassHint::DepthReadSubpass | ESubpassHint::DeferredShadingSubpass)) != ESubpassHint::None)
+	if (RenderPassInfo.SubpassHint == ESubpassHint::DepthReadSubpass ||
+		RenderPassInfo.SubpassHint == ESubpassHint::DeferredShadingSubpass)
 	{
 		FOpenGL::FrameBufferFetchBarrier();
 	}

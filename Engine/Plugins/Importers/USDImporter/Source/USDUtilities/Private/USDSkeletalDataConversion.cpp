@@ -1636,10 +1636,10 @@ bool UsdToUnreal::ConvertSkinnedMesh(
 
 		// Manage materials
 		int32 LocalMaterialIndex = 0;
-		if ( FaceMaterialIndices.IsValidIndex( PolygonIndex ) )
+		if ( FaceMaterialIndices.IsValidIndex( LocalIndex ) )
 		{
-			LocalMaterialIndex = FaceMaterialIndices[ PolygonIndex ];
-			if ( !LocalMaterialSlots.IsValidIndex(LocalMaterialIndex) )
+			LocalMaterialIndex = FaceMaterialIndices[ LocalIndex ];
+			if ( !LocalMaterialSlots.IsValidIndex( LocalMaterialIndex ) )
 			{
 				LocalMaterialIndex = 0;
 			}
@@ -2879,6 +2879,15 @@ bool UnrealToUsd::ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, 
 	{
 		pxr::UsdAttribute BindTransformsAttr = UsdSkeleton.CreateBindTransformsAttr();
 		BindTransformsAttr.Set( WorldSpaceJointTransforms );
+	}
+
+	// Use Guide purpose on skeletons by default, unless it has some specific purpose set already
+	if ( pxr::UsdAttribute PurposeAttr = UsdSkeleton.GetPurposeAttr() )
+	{
+		if ( !PurposeAttr.HasAuthoredValue() )
+		{
+			PurposeAttr.Set( pxr::UsdGeomTokens->guide );
+		}
 	}
 
 	return true;

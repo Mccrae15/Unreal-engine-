@@ -389,7 +389,7 @@ bool UIKRigController::ValidateChain(
 	const int32 EndBoneIndex = Skeleton.GetBoneIndexFromName(Chain->EndBone.BoneName);
 
 	const bool bHasStartBone = StartBoneIndex != INDEX_NONE;
-	const bool bHasEndBone = StartBoneIndex != INDEX_NONE;
+	const bool bHasEndBone = EndBoneIndex != INDEX_NONE;
 
 	// chain has neither start nor end bone
 	if (!bHasStartBone && !bHasEndBone)
@@ -742,6 +742,11 @@ UIKRigSolver* UIKRigController::GetSolver(int32 Index) const
 
 UIKRigEffectorGoal* UIKRigController::AddNewGoal(const FName& GoalName, const FName& BoneName) const
 {
+	if (GetIKRigSkeleton().GetBoneIndexFromName(BoneName) == INDEX_NONE)
+	{
+		return nullptr; // bone does not exist in the skeleton
+	}
+	
 	if (GetGoalIndex(GoalName) != INDEX_NONE)
 	{
 		return nullptr; // goal already exists!

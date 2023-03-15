@@ -930,6 +930,8 @@ void FNiagaraGpuComputeDispatch::PrepareTicksForProxy(FRHICommandListImmediate& 
 		Tick.BuildUniformBuffers();
 	}
 
+	const bool bLowLatencyTranslucencyEnabled = GNiagaraGpuLowLatencyTranslucencyEnabled && FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Deferred;
+
 	// Now that all ticks have been processed we can adjust our output buffers to the correct size
 	// We will also set the translucent data to render, i.e. this frames data.
 	for (FNiagaraComputeExecutionContext* ComputeContext : ComputeProxy->ComputeContexts)
@@ -981,7 +983,7 @@ void FNiagaraGpuComputeDispatch::PrepareTicksForProxy(FRHICommandListImmediate& 
 		// When low latency translucency is enabled we can setup the final buffer / final count here.
 		// This will allow our mesh processor commands to pickup the data for the same frame.
 		// This allows simulations that use the depth buffer, for example, to execute with no latency
-		else if ( GNiagaraGpuLowLatencyTranslucencyEnabled )
+		else if (bLowLatencyTranslucencyEnabled)
 		{
 			FNiagaraDataBuffer* FinalBuffer = ComputeContext->GetPrevDataBuffer();
 			FinalBuffer->SetGPUInstanceCountBufferOffset(ComputeContext->CountOffset_RT);

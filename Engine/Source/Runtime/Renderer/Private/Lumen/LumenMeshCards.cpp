@@ -1135,6 +1135,7 @@ void FLumenMeshCards::UpdateLookup(const TSparseSpanArray<FLumenCard>& Cards)
 		CardLookup[Card.AxisAlignedDirectionIndex] |= BitMask;
 	}
 }
+
 void FLumenMeshCards::SetTransform(const FMatrix& InLocalToWorld)
 {
 	LocalToWorld = InLocalToWorld;

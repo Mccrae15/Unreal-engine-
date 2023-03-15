@@ -488,11 +488,13 @@ void UChaosGameplayEventDispatcher::HandleBreakingEvents(const Chaos::FBreakingE
 		const int32 NumBreaks = BreakingData.Num();
 		if (NumBreaks > 0)
 		{
+			FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+
 			for (Chaos::FBreakingData const& BreakingDataItem : BreakingData)
 			{	
 				if (BreakingDataItem.Proxy)
 				{
-					UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(BreakingDataItem.Proxy->GetOwner());
+					UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(BreakingDataItem.Proxy);
 					if (PrimComp && BreakEventRegistrations.Contains(PrimComp))
 					{
 						// queue them up so we can release the physics data before trigging BP events
@@ -558,11 +560,13 @@ void UChaosGameplayEventDispatcher::HandleRemovalEvents(const Chaos::FRemovalEve
 		const int32 NumRemovals = RemovalData.Num();
 		if (NumRemovals > 0)
 		{
+			FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+
 			for (Chaos::FRemovalData const& RemovalDataItem : RemovalData)
 			{
 				if (RemovalDataItem.Proxy)
 				{
-					UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(RemovalDataItem.Proxy->GetOwner());
+					UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(RemovalDataItem.Proxy);
 					if (PrimComp && RemovalEventRegistrations.Contains(PrimComp))
 					{
 						// queue them up so we can release the physics data before trigging BP events
@@ -595,11 +599,14 @@ void UChaosGameplayEventDispatcher::HandleCrumblingEvents(const Chaos::FCrumblin
 
 		// let's assume crumbles are rare, so we will iterate breaks instead of registered components for now
 		TArray<FChaosCrumblingEvent> PendingCrumblingEvent;
+
+		FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+
 		for (const Chaos::FCrumblingData& CrumblingDataItem : Event.CrumblingData.AllCrumblingsArray)
 		{	
 			if (CrumblingDataItem.Proxy)
 			{
-				if (UPrimitiveComponent* const PrimComp = Cast<UPrimitiveComponent>(CrumblingDataItem.Proxy->GetOwner()))
+				if (UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(CrumblingDataItem.Proxy))
 				{
 					if (CrumblingEventRegistrations.Contains(PrimComp))
 					{

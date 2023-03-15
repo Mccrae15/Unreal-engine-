@@ -161,6 +161,11 @@ namespace EpicGames.UHT.Parsers
 					topScope.TokenReader.RequireList('}', ',', true, () =>
 					{
 						UhtToken tagToken = topScope.TokenReader.GetIdentifier();
+						if (tagToken.IsValue("true", true) || tagToken.IsValue("false", true))
+						{
+							// C++ UHT compatibility - TODO
+							topScope.TokenReader.LogError("Enumerations can't have any elements named 'true' or 'false' regardless of case");
+						}
 
 						StringView fullEnumName;
 						switch (enumObject.CppForm)

@@ -729,7 +729,7 @@ namespace EpicGames.UHT.Types
 		}
 
 		/// <inheritdoc/>
-		public override bool ScanForInstancedReferenced(bool deepScan)
+		protected override bool ScanForInstancedReferencedInternal(bool deepScan)
 		{
 			if (ScriptStructFlags.HasAnyFlags(EStructFlags.HasInstancedReference))
 			{
@@ -741,7 +741,7 @@ namespace EpicGames.UHT.Types
 				return true;
 			}
 
-			return base.ScanForInstancedReferenced(deepScan);
+			return base.ScanForInstancedReferencedInternal(deepScan);
 		}
 		#endregion
 

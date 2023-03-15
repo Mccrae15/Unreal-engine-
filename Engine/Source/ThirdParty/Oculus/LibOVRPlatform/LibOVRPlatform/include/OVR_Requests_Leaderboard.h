@@ -6,8 +6,6 @@
 #include "OVR_Types.h"
 #include "OVR_Platform_Defs.h"
 
-#include "OVR_LeaderboardArray.h"
-#include "OVR_LeaderboardArray.h"
 #include "OVR_LeaderboardEntryArray.h"
 #include "OVR_LeaderboardFilterType.h"
 #include "OVR_LeaderboardStartAt.h"
@@ -114,26 +112,13 @@
 ///   }
 ///
 
-/// Gets the information for a single leaderboard
-/// \param leaderboardName The name of the leaderboard to return.
-///
-/// A message with type ::ovrMessage_Leaderboard_Get will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrLeaderboardArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_Get(const char *leaderboardName);
-
-/// Requests a block of leaderboard entries.
+/// Requests a block of Leaderboard Entries.
 /// \param leaderboardName The name of the leaderboard whose entries to return.
 /// \param limit Defines the maximum number of entries to return.
 /// \param filter Allows you to restrict the returned values by friends.
 /// \param startAt Defines whether to center the query on the user or start at the top of the leaderboard.
 ///
 /// <b>Error codes</b>
-/// - \b 100: Parameter {parameter}: invalid user id: {user_id}
-/// - \b 100: Something went wrong.
 /// - \b 12074: You're not yet ranked on this leaderboard.
 ///
 /// A message with type ::ovrMessage_Leaderboard_GetEntries will be generated in response.
@@ -144,7 +129,7 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_Get(const char *leaderboardName
 /// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardEntryArray().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetEntries(const char *leaderboardName, int limit, ovrLeaderboardFilterType filter, ovrLeaderboardStartAt startAt);
 
-/// Requests a block of leaderboard entries.
+/// Requests a block of leaderboard Entries.
 /// \param leaderboardName The name of the leaderboard.
 /// \param limit The maximum number of entries to return.
 /// \param afterRank The position after which to start.  For example, 10 returns leaderboard results starting with the 11th user.
@@ -157,22 +142,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetEntries(const char *leaderbo
 /// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardEntryArray().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetEntriesAfterRank(const char *leaderboardName, int limit, unsigned long long afterRank);
 
-/// Requests a block of leaderboard entries. Will return only entries matching
-/// the user IDs passed in.
-/// \param leaderboardName The name of the leaderboard whose entries to return.
-/// \param limit Defines the maximum number of entries to return.
-/// \param startAt Defines whether to center the query on the user or start at the top of the leaderboard. If this is ovrLeaderboard_StartAtCenteredOnViewer or ovrLeaderboard_StartAtCenteredOnViewerOrTop, then the current user's ID will be automatically added to the query.
-/// \param userIDs Defines a list of user ids to get entries for.
-/// \param userIDLength The number of user IDs provided.
-///
-/// A message with type ::ovrMessage_Leaderboard_GetEntriesByIds will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrLeaderboardEntryArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardEntryArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetEntriesByIds(const char *leaderboardName, int limit, ovrLeaderboardStartAt startAt, ovrID *userIDs, unsigned int userIDLength);
-
 /// Requests the next block of leaderboard entries.
 /// \param handle The return value from ovr_Message_GetLeaderboardEntryArray().
 ///
@@ -183,16 +152,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetEntriesByIds(const char *lea
 /// If no error occurred, the message will contain a payload of type ::ovrLeaderboardEntryArrayHandle.
 /// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardEntryArray().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetNextEntries(const ovrLeaderboardEntryArrayHandle handle);
-
-/// Get the next page of entries
-///
-/// A message with type ::ovrMessage_Leaderboard_GetNextLeaderboardArrayPage will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrLeaderboardArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetNextLeaderboardArrayPage(ovrLeaderboardArrayHandle handle);
 
 /// Requests the previous block of leaderboard entries.
 /// \param handle The return value from ovr_Message_GetLeaderboardEntryArray().
@@ -214,8 +173,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetPreviousEntries(const ovrLea
 ///
 /// <b>Error codes</b>
 /// - \b 100: Parameter {parameter}: invalid user id: {user_id}
-/// - \b 100: Something went wrong.
-/// - \b 100: This leaderboard entry is too late for the leaderboard's allowed time window.
 ///
 /// A message with type ::ovrMessage_Leaderboard_WriteEntry will be generated in response.
 ///
@@ -224,26 +181,5 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_GetPreviousEntries(const ovrLea
 /// If no error occurred, the message will contain a payload of type ::ovrLeaderboardUpdateStatusHandle.
 /// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardUpdateStatus().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_WriteEntry(const char *leaderboardName, long long score, const void *extraData, unsigned int extraDataLength, bool forceUpdate);
-
-/// Writes a single entry to a leaderboard, can include supplementary metrics
-/// \param leaderboardName The leaderboard for which to write the entry.
-/// \param score The score to write.
-/// \param supplementaryMetric A metric that can be used for tiebreakers.
-/// \param extraData A 2KB custom data field that is associated with the leaderboard entry. This can be a game replay or anything that provides more detail about the entry to the viewer.
-/// \param extraDataLength The length of the extra data.
-/// \param forceUpdate If true, the score always updates. This happens ecen if it is not the user's best score.
-///
-/// <b>Error codes</b>
-/// - \b 100: Parameter {parameter}: invalid user id: {user_id}
-/// - \b 100: Something went wrong.
-/// - \b 100: This leaderboard entry is too late for the leaderboard's allowed time window.
-///
-/// A message with type ::ovrMessage_Leaderboard_WriteEntryWithSupplementaryMetric will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrLeaderboardUpdateStatusHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLeaderboardUpdateStatus().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_Leaderboard_WriteEntryWithSupplementaryMetric(const char *leaderboardName, long long score, long long supplementaryMetric, const void *extraData, unsigned int extraDataLength, bool forceUpdate);
 
 #endif

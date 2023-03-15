@@ -104,8 +104,6 @@ void SDMXPixelMappingPreviewView::Construct(const FArguments& InArgs, const TSha
 			]
 		]
 	, InToolkit);
-
-	ZoomToFit(true);
 }
 
 FReply SDMXPixelMappingPreviewView::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)

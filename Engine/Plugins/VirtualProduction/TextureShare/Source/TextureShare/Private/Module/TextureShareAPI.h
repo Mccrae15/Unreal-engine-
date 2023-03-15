@@ -2,6 +2,7 @@
 
 #pragma once
 #include "ITextureShareAPI.h"
+#include "TextureShareCallbacks.h"
 
 #include "Object/TextureShareObject.h"
 #include "Object/TextureShareObjectProxy.h"
@@ -32,6 +33,11 @@ public:
 
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	virtual void OnWorldEndPlay(UWorld& InWorld) override;
+
+	virtual ITextureShareCallbacks& GetCallbacks() override
+	{
+		return Callbacks;
+	}
 	//~~ ITextureShare
 
 private:
@@ -60,4 +66,6 @@ private:
 	FDelegateHandle OnBackBufferReadyToPresentHandle;
 
 	mutable FCriticalSection ThreadDataCS;
+
+	FTextureShareCallbacks Callbacks;
 };

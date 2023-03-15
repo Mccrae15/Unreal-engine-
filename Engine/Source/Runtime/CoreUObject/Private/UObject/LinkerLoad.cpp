@@ -1677,6 +1677,10 @@ FLinkerLoad::ELinkerStatus FLinkerLoad::SerializeSoftObjectPathList()
 		Seek(Summary.SoftObjectPathsOffset);
 	}
 
+#if WITH_EDITOR
+	FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::NonPackage, ESoftObjectPathSerializeType::AlwaysSerialize);
+#endif // WITH_EDITOR
+
 	FStructuredArchive::FStream Stream = StructuredArchiveRootRecord->EnterStream(TEXT("SoftObjectPathList"));
 	while (SoftObjectPathListIndex < Summary.SoftObjectPathsCount && !IsTimeLimitExceeded(TEXT("serializing soft object path list"), 100))
 	{
@@ -5822,6 +5826,10 @@ FArchive& FLinkerLoad::operator<<(FSoftObjectPath& Value)
 		if (SoftObjectPathList.IsValidIndex(SoftObjectPathIndex))
 		{
 			Value = SoftObjectPathList[SoftObjectPathIndex];
+
+#if WITH_EDITOR
+			Value.PostLoadPath(this);
+#endif // WITH_EDITOR
 		}
 		else
 		{

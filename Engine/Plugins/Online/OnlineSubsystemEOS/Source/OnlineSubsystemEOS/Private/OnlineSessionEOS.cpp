@@ -1125,7 +1125,7 @@ void FOnlineSessionEOS::SetAttributes(EOS_HSessionModification SessionModHandle,
 	FAttributeOptions Opt2("NumPublicConnections", Session->SessionSettings.NumPublicConnections);
 	AddAttribute(SessionModHandle, &Opt2);
 
-	if (Session->OwningUserId->IsValid())
+	if (Session->OwningUserId.IsValid() && Session->OwningUserId->IsValid())
 	{
 		FAttributeOptions OwningUserId("OwningUserId", TCHAR_TO_UTF8(*Session->OwningUserId->ToString()));
 		AddAttribute(SessionModHandle, &OwningUserId);

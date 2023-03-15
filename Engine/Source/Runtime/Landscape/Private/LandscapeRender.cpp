@@ -44,6 +44,8 @@ LandscapeRender.cpp: New terrain rendering
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "StaticMeshResources.h"
 #include "NaniteSceneProxy.h"
+#include "Rendering/Texture2DResource.h"
+
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, "LandscapeParameters");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, "LandscapeFixedGrid");
@@ -621,7 +623,7 @@ void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& Graph
 			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 
 			for (auto& Pair : LandscapeRenderSystems)
-	{
+			{
 				FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 				RenderSystem.CachedSectionLODValues.Reset();
 				RenderSystem.FetchHeightmapLODBiases();
@@ -631,16 +633,16 @@ void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& Graph
 			{
 				LandscapeView.LandscapeIndirection.SetNum(FLandscapeRenderSystem::LandscapeIndexAllocator.Num());
 
-		for (auto& Pair : LandscapeRenderSystems)
-		{
-			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
+				for (auto& Pair : LandscapeRenderSystems)
+				{
+					FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 
-			// Store index where the LOD data for this landscape starts
+					// Store index where the LOD data for this landscape starts
 					LandscapeView.LandscapeIndirection[RenderSystem.LandscapeIndex] = LandscapeView.LandscapeLODData.Num();
 
-			// Compute sections lod values for this view & append to the global landscape LOD data
+					// Compute sections lod values for this view & append to the global landscape LOD data
 					LandscapeView.LandscapeLODData.Append(RenderSystem.ComputeSectionsLODForView(*LandscapeView.View));
-		}
+				}
 			}
 		};
 
@@ -676,9 +678,9 @@ void FLandscapeSceneViewExtension::PreInitViews_RenderThread(FRDGBuilder& GraphB
 			FRHIResourceCreateInfo CreateInfoIndirection(TEXT("LandscapeIndirectionBuffer"), &LandscapeView.LandscapeIndirection);
 			LandscapeIndirectionBuffer = RHICreateVertexBuffer(LandscapeView.LandscapeIndirection.GetResourceDataSize(), BUF_ShaderResource | BUF_Volatile, CreateInfoIndirection);
 			LandscapeView.View->LandscapeIndirectionBuffer = RHICreateShaderResourceView(LandscapeIndirectionBuffer, sizeof(uint32), PF_R32_UINT);
-	}
-	else
-	{
+		}
+		else
+		{
 			LandscapeView.View->LandscapePerComponentDataBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 			LandscapeView.View->LandscapeIndirectionBuffer = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 		}
@@ -822,8 +824,8 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 			
-		HeightmapSubsectionOffsetU = 0;
-		HeightmapSubsectionOffsetV = 0;
+	HeightmapSubsectionOffsetU = 0;
+	HeightmapSubsectionOffsetV = 0;
 	if (HeightmapTexture)
 	{
 		HeightmapSubsectionOffsetU = ((float)(InComponent->SubsectionSizeQuads + 1) / (float)FMath::Max<int32>(1, HeightmapTexture->GetSizeX()));
@@ -984,16 +986,16 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	// TODO: Mobile has its own MobileWeightmapLayerAllocations, and visibility layer could be in a different channel potentially?
 	if (FeatureLevel > ERHIFeatureLevel::ES3_1)
 	{
-	for (int32 Idx = 0; Idx < InComponent->WeightmapLayerAllocations.Num(); Idx++)
-	{
-		const FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
-			if (Allocation.GetLayerName() == UMaterialExpressionLandscapeVisibilityMask::ParameterName && Allocation.IsAllocated())
+		for (int32 Idx = 0; Idx < InComponent->WeightmapLayerAllocations.Num(); Idx++)
 		{
-			VisibilityWeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
-			VisibilityWeightmapChannel = Allocation.WeightmapTextureChannel;
-			break;
+			const FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
+			if (Allocation.GetLayerName() == UMaterialExpressionLandscapeVisibilityMask::ParameterName && Allocation.IsAllocated())
+			{
+				VisibilityWeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
+				VisibilityWeightmapChannel = Allocation.WeightmapTextureChannel;
+				break;
+			}
 		}
-	}
 	}
 
 	bSupportsInstanceDataBuffer = true;
@@ -1556,7 +1558,8 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 		0
 	);
 
-	if (HeightmapTexture)
+	FTextureResource* HeightmapResource = HeightmapTexture ? HeightmapTexture->GetResource() : nullptr;
+	if (HeightmapResource)
 	{
 		LandscapeParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
@@ -1571,7 +1574,8 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 		LandscapeParams.NormalmapTextureSampler = GBlackTexture->SamplerStateRHI;
 	}
 
-	if (XYOffsetmapTexture)
+	FTextureResource* XYOffsetmapResource = XYOffsetmapTexture ? XYOffsetmapTexture->GetResource() : nullptr;
+	if (XYOffsetmapResource)
 	{
 		LandscapeParams.XYOffsetmapTexture = XYOffsetmapTexture->TextureReference.TextureReferenceRHI;
 		LandscapeParams.XYOffsetmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
@@ -2585,7 +2589,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 {
 	NumVertices = FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections);
 	
-		VertexBuffer = new FLandscapeVertexBuffer(InFeatureLevel, NumVertices, SubsectionSizeVerts, NumSubsections);
+	VertexBuffer = new FLandscapeVertexBuffer(InFeatureLevel, NumVertices, SubsectionSizeVerts, NumSubsections);
 
 	IndexBuffers = new FIndexBuffer * [NumIndexBuffers];
 	FMemory::Memzero(IndexBuffers, sizeof(FIndexBuffer*) * NumIndexBuffers);
@@ -3536,22 +3540,30 @@ void FLandscapeComponentSceneProxy::ChangeComponentScreenSizeToUseSubSections_Re
 bool FLandscapeComponentSceneProxy::HeightfieldHasPendingStreaming() const
 {
 	bool bHeightmapTextureStreaming = false;
-
 	if (HeightmapTexture)
 	{
+		// this is technically a game thread value and not render-thread safe, but it shouldn't ever crash, may just be out of date.
+		// there doesn't appear to be any render thread equivalent, the render thread is ignorant of streaming state.
+		// in general, HeightfieldHasPendingStreaming() should only be used if the code is ok with a slightly out of date value being returned.
 		bHeightmapTextureStreaming |= HeightmapTexture->bHasStreamingUpdatePending;
 #if WITH_EDITOR
-		bHeightmapTextureStreaming |= HeightmapTexture->IsCompiling();
+		if (const FTexture2DResource* HeightmapTextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
+		{
+			bHeightmapTextureStreaming |= HeightmapTextureResource->IsProxy();
+		}
 #endif
 	}
 
 	bool bVisibilityTextureStreaming = false;
-
 	if (VisibilityWeightmapTexture)
 	{
+		// again, not render thread safe (see above)
 		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->bHasStreamingUpdatePending;
 #if WITH_EDITOR
-		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->IsCompiling();
+		if (const FTexture2DResource* VisibilityTextureResource = (const FTexture2DResource*)VisibilityWeightmapTexture->GetResource())
+		{
+			bVisibilityTextureStreaming |= VisibilityTextureResource->IsProxy();
+		}
 #endif
 	}
 
@@ -3633,7 +3645,7 @@ float FLandscapeComponentSceneProxy::ComputeLODBias() const
 	{
 		if (const FTexture2DResource* TextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
 		{
-			ComputedLODBias = HeightmapTexture->GetNumMips() - HeightmapTexture->GetNumResidentMips();
+			ComputedLODBias = TextureResource->GetCurrentFirstMip();
 		}
 	}
 

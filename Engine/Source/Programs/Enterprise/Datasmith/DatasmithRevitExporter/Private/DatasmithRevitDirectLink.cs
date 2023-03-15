@@ -125,6 +125,16 @@ namespace DatasmithRevitExporter
 					FDocumentData.FBaseElementData ElementData = CachedElements[ElemId];
 					CachedElements.Remove(ElemId);
 					ElementData.Parent?.ChildElements.Remove(ElementData);
+
+					// Remove all owned children
+					foreach (FDocumentData.FBaseElementData ChildElementData in ElementData.ChildElements)
+					{
+						if (ChildElementData.bOwnedByParent && (ChildElementData.ElementActor != null))
+						{
+							ElementData.ElementActor.RemoveChild(ChildElementData.ElementActor);
+						}
+					}
+
 					DatasmithScene.RemoveActor(ElementData.ElementActor, FDatasmithFacadeScene.EActorRemovalRule.KeepChildrenAndKeepRelativeTransform);
 					ExportedActorsMap.Remove(ElementData.ElementActor.GetName());
 				}
@@ -161,6 +171,7 @@ namespace DatasmithRevitExporter
 		private FDatasmithFacadeDirectLink								DatasmithDirectLink;
 		private string													SceneName;
 
+		public Dictionary<string, FDocumentData> ExportedDocuments 		= new Dictionary<string, FDocumentData>();
 		private Dictionary<string, int>									ExportedActorNames = new Dictionary<string, int>();
 
 		// The number of times this document was synced (sent to receiver)
@@ -194,6 +205,8 @@ namespace DatasmithRevitExporter
 			}
 		}
 
+		public Dictionary<ElementId, ElementId> DecalIdToOwnerObjectIdMap = new Dictionary<ElementId, ElementId>();
+
 		public static void OnApplicationIdle()
 		{
 			FDirectLink ActiveInstance = FDocument.ActiveDocument?.ActiveDirectLinkInstance ?? null;
@@ -210,25 +223,6 @@ namespace DatasmithRevitExporter
 			{
 				ActiveInstance.RunAutoSync();
 			}
-
-			if (ActiveInstance.SyncCount == 0)
-			{
-				return;
-			}
-
-			// MetadataCountPerIdleEvent value will be revisited in a future release since it also requires changes in the import of metadata.
-			int MetadataCountPerIdleEvent = int.MaxValue;
-
-			string EnvBatchSize = Environment.GetEnvironmentVariable("REVIT_DIRECTLINK_METADATA_BATCH_SIZE");
-			if (!string.IsNullOrEmpty(EnvBatchSize))
-			{
-				if (int.TryParse(EnvBatchSize, out MetadataCountPerIdleEvent))
-				{
-					MetadataCountPerIdleEvent = Math.Max(1, MetadataCountPerIdleEvent);
-				}
-			}
-
-			ActiveInstance.ExportMetadataBatch(MetadataCountPerIdleEvent);
 		}
 
 		public static void OnDocumentChanged(
@@ -238,6 +232,11 @@ namespace DatasmithRevitExporter
 			FDirectLink ActiveInstance = FDocument.ActiveDocument?.ActiveDirectLinkInstance ?? null;
 
 			Debug.Assert(ActiveInstance != null);
+
+			if (ActiveInstance == null)
+			{
+				return;
+			}
 
 			// Handle modified elements
 			foreach (ElementId ElemId in InArgs.GetModifiedElementIds())
@@ -269,6 +268,16 @@ namespace DatasmithRevitExporter
 					}
 					else
 					{
+						if (FUtils.IsElementDecal(ModifiedElement))
+						{
+							//decal:
+							//modifying decal does not modify the owner object
+							if (ActiveInstance.DecalIdToOwnerObjectIdMap.TryGetValue(ElemId, out var OwnerObjectElementId))
+							{
+								ActiveInstance.RootCache.SetElementModified(true, OwnerObjectElementId);
+							}
+						}
+
 						// Handles a case where Revit won't notify us about modified mullions and their transform remains obsolte, thus wrong.
 						ElementCategoryFilter Filter = new ElementCategoryFilter(BuiltInCategory.OST_CurtainWallMullions);
 						IList<ElementId> DependentElements = ModifiedElement.GetDependentElements(Filter);
@@ -282,6 +291,64 @@ namespace DatasmithRevitExporter
 					}
 
 					ActiveInstance.RootCache.SetElementModified(true, ElemId);
+				}
+			}
+
+			foreach (ElementId ElemId in InArgs.GetAddedElementIds())
+			{
+				Element AddedElement = ActiveInstance.RootCache.SourceDocument.GetElement(ElemId);
+
+				if (FUtils.IsElementDecal(AddedElement))
+				{
+					FilteredElementCollector Collector = new FilteredElementCollector(ActiveInstance.RootCache.SourceDocument, ActiveInstance.RootCache.SourceDocument.ActiveView.Id);
+					IList<Element> AllElementsInView = Collector.ToElements();
+
+					bool ElementFound = false;
+
+					//find the Element that is dependent on the newly added decal:
+					foreach (Element ElementInView in AllElementsInView)
+					{
+#if REVIT_API_2023
+						if (ElementInView.Category != null && ElementInView.Category.BuiltInCategory != BuiltInCategory.OST_Levels)
+#else
+						if (ElementInView.Category != null && (BuiltInCategory)ElementInView.Category.Id.IntegerValue != BuiltInCategory.OST_Levels)
+#endif
+						{
+							IList<ElementId> DependentElements = ElementInView.GetDependentElements(null);
+							foreach (ElementId DependentElementId in DependentElements)
+							{
+								if (DependentElementId == ElemId)
+								{
+									ActiveInstance.RootCache.SetElementModified(true, ElementInView.Id);
+									ElementFound = true;
+									break;
+								}
+							}
+
+							if (ElementFound)
+							{
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			foreach (ElementId ElemId in InArgs.GetDeletedElementIds())
+			{
+				//checking if decal was removed:
+				if (ActiveInstance.DecalIdToOwnerObjectIdMap.ContainsKey(ElemId))
+				{
+					ActiveInstance.DecalIdToOwnerObjectIdMap.Remove(ElemId);
+				}
+				//checking if owner object was removed:
+				if (ActiveInstance.DecalIdToOwnerObjectIdMap.ContainsValue(ElemId))
+				{
+					KeyValuePair<ElementId, ElementId>[] PairsToRemove = ActiveInstance.DecalIdToOwnerObjectIdMap.Where(CurrentPair => CurrentPair.Value == ElemId).ToArray();
+					foreach (KeyValuePair<ElementId, ElementId> PairToRemove in PairsToRemove)
+					{
+						ActiveInstance.DecalIdToOwnerObjectIdMap.Remove(PairToRemove.Key);
+					}
 				}
 			}
 
@@ -748,13 +815,16 @@ namespace DatasmithRevitExporter
 			bSyncInProgress = false;
 		}
 
-		void ExportMetadataBatch(int ExportBatchSize)
+		//The number of metadata transfers in one go will be revisited in a future release since it also requires changes in the import of metadata.
+		// For now however all metadata will be transfered in one go.
+		// ExportMetadataBatch is called from the DatasmithSyncRevitCommand.OnExecute/DatasmithExportRevitCommand.OnExecute functions (instead of getting triggered when Revit is idle).
+		public void ExportMetadataBatch()
 		{
 			int CurrentBatchSize = 0;
 
 			Action<FCachedDocumentData> AddElements = (FCachedDocumentData CacheData) => 
 			{
-				while (CacheData.ElementsWithoutMetadataQueue.Count > 0 && CurrentBatchSize < ExportBatchSize)
+				while (CacheData.ElementsWithoutMetadataQueue.Count > 0)
 				{
 					var Entry = CacheData.ElementsWithoutMetadataQueue.Dequeue();
 
@@ -824,11 +894,6 @@ namespace DatasmithRevitExporter
 			foreach (var Cache in CachesToExport)
 			{
 				AddElements(Cache);
-
-				if (CurrentBatchSize >= ExportBatchSize)
-				{
-					break;
-				}
 			}
 
 			if (CurrentBatchSize > 0)

@@ -4,16 +4,13 @@
 
 #include "DisplayClusterColorGradingCommands.h"
 #include "SDisplayClusterColorGradingColorWheel.h"
-#include "Drawer/SDisplayClusterColorGradingDrawer.h"
+#include "DetailView/SDisplayClusterColorGradingDetailView.h"
+#include "Drawer/DisplayClusterColorGradingDrawerState.h"
 
-#include "DetailCategoryBuilder.h"
-#include "DetailLayoutBuilder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "IDetailCustomization.h"
 #include "IDetailTreeNode.h"
 #include "IPropertyRowGenerator.h"
 #include "Modules/ModuleManager.h"
-#include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SComboButton.h"
@@ -41,13 +38,6 @@ void SDisplayClusterColorGradingColorWheelPanel::Construct(const FArguments& InA
 		ColorGradingDataModel->OnColorGradingGroupSelectionChanged().AddSP(this, &SDisplayClusterColorGradingColorWheelPanel::OnColorGradingGroupSelectionChanged);
 		ColorGradingDataModel->OnColorGradingElementSelectionChanged().AddSP(this, &SDisplayClusterColorGradingColorWheelPanel::OnColorGradingElementSelectionChanged);
 	}
-
-	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs;
-	DetailsViewArgs.bAllowSearch = false;
-	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-	DetailsViewArgs.bHideSelectionTip = true;
-	DetailsView = EditModule.CreateDetailView(DetailsViewArgs);
 
 	CommandList = MakeShared<FUICommandList>();
 	BindCommands();
@@ -195,7 +185,9 @@ void SDisplayClusterColorGradingColorWheelPanel::Construct(const FArguments& InA
 		+ SSplitter::Slot()
 		.Value(0.2f)
 		[
-			DetailsView.ToSharedRef()
+			SAssignNew(DetailView, SDisplayClusterColorGradingDetailView)
+			.PropertyRowGeneratorSource(ColorGradingDataModel->GetPropertyRowGenerator())
+			.OnFilterDetailTreeNode(this, &SDisplayClusterColorGradingColorWheelPanel::FilterDetailTreeNode)
 		]
 	];
 }
@@ -208,17 +200,24 @@ void SDisplayClusterColorGradingColorWheelPanel::Refresh()
 		{
 			FillColorGradingGroupProperty(*ColorGradingGroup);
 			FillColorGradingElementsToolBar(ColorGradingGroup->ColorGradingElements);
-			ColorGradingDataModel->SetSelectedColorGradingElement(ColorGradingGroup->ColorGradingElements.Num() ? 0 : INDEX_NONE);
 
-			FillDetailsView(*ColorGradingGroup);
+			if (const FDisplayClusterColorGradingDataModel::FColorGradingElement* ColorGradingElement = ColorGradingDataModel->GetSelectedColorGradingElement())
+			{
+				FillColorWheels(*ColorGradingElement);
+			}
+			else
+			{
+				ClearColorWheels();
+			}
 		}
 		else
 		{
 			ClearColorGradingGroupProperty();
 			ClearColorGradingElementsToolBar();
-			ClearDetailsView();
 			ClearColorWheels();
 		}
+
+		DetailView->Refresh();
 	}
 }
 
@@ -245,14 +244,14 @@ void SDisplayClusterColorGradingColorWheelPanel::BindCommands()
 		Commands.SaturationColorWheelVisibility,
 		FExecuteAction::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::ToggleColorWheelVisible, 3),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisibile, 3)
+		FIsActionChecked::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisible, 3)
 	);
 
 	CommandList->MapAction(
 		Commands.ContrastColorWheelVisibility,
 		FExecuteAction::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::ToggleColorWheelVisible, 4),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisibile, 4)
+		FIsActionChecked::CreateSP(this, &SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisible, 4)
 	);
 
 	CommandList->MapAction(
@@ -415,95 +414,6 @@ void SDisplayClusterColorGradingColorWheelPanel::ClearColorGradingElementsToolBa
 	ColorGradingElementsToolBarBox->ClearChildren();
 }
 
-class FColorGradingDetailsCustomization : public IDetailCustomization
-{
-public:
-	FColorGradingDetailsCustomization(const FDisplayClusterColorGradingDataModel::FColorGradingGroup& ColorGradingGroup)
-		: PropertyHandles(ColorGradingGroup.DetailsViewPropertyHandles)
-		, CategorySortOrder(ColorGradingGroup.DetailsViewCategorySortOrder)
-	{ }
-
-	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override
-	{
-		TArray<FName> Categories;
-		DetailBuilder.GetCategoryNames(Categories);
-
-		for (const FName& Category : Categories)
-		{
-			DetailBuilder.HideCategory(Category);
-		}
-
-		// TransformCommon is a custom category that doesn't get returned by GetCategoryNames that also needs to be hidden
-		DetailBuilder.HideCategory(TEXT("TransformCommon"));
-
-		TSet<FName> FinalCategories;
-		for (const TSharedPtr<IPropertyHandle>& PropertyHandle : PropertyHandles)
-		{
-			FName CategoryOverride = PropertyHandle->GetDefaultCategoryName();
-			FText CategoryOverrideText = PropertyHandle->GetDefaultCategoryText();
-			if (const FString* CategoryOverridePtr = PropertyHandle->GetInstanceMetaData(TEXT("CategoryOverride")))
-			{
-				CategoryOverride = FName(*CategoryOverridePtr + "_Override");
-				CategoryOverrideText = FText::FromString(*CategoryOverridePtr);
-			}
-
-			IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(CategoryOverride, CategoryOverrideText);
-			CategoryBuilder.AddProperty(PropertyHandle);
-
-			FinalCategories.Add(CategoryOverride);
-		}
-
-		DetailBuilder.SortCategories([this, FinalCategories = MoveTemp(FinalCategories)](const TMap<FName, IDetailCategoryBuilder*>& CategoryMap)
-		{
-			for (const FName& Category : FinalCategories)
-			{
-				if (CategorySortOrder.Contains(Category))
-				{
-					CategoryMap[Category]->SetSortOrder(CategorySortOrder[Category]);
-				}
-			}
-		});
-	}
-
-private:
-	TArray<TSharedPtr<IPropertyHandle>> PropertyHandles;
-	TMap<FName, int32> CategorySortOrder;
-};
-
-void SDisplayClusterColorGradingColorWheelPanel::FillDetailsView(const FDisplayClusterColorGradingDataModel::FColorGradingGroup& ColorGradingGroup)
-{
-	if (DetailsView.IsValid() && ColorGradingGroup.DetailsViewPropertyHandles.Num())
-	{
-		TArray<UObject*> OuterObjects;
-
-		if (ColorGradingGroup.GroupPropertyHandle.IsValid())
-		{
-			ColorGradingGroup.GroupPropertyHandle->GetOuterObjects(OuterObjects);
-		}
-		else if (ColorGradingGroup.DetailsViewPropertyHandles[0].IsValid())
-		{
-			ColorGradingGroup.DetailsViewPropertyHandles[0]->GetOuterObjects(OuterObjects);
-		}
-
-		if (OuterObjects.Num())
-		{
-			DetailsView->RegisterInstancedCustomPropertyLayout(OuterObjects[0]->GetClass(), FOnGetDetailCustomizationInstance::CreateLambda([&ColorGradingGroup]()
-			{
-				return MakeShareable(new FColorGradingDetailsCustomization(ColorGradingGroup));
-			}));
-
-			const bool bForceRefresh = true;
-			DetailsView->SetObjects(OuterObjects, bForceRefresh);
-		}
-	}
-}
-
-void SDisplayClusterColorGradingColorWheelPanel::ClearDetailsView()
-{
-	TArray<UObject*> EmptyList;
-	DetailsView->SetObjects(EmptyList);
-}
-
 void SDisplayClusterColorGradingColorWheelPanel::FillColorWheels(const FDisplayClusterColorGradingDataModel::FColorGradingElement& ColorGradingElement)
 {
 	auto FillColorWheel = [this](const TSharedPtr<SDisplayClusterColorGradingColorWheel>& ColorWheel, const TSharedPtr<IPropertyHandle>& PropertyHandle)
@@ -511,38 +421,7 @@ void SDisplayClusterColorGradingColorWheelPanel::FillColorWheels(const FDisplayC
 		if (ColorWheel.IsValid())
 		{
 			ColorWheel->SetColorPropertyHandle(PropertyHandle);
-
-			if (TSharedPtr<IDetailTreeNode> TreeNode = ColorGradingDataModel->GetPropertyRowGenerator()->FindTreeNode(PropertyHandle))
-			{
-				FNodeWidgets NodeWidgets = TreeNode->CreateNodeWidgets();
-
-				TSharedRef<SHorizontalBox> PropertyNameBox = SNew(SHorizontalBox);
-
-				if (NodeWidgets.EditConditionWidget.IsValid())
-				{
-					PropertyNameBox->AddSlot()
-						.VAlign(VAlign_Center)
-						.HAlign(HAlign_Left)
-						.Padding(2, 0, 0, 0)
-						.AutoWidth()
-						[
-							NodeWidgets.EditConditionWidget.ToSharedRef()
-						];
-				}
-
-				if (NodeWidgets.NameWidget.IsValid())
-				{
-					PropertyNameBox->AddSlot()
-						.HAlign(NodeWidgets.NameWidgetLayoutData.HorizontalAlignment)
-						.VAlign(NodeWidgets.NameWidgetLayoutData.VerticalAlignment)
-						.Padding(2, 0, 0, 0)
-						[
-							NodeWidgets.NameWidget.ToSharedRef()
-						];
-				}
-
-				ColorWheel->SetHeaderContent(PropertyNameBox);
-			}
+			ColorWheel->SetHeaderContent(CreateColorWheelHeaderWidget(PropertyHandle));
 		}
 	};
 
@@ -563,6 +442,146 @@ void SDisplayClusterColorGradingColorWheelPanel::ClearColorWheels()
 			ColorWheel->SetHeaderContent(SNullWidget::NullWidget);
 		}
 	};
+}
+
+TSharedRef<SWidget> SDisplayClusterColorGradingColorWheelPanel::CreateColorWheelHeaderWidget(const TSharedPtr<IPropertyHandle>& ColorPropertyHandle)
+{
+	if (TSharedPtr<IDetailTreeNode> TreeNode = ColorGradingDataModel->GetPropertyRowGenerator()->FindTreeNode(ColorPropertyHandle))
+	{
+		FNodeWidgets NodeWidgets = TreeNode->CreateNodeWidgets();
+
+		TSharedRef<SHorizontalBox> PropertyNameBox = SNew(SHorizontalBox);
+
+		PropertyNameBox->AddSlot()
+			.FillWidth(1.0f)
+			[
+				SNew(SSpacer)
+			];
+
+		if (NodeWidgets.EditConditionWidget.IsValid())
+		{
+			PropertyNameBox->AddSlot()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Left)
+				.Padding(2, 0, 0, 0)
+				.AutoWidth()
+				[
+					NodeWidgets.EditConditionWidget.ToSharedRef()
+				];
+		}
+
+		if (NodeWidgets.NameWidget.IsValid())
+		{
+			PropertyNameBox->AddSlot()
+				.HAlign(NodeWidgets.NameWidgetLayoutData.HorizontalAlignment)
+				.VAlign(NodeWidgets.NameWidgetLayoutData.VerticalAlignment)
+				.Padding(2, 0, 0, 0)
+				[
+					NodeWidgets.NameWidget.ToSharedRef()
+				];
+
+			PropertyNameBox->AddSlot()
+				.HAlign(HAlign_Right)
+				.VAlign(VAlign_Center)
+				.FillWidth(1.0f)
+				[
+					SNew(SBox)
+					.WidthOverride(22.0f)
+					[
+						CreateColorPropertyExtensions(ColorPropertyHandle, TreeNode)
+					]
+				];
+		}
+
+		return PropertyNameBox;
+	}
+
+	return SNullWidget::NullWidget;
+}
+
+TSharedRef<SWidget> SDisplayClusterColorGradingColorWheelPanel::CreateColorPropertyExtensions(const TSharedPtr<IPropertyHandle>& ColorPropertyHandle, const TSharedPtr<IDetailTreeNode>& DetailTreeNode)
+{
+	TArray<FPropertyRowExtensionButton> ExtensionButtons;
+
+	// Use a weak pointer to pass into delegates
+	TWeakPtr<IPropertyHandle> WeakColorPropertyHandle = ColorPropertyHandle;
+
+	FPropertyRowExtensionButton& ResetToDefaultButton = ExtensionButtons.AddDefaulted_GetRef();
+	ResetToDefaultButton.Label = NSLOCTEXT("PropertyEditor", "ResetToDefault", "Reset to Default");
+	ResetToDefaultButton.UIAction = FUIAction(
+		FExecuteAction::CreateLambda([WeakColorPropertyHandle]
+		{
+			if (WeakColorPropertyHandle.IsValid())
+			{
+				WeakColorPropertyHandle.Pin()->ResetToDefault();
+			}
+		}),
+		FCanExecuteAction::CreateLambda([WeakColorPropertyHandle]
+		{
+			const bool bIsEditable = WeakColorPropertyHandle.Pin()->IsEditable();
+			return bIsEditable;
+		}),
+		FIsActionChecked(),
+		FIsActionButtonVisible::CreateLambda([WeakColorPropertyHandle]
+		{
+			bool bShowResetToDefaultButton = false;
+			if (WeakColorPropertyHandle.IsValid())
+			{
+				if (!WeakColorPropertyHandle.Pin()->HasMetaData("NoResetToDefault") && !WeakColorPropertyHandle.Pin()->GetInstanceMetaData("NoResetToDefault"))
+				{
+					bShowResetToDefaultButton = WeakColorPropertyHandle.Pin()->CanResetToDefault();
+				}
+			}
+
+			return bShowResetToDefaultButton;
+		})
+	);
+
+	ResetToDefaultButton.Icon = FSlateIcon(FAppStyle::Get().GetStyleSetName(), "PropertyWindow.DiffersFromDefault");
+	ResetToDefaultButton.ToolTip = NSLOCTEXT("PropertyEditor", "ResetToDefaultPropertyValueToolTip", "Reset this property to its default value.");
+
+	// Add any global row extensions that are registered for the color property
+	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	FOnGenerateGlobalRowExtensionArgs Args;
+	Args.OwnerTreeNode = DetailTreeNode;
+	Args.PropertyHandle = ColorPropertyHandle;
+
+	PropertyEditorModule.GetGlobalRowExtensionDelegate().Broadcast(Args, ExtensionButtons);
+
+	FSlimHorizontalToolBarBuilder ToolbarBuilder(TSharedPtr<FUICommandList>(), FMultiBoxCustomization::None);
+	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
+	ToolbarBuilder.SetStyle(&FAppStyle::Get(), "DetailsView.ExtensionToolBar");
+	ToolbarBuilder.SetIsFocusable(false);
+
+	for (const FPropertyRowExtensionButton& Extension : ExtensionButtons)
+	{
+		ToolbarBuilder.AddToolBarButton(Extension.UIAction, NAME_None, Extension.Label, Extension.ToolTip, Extension.Icon);
+	}
+
+	return ToolbarBuilder.MakeWidget();
+}
+
+bool SDisplayClusterColorGradingColorWheelPanel::FilterDetailTreeNode(const TSharedRef<IDetailTreeNode>& InDetailTreeNode)
+{
+	if (ColorGradingDataModel)
+	{
+		if (FDisplayClusterColorGradingDataModel::FColorGradingGroup* ColorGradingGroup = ColorGradingDataModel->GetSelectedColorGradingGroup())
+		{
+			// Filter out any categories that are not configured by the data model to be displayed in the details section or subsection.
+			// All other nodes (which will be any child of the category), should be displayed.
+			if (InDetailTreeNode->GetNodeType() == EDetailNodeType::Category)
+			{
+				return ColorGradingGroup->DetailsViewCategories.Contains(InDetailTreeNode->GetNodeName());
+			}
+			else
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 void SDisplayClusterColorGradingColorWheelPanel::SetColorWheelOrientation(EOrientation NewOrientation)
@@ -594,7 +613,7 @@ void SDisplayClusterColorGradingColorWheelPanel::ToggleColorWheelVisible(int32 C
 	}
 }
 
-bool SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisibile(int32 ColorWheelIndex)
+bool SDisplayClusterColorGradingColorWheelPanel::IsColorWheelVisible(int32 ColorWheelIndex)
 {
 	if (ColorWheelIndex >= 0 && ColorWheelIndex < HiddenColorWheels.Num())
 	{

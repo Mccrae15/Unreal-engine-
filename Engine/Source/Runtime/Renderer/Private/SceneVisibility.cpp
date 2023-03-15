@@ -795,7 +795,7 @@ static void PrimitiveCullTask(FThreadSafeCounter& NumCulledPrimitives, const FSc
 						if (Flags.bUseCustomCulling &&
 							((Scene->PrimitiveOcclusionFlags[Index] & CustomVisibilityFlags) == CustomVisibilityFlags))
 						{
-							VisibilityId = Scene->PrimitiveVisibilityIds[Index].ByteIndex;
+							VisibilityId = Scene->Primitives[Index]->Proxy->GetVisibilityId();
 						}
 
 						bIsVisible = !bPartiallyOutside || IsPrimitiveVisible(View, PermutedPlanePtr, Bounds, VisibilityId, Flags);
@@ -5273,7 +5273,7 @@ void FSceneRenderer::SetupSceneReflectionCaptureBuffer(FRHICommandListImmediate&
 		}
 		else
 		{
-		View.ReflectionCaptureUniformBuffer = ReflectionCaptureUniformBuffer;
+			View.ReflectionCaptureUniformBuffer = ReflectionCaptureUniformBuffer;
 		}
 		
 		View.NumBoxReflectionCaptures = 0;
@@ -5340,8 +5340,8 @@ void FDeferredShadingSceneRenderer::InitViewsAfterPrepass(FRDGBuilder& GraphBuil
 
 		if (GDynamicRHI->RHIIncludeOptionalFlushes())
 		{
-		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-	}
+			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+		}
 	}
 
 	// If parallel ILC update is disabled, then process it in place.

@@ -897,6 +897,7 @@ struct FTemporalAAHistory
 struct FTSRHistory
 {
 	// Output resolution.
+	TRefCountPtr<IPooledRenderTarget> Output;
 	TRefCountPtr<IPooledRenderTarget> ColorArray;
 	TRefCountPtr<IPooledRenderTarget> Metadata;
 	TRefCountPtr<IPooledRenderTarget> TranslucencyAlpha;
@@ -908,6 +909,7 @@ struct FTSRHistory
 	TRefCountPtr<IPooledRenderTarget> Velocity;
 
 	// Previous frame's history.
+	TRefCountPtr<IPooledRenderTarget> PrevOutput;
 	TRefCountPtr<IPooledRenderTarget> PrevColorArray;
 
 	// Frame's input and output resolution.
@@ -930,7 +932,7 @@ struct FTSRHistory
 
 	bool IsValid() const
 	{
-		return ColorArray.IsValid();
+		return Metadata.IsValid();
 	}
 
 	uint64 GetGPUSizeBytes(bool bLogSizes) const;
@@ -2508,7 +2510,7 @@ protected:
 	void PreTonemapMSAA(FRHICommandListImmediate& RHICmdList, const FMinimalSceneTextures& SceneTextures);
 
 	/** Mobile Tonemap Subpass */
-	void MobileTonemapSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FIntPoint TargetSize, FRDGBuilder& GraphBuilder);
+	void MobileTonemapSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FIntPoint TargetSize, FRDGTexture* ColorGradingTexture, FRDGBuilder& GraphBuilder);
 
 	void SortMobileBasePassAfterShadowInit(FExclusiveDepthStencil::Type BasePassDepthStencilAccess, FViewVisibleCommandsPerView& ViewCommandsPerView);
 	void SetupMobileBasePassAfterShadowInit(FExclusiveDepthStencil::Type BasePassDepthStencilAccess, FViewVisibleCommandsPerView& ViewCommandsPerView, FInstanceCullingManager& InstanceCullingManager);

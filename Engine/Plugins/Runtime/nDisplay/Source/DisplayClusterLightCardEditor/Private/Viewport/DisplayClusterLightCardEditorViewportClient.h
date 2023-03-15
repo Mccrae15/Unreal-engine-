@@ -216,8 +216,8 @@ private:
 	/** Determines the appropriate spin delta needed to rotate the light card */
 	double GetActorSpinDelta(FViewport* InViewport);
 
-	/** Traces to find the light card corresponding to a click on a stage screen */
-	ADisplayClusterLightCardActor* TraceScreenForLightCard(const FSceneView& View, int32 HitX, int32 HitY);
+	/** Traces to find the actor corresponding to a click on a stage screen */
+	AActor* TraceScreenForActor(const FSceneView& View, int32 HitX, int32 HitY);
 
 	/** Projects the specified world position to the viewport's current projection space */
 	FVector ProjectWorldPosition(const FVector& UnprojectedWorldPosition, const FViewMatrices& ViewMatrices) const;
@@ -288,7 +288,7 @@ private:
 	const FActorProxy* FindActorProxyFromActor(AActor* InActor) const;
 
 	/** Create a stage actor proxy */
-	void CreateStageActorProxy(AActor* InLevelInstance);
+	AActor* CreateStageActorProxy(AActor* InLevelInstance);
 	
 	/** Update the transforms for the specific proxy */
 	void UpdateProxyTransforms(const FActorProxy& InActorProxy);
@@ -305,6 +305,7 @@ private:
 	TWeakPtr<FDisplayClusterLightCardEditor> LightCardEditorPtr;
 	TWeakObjectPtr<ADisplayClusterRootActor> RootActorProxy;
 	TWeakObjectPtr<ADisplayClusterRootActor> RootActorLevelInstance;
+	TSet<AActor*> ActorsRefreshing;
 
 	/** Proxy types that are currently refreshing over 1-2 frames */
 	TSet<EDisplayClusterLightCardEditorProxyType> ProxyTypesRefreshing;

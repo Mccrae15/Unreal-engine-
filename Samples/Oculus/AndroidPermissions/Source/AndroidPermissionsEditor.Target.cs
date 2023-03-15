@@ -9,7 +9,7 @@ public class AndroidPermissionsEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
-
+		IncludeOrderVersion  = EngineIncludeOrderVersion.Unreal5_1;	
 		ExtraModuleNames.AddRange( new string[] { "AndroidPermissions" } );
 	}
 }

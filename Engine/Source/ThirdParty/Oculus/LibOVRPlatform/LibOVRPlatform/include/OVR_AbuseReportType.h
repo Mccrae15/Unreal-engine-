@@ -7,9 +7,7 @@
 
 typedef enum ovrAbuseReportType_ {
   ovrAbuseReportType_Unknown,
-  /// A report for something besides a user, like a world.
   ovrAbuseReportType_Object,
-  /// A report for a user's behavior or profile.
   ovrAbuseReportType_User,
 } ovrAbuseReportType;
 

@@ -73,7 +73,7 @@ void FOpenXRHMDModule::ShutdownModule()
 {
 	if (Instance)
 	{
-		XR_ENSURE(xrDestroyInstance(Instance));
+		DestroyInstance();
 	}
 
 	if (LoaderHandle)
@@ -744,8 +744,7 @@ bool FOpenXRHMDModule::InitSystem()
 	XrResult Result = xrGetSystem(Instance, &SystemInfo, &System);
 	if (XR_FAILED(Result))
 	{
-		XR_ENSURE(xrDestroyInstance(Instance));
-		Instance = XR_NULL_HANDLE;
+		DestroyInstance();
 		UE_LOG(LogHMD, Log, TEXT("Failed to get an OpenXR system, result is %s. Please check that your runtime supports VR headsets."), OpenXRResultToString(Result));
 		return false;
 	}
@@ -756,4 +755,10 @@ bool FOpenXRHMDModule::InitSystem()
 	}
 
 	return true;
+}
+
+void FOpenXRHMDModule::DestroyInstance()
+{
+	XR_ENSURE(xrDestroyInstance(Instance));
+	Instance = XR_NULL_HANDLE;
 }

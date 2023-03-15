@@ -1699,12 +1699,6 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 
 	if ((PSOInitializer.SubpassHint & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None)
 	{
-		if (GIsEditor && PSOInitializer.SubpassIndex >= 2)
-		{
-			// Only SceneColor is used as a color attachment
-			NumRenderTargets = 1;
-		}
-
 		// tonemap subpass non-msaa uses an additional color attachment that should not be used by main and depth subpasses
 		if (PSOInitializer.NumSamples == 1)
 		{

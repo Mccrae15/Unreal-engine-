@@ -619,7 +619,8 @@ inline bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
 {
 	if (IsMobilePlatform(Platform))
 	{
-		return IsMobileDeferredShadingEnabled(Platform) || (GIsEditor && IsMobileTonemapSubpassEnabled());
+		bool bEmulatedTonemapSubpass = !IsVulkanPlatform(Platform) && IsMobileTonemapSubpassEnabled();
+		return IsMobileDeferredShadingEnabled(Platform) || bEmulatedTonemapSubpass;
 	}
 	else
 	{

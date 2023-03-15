@@ -31,6 +31,10 @@ In addition to those listed, there are numerous other updates. Many of them are 
 Additional samples can be found in the [Oculus Samples GitHub.](
 https://github.com/oculus-samples)
  
+#### Supported Development Platforms
+* Windows
+* Mac and Linux are not supported in this fork
+
 Below you will find the current README from Epic’s repo.
 
 Unreal Engine

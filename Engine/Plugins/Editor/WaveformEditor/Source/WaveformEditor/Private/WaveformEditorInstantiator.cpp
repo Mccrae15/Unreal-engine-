@@ -3,8 +3,10 @@
 #include "WaveformEditorInstantiator.h"
 
 #include "ContentBrowserModule.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Sound/SoundWave.h"
+#include "SWaveformEditorMessageDialog.h"
 #include "WaveformEditor.h"
 #include "WaveformEditorLog.h"
 
@@ -62,24 +64,70 @@ void FWaveformEditorInstantiator::AddWaveformEditorMenuEntry(FMenuBuilder& MenuB
 
 bool FWaveformEditorInstantiator::CanSoundWaveBeOpenedInEditor(const USoundWave* SoundWaveToEdit)
 {
+	bool bCanOpenWaveEditor = true;
+	
+	FText ErrorText = LOCTEXT("WaveformEditorOpeningError", "Could not open waveform editor for Selected SoundWave");
+
 	if (SoundWaveToEdit == nullptr)
 	{
-		UE_LOG(LogWaveformEditor, Warning, TEXT("Could not open waveform editor from null SoundWave"))
-		return false;
+		ErrorText = LOCTEXT("WaveformEditorOpeningError_NullSoundWave", "Could not open waveform editor. Selected SoundWave was null.");
+		bCanOpenWaveEditor = false;
+	}
+	else
+	{
+		FText SoundWaveNameText = FText::FromString(*(SoundWaveToEdit->GetName()));
+		
+		if (SoundWaveToEdit->GetDuration() == 0.f)
+		{
+			ErrorText = FText::Format(LOCTEXT("WaveformEditorOpeningError_ZeroDuration", "Could not open waveform editor for SoundWave '{0}': duration is 0"), SoundWaveNameText);
+			bCanOpenWaveEditor = false;
+		}
+
+		if (SoundWaveToEdit->NumChannels == 0)
+		{
+			ErrorText = FText::Format(LOCTEXT("WaveformEditorOpeningError_ZeroChannels", "Could not open waveform editor for SoundWave '{0}': channel count is 0"), SoundWaveNameText);
+			bCanOpenWaveEditor = false;
+		}
+
+		if (SoundWaveToEdit->TotalSamples == 0)
+		{
+			ErrorText = FText::Format(LOCTEXT("WaveformEditorOpeningError_ZeroSamples", "Could not open waveform editor for SoundWave '{0}': found 0 total samples.\n\nConsider reimporting the asset to fix it."), SoundWaveNameText);
+			bCanOpenWaveEditor = false;
+		}
+	}
+
+
+	if (!bCanOpenWaveEditor)
+	{
+		DisplayErrorDialog(ErrorText);
 	}
 	
-	if (SoundWaveToEdit->GetDuration() == 0.f)
+	return bCanOpenWaveEditor;
+}
+
+void FWaveformEditorInstantiator::DisplayErrorDialog(const FText& ErrorMessage) const
+{
+	UE_LOG(LogWaveformEditor, Warning, TEXT("%s"), *ErrorMessage.ToString())
+
+	TSharedPtr<SWindow> OpeningErrorWindow = SNew(SWindow)
+		.Title(LOCTEXT("WaveEditorErrorWindowTitle", "Waveform Editor"))
+		.HasCloseButton(true)
+		.SupportsMaximize(false)
+		.SupportsMinimize(false)
+		.SizingRule(ESizingRule::Autosized);
+
+	OpeningErrorWindow->SetContent(SNew(SWaveformEditorMessageDialog).ParentWindow(OpeningErrorWindow).MessageToDisplay(ErrorMessage));
+
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+
+	if (RootWindow.IsValid())
 	{
-		UE_LOG(LogWaveformEditor, Warning, TEXT("Could not open waveform editor for soundwave %s, duration is 0"), *(SoundWaveToEdit->GetName()))
-		return false;
+		FSlateApplication::Get().AddModalWindow(OpeningErrorWindow.ToSharedRef(), RootWindow);
 	}
-	else if (SoundWaveToEdit->NumChannels == 0.f)
+	else
 	{
-		UE_LOG(LogWaveformEditor, Warning, TEXT("Could not open waveform editor for soundwave %s, channel count is 0"), *(SoundWaveToEdit->GetName()))
-		return false;
+		FSlateApplication::Get().AddWindow(OpeningErrorWindow.ToSharedRef());
 	}
-		
-	return true;
 }
 
 void FWaveformEditorInstantiator::CreateWaveformEditor(TArray<USoundWave*> SoundWavesToEdit)

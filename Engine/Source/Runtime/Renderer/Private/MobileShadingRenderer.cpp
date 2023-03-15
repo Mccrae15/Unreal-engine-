@@ -61,9 +61,7 @@
 #include "SceneTextureReductions.h"
 #include "GPUMessaging.h"
 #include "Strata/Strata.h"
-#if UE_EDITOR
-	#include "SceneCaptureRendering.h"
-#endif
+#include "SceneCaptureRendering.h"
 
 uint32 GetShadowQuality();
 
@@ -134,42 +132,42 @@ static FMobileCustomDepthStencilUsage GetCustomDepthStencilUsage(const FViewInfo
 	// Find out whether there are primitives will render in custom depth pass or just always render custom depth
 	if ((View.bHasCustomDepthPrimitives || GetCustomDepthMode() == ECustomDepthMode::EnabledWithStencil))
 	{
-	// Find out whether CustomDepth/Stencil used in translucent materials
+		// Find out whether CustomDepth/Stencil used in translucent materials
 		if (CVarMobileCustomDepthForTranslucency.GetValueOnAnyThread() != 0)
-	{
+		{
 			CustomDepthStencilUsage.bUsesCustomDepthStencil = View.bUsesCustomDepth || View.bUsesCustomStencil;
-			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomDepth && View.bUsesCustomStencil;
-	}
+			CustomDepthStencilUsage.bSamplesCustomDepthAndStencil = View.bUsesCustomStencil;
+		}
 
 		if (!CustomDepthStencilUsage.bSamplesCustomDepthAndStencil)
-	{
-		// Find out whether post-process materials use CustomDepth/Stencil lookups
-		const FBlendableManager& BlendableManager = View.FinalPostProcessSettings.BlendableManager;
-		FBlendableEntry* BlendableIt = nullptr;
-		while (FPostProcessMaterialNode* DataPtr = BlendableManager.IterateBlendables<FPostProcessMaterialNode>(BlendableIt))
 		{
-			if (DataPtr->IsValid())
+			// Find out whether post-process materials use CustomDepth/Stencil lookups
+			const FBlendableManager& BlendableManager = View.FinalPostProcessSettings.BlendableManager;
+			FBlendableEntry* BlendableIt = nullptr;
+			while (FPostProcessMaterialNode* DataPtr = BlendableManager.IterateBlendables<FPostProcessMaterialNode>(BlendableIt))
 			{
-				FMaterialRenderProxy* Proxy = DataPtr->GetMaterialInterface()->GetRenderProxy();
-				check(Proxy);
+				if (DataPtr->IsValid())
+				{
+					FMaterialRenderProxy* Proxy = DataPtr->GetMaterialInterface()->GetRenderProxy();
+					check(Proxy);
 
-				const FMaterial& Material = Proxy->GetIncompleteMaterialWithFallback(View.GetFeatureLevel());
+					const FMaterial& Material = Proxy->GetIncompleteMaterialWithFallback(View.GetFeatureLevel());
 					const FMaterialShaderMap* MaterialShaderMap = Material.GetRenderingThreadShaderMap();
 					bool bUsesCustomDepth = MaterialShaderMap->UsesSceneTexture(PPI_CustomDepth);
 					bool bUsesCustomStencil = MaterialShaderMap->UsesSceneTexture(PPI_CustomStencil);
 					if (Material.IsStencilTestEnabled() || bUsesCustomDepth || bUsesCustomStencil)
-				{
+					{
 						CustomDepthStencilUsage.bUsesCustomDepthStencil |= true;
-				}
+					}
 
-					if (bUsesCustomDepth && bUsesCustomStencil)
-				{
+					if (bUsesCustomStencil)
+					{
 						CustomDepthStencilUsage.bSamplesCustomDepthAndStencil |= true;
-					break;
+						break;
+					}
 				}
 			}
 		}
-	}
 	}
 	
 	return CustomDepthStencilUsage;
@@ -199,6 +197,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FMobileRenderPassParameters, RENDERER_API)
 	SHADER_PARAMETER_STRUCT_REF(FMobileReflectionCaptureShaderData, ReflectionCapture)
 	RDG_BUFFER_ACCESS_ARRAY(DrawIndirectArgsBuffers)
 	RDG_BUFFER_ACCESS_ARRAY(InstanceIdOffsetBuffers)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ColorGradingLUT)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
@@ -243,7 +242,7 @@ static void SetupGBufferFlags(FSceneTexturesConfig& SceneTexturesConfig, bool bR
 		Bindings.GBufferD.Flags |= AddFlags;
 		Bindings.GBufferE.Flags |= AddFlags;
 
-	// Mobile uses FBF/subpassLoad to fetch data from GBuffer, and FBF does not always work with sRGB targets 
+		// Mobile uses FBF/subpassLoad to fetch data from GBuffer, and FBF does not always work with sRGB targets 
 		Bindings.GBufferA.Flags &= (~TexCreate_SRGB);
 		Bindings.GBufferB.Flags &= (~TexCreate_SRGB);
 		Bindings.GBufferC.Flags &= (~TexCreate_SRGB);
@@ -315,7 +314,7 @@ FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,
 	bRequiresPixelProjectedPlanarRelfectionPass = false;
 	bRequiresAmbientOcclusionPass = false;
 	bRequiresShadowProjections = false;
-	bIsFullDepthPrepassEnabled = ((Scene->EarlyZPassMode == DDM_AllOpaque) && !bTonemapSubpass);
+	bIsFullDepthPrepassEnabled = Scene->EarlyZPassMode == DDM_AllOpaque;
 	bIsMaskedOnlyDepthPrepassEnabled = Scene->EarlyZPassMode == DDM_MaskedOnly;
 	bRequiresSceneDepthAux = MobileRequiresSceneDepthAux(ShaderPlatform);
 	bEnableClusteredLocalLights = MobileForwardEnableLocalLights(ShaderPlatform);
@@ -493,7 +492,8 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 		RenderTargetSize = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeXY();
 		RenderTargetPixelFormat = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetFormat();
 	}
-	const bool bRequiresUpscale = ((int32)RenderTargetSize.X > FamilySize.X || (int32)RenderTargetSize.Y > FamilySize.Y);
+	const bool bRequiresUpscale = ((int32)RenderTargetSize.X > FamilySize.X || (int32)RenderTargetSize.Y > FamilySize.Y) && !ViewFamily.EngineShowFlags.StereoRendering;
+
 	// ES requires that the back buffer and depth match dimensions.
 	// For the most part this is not the case when using scene captures. Thus scene captures always render to scene color target.
 	const bool bShouldCompositeEditorPrimitives = FSceneRenderer::ShouldCompositeEditorPrimitives(Views[0]);
@@ -508,6 +508,8 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 						|| (NumMSAASamples > 1 && !RHISupportsSeparateMSAAAndResolveTextures(ShaderPlatform))
 						|| (NumMSAASamples > 1 && (RenderTargetPixelFormat != PF_Unknown && RenderTargetPixelFormat != SceneTexturesConfig.ColorFormat))
 						|| bIsFullDepthPrepassEnabled;
+
+	bRenderToSceneColor = bTonemapSubpass ? GIsEditor : bRenderToSceneColor;
 
 	const bool bSceneDepthCapture = (
 		ViewFamily.SceneCaptureSource == SCS_SceneColorSceneDepth ||
@@ -593,8 +595,9 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
     SceneTexturesConfig.NumSamples = NumMSAASamples;
     
     SceneTexturesConfig.BuildSceneColorAndDepthFlags();
-	
-	if (bDeferredShading || (GIsEditor && bTonemapSubpass))
+    
+	bool bEmulatedTonemapSubpass = !IsVulkanPlatform(ShaderPlatform) && bTonemapSubpass;
+	if (bDeferredShading || bEmulatedTonemapSubpass)
 	{
 		SetupGBufferFlags(SceneTexturesConfig, bRequiresMultiPass || GraphBuilder.IsDumpingFrame() || bRequireSeparateViewPass);
 	}
@@ -687,8 +690,8 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, UpdateGPUScene);
 
 		Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-	{
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
 			Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
 		}
 	}
@@ -793,7 +796,7 @@ void FMobileSceneRenderer::RenderFullDepthPrepass(FRDGBuilder& GraphBuilder, FSc
 
 				if (bDoOcclusionQueries)
 				{
-				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
+					RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 					RenderOcclusion(RHICmdList);
 				}
 			});
@@ -874,7 +877,7 @@ void FMobileSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	// Important that this uses consistent logic throughout the frame, so evaluate once and pass in the flag from here
 	// NOTE: Must be done after  system texture initialization
 	// TODO: This doesn't take into account the potential for split screen views with separate shadow caches
-	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel));
+	VirtualShadowMapArray.Initialize(GraphBuilder, Scene->GetVirtualShadowMapCache(Views[0]), UseVirtualShadowMaps(ShaderPlatform, FeatureLevel), Views[0].bIsSceneCapture);
 
 	GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLMM_InitViews));
 
@@ -1183,7 +1186,8 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 	// tells the GPU "execute this renderpass as MSAA, and when you're done, automatically resolve and copy into this non-MSAA texture").
 	bool bMobileMSAA = NumMSAASamples > 1;
 
-	const bool bUseMobileTonemapSubpass = CVarMobileTonemapSubpass.GetValueOnAnyThread() == 1;
+	const bool bUseMobileTonemapSubpass = bTonemapSubpass;
+	const bool bEmulatedTonemapSubpass = !IsVulkanPlatform(ShaderPlatform) && bUseMobileTonemapSubpass;
 
 	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
 	const bool bIsMultiViewApplication = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
@@ -1204,7 +1208,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 	else
 	{
 		SceneColor = SceneTextures.Color.Target;
-		SceneColorResolve = bMobileMSAA ? SceneTextures.Color.Resolve : nullptr;
+		SceneColorResolve = (bMobileMSAA || bUseMobileTonemapSubpass) ? SceneTextures.Color.Resolve : nullptr;
 		SceneDepth = SceneTextures.Depth.Target;
 	}
 
@@ -1225,7 +1229,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 
 	if (bUseMobileTonemapSubpass)
 	{
-		if (GIsEditor)
+		if (bEmulatedTonemapSubpass)
 		{
 			BasePassRenderTargets[0] = FRenderTargetBinding(SceneTextures.GBufferA, nullptr, ERenderTargetLoadAction::EClear);
 		}
@@ -1234,6 +1238,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 			BasePassRenderTargets[0] = FRenderTargetBinding(SceneColor, nullptr, ERenderTargetLoadAction::EClear);
 
 			uint32 ColorTargetIndex = bRequiresSceneDepthAux ? 2 : 1;
+			ensureMsgf(!bRequiresSceneDepthAux, TEXT("Scene depth aux combined with mobile tonemap subpass is not yet handled correctly in the VulkanRHI"));
 			BasePassRenderTargets[ColorTargetIndex] = FRenderTargetBinding(SceneColorResolve, nullptr, ERenderTargetLoadAction::EClear);
 		}
 	}
@@ -1243,20 +1248,20 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
+	const bool bUseColorGradingLUT = (bUseMobileTonemapSubpass && (ViewFamily.EngineShowFlags.ColorGrading != 0) && (ViewFamily.EngineShowFlags.PostProcessing != 0));
+	FRDGTextureRef ColorGradingTexture = nullptr;
+	if (bUseColorGradingLUT)
+	{
+		// Must add combine LUT pass before we start main render pass. The texture is needed by the tonemap subpass.
+		ColorGradingTexture = AddCombineLUTPass(GraphBuilder, MainView);
+	}
+
 	FRenderViewContextArray RenderViews;
 	GetRenderViews(Views, RenderViews);
 
 	for (FRenderViewContext& ViewContext : RenderViews)
 	{
 		FViewInfo& View = *ViewContext.ViewInfo;
-
-		const bool bUseColorGradingLUT = (bUseMobileTonemapSubpass && (View.Family->EngineShowFlags.ColorGrading != 0) && (View.Family->EngineShowFlags.PostProcessing != 0));
-
-		if (bUseColorGradingLUT && IStereoRendering::IsAPrimaryView(View))
-		{
-			// Must add combine LUT pass before we start main render pass. The texture is needed by the tonemap subpass.
-			AddCombineLUTPass(GraphBuilder, View);
-		}
 
 		SCOPED_GPU_MASK(GraphBuilder.RHICmdList, !View.IsInstancedStereoPass() ? View.GPUMask : (View.GPUMask | View.GetInstancedView()->GPUMask));
 		SCOPED_CONDITIONAL_DRAW_EVENTF(GraphBuilder.RHICmdList, EventView, RenderViews.Num() > 1, TEXT("View%d"), ViewContext.ViewIndex);
@@ -1292,6 +1297,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 		PassParameters->MobileBasePass = CreateMobileBasePassUniformBuffer(GraphBuilder, View, EMobileBasePass::Opaque, SetupMode, MobileBasePassTextures);
 		PassParameters->ReflectionCapture = View.MobileReflectionCaptureUniformBuffer;
 		PassParameters->RenderTargets = BasePassRenderTargets;
+		PassParameters->ColorGradingLUT = ColorGradingTexture;
 	
 		BuildInstanceCullingDrawParams(GraphBuilder, View, PassParameters);
 
@@ -1350,25 +1356,24 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 			// Issue occlusion queries
 			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 			const bool bAdrenoOcclusionMode = (CVarMobileAdrenoOcclusionMode.GetValueOnRenderThread() != 0 && IsOpenGLPlatform(ShaderPlatform));
-		if (bAdrenoOcclusionMode)
-		{
-			// flush
-			RHICmdList.SubmitCommandsHint();
-		}
+			if (bAdrenoOcclusionMode)
+			{
+				// flush
+				RHICmdList.SubmitCommandsHint();
+			}
 			RenderOcclusion(RHICmdList);
 		}
 
 		// Pre-tonemap before MSAA resolve (iOS only)
 		PreTonemapMSAA(RHICmdList, SceneTextures);
-		const bool bUseMobileTonemapSubpass = CVarMobileTonemapSubpass.GetValueOnAnyThread() == 1;
-		if (bUseMobileTonemapSubpass)
+		PostRenderBasePass(RHICmdList, View); // This has to happen before shader resolve, it may render things.
+		if (bTonemapSubpass)
 		{
 			RHICmdList.NextSubpass();
 			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Tonemapping));
 			const FIntPoint TargetSize = SceneTextures.Color.Target->Desc.Extent;
-			MobileTonemapSubpass(RHICmdList, View, TargetSize, GraphBuilder);
+			MobileTonemapSubpass(RHICmdList, View, TargetSize, PassParameters->ColorGradingLUT, GraphBuilder);
 		}
-		PostRenderBasePass(RHICmdList, View);
 	});
 	
 	// resolve MSAA depth
@@ -1409,7 +1414,7 @@ void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMo
 	// resolve MSAA depth
 	if (!bIsFullDepthPrepassEnabled)
 	{
-	AddResolveSceneDepthPass(GraphBuilder, View, SceneTextures.Depth);
+		AddResolveSceneDepthPass(GraphBuilder, View, SceneTextures.Depth);
 	}
 	if (bRequiresSceneDepthAux)
 	{
@@ -1471,9 +1476,9 @@ void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMo
 
 	AddResolveSceneColorPass(GraphBuilder, View, SceneTextures.Color);
 
-#if UE_EDITOR
-	const bool bUseMobileTonemapSubpass = CVarMobileTonemapSubpass.GetValueOnAnyThread() == 1;
-	if (bUseMobileTonemapSubpass)
+#if !PLATFORM_ANDROID
+	const bool bEmulatedSubpasses = !IsVulkanPlatform(ShaderPlatform);
+	if (bTonemapSubpass && bEmulatedSubpasses)
 	{
 		// This code path ignores the MSAA CVar. It will render without MSAA for Android Vulkan Preview in editor.
 		// MSAA settings are respected on device.
@@ -1495,7 +1500,7 @@ void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMo
 			{
 				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Tonemapping));
 				const FIntPoint TargetSize = SceneTextures.Color.Target->Desc.Extent;
-				MobileTonemapSubpass(RHICmdList, View, TargetSize, GraphBuilder);
+				MobileTonemapSubpass(RHICmdList, View, TargetSize, TonemapPassParameters->ColorGradingLUT, GraphBuilder);
 			});
 
 		SceneTextures.MobileSetupMode = EMobileSceneTextureSetupMode::All;
@@ -1895,7 +1900,8 @@ bool FMobileSceneRenderer::RequiresMultiPass(FRHICommandListImmediate& RHICmdLis
 	}
 
 	// Only Vulkan, iOS and some GL can do a single pass deferred shading, otherwise multipass
-	if (IsMobileDeferredShadingEnabled(ShaderPlatform) || (GIsEditor && IsMobileTonemapSubpassEnabled()))
+	bool bEmulatedTonemapSubpass = !IsVulkanPlatform(ShaderPlatform) && IsMobileTonemapSubpassEnabled();
+	if (IsMobileDeferredShadingEnabled(ShaderPlatform) || bEmulatedTonemapSubpass)
 	{
 		return true;
 	}
@@ -2016,56 +2022,23 @@ void FMobileSceneRenderer::PreTonemapMSAA(FRHICommandListImmediate& RHICmdList, 
 		EDRF_UseTriangleOptimization);
 }
 
-void FMobileSceneRenderer::MobileTonemapSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FIntPoint TargetSize, FRDGBuilder& GraphBuilder)
+void FMobileSceneRenderer::MobileTonemapSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FIntPoint TargetSize, FRDGTexture* ColorGradingTexture, FRDGBuilder& GraphBuilder)
 {
 	check(IsInRenderingThread());
 
-	FRDGBufferRef LastEyeAdaptationBuffer = GetEyeAdaptationBuffer(GraphBuilder, View);
-	FRDGBufferSRVRef EyeAdaptationBufferSRV = LastEyeAdaptationBuffer != nullptr ? GraphBuilder.CreateSRV(LastEyeAdaptationBuffer, PF_A32B32G32R32F) : nullptr;
+	// Default the new eye adaptation to the last one in case it's not generated this frame.
+	const FEyeAdaptationParameters EyeAdaptationParameters = GetEyeAdaptationParameters(View, ERHIFeatureLevel::ES3_1);
+	FRDGTextureRef LastEyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+	FRDGTextureRef EyeAdaptationTexture = LastEyeAdaptationTexture;
 
-	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MSAACount"));
-	const uint32 NumSamples = (uint32)(CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() : 1);
-
-	FRHITexture* ColorGradingTexture = nullptr;
-	const bool bUseColorGradingLUT = ((View.Family->EngineShowFlags.ColorGrading != 0) && (View.Family->EngineShowFlags.PostProcessing != 0));
-
-	if (bUseColorGradingLUT)
-	{
-		// We can re-use the color grading texture from the primary view.
-		if (View.GetTonemappingLUT())
-		{
-			ColorGradingTexture = View.GetTonemappingLUT()->GetRHI();
-		}
-		else
-		{
-			const FViewInfo* PrimaryView = View.GetPrimaryView();
-			ColorGradingTexture = PrimaryView->GetTonemappingLUT()->GetRHI();
-		}
-	}
-
-	FScreenPassTexture BloomOutput;
-	FScreenPassTexture DofOutput;
-	FScreenPassTexture PostProcessSunShaftAndDof;
-
-	bool bSRGBAwareTarget = false;
-	
-	bool bHDRTonemapperOutput = false;
-	{
-		FMobileTonemapperInputs TonemapperInputs;
-
-		TonemapperInputs.bOutputInHDR = bHDRTonemapperOutput;
-		TonemapperInputs.bSRGBAwareTarget = bSRGBAwareTarget;
-		TonemapperInputs.BloomOutput = BloomOutput;
-		TonemapperInputs.DofOutput = DofOutput;
-		TonemapperInputs.SunShaftAndDof = PostProcessSunShaftAndDof;
-		TonemapperInputs.MsaaSamples = NumSamples;
+	FTonemapInputs TonemapperInputs;
+	TonemapperInputs.MsaaSamples = NumMSAASamples;
 		TonemapperInputs.ColorGradingTexture = ColorGradingTexture;
 		TonemapperInputs.TargetSize = TargetSize;
-		TonemapperInputs.EyeAdaptationBufferSRV = EyeAdaptationBufferSRV;
-		TonemapperInputs.EyeAdaptationParameters = GetEyeAdaptationParameters(View, ERHIFeatureLevel::ES3_1);
+	TonemapperInputs.EyeAdaptationParameters = &EyeAdaptationParameters;
+	TonemapperInputs.EyeAdaptationTexture = EyeAdaptationTexture;
 
 		AddMobileTonemapperSubpass(RHICmdList, View, TonemapperInputs);
-	}
 }
 
 bool FMobileSceneRenderer::ShouldRenderHZB()

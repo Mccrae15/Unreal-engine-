@@ -248,7 +248,7 @@ void Main(
 	, out HALF4_TYPE OutGBufferD : SV_Target4
 	#endif
 #else
-#if MOBILE_TONEMAP_SUBPASS_EDITOR
+#if TONEMAP_SUBPASS_EMULATION
 	, out half4 OutGBufferA	: SV_Target1
 #endif
 	, out HALF4_TYPE OutColor : SV_Target0
@@ -712,10 +712,6 @@ void Main(
 	#endif
 #endif
 
-#if MOBILE_TONEMAP_SUBPASS_EDITOR
-	OutGBufferA = OutColor;
-#endif
-
 #if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
 	FinalizeVirtualTextureFeedback(
 		MaterialParameters.VirtualTextureFeedback,
@@ -724,6 +720,10 @@ void Main(
 		View.FrameNumber,
 		View.VTFeedbackBuffer
 	);
+#endif
+
+#if TONEMAP_SUBPASS_EMULATION && !DEFERRED_SHADING_PATH
+	OutGBufferA = OutColor;
 #endif
 
 #if DEFERRED_SHADING_PATH && USE_GLES_FBF_DEFERRED 

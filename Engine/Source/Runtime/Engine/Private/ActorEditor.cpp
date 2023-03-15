@@ -85,14 +85,12 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 	{
 		if (!IsTemplate())
 		{
-			if (UWorld* World = GetTypedOuter<UWorld>())
+			UWorld* World = GetTypedOuter<UWorld>();
+			UWorldPartition* WorldPartition = World ? World->GetWorldPartition() : nullptr;
+			if (!WorldPartition || (!WorldPartition->IsStreamingEnabled() && !bIsDataLayersProperty))
 			{
-				if (UWorldPartition* WorldPartition = World->GetWorldPartition())
-				{
-					return bIsDataLayersProperty || WorldPartition->IsStreamingEnabled();
-				}
+				return false;
 			}
-			return false;
 		}
 	}
 
@@ -1407,6 +1405,8 @@ void AActor::SetFolderPath_Recursively(const FName& NewFolderPath)
 // Ideally, this should be revisited to implement something more generic.
 void AActor::EditorReplacedActor(AActor* OldActor)
 {
+	ContentBundleGuid = OldActor->ContentBundleGuid;
+
 	SetActorLabel(OldActor->GetActorLabel());
 	Tags = OldActor->Tags;
 	

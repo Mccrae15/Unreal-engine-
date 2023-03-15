@@ -290,7 +290,7 @@ int32 FMatExpressionPreview::CompilePropertyAndSetMaterialProperty(EMaterialProp
 		// Hardcoding output 0 as we don't have the UI to specify any other output
 		const int32 OutputIndex = 0;
 		int32 PreviewCodeChunk = INDEX_NONE;
-			PreviewCodeChunk = Expression->CompilePreview(Compiler, OutputIndex);
+		PreviewCodeChunk = Expression->CompilePreview(Compiler, OutputIndex);
 
 		// Get back into gamma corrected space, as DrawTile does not do this adjustment.
 		Ret = Compiler->Power(Compiler->Max(PreviewCodeChunk, Compiler->Constant(0)), Compiler->Constant(1.f / 2.2f));
@@ -920,11 +920,11 @@ void FMaterialEditor::GetAllMaterialExpressionGroups(TArray<FString>* OutGroups)
 	if (!EditorOnlyData)
 	{
 		return;
-			}
+	}
 
 	TArray<FParameterGroupData> UpdatedGroups;
 	for (const UMaterialExpression* MaterialExpression : Material->GetExpressions())
-					{
+	{
 		FMaterialParameterMetadata ParameterMeta;
 		if (MaterialExpression->GetParameterValue(ParameterMeta))
 		{
@@ -2538,7 +2538,7 @@ void FMaterialEditor::UpdatePreviewMaterial( bool bForce )
 bool FMaterialEditor::UpdateOriginalMaterial()
 {
 	// If the Material has compilation errors, warn the user
-	for (int32 i = ERHIFeatureLevel::SM5; i >= 0; --i)
+	for (int32 i = ERHIFeatureLevel::Num - 1; i >= 0; --i)
 	{
 		ERHIFeatureLevel::Type FeatureLevel = (ERHIFeatureLevel::Type)i;
 		FMaterialResource* CurrentResource = Material->GetMaterialResource(FeatureLevel);
@@ -4788,13 +4788,13 @@ FString FMaterialEditor::GetDocLinkForSelectedNode()
 		for (UObject* ObjectInSelection : SelectedNodes)
 		{
 			if (ObjectInSelection != NULL)
-		{
+			{
 				UMaterialGraphNode* SelectedGraphNode = Cast<UMaterialGraphNode>(ObjectInSelection);
-			FString DocLink = SelectedGraphNode->GetDocumentationLink();
-			FString DocExcerpt = SelectedGraphNode->GetDocumentationExcerptName();
+				FString DocLink = SelectedGraphNode->GetDocumentationLink();
+				FString DocExcerpt = SelectedGraphNode->GetDocumentationExcerptName();
 
-			DocumentationLink = FEditorClassUtils::GetDocumentationLinkFromExcerpt(DocLink, DocExcerpt);
-		}
+				DocumentationLink = FEditorClassUtils::GetDocumentationLinkFromExcerpt(DocLink, DocExcerpt);
+			}
 			break;
 		}
 	}

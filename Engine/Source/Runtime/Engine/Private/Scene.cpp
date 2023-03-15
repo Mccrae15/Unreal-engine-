@@ -493,7 +493,7 @@ FPostProcessSettings::FPostProcessSettings()
 	LensFlareTint = FLinearColor(1.0f, 1.0f, 1.0f);
 	LensFlareBokehSize = 3.0f;
 	LensFlareThreshold = 8.0f;
-	VignetteIntensity = 0.4f;
+	VignetteIntensity = IsMobileTonemapSubpassEnabled() ? 0.0f : 0.4f; // No vignette by default when tonemap subpass is enabled
 	GrainIntensity_DEPRECATED = 0.0f;
 	GrainJitter_DEPRECATED = 0.0f;
 

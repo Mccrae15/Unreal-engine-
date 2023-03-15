@@ -12,11 +12,6 @@
 #include "OnlineVoiceOculus.h"
 #include "Stats/Stats.h"
 
-#include "Misc/Parse.h"
-#include "Misc/CommandLine.h"
-
-#include <string>
-
 #if PLATFORM_ANDROID
 #include "Android/AndroidApplication.h"
 #endif
@@ -263,80 +258,12 @@ bool FOnlineSubsystemOculus::InitWithWindowsPlatform() const
 		return false;
 	}
 
-	// We can start in standalone mode by providing credentials via either the command line or in DefaultEngine.ini.
-	FString Email, Password;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("OculusEmail"), Email) ||
-		!FParse::Value(FCommandLine::Get(), TEXT("OculusPassword"), Password))
+	auto InitResult = ovr_PlatformInitializeWindows(TCHAR_TO_ANSI(*OculusAppId));
+	if (InitResult != ovrPlatformInitialize_Success)
 	{
-		Email = GConfig->GetStr(TEXT("OnlineSubsystemOculus"), TEXT("OculusEmail"), GEngineIni);
-		Password = GConfig->GetStr(TEXT("OnlineSubsystemOculus"), TEXT("OculusPassword"), GEngineIni);
+		UE_LOG_ONLINE(Warning, TEXT("Failed to initialize the Oculus Platform SDK! Failure code: %d"), static_cast<int>(InitResult));
+		return false;
 	}
-
-	if (!Email.IsEmpty() && !Password.IsEmpty())
-	{
-		std::string EmailANSI = TCHAR_TO_ANSI(*Email);
-		std::string PasswordANSI = TCHAR_TO_ANSI(*Password);
-
-		ovrOculusInitParams InitParams;
-		InitParams.sType = ovrPlatformStructureType_OculusInitParams;
-		InitParams.email = EmailANSI.c_str();
-		InitParams.password = PasswordANSI.c_str();
-		InitParams.appId = atoll(TCHAR_TO_ANSI(*OculusAppId));
-		InitParams.uriPrefixOverride = nullptr;
-
-#if WITH_EDITOR
-		try
-#endif
-		{
-			ovrPlatformInitializeResult InitResult;
-			ovr_Platform_InitializeStandaloneOculusEx(&InitParams, &InitResult, PLATFORM_PRODUCT_VERSION, PLATFORM_MAJOR_VERSION);
-			
-			if (InitResult == ovrPlatformInitialize_Success)
-			{
-				UE_LOG_ONLINE(Display, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_Platform_InitializeStandaloneOculusEx successful"));
-			}
-			else
-			{
-				UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_Platform_InitializeStandaloneOculusEx error: %s"),
-					ANSI_TO_TCHAR(ovrPlatformInitializeResult_ToString(InitResult)));
-				return false;
-			}
-		}
-#if WITH_EDITOR
-		catch (...)
-		{
-			UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_Platform_InitializeStandaloneOculusEx exception"));
-			return false;
-		}
-#endif
-	}
-	else
-	{
-#if WITH_EDITOR
-		try 
-#endif
-		{
-			auto InitResult = ovr_PlatformInitializeWindows(TCHAR_TO_ANSI(*OculusAppId));
-			if (InitResult == ovrPlatformInitialize_Success)
-			{
-				UE_LOG_ONLINE(Display, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_PlatformInitializeWindows successful"));
-			}
-			else
-			{
-				UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_PlatformInitializeWindows error: %d"),
-					static_cast<int>(InitResult));
-				return false;
-			}
-		}
-#if WITH_EDITOR
-		catch (...) 
-		{
-			UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemOculus::InitWithWindowsPlatform: ovr_PlatformInitializeWindows exception"));
-			return false;
-		}
-#endif
-	}
-
 	return true;
 }
 #elif PLATFORM_ANDROID
@@ -387,6 +314,12 @@ bool FOnlineSubsystemOculus::Shutdown()
 	{
 		MessageTaskManager.Release();
 	}
+
+#if !defined(OVRPL_DISABLED) && WITH_EDITOR
+	// If we are playing in the editor,
+	// Destroy the context and reset the init status
+	ovr_ResetInitAndContext();
+#endif
 
 	bOculusInit = false;
 

@@ -52,7 +52,8 @@ void AddPostProcessingPasses(
 	FInstanceCullingManager& InstanceCullingManager,
 	FVirtualShadowMapArray* VirtualShadowMapArray,
 	struct FLumenSceneFrameTemporaries& LumenFrameTemporaries,
-	const FSceneWithoutWaterTextures& SceneWithoutWaterTextures);
+	const FSceneWithoutWaterTextures& SceneWithoutWaterTextures,
+	FScreenPassTexture TSRMoireInput);
 
 void AddDebugViewPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FPostProcessingInputs& Inputs, const Nanite::FRasterResults* NaniteRasterResults);
 
@@ -67,17 +68,6 @@ struct FMobilePostProcessingInputs
 	{
 		check(ViewFamilyTexture);
 		check(SceneTextures);
-	}
-};
-
-struct FMobilePostProcessingSubpassInputs
-{
-	FRHITexture* ColorGradingTexture = nullptr;	// Optional parameter for subpass color grading LUT
-	FIntPoint TargetSize;
-
-	void Validate() const
-	{
-
 	}
 };
 

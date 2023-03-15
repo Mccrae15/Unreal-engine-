@@ -7,10 +7,8 @@
 #include "OVR_Platform_Defs.h"
 
 #include "OVR_AbuseReportOptions.h"
-#include "OVR_BlockedUserArray.h"
 #include "OVR_UserAndRoomArray.h"
 #include "OVR_UserArray.h"
-#include "OVR_UserCapabilityArray.h"
 #include "OVR_UserOptions.h"
 
 /// \file
@@ -53,26 +51,12 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_Get(ovrID userID);
 /// Extract the payload from the message handle with ::ovr_Message_GetString().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetAccessToken();
 
-/// Return the IDs of users entitled to use the current app that are blocked by
-/// the specified user
-///
-/// A message with type ::ovrMessage_User_GetBlockedUsers will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrBlockedUserArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetBlockedUserArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetBlockedUsers();
-
 /// Retrieve the currently signed in user. This call is available offline.
 ///
 /// NOTE: This will not return the user's presence as it should always be
 /// 'online' in your application.
 ///
 /// NOTE: Users will have a unique ID per application.
-///
-/// <b>Error codes</b>
-/// - \b 100: Something went wrong.
 ///
 /// A message with type ::ovrMessage_User_GetLoggedInUser will be generated in response.
 ///
@@ -130,16 +114,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetLoggedInUserRecentlyMetUsersAndRoom
 
 /// Get the next page of entries
 ///
-/// A message with type ::ovrMessage_User_GetNextBlockedUserArrayPage will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrBlockedUserArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetBlockedUserArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetNextBlockedUserArrayPage(ovrBlockedUserArrayHandle handle);
-
-/// Get the next page of entries
-///
 /// A message with type ::ovrMessage_User_GetNextUserAndRoomArrayPage will be generated in response.
 ///
 /// First call ::ovr_Message_IsError() to check if an error occurred.
@@ -157,16 +131,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetNextUserAndRoomArrayPage(ovrUserAnd
 /// If no error occurred, the message will contain a payload of type ::ovrUserArrayHandle.
 /// Extract the payload from the message handle with ::ovr_Message_GetUserArray().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetNextUserArrayPage(ovrUserArrayHandle handle);
-
-/// Get the next page of entries
-///
-/// A message with type ::ovrMessage_User_GetNextUserCapabilityArrayPage will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrUserCapabilityArrayHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetUserCapabilityArray().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetNextUserCapabilityArrayPage(ovrUserCapabilityArrayHandle handle);
 
 /// returns an ovrID which is unique per org. allows different apps within the
 /// same org to identify the user.
@@ -207,19 +171,6 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetSdkAccounts();
 /// Extract the payload from the message handle with ::ovr_Message_GetUserProof().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_GetUserProof();
 
-/// Launch the flow for blocking the given user. You can't be friended,
-/// invited, or searched by a blocked user, for example. You can remove the
-/// block via ovr_User_LaunchUnblockFlow.
-/// \param userID User ID of user being blocked
-///
-/// A message with type ::ovrMessage_User_LaunchBlockFlow will be generated in response.
-///
-/// First call ::ovr_Message_IsError() to check if an error occurred.
-///
-/// If no error occurred, the message will contain a payload of type ::ovrLaunchBlockFlowResultHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLaunchBlockFlowResult().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_LaunchBlockFlow(ovrID userID);
-
 /// Launch the flow for sending a friend request to a user.
 /// \param userID User ID of user to send a friend request to
 ///
@@ -231,15 +182,16 @@ OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_LaunchBlockFlow(ovrID userID);
 /// Extract the payload from the message handle with ::ovr_Message_GetLaunchFriendRequestFlowResult().
 OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_LaunchFriendRequestFlow(ovrID userID);
 
-/// Launch the flow for unblocking a user that the viewer has blocked.
-/// \param userID User ID of user to unblock
+/// Launch the profile of the given user. The profile surfaces information
+/// about the user and supports relevant actions that the viewer may take on
+/// that user, e.g. sending a friend request.
+/// \param userID User ID for profile being viewed
 ///
-/// A message with type ::ovrMessage_User_LaunchUnblockFlow will be generated in response.
+/// A message with type ::ovrMessage_User_LaunchProfile will be generated in response.
 ///
 /// First call ::ovr_Message_IsError() to check if an error occurred.
 ///
-/// If no error occurred, the message will contain a payload of type ::ovrLaunchUnblockFlowResultHandle.
-/// Extract the payload from the message handle with ::ovr_Message_GetLaunchUnblockFlowResult().
-OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_LaunchUnblockFlow(ovrID userID);
+/// This response has no payload. If no error occured, the request was successful. Yay!
+OVRP_PUBLIC_FUNCTION(ovrRequest) ovr_User_LaunchProfile(ovrID userID);
 
 #endif

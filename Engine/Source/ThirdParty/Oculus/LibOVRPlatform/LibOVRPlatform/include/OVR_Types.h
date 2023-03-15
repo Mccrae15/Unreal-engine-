@@ -96,12 +96,6 @@ typedef void (
 ///
 typedef void (*MicrophoneDataAvailableCallback)(void*);
 
-typedef struct {
-  float x;
-  float y;
-  float z;
-} ovrNetSyncVec3;
-
 #ifdef __cplusplus
 }
 #endif

@@ -2339,7 +2339,7 @@ void FLevelEditorActionCallbacks::ImportContent()
 void FLevelEditorActionCallbacks::ToggleVR()
 {
 	IVREditorModule& VREditorModule = IVREditorModule::Get();
-	VREditorModule.EnableVREditor( !VREditorModule.IsVREditorEnabled() );
+	VREditorModule.EnableVREditor( VREditorModule.GetVRMode() == nullptr );
 }
 
 

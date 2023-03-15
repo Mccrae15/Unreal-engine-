@@ -412,6 +412,8 @@ public:
 		OutEnvironment.SetDefine(TEXT("ENABLE_CLUSTERED_LIGHTS"), bEnableLocalLights ? 1u : 0u);
 		OutEnvironment.SetDefine(TEXT("ENABLE_CLUSTERED_REFLECTION"), bEnableClusteredReflections ? 1u : 0u);
 		OutEnvironment.SetDefine(TEXT("USE_SHADOWMASKTEXTURE"), bMobileUsesShadowMaskTexture && !bTranslucentMaterial ? 1u : 0u);
+
+		OutEnvironment.SetDefine(TEXT("TONEMAP_SUBPASS_EMULATION"), (!IsVulkanPlatform(Parameters.Platform) && IsMobileTonemapSubpassEnabled()) ? 1u : 0u);
 	}
 	
 	/** Initialization constructor. */

@@ -466,7 +466,7 @@ int32 DumpPSOSC(FString& Token, const FString& StableKeyFileDir)
 		}
 		else if (Item.Type == FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
 		{
-			check(!(Item.GraphicsDesc.VertexShader == FSHAHash() || Item.GraphicsDesc.MeshShader == FSHAHash()));
+			check(Item.GraphicsDesc.VertexShader != FSHAHash() || Item.GraphicsDesc.MeshShader != FSHAHash());
 			UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("%s"), *Item.GraphicsDesc.ToString());
 
 			if (InverseMap.Num())
@@ -517,7 +517,7 @@ static void PrintShaders(const TMap<FSHAHash, TArray<int32>>& InverseMap, TArray
 	}
 	for (const int32& Item : *Out)
 	{
-		UE_LOG(LogShaderPipelineCacheTools, Verbose, TEXT("    %s"), *StableArray[Item].ToString());
+		UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("    %s"), *StableArray[Item].ToString());
 	}
 }
 
@@ -600,14 +600,20 @@ bool CouldBeUsedTogether(const FStableShaderKeyAndValue& A, const FStableShaderK
 	}
 
 	static FName NAME_FDeferredDecalVS("FDeferredDecalVS");
+	static FName NAME_FDeferredLightVS("FDeferredLightVS");
 	static FName NAME_FWriteToSliceVS("FWriteToSliceVS");
-	static FName NAME_FPostProcessVS("FPostProcessVS");
+	static FName NAME_FScreenPassVS("FScreenPassVS");
 	static FName NAME_FWriteToSliceGS("FWriteToSliceGS");
+	static FName NAME_FNaniteIndirectMaterialVS("FNaniteIndirectMaterialVS");
+	static FName NAME_FNaniteMultiViewMaterialVS("FNaniteMultiViewMaterialVS");
 	if (
 		A.ShaderType == NAME_FDeferredDecalVS || B.ShaderType == NAME_FDeferredDecalVS ||
+		A.ShaderType == NAME_FDeferredLightVS || B.ShaderType == NAME_FDeferredLightVS ||
 		A.ShaderType == NAME_FWriteToSliceVS || B.ShaderType == NAME_FWriteToSliceVS ||
-		A.ShaderType == NAME_FPostProcessVS || B.ShaderType == NAME_FPostProcessVS ||
-		A.ShaderType == NAME_FWriteToSliceGS || B.ShaderType == NAME_FWriteToSliceGS
+		A.ShaderType == NAME_FScreenPassVS || B.ShaderType == NAME_FScreenPassVS ||
+		A.ShaderType == NAME_FWriteToSliceGS || B.ShaderType == NAME_FWriteToSliceGS ||
+		A.ShaderType == NAME_FNaniteIndirectMaterialVS || B.ShaderType == NAME_FNaniteIndirectMaterialVS ||
+		A.ShaderType == NAME_FNaniteMultiViewMaterialVS || B.ShaderType == NAME_FNaniteMultiViewMaterialVS
 		)
 	{
 		// oddball mix and match with any material shader.
@@ -625,17 +631,48 @@ bool CouldBeUsedTogether(const FStableShaderKeyAndValue& A, const FStableShaderK
 	{
 		return false;
 	}
-	if (A.QualityLevel != B.QualityLevel)
-	{
-		return false;
-	}
 	if (A.TargetPlatform != B.TargetPlatform)
 	{
 		return false;
 	}
-	if (!(A.ClassNameAndObjectPath == B.ClassNameAndObjectPath))
+	static FName NAME_FHWRasterizeVS("FHWRasterizeVS");
+	static FName NAME_FHWRasterizeMS("FHWRasterizeMS");
+	static FName NAME_FHWRasterizePS("FHWRasterizePS");
+	if ((A.ShaderType == NAME_FHWRasterizePS && (B.ShaderType == NAME_FHWRasterizeVS || B.ShaderType == NAME_FHWRasterizeMS)) ||
+		(B.ShaderType == NAME_FHWRasterizePS && (A.ShaderType == NAME_FHWRasterizeVS || A.ShaderType == NAME_FHWRasterizeMS)))
 	{
-		return false;
+		// skip quality level and ClassNameAndObjectPath because either vertex/mesh shader or pixel shader could be from WorldGridMaterial 
+		// and then quality level could be Num and Epic, and different material name
+
+		if (A.QualityLevel != B.QualityLevel)
+		{
+			static FName NAME_NumQualityLevel("Num");
+			if (A.QualityLevel != NAME_NumQualityLevel && B.QualityLevel != NAME_NumQualityLevel)
+			{
+				return false;
+			}
+		}
+
+		if (!(A.ClassNameAndObjectPath == B.ClassNameAndObjectPath))
+		{
+			static FName NAME_WorldGridMaterial("WorldGridMaterial");
+			if (A.ClassNameAndObjectPath.ObjectClassAndPath.Num() < 3 || B.ClassNameAndObjectPath.ObjectClassAndPath.Num() < 3 ||
+				(A.ClassNameAndObjectPath.ObjectClassAndPath[2] != NAME_WorldGridMaterial && B.ClassNameAndObjectPath.ObjectClassAndPath[2] != NAME_WorldGridMaterial))
+			{
+				return false;
+			}
+		}
+	}
+	else
+	{
+		if (A.QualityLevel != B.QualityLevel)
+		{
+			return false;
+		}
+		if (!(A.ClassNameAndObjectPath == B.ClassNameAndObjectPath))
+		{
+			return false;
+		}
 	}
 	return true;
 }
@@ -983,7 +1020,8 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 				}
 				else
 				{
-					bool bInvertibilityResult = CheckPSOStringInveribility(TempPSO);
+					// as of UE 5.1, we do not support storing PSOs in CSV so disable the string invertibility test, as that code path isn't updated
+					bool bInvertibilityResult = true; // CheckPSOStringInveribility(TempPSO);
 					bool bVerifyResult = TempPSO.Verify();
 					if(bInvertibilityResult && bVerifyResult)
 					{
@@ -1594,7 +1632,9 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 		TEXT("FRenderSkyAtmosphereVS"),
 		TEXT("TPageTableUpdateVS<true>"),
 		TEXT("TPageTableUpdateVS<false>"),
-		TEXT("FShaderDrawDebugVS")
+		TEXT("FShaderDrawDebugVS"),
+		TEXT("FHWRasterizeVS"),
+		TEXT("FRenderRealTimeReflectionHeightFogVS")
 	};
 
 	TSet<FName> VShadersUsableWithEmptyVertexDecl;
@@ -1614,6 +1654,18 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 	for (const TCHAR* VFType : VFactoriesUsableWithEmptyVertexDecl_Table)
 	{
 		VFactoriesUsableWithEmptyVertexDecl.Add(FName(VFType));
+	}
+
+	// list of Shaders which are using RHI features which are not available on all systems and could fail to compile
+	const TCHAR* ShadersUsingPossibleUnsupportedRHIFeatures_Table[] =
+	{
+		TEXT("FTSRRejectShadingCS")
+	};
+	
+	TSet<FName> ShadersUsingPossibleUnsupportedRHIFeatures;
+	for (const TCHAR* ShaderType : ShadersUsingPossibleUnsupportedRHIFeatures_Table)
+	{
+		ShadersUsingPossibleUnsupportedRHIFeatures.Add(FName(ShaderType));
 	}
 
 	// This may be too strict, but we cannot know the VS signature.
@@ -1772,6 +1824,7 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 	TSet<FStableShaderKeyAndValue> PossiblyIncorrectUsageWithEmptyDeclaration;
 	int32 NumPSOsFilteredDueToEmptyDecls = 0;
 	int32 NumPSOsFilteredDueToInconsistentDecls = 0;
+	int32 NumPSOsFilteredDueToUsingPossibleUnsupportedRHIFeatures = 0;
 	int32 NumPSOsOriginal = InOutPSOs.Num();
 
 	for (const FPipelineCacheFileFormatPSO& CurPSO : InOutPSOs)
@@ -1850,65 +1903,110 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 
 	FName UnknownVFType(TEXT("null"));
 
+	// Filter the PSOs using possible unsupported RHI features
+	auto ContainsShaderWithPossibleUnsupportedRHIFeatures = [InverseMap, ShadersUsingPossibleUnsupportedRHIFeatures](const FSHAHash& ShaderHash) -> bool
+	{
+		if (ShaderHash != FSHAHash())
+		{
+			const TArray<FStableShaderKeyAndValue>* Shaders = InverseMap.Find(ShaderHash);
+			if (Shaders != nullptr)
+			{
+				for (const FStableShaderKeyAndValue& Shader : *Shaders)
+				{
+					if (ShadersUsingPossibleUnsupportedRHIFeatures.Contains(Shader.ShaderType))
+					{
+						UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Filtering out PSO using shader with possible unsupported RHI feature:\n %s"), *Shader.ToString());
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	};
+
 	// filter the PSOs
 	TSet<FPipelineCacheFileFormatPSO> RetainedPSOs;
 	for (const FPipelineCacheFileFormatPSO& CurPSO : InOutPSOs)
 	{
-		if (CurPSO.Type != FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
+		switch (CurPSO.Type)
 		{
-			RetainedPSOs.Add(CurPSO);
-			continue;
-		}
-
-		if (SuspiciousVertexShaders.Contains(CurPSO.GraphicsDesc.VertexShader))
+		case FPipelineCacheFileFormatPSO::DescriptorType::Compute:
 		{
-			++NumPSOsFilteredDueToInconsistentDecls;
-			continue;
-		}
-
-		// check if the vertex shader is known to be used with an empty declaration - this is the largest source of driver crashes
-		if (CurPSO.GraphicsDesc.VertexDescriptor.Num() == 0)
-		{
-			// check against the list
-			const TArray<FStableShaderKeyAndValue>* OriginalShaders = InverseMap.Find(CurPSO.GraphicsDesc.VertexShader);
-			if (OriginalShaders == nullptr)
+			if (ContainsShaderWithPossibleUnsupportedRHIFeatures(CurPSO.ComputeDesc.ComputeShader))
 			{
-				UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("PSO with an empty vertex declaration and unknown VS %s encountered, filtering out"), *CurPSO.GraphicsDesc.VertexShader.ToString());
-				++NumPSOsFilteredDueToEmptyDecls;
+				++NumPSOsFilteredDueToUsingPossibleUnsupportedRHIFeatures;
 				continue;
 			}
 
-			// all shader classes need to be usabe with empty declarations for this to pass
-			bool bAllShadersAllowed = true;
-			for (const FStableShaderKeyAndValue& OriginalShader : *OriginalShaders)
+			break;
+		}
+		case FPipelineCacheFileFormatPSO::DescriptorType::Graphics:
+		{
+			if (CurPSO.GraphicsDesc.MeshShader != FSHAHash())
 			{
-				if (!VShadersUsableWithEmptyVertexDecl.Contains(OriginalShader.ShaderType))
-				{
-					// if this shader has a vertex factory type associated, check if VF is known to have empty decl
-					if (OriginalShader.VFType != UnknownVFType)
-					{
-						if (VFactoriesUsableWithEmptyVertexDecl.Contains(OriginalShader.VFType))
-						{
-							// allow, vertex factory can have an empty declaration
-							continue;
-						}
+				RetainedPSOs.Add(CurPSO);
+				continue;
+			}
 
-						// found an incompatible (possibly, but we will err on the side of caution) usage. Log it
-						PossiblyIncorrectUsageWithEmptyDeclaration.Add(OriginalShader);
+			if (SuspiciousVertexShaders.Contains(CurPSO.GraphicsDesc.VertexShader))
+			{
+				++NumPSOsFilteredDueToInconsistentDecls;
+				continue;
+			}
+
+			// check if the vertex shader is known to be used with an empty declaration - this is the largest source of driver crashes
+			if (CurPSO.GraphicsDesc.VertexDescriptor.Num() == 0)
+			{
+				// check against the list
+				const TArray<FStableShaderKeyAndValue>* OriginalShaders = InverseMap.Find(CurPSO.GraphicsDesc.VertexShader);
+				if (OriginalShaders == nullptr)
+				{
+					UE_LOG(LogShaderPipelineCacheTools, Warning, TEXT("PSO with an empty vertex declaration and unknown VS %s encountered, filtering out"), *CurPSO.GraphicsDesc.VertexShader.ToString());
+					++NumPSOsFilteredDueToEmptyDecls;
+					continue;
+				}
+
+				// all shader classes need to be usabe with empty declarations for this to pass
+				bool bAllShadersAllowed = true;
+				for (const FStableShaderKeyAndValue& OriginalShader : *OriginalShaders)
+				{
+					if (!VShadersUsableWithEmptyVertexDecl.Contains(OriginalShader.ShaderType))
+					{
+						// if this shader has a vertex factory type associated, check if VF is known to have empty decl
+						if (OriginalShader.VFType != UnknownVFType)
+						{
+							if (VFactoriesUsableWithEmptyVertexDecl.Contains(OriginalShader.VFType))
+							{
+								// allow, vertex factory can have an empty declaration
+								continue;
+							}
+
+							// found an incompatible (possibly, but we will err on the side of caution) usage. Log it
+							PossiblyIncorrectUsageWithEmptyDeclaration.Add(OriginalShader);
+						}
+						bAllShadersAllowed = false;
+						break;
 					}
-					bAllShadersAllowed = false;
-					break;
+				}
+
+				if (!bAllShadersAllowed)
+				{
+					// skip this PSO
+					++NumPSOsFilteredDueToEmptyDecls;
+					continue;
 				}
 			}
 
-			if (!bAllShadersAllowed)
-			{
-				// skip this PSO
-				++NumPSOsFilteredDueToEmptyDecls;
-				continue;
-			}
+			break;
+		}
+		case FPipelineCacheFileFormatPSO::DescriptorType::RayTracing:
+		{
+			break;
+		}
 		}
 
+		// still used
 		RetainedPSOs.Add(CurPSO);
 	}
 
@@ -1933,6 +2031,7 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Before sanitization: .................................................................... %6d PSOs"), NumPSOsOriginal);
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Filtered out due to inconsistent vertex declaration for the same vertex shader:.......... %6d PSOs"), NumPSOsFilteredDueToInconsistentDecls);
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Filtered out due to VS being possibly incompatible with an empty vertex declaration:..... %6d PSOs"), NumPSOsFilteredDueToEmptyDecls);
+	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Filtered out due to using possible unsupported RHI features:............................. %6d PSOs"), NumPSOsFilteredDueToUsingPossibleUnsupportedRHIFeatures);
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("-----"));
 	UE_LOG(LogShaderPipelineCacheTools, Display, TEXT("Number of PSOs after sanity checks:...................................................... %6d PSOs"), InOutPSOs.Num());
 }
@@ -2451,7 +2550,7 @@ int32 BuildPSOSC(const TArray<FString>& Tokens, const TMap<FString, FString>& Pa
 			}
 			else if (Item.Type == FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
 			{
-				check(!(Item.GraphicsDesc.VertexShader == FSHAHash() || Item.GraphicsDesc.MeshShader == FSHAHash()));
+				check(Item.GraphicsDesc.VertexShader != FSHAHash() || Item.GraphicsDesc.MeshShader != FSHAHash());
 				StringRep = Item.GraphicsDesc.ToString();
 			}
 			else if (Item.Type == FPipelineCacheFileFormatPSO::DescriptorType::RayTracing)

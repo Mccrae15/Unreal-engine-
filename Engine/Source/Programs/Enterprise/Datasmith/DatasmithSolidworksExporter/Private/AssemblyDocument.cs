@@ -49,7 +49,7 @@ namespace DatasmithSolidworks
 			SwAsmDoc = InSwDoc;
 		}
 
-		public override void PreExport(FMeshes Meshes)
+		public override void PreExport(FMeshes Meshes, bool bConfigurations)
 		{
 		}
 
@@ -384,6 +384,12 @@ namespace DatasmithSolidworks
 					ActorExportInfo.Type = EActorType.MeshActor;
 					
 					OutMeshesToExportMap.Add(InComponent, ActorExportInfo.Name);
+				}
+
+				if (ActorExportInfo.Type == EActorType.MeshActor )
+				{
+					// todo: deduplicate mesh name calculation
+					ActorExportInfo.MeshName = FDatasmithExporter.SanitizeName($"{ActorExportInfo.Name}_Mesh");
 				}
 
 				Exporter.ExportOrUpdateActor(ActorExportInfo);

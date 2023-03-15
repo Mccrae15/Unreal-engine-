@@ -140,6 +140,11 @@ public:
 	/* Copy the settings from a specific instance name */
 	void LoadSettings(const FName& InInstanceName);
 
+	/** Helper functions for backwards compatibility with filters that save state until they are ported to EditorConfig */
+	void SaveSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString);
+	void LoadSettings(const FName& InInstanceName, const FString& IniFilename, const FString& IniSection, const FString& SettingsString);
+
+
 	virtual void SetFilterLayout(EFilterBarLayout InFilterBarLayout) override;
 
 protected:
@@ -167,8 +172,10 @@ private:
 	/** Empty our list of custom text filters, and load from the given config */
 	void LoadCustomTextFilters(const FFilterBarSettings* FilterBarConfig);
 
-	/** Find the custom text filter corresponding to the specified state, and restore it's state to what is specified */
-	void RestoreCustomTextFilterState(const FCustomTextFilterState& InFilterState);
+	/** Find the custom text filter corresponding to the specified state, and restore it's state to what is specified
+	 *  @return True if the filter was restored successfully, false if not
+	 */
+	bool RestoreCustomTextFilterState(const FCustomTextFilterState& InFilterState);
 	
 private:
 

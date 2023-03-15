@@ -2887,14 +2887,16 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 #endif
 	LandscapeLODOverride = -1;
 
+	const bool bIsStereoRendering = GEngine && GEngine->IsStereoscopic3D();
+
 	// ScreenPercentage is not supported in ES 3.1 with MobileHDR = false. Disable show flag so to have it respected.
 	const bool bIsMobileLDR = (GetFeatureLevel() <= ERHIFeatureLevel::ES3_1 && !IsMobileHDR());
-	if (bIsMobileLDR)
+	if (bIsMobileLDR && !bIsStereoRendering)
 	{
 		EngineShowFlags.ScreenPercentage = false;
 	}
 
-	if (GEngine && GEngine->IsStereoscopic3D())
+	if (bIsStereoRendering)
 	{
 		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
 		const bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(GetFeatureLevel()) == EShadingPath::Mobile;
@@ -2960,6 +2962,7 @@ bool FSceneViewFamily::SupportsScreenPercentage() const
 	if (Scene != nullptr)
 	{
 		EShadingPath ShadingPath = Scene->GetShadingPath();
+		const bool bIsStereoRendering = GEngine && GEngine->IsStereoscopic3D();
 
 		// The deferred shading renderer supports screen percentage when used normally
 		if (Scene->GetShadingPath() == EShadingPath::Deferred)
@@ -2967,8 +2970,8 @@ bool FSceneViewFamily::SupportsScreenPercentage() const
 			return true;
 		}
 
-		// Mobile renderer does not support screen percentage with LDR.
-		if ((GetFeatureLevel() <= ERHIFeatureLevel::ES3_1 && !IsMobileHDR()))
+		// Mobile renderer does not support screen percentage with LDR if rendering to the backbuffer (VR handles upscale in the compositor)
+		if ((GetFeatureLevel() <= ERHIFeatureLevel::ES3_1 && !IsMobileHDR() && !bIsStereoRendering))
 		{
 			return false;
 		}

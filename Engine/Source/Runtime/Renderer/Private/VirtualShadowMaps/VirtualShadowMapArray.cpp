@@ -78,6 +78,13 @@ TAutoConsoleVariable<int32> CVarMaxPhysicalPages(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+TAutoConsoleVariable<int32> CVarMaxPhysicalPagesSceneCapture(
+	TEXT("r.Shadow.Virtual.MaxPhysicalPagesSceneCapture"),
+	512,
+	TEXT("Maximum number of physical pages in the pool for each scene capture component."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 TAutoConsoleVariable<int32> CVarCacheStaticSeparate(
 	TEXT("r.Shadow.Virtual.Cache.StaticSeparate"),
 	1,
@@ -384,7 +391,7 @@ static void SetCacheDataShaderParameters(FRDGBuilder& GraphBuilder, const TArray
 }
 
 
-void FVirtualShadowMapArray::Initialize(FRDGBuilder& GraphBuilder, FVirtualShadowMapArrayCacheManager* InCacheManager, bool bInEnabled)
+void FVirtualShadowMapArray::Initialize(FRDGBuilder& GraphBuilder, FVirtualShadowMapArrayCacheManager* InCacheManager, bool bInEnabled, bool bIsSceneCapture)
 {
 	bInitialized = true;
 	bEnabled = bInEnabled;
@@ -427,7 +434,8 @@ void FVirtualShadowMapArray::Initialize(FRDGBuilder& GraphBuilder, FVirtualShado
 		// NOTE: This assumes GetMax2DTextureDimension() is a power of two on supported platforms
 		const uint32 PhysicalPagesX = FMath::DivideAndRoundDown(GetMax2DTextureDimension(), FVirtualShadowMap::PageSize);
 		check(FMath::IsPowerOfTwo(PhysicalPagesX));
-		uint32 PhysicalPagesY = FMath::DivideAndRoundUp((uint32)FMath::Max(1, CVarMaxPhysicalPages.GetValueOnRenderThread()), PhysicalPagesX);	
+		const int32 MaxPhysicalPages = (bIsSceneCapture ? CVarMaxPhysicalPagesSceneCapture : CVarMaxPhysicalPages).GetValueOnRenderThread();
+		uint32 PhysicalPagesY = FMath::DivideAndRoundUp((uint32)FMath::Max(1, MaxPhysicalPages), PhysicalPagesX);	
 
 		UniformParameters.MaxPhysicalPages = PhysicalPagesX * PhysicalPagesY;
 				
@@ -2429,6 +2437,11 @@ void FVirtualShadowMapArray::RenderVirtualShadowMapsNonNanite(FRDGBuilder& Graph
 	FRDGBufferSRVRef PrevPageRectBoundsRDGSRV = CacheManager->IsValid() ? GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(CacheManager->PrevBuffers.PageRectBounds, TEXT("Shadow.Virtual.PrevPageRectBounds"))) : nullptr;
 
 	int32 HZBMode = CVarNonNaniteVsmUseHzb.GetValueOnRenderThread();
+	// When disabling Nanite, there may be stale data in the Nanite-HZB causing incorrect culling.
+	if (!bHZBBuiltThisFrame)
+	{
+		HZBMode = 0; /* Disable HZB culling */
+	}
 
 	auto InitHZB = [&]()->FRDGTextureRef
 	{
