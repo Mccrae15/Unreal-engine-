@@ -1,15 +1,9 @@
 Oculus-VR/UnrealEngine
 =============
  
-This is the 5.1 preview branch for the Meta fork of UE5. The current public release is [oculus-5.1.1](https://github.com/Oculus-VR/UnrealEngine/releases/tag/oculus-5.1.1-release-1.82.0-v50.2)
-
-#### Known issues in this preview
-* Controller Input events are not consistent when using enhanced input actions.
-* Controller models rotations are offset when building apps using the VR Template sample hand models.
- 
 Welcome to the Meta fork of Epic’s Unreal Engine. We recommend you use our fork whenever building apps for Meta Quest. In addition to the OVRPlugin, this fork contains features, samples, and fixes not yet available in Epic’s repo.
 
-You can find the latest UE5 plugin release notes [here](https://developer.oculus.com/downloads/package/unreal-engine-5-integration/).
+You can find the latest UE5 plugin release notes [here]([https://developer.oculus.com/downloads/package/unreal-engine-5-integration/](https://developer.oculus.com/downloads/package/unreal-engine-5-integration-github).
  
 #### Features
 * [Application SpaceWarp (AppSW)](https://developer.oculus.com/documentation/unreal/unreal-asw/)
