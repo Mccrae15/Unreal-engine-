@@ -1,7 +1,7 @@
 Oculus-VR/UnrealEngine
 =============
  
-This is the 5.1 preview branch for the Meta fork of UE5. The current public release is [oculus-5.0.3](https://github.com/Oculus-VR/UnrealEngine/releases/tag/oculus-5.0.3-release-1.79.0-v47.1)
+This is the 5.1 preview branch for the Meta fork of UE5. The current public release is [oculus-5.1.1](https://github.com/Oculus-VR/UnrealEngine/releases/tag/oculus-5.1.1-release-1.82.0-v50.2)
 
 #### Known issues in this preview
 * Controller Input events are not consistent when using enhanced input actions.
