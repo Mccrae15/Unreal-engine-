@@ -1,9 +1,9 @@
 Oculus-VR/UnrealEngine
 =============
- 
+  
 Welcome to the Meta fork of Epic’s Unreal Engine. We recommend you use our fork whenever building apps for Meta Quest. In addition to the OVRPlugin, this fork contains features, samples, and fixes not yet available in Epic’s repo.
 
-You can find the latest UE5 plugin release notes [here]([https://developer.oculus.com/downloads/package/unreal-engine-5-integration/](https://developer.oculus.com/downloads/package/unreal-engine-5-integration-github).
+You can find the latest UE5 plugin release notes [here](https://developer.oculus.com/downloads/package/unreal-engine-5-integration-github).
  
 #### Features
 * [Application SpaceWarp (AppSW)](https://developer.oculus.com/documentation/unreal/unreal-asw/)
