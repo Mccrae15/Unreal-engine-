@@ -128,7 +128,12 @@ struct FVulkanSubpassDescription<VkSubpassDescription>
 		inputAttachmentCount = NumInputAttachmentReferences;
 	}
 
-	void SetShadingRateAttachment(void* /* ShadingRateAttachmentInfo */)
+	void SetDepthStencilResolveAttachment(VkSubpassDescriptionDepthStencilResolveKHR* DepthStencilResolveAttachmentDesc)
+	{
+		// No-op without VK_KHR_create_renderpass2
+	}
+
+	void SetShadingRateAttachment(VkFragmentShadingRateAttachmentInfoKHR* /* ShadingRateAttachmentInfo */)
 	{
 		// No-op without VK_KHR_create_renderpass2
 	}
@@ -177,9 +182,18 @@ struct FVulkanSubpassDescription<VkSubpassDescription2>
 		inputAttachmentCount = NumInputAttachmentReferences;
 	}
 
-	void SetShadingRateAttachment(void* ShadingRateAttachmentInfo)
+	void SetDepthStencilResolveAttachment(VkSubpassDescriptionDepthStencilResolveKHR* DepthStencilResolveAttachmentDesc)
 	{
+		const void* Next = pNext;
+		pNext = DepthStencilResolveAttachmentDesc;
+		DepthStencilResolveAttachmentDesc->pNext = Next;
+	}
+
+	void SetShadingRateAttachment(VkFragmentShadingRateAttachmentInfoKHR* ShadingRateAttachmentInfo)
+	{
+		const void* Next = pNext;
 		pNext = ShadingRateAttachmentInfo;
+		ShadingRateAttachmentInfo->pNext = Next;
 	}
 
 	void SetMultiViewMask(uint32_t Mask)
@@ -333,6 +347,7 @@ struct FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>
 	}
 };
 
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 struct FVulkanFragmentShadingRateAttachmentInfo
 	: public VkFragmentShadingRateAttachmentInfoKHR
 {
@@ -349,7 +364,30 @@ struct FVulkanFragmentShadingRateAttachmentInfo
 		pFragmentShadingRateAttachment = AttachmentReference;
 	}
 };
-#endif
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+struct FVulkanDepthStencilResolveSubpassDesc
+	: public VkSubpassDescriptionDepthStencilResolveKHR
+{
+	FVulkanDepthStencilResolveSubpassDesc()
+	{
+		ZeroVulkanStruct(*this, VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE);
+	}
+
+	void SetResolveModes(VkResolveModeFlagBits DepthMode, VkResolveModeFlagBits StencilMode)
+	{
+		depthResolveMode = DepthMode;
+		stencilResolveMode = StencilMode;
+	}
+
+	void SetReference(FVulkanAttachmentReference<VkAttachmentReference2>* AttachmentReference)
+	{
+		pDepthStencilResolveAttachment = AttachmentReference;
+	}
+};
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 
 extern int32 GVulkanInputAttachmentShaderRead;
 
@@ -376,6 +414,7 @@ public:
 		const bool bDeferredShadingSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::DeferredShadingSubpass) != ESubpassHint::None;
 		const bool bDepthReadSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::DepthReadSubpass) != ESubpassHint::None;
 		const bool bMobileTonemapSubpass = (RTLayout.GetSubpassHint() & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None;
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 		const bool bApplyFragmentShadingRate =
 			Device.GetOptionalExtensions().HasKHRFragmentShadingRate &&
 			GRHISupportsAttachmentVariableRateShading &&
@@ -383,14 +422,35 @@ public:
 			GRHIAttachmentVariableRateShadingEnabled &&
 			GRHIVariableRateShadingImageDataType == VRSImage_Fractional &&
 			RTLayout.GetHasFragmentDensityAttachment();
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+		const bool bResolveDepth =
+			GRHISupportsDepthStencilResolve &&
+			Device.GetOptionalExtensions().HasKHRDepthStencilResolve &&
+			RTLayout.GetHasDepthStencilResolve();
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
 
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 		if (bApplyFragmentShadingRate)
 		{
 			ShadingRateAttachmentReference.SetAttachment(*RTLayout.GetFragmentDensityAttachmentReference(), VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT);
 			FragmentShadingRateAttachmentInfo.SetReference(&ShadingRateAttachmentReference);
 		}
-#endif
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+		if (bResolveDepth)
+		{
+			DepthStencilResolveAttachmentReference.SetAttachment(*RTLayout.GetDepthStencilResolveAttachmentReference(), VkImageAspectFlagBits::VK_IMAGE_ASPECT_NONE);
+			// Using zero bit because it is always supported if the extension is supported, from spec: "The VK_RESOLVE_MODE_SAMPLE_ZERO_BIT mode
+			// is the only mode that is required of all implementations (that support the extension or support Vulkan 1.2 or higher)."
+			DepthStencilResolveSubpassDesc.SetResolveModes(VK_RESOLVE_MODE_SAMPLE_ZERO_BIT, VK_RESOLVE_MODE_SAMPLE_ZERO_BIT);
+			DepthStencilResolveSubpassDesc.SetReference(&DepthStencilResolveAttachmentReference);
+		}
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 
 		// Grab (and optionally convert) attachment references.
 		uint32 NumColorAttachments = RTLayout.GetNumColorAttachments();
@@ -430,12 +490,21 @@ public:
 			}
 
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+			if (!bDepthReadSubpass && bResolveDepth)
+			{
+				SubpassDesc.SetDepthStencilResolveAttachment(&DepthStencilResolveSubpassDesc);
+			}
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 			if (bApplyFragmentShadingRate)
 			{
 				SubpassDesc.SetShadingRateAttachment(&FragmentShadingRateAttachmentInfo);
 			}
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 			SubpassDesc.SetMultiViewMask(MultiviewMask);
-#endif
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 		}
 
 		// Color write and depth read sub-pass
@@ -461,12 +530,21 @@ public:
 			SubpassDesc.SetDepthStencilAttachment(InputAttachments1);
 
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+			if (bResolveDepth)
+			{
+				SubpassDesc.SetDepthStencilResolveAttachment(&DepthStencilResolveSubpassDesc);
+			}
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 			if (bApplyFragmentShadingRate)
 			{
 				SubpassDesc.SetShadingRateAttachment(&FragmentShadingRateAttachmentInfo);
 			}
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 			SubpassDesc.SetMultiViewMask(MultiviewMask);
-#endif
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 
 			TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
 			SubpassDep.srcSubpass = SrcSubpass++;
@@ -498,12 +576,14 @@ public:
 				SubpassDesc.SetInputAttachments(&DepthStencilAttachment, 1);
 
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 				if (bApplyFragmentShadingRate)
 				{
 					SubpassDesc.SetShadingRateAttachment(&FragmentShadingRateAttachmentInfo);
 				}
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 				SubpassDesc.SetMultiViewMask(MultiviewMask);
-#endif
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 
 				// Depth as Input0
 				TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
@@ -543,12 +623,14 @@ public:
 
 				SubpassDesc.SetInputAttachments(InputAttachments2, NumColorInputs + 2);
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 				if (bApplyFragmentShadingRate)
 				{
 					SubpassDesc.SetShadingRateAttachment(&FragmentShadingRateAttachmentInfo);
 				}
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 				SubpassDesc.SetMultiViewMask(MultiviewMask);
-#endif
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 
 				TSubpassDependencyClass& SubpassDep = SubpassDependencies[NumDependencies++];
 				SubpassDep.srcSubpass = SrcSubpass++;
@@ -728,9 +810,16 @@ private:
 	TAttachmentReferenceClass ColorAttachments3[MaxSimultaneousRenderTargets + 1];
 
 #if VULKAN_SUPPORTS_RENDERPASS2
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	FVulkanAttachmentReference<VkAttachmentReference2> ShadingRateAttachmentReference;
 	FVulkanFragmentShadingRateAttachmentInfo FragmentShadingRateAttachmentInfo;
-#endif
+#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+
+#if VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+	FVulkanAttachmentReference<VkAttachmentReference2> DepthStencilResolveAttachmentReference;
+	FVulkanDepthStencilResolveSubpassDesc DepthStencilResolveSubpassDesc;
+#endif // VULKAN_SUPPORTS_DEPTH_STENCIL_RESOLVE
+#endif // VULKAN_SUPPORTS_RENDERPASS2
 	FVulkanRenderPassFragmentDensityMapCreateInfoEXT FragDensityCreateInfo;
 
 	TRenderPassCreateInfoClass CreateInfo;

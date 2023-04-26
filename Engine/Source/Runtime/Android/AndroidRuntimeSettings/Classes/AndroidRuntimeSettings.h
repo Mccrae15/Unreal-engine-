@@ -81,10 +81,9 @@ namespace EOculusMobileDevice
 {
 	enum Type
 	{
-		// 0 was the deprecated OculusGo
+		/** 0 was the deprecated OculusGo */
 
-		/** Package for Meta Quest */
-		Quest = 1 UMETA(DisplayName = "Meta Quest"),
+		/** 1 was the deprecated Meta Quest */
 
 		/** Package for Meta Quest 2 */
 		Quest2 = 2 UMETA(DisplayName = "Meta Quest 2"),

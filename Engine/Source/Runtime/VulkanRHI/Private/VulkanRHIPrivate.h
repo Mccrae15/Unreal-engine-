@@ -164,6 +164,7 @@ public:
 	inline uint32 GetNumColorAttachments() const { return NumColorAttachments; }
 	inline bool GetHasDepthStencil() const { return bHasDepthStencil != 0; }
 	inline bool GetHasResolveAttachments() const { return bHasResolveAttachments != 0; }
+	inline bool GetHasDepthStencilResolve() const { return bHasDepthStencilResolve != 0; }
 	inline bool GetHasFragmentDensityAttachment() const { return bHasFragmentDensityAttachment != 0; }
 	inline uint32 GetNumAttachmentDescriptions() const { return NumAttachmentDescriptions; }
 	inline uint32 GetNumSamples() const { return NumSamples; }
@@ -175,6 +176,7 @@ public:
 	inline const VkAttachmentReference* GetColorAttachmentReferences() const { return NumColorAttachments > 0 ? ColorReferences : nullptr; }
 	inline const VkAttachmentReference* GetResolveAttachmentReferences() const { return bHasResolveAttachments ? ResolveReferences : nullptr; }
 	inline const VkAttachmentReference* GetDepthStencilAttachmentReference() const { return bHasDepthStencil ? &DepthStencilReference : nullptr; }
+	inline const VkAttachmentReference* GetDepthStencilResolveAttachmentReference() const { return bHasDepthStencilResolve ? &DepthStencilResolveReference : nullptr; }
 	inline const VkAttachmentReference* GetFragmentDensityAttachmentReference() const { return bHasFragmentDensityAttachment ? &FragmentDensityReference : nullptr; }
 
 	inline const ESubpassHint GetSubpassHint() const { return SubpassHint; }
@@ -189,16 +191,18 @@ protected:
 	VkAttachmentReference DepthStencilReference;
 	VkAttachmentReference FragmentDensityReference;
 	VkAttachmentReference ResolveReferences[MaxSimultaneousRenderTargets];
+	VkAttachmentReference DepthStencilResolveReference;
 	VkAttachmentReference InputAttachments[MaxSimultaneousRenderTargets + 1];
 
-	// Depth goes in the "+1" slot and the Shading Rate texture goes in the "+2" slot.
-	VkAttachmentDescription Desc[MaxSimultaneousRenderTargets * 2 + 2];
+	// Depth goes in the "+1" slot, Depth resolve goes in the "+2 slot", and the Shading Rate texture goes in the "+3" slot.
+	VkAttachmentDescription Desc[MaxSimultaneousRenderTargets * 2 + 3];
 
 	uint8 NumAttachmentDescriptions;
 	uint8 NumColorAttachments;
 	uint8 NumInputAttachments = 0;
 	uint8 bHasDepthStencil;
 	uint8 bHasResolveAttachments;
+	uint8 bHasDepthStencilResolve;
 	uint8 bHasFragmentDensityAttachment;
 	uint8 NumSamples;
 	uint8 NumUsedClearValues;
@@ -228,12 +232,14 @@ protected:
 		FMemory::Memzero(DepthStencilReference);
 		FMemory::Memzero(FragmentDensityReference);
 		FMemory::Memzero(ResolveReferences);
+		FMemory::Memzero(DepthStencilResolveReference);
 		FMemory::Memzero(InputAttachments);
 		FMemory::Memzero(Desc);
 		NumAttachmentDescriptions = 0;
 		NumColorAttachments = 0;
 		bHasDepthStencil = 0;
 		bHasResolveAttachments = 0;
+		bHasDepthStencilResolve = 0;
 		bHasFragmentDensityAttachment = 0;
 		Extent.Extent3D.width = 0;
 		Extent.Extent3D.height = 0;
@@ -319,6 +325,7 @@ private:
 	VkImage ColorRenderTargetImages[MaxSimultaneousRenderTargets];
 	VkImage ColorResolveTargetImages[MaxSimultaneousRenderTargets];
 	VkImage DepthStencilRenderTargetImage;
+	VkImage DepthStencilResolveRenderTargetImage;
 	VkImage FragmentDensityImage;
 
 	// Predefined set of barriers, when executes ensuring all writes are finished

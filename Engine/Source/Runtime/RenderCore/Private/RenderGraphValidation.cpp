@@ -1105,6 +1105,11 @@ void FRDGUserValidation::SetAllowRHIAccess(const FRDGPass* Pass, bool bAllowAcce
 				Texture->GetDebugData().bAllowRHIAccess = bAllowAccess;
 			}
 
+			if (FRDGTextureRef ResolveTexture = RenderTargets.DepthStencil.GetResolveTexture())
+			{
+				ResolveTexture->GetDebugData().bAllowRHIAccess = bAllowAccess;
+			}
+
 			if (FRDGTexture* Texture = RenderTargets.ShadingRateTexture)
 			{
 				Texture->GetDebugData().bAllowRHIAccess = bAllowAccess;

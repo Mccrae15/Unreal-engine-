@@ -8,11 +8,9 @@
 		<isArch arch="arm64-v8a">
 			<setBool result="bCpuArchSupported" value="true"/>
 		</isArch>
-		<setBoolFromPropertyContains result="bPackageForOculusQuest" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest"/>
 		<setBoolFromPropertyContains result="bPackageForOculusQuest2" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest2"/>
 		<setBoolFromPropertyContains result="bPackageForQuestPro" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="QuestPro"/>
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusQuest)" arg2="$B(bPackageForOculusQuest2)"/>
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusMobile)" arg2="$B(bPackageForQuestPro)"/>
+		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusQuest2)" arg2="$B(bPackageForQuestPro)"/>
 
 		<if condition="bCpuArchSupported">
 			<false>
@@ -70,11 +68,6 @@
 				<loopElements tag="application">
 					<!-- Add SupportedDevices Tag -->
 					<setString result="devicesString" value="" />
-					<if condition="bPackageForOculusQuest">
-						<true>
-							<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="quest|" />
-						</true>
-					</if>
 					<if condition="bPackageForOculusQuest2">
 						<true>
 							<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="quest2|" />
